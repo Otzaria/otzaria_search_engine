@@ -22,6 +22,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   Future<void> addDocument(
       {required BigInt id,
       required String title,
+      required String reference,
+      required String topics,
       required String text,
       required BigInt segment,
       required bool isPdf,
@@ -59,17 +61,21 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
 class SearchResult {
   final String title;
+  final String reference;
   final String text;
   final BigInt id;
   final BigInt segment;
+  final String topics;
   final bool isPdf;
   final String filePath;
 
   const SearchResult({
     required this.title,
+    required this.reference,
     required this.text,
     required this.id,
     required this.segment,
+    required this.topics,
     required this.isPdf,
     required this.filePath,
   });
@@ -77,9 +83,11 @@ class SearchResult {
   @override
   int get hashCode =>
       title.hashCode ^
+      reference.hashCode ^
       text.hashCode ^
       id.hashCode ^
       segment.hashCode ^
+      topics.hashCode ^
       isPdf.hashCode ^
       filePath.hashCode;
 
@@ -89,9 +97,11 @@ class SearchResult {
       other is SearchResult &&
           runtimeType == other.runtimeType &&
           title == other.title &&
+          reference == other.reference &&
           text == other.text &&
           id == other.id &&
           segment == other.segment &&
+          topics == other.topics &&
           isPdf == other.isPdf &&
           filePath == other.filePath;
 }

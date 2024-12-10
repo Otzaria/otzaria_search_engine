@@ -25,9 +25,11 @@ use tantivy::{schema::*, Directory};
 #[derive(Clone)]
 pub struct SearchResult {
     pub title: String,
+    pub reference: String,
     pub text: String,
     pub id: u64,
     pub segment: u64,
+    pub topics: String,
     pub is_pdf: bool,
     pub file_path: String,
 }
@@ -46,6 +48,7 @@ impl SearchEngine {
         let schema_builder = Schema::builder();
         let mut schema_builder = Schema::builder();
         let text = schema_builder.add_text_field("text", TEXT | STORED | FAST);
+        let reference: Field = schema_builder.add_text_field("reference", TEXT | STORED | FAST);
         let title = schema_builder.add_text_field(
             "title",
             TextOptions::default()
@@ -56,6 +59,7 @@ impl SearchEngine {
                 )
                 .set_stored(),
         );
+        let topics = schema_builder.add_text_field("topics", TEXT | STORED | FAST);
         let id = schema_builder.add_u64_field("id", STORED | FAST);
         let segment = schema_builder.add_u64_field("segment", STORED);
         let isPdf = schema_builder.add_bool_field("isPdf", STORED);
@@ -64,10 +68,10 @@ impl SearchEngine {
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
         let index = Index::open_or_create(mmap_directory, schema.clone());
         let index = index.expect("Failed to create index").clone();
-        let index_reader = index.reader().expect("Failed to create index reader");
         let index_writer = index
             .writer(50_000_000)
             .expect("Failed to create index writer");
+        let index_reader = index.reader().expect("Failed to create index reader");
 
         SearchEngine {
             path: path.to_string(),
@@ -82,20 +86,26 @@ impl SearchEngine {
         &mut self,
         _id: u64,
         _title: &str,
+        _reference: &str,
+        _topics: &str,
         _text: &str,
         _segment: u64,
         _is_pdf: bool,
         _file_path: &str,
     ) -> Result<()> {
         let title = self.schema.get_field("title").unwrap();
+        let reference: Field = self.schema.get_field("reference").unwrap();
         let text = self.schema.get_field("text").unwrap();
         let id = self.schema.get_field("id").unwrap();
         let segment = self.schema.get_field("segment").unwrap();
         let is_pdf = self.schema.get_field("isPdf").unwrap();
+        let topics: Field = self.schema.get_field("topics").unwrap();
         let file_path = self.schema.get_field("filePath").unwrap();
 
         self.index_writer.add_document(doc!(
         title => _title,
+        reference => _reference,
+        topics => _topics,
         text => _text,
         id => _id,
         segment => _segment,
@@ -167,6 +177,8 @@ impl SearchEngine {
 
         let mut results = Vec::<SearchResult>::new();
         let title_field = schema.get_field("title")?;
+        let reference_field = schema.get_field("reference")?;
+        let topics_field = schema.get_field("topics")?;
         let text_field = schema.get_field("text")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
@@ -251,8 +263,25 @@ impl SearchEngine {
                         }
                     };
 
+                    let reference = retrieved_doc
+                        .get_first(reference_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let topics = retrieved_doc
+                        .get_first(topics_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+
                     let result = SearchResult {
                         title,
+                        reference,
+                        topics,
                         text,
                         id,
                         segment,
@@ -283,6 +312,8 @@ impl SearchEngine {
             .unwrap();
         let mut results = Vec::<SearchResult>::new();
         let title_field = schema.get_field("title").unwrap();
+        let reference_field = schema.get_field("reference").unwrap();
+        let topics_field = schema.get_field("topics").unwrap();
         let text_field = schema.get_field("text").unwrap();
         let id_field = schema.get_field("id").unwrap();
         let segment_field = schema.get_field("segment").unwrap();
@@ -335,8 +366,25 @@ impl SearchEngine {
                         })
                         .unwrap_or_default();
 
+                    let reference = retrieved_doc
+                        .get_first(reference_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let topics = retrieved_doc
+                        .get_first(topics_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+
                     let result = SearchResult {
                         title,
+                        reference,
+                        topics,
                         text,
                         id,
                         segment,

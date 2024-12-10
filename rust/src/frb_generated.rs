@@ -73,6 +73,8 @@ fn wire__crate__api__search_engine__SearchEngine_add_document_impl(
             >>::sse_decode(&mut deserializer);
             let api__id = <u64>::sse_decode(&mut deserializer);
             let api__title = <String>::sse_decode(&mut deserializer);
+            let api__reference = <String>::sse_decode(&mut deserializer);
+            let api__topics = <String>::sse_decode(&mut deserializer);
             let api__text = <String>::sse_decode(&mut deserializer);
             let api__segment = <u64>::sse_decode(&mut deserializer);
             let api__is_pdf = <bool>::sse_decode(&mut deserializer);
@@ -99,6 +101,8 @@ fn wire__crate__api__search_engine__SearchEngine_add_document_impl(
                             &mut *api_that_guard,
                             api__id,
                             &api__title,
+                            &api__reference,
+                            &api__topics,
                             &api__text,
                             api__segment,
                             api__is_pdf,
@@ -557,16 +561,20 @@ impl SseDecode for crate::api::search_engine::SearchResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_title = <String>::sse_decode(deserializer);
+        let mut var_reference = <String>::sse_decode(deserializer);
         let mut var_text = <String>::sse_decode(deserializer);
         let mut var_id = <u64>::sse_decode(deserializer);
         let mut var_segment = <u64>::sse_decode(deserializer);
+        let mut var_topics = <String>::sse_decode(deserializer);
         let mut var_isPdf = <bool>::sse_decode(deserializer);
         let mut var_filePath = <String>::sse_decode(deserializer);
         return crate::api::search_engine::SearchResult {
             title: var_title,
+            reference: var_reference,
             text: var_text,
             id: var_id,
             segment: var_segment,
+            topics: var_topics,
             is_pdf: var_isPdf,
             file_path: var_filePath,
         };
@@ -712,9 +720,11 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SearchResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.title.into_into_dart().into_dart(),
+            self.reference.into_into_dart().into_dart(),
             self.text.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.segment.into_into_dart().into_dart(),
+            self.topics.into_into_dart().into_dart(),
             self.is_pdf.into_into_dart().into_dart(),
             self.file_path.into_into_dart().into_dart(),
         ]
@@ -845,9 +855,11 @@ impl SseEncode for crate::api::search_engine::SearchResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.title, serializer);
+        <String>::sse_encode(self.reference, serializer);
         <String>::sse_encode(self.text, serializer);
         <u64>::sse_encode(self.id, serializer);
         <u64>::sse_encode(self.segment, serializer);
+        <String>::sse_encode(self.topics, serializer);
         <bool>::sse_encode(self.is_pdf, serializer);
         <String>::sse_encode(self.file_path, serializer);
     }
@@ -1024,7 +1036,5 @@ mod web {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>::decrement_strong_count(ptr as _);
     }
 }
-use tantivy::query::Query;
-use tantivy::Index;
 #[cfg(target_family = "wasm")]
 pub use web::*;
