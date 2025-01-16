@@ -120,23 +120,16 @@ impl SearchEngine {
         let title_field = schema.get_field("title").unwrap();
 
         // Create the main text search query
-        let mut text_query: Box<dyn Query> = {
-            // in case of fuzzy search, use a query parser with fuzzy query
-            if fuzzy {
-                let mut text_query = QueryParser::for_index(&index, vec![text_field]);
-                text_query.set_conjunction_by_default();
-                text_query.set_field_fuzzy(text_field, false, 1, true);
-                let text_query = text_query.parse_query(search_term).unwrap();
-                Box::new(text_query) as Box<dyn Query>
-            // in case of exact search, use a term query
-            } else {
-                Box::new(
-                    QueryParser::for_index(&index, vec![text_field])
-                        .parse_query(search_term)
-                        .unwrap(),
-                ) as Box<dyn Query>
-            }
-        };
+        let mut text_query = QueryParser::for_index(&index, vec![text_field]);
+        text_query.set_conjunction_by_default();
+
+        // in case of fuzzy search, set the fuzziness
+        if fuzzy {
+            text_query.set_field_fuzzy(text_field, false, 1, true);
+        }
+
+        // Parse the search term
+        let text_query = text_query.parse_query_lenient(search_term).0;
 
         // Create a TermSetQuery for exact matching of book titles
         let title_terms: Vec<Term> = book_titles
@@ -176,24 +169,14 @@ impl SearchEngine {
         snippet_generator.set_max_num_chars(800);
 
         let top_docs: Vec<DocAddress> = {
-            if fuzzy {
-                // sort by relevance
-                let collector_by_relanace = TopDocs::with_limit(limit as usize);
-                let top_docs_by_relevance = searcher.search(&query, &collector_by_relanace)?;
-                top_docs_by_relevance
-                    .into_iter()
-                    .map(|(score, doc_address)| (doc_address))
-                    .collect()
-            } else {
-                // sort by id (ascending)
-                let collector_by_id = TopDocs::with_limit(limit as usize)
-                    .order_by_fast_field::<u64>("id", Order::Asc);
-                let top_docs_by_id = searcher.search(&query, &collector_by_id).unwrap();
-                top_docs_by_id
-                    .into_iter()
-                    .map(|(id, doc_address)| (doc_address))
-                    .collect()
-            }
+            // sort by id (ascending)
+            let collector_by_id =
+                TopDocs::with_limit(limit as usize).order_by_fast_field::<u64>("id", Order::Asc);
+            let top_docs_by_id = searcher.search(&query, &collector_by_id).unwrap();
+            top_docs_by_id
+                .into_iter()
+                .map(|(id, doc_address)| (doc_address))
+                .collect()
         };
 
         for doc_address in top_docs {
