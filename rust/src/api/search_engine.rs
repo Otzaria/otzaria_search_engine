@@ -25,6 +25,7 @@ use tantivy::{schema::*, Directory};
 #[derive(Clone)]
 pub struct SearchResult {
     pub title: String,
+    pub reference: String,
     pub text: String,
     pub id: u64,
     pub segment: u64,
@@ -46,6 +47,7 @@ impl SearchEngine {
         let schema_builder = Schema::builder();
         let mut schema_builder = Schema::builder();
         let text = schema_builder.add_text_field("text", TEXT | STORED | FAST);
+        let reference = schema_builder.add_text_field("reference",  STORED );
         let title = schema_builder.add_text_field(
             "title",
             TextOptions::default()
@@ -82,12 +84,14 @@ impl SearchEngine {
         &mut self,
         _id: u64,
         _title: &str,
+        _reference: &str,
         _text: &str,
         _segment: u64,
         _is_pdf: bool,
         _file_path: &str,
     ) -> Result<()> {
         let title = self.schema.get_field("title").unwrap();
+        let reference = self.schema.get_field("reference").unwrap();
         let text = self.schema.get_field("text").unwrap();
         let id = self.schema.get_field("id").unwrap();
         let segment = self.schema.get_field("segment").unwrap();
@@ -96,6 +100,7 @@ impl SearchEngine {
 
         self.index_writer.add_document(doc!(
         title => _title,
+        reference => _reference,
         text => _text,
         id => _id,
         segment => _segment,
@@ -125,7 +130,7 @@ impl SearchEngine {
 
         // in case of fuzzy search, set the fuzziness
         if fuzzy {
-            text_query.set_field_fuzzy(text_field, false, 1, true);
+            text_query.set_field_fuzzy(text_field, false, 1, false);
         }
 
         // Parse the search term
@@ -160,6 +165,7 @@ impl SearchEngine {
 
         let mut results = Vec::<SearchResult>::new();
         let title_field = schema.get_field("title")?;
+        let reference_field = schema.get_field("reference")?;
         let text_field = schema.get_field("text")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
@@ -167,6 +173,7 @@ impl SearchEngine {
         let file_path_field = schema.get_field("filePath")?;
         let mut snippet_generator = SnippetGenerator::create(&searcher, &*query, text_field)?;
         snippet_generator.set_max_num_chars(800);
+
 
         let top_docs: Vec<DocAddress> = {
             // sort by id (ascending)
@@ -189,6 +196,14 @@ impl SearchEngine {
                             _ => None,
                         })
                         .unwrap_or_default();
+                    let reference = retrieved_doc
+                        .get_first(reference_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    
                     let text = retrieved_doc
                         .get_first(text_field)
                         .and_then(|v| match v {
@@ -236,6 +251,7 @@ impl SearchEngine {
 
                     let result = SearchResult {
                         title,
+                        reference,
                         text,
                         id,
                         segment,
@@ -266,6 +282,7 @@ impl SearchEngine {
             .unwrap();
         let mut results = Vec::<SearchResult>::new();
         let title_field = schema.get_field("title").unwrap();
+        let reference_field = schema.get_field("reference").unwrap();
         let text_field = schema.get_field("text").unwrap();
         let id_field = schema.get_field("id").unwrap();
         let segment_field = schema.get_field("segment").unwrap();
@@ -277,6 +294,13 @@ impl SearchEngine {
                 Ok(retrieved_doc) => {
                     let title = retrieved_doc
                         .get_first(title_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let reference = retrieved_doc
+                        .get_first(reference_field)
                         .and_then(|v| match v {
                             OwnedValue::Str(s) => Some(s.clone()),
                             _ => None,
@@ -320,6 +344,7 @@ impl SearchEngine {
 
                     let result = SearchResult {
                         title,
+                        reference,
                         text,
                         id,
                         segment,
