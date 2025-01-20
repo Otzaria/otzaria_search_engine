@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flutter_rust_bridge = "=2.3.0"
+flutter_rust_bridge = "=2.7.0"
 tantivy= "=0.22.0"
 jieba-rs = "0.6.2"
 anyhow = "1.0.36"
