@@ -29,6 +29,8 @@ use crate::api::search_engine::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
+use tantivy::query::Query;
+use tantivy::index::Index;
 
 // Section: boilerplate
 
