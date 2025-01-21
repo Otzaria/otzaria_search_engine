@@ -30,6 +30,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<void> commit();
 
+  Future<int> count(
+      {required String query,
+      required List<String> books,
+      required bool fuzzy});
+
   static Future<BoxQuery> createSearchQuery(
           {required Index index,
           required String searchTerm,

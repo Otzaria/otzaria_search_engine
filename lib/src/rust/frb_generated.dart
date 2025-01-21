@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.7.0';
 
   @override
-  int get rustContentHash => -340198064;
+  int get rustContentHash => 769689944;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -89,6 +89,12 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiSearchEngineSearchEngineCommit(
       {required SearchEngine that});
+
+  Future<int> crateApiSearchEngineSearchEngineCount(
+      {required SearchEngine that,
+      required String query,
+      required List<String> books,
+      required bool fuzzy});
 
   Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
       {required Index index,
@@ -224,6 +230,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<int> crateApiSearchEngineSearchEngineCount(
+      {required SearchEngine that,
+      required String query,
+      required List<String> books,
+      required bool fuzzy}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_String(query, serializer);
+        sse_encode_list_String(books, serializer);
+        sse_encode_bool(fuzzy, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 3, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_u_32,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta: kCrateApiSearchEngineSearchEngineCountConstMeta,
+      argValues: [that, query, books, fuzzy],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineCountConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count",
+        argNames: ["that", "query", "books", "fuzzy"],
+      );
+
+  @override
   Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
       {required Index index,
       required String searchTerm,
@@ -238,7 +277,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_list_String(bookTitles, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 3, port: port_);
+            funcId: 4, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -266,7 +305,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(path, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 4, port: port_);
+            funcId: 5, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -302,7 +341,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 5, port: port_);
+            funcId: 6, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_search_result,
@@ -339,7 +378,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 6, port: port_);
+            funcId: 7, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -364,7 +403,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: () {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(name, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_String,
@@ -982,6 +1021,13 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
       RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(
         that: this,
       );
+
+  Future<int> count(
+          {required String query,
+          required List<String> books,
+          required bool fuzzy}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
+          that: this, query: query, books: books, fuzzy: fuzzy);
 
   Future<List<SearchResult>> search(
           {required String query,
