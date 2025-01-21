@@ -11,7 +11,7 @@ use std::borrow::{Borrow, BorrowMut};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::index::Index;
 use tantivy::query::{self, BooleanQuery, Occur, QueryParser, TermQuery, TermSetQuery};
@@ -151,6 +151,19 @@ impl SearchEngine {
         Ok(Box::new(bool_query))
     }
 
+    pub fn count(
+        &mut self,
+        query: &str,
+        books: &Vec<String>,       
+        fuzzy: bool,) -> Result<u32> {
+        let index = &self.index;
+        let query = Self::create_search_query(index, query, books, fuzzy).unwrap();
+        let searcher = index.reader()?.searcher();
+        let count = searcher.search(&query, &Count).unwrap() as u32;
+        Ok(count)
+        }
+    
+    
     pub fn search(
         &mut self,
         query: &str,
