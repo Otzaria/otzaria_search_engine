@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.7.0';
 
   @override
-  int get rustContentHash => 769689944;
+  int get rustContentHash => -655336046;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -82,10 +82,14 @@ abstract class RustLibApi extends BaseApi {
       required BigInt id,
       required String title,
       required String reference,
+      required String topics,
       required String text,
       required BigInt segment,
       required bool isPdf,
       required String filePath});
+
+  Future<void> crateApiSearchEngineSearchEngineClear(
+      {required SearchEngine that});
 
   Future<void> crateApiSearchEngineSearchEngineCommit(
       {required SearchEngine that});
@@ -94,6 +98,7 @@ abstract class RustLibApi extends BaseApi {
       {required SearchEngine that,
       required String query,
       required List<String> books,
+      required String topics,
       required bool fuzzy});
 
   Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
@@ -110,7 +115,8 @@ abstract class RustLibApi extends BaseApi {
       required String query,
       required List<String> books,
       required int limit,
-      required bool fuzzy});
+      required bool fuzzy,
+      required ResultsOrder order});
 
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchStream(
       {required SearchEngine that,
@@ -158,6 +164,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       required BigInt id,
       required String title,
       required String reference,
+      required String topics,
       required String text,
       required BigInt segment,
       required bool isPdf,
@@ -170,6 +177,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_64(id, serializer);
         sse_encode_String(title, serializer);
         sse_encode_String(reference, serializer);
+        sse_encode_String(topics, serializer);
         sse_encode_String(text, serializer);
         sse_encode_u_64(segment, serializer);
         sse_encode_bool(isPdf, serializer);
@@ -182,7 +190,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineAddDocumentConstMeta,
-      argValues: [that, id, title, reference, text, segment, isPdf, filePath],
+      argValues: [
+        that,
+        id,
+        title,
+        reference,
+        topics,
+        text,
+        segment,
+        isPdf,
+        filePath
+      ],
       apiImpl: this,
     ));
   }
@@ -195,11 +213,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "id",
           "title",
           "reference",
+          "topics",
           "text",
           "segment",
           "isPdf",
           "filePath"
         ],
+      );
+
+  @override
+  Future<void> crateApiSearchEngineSearchEngineClear(
+      {required SearchEngine that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 2, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta: kCrateApiSearchEngineSearchEngineClearConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineClearConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_clear",
+        argNames: ["that"],
       );
 
   @override
@@ -211,7 +257,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 2, port: port_);
+            funcId: 3, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -234,6 +280,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       {required SearchEngine that,
       required String query,
       required List<String> books,
+      required String topics,
       required bool fuzzy}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -242,16 +289,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(query, serializer);
         sse_encode_list_String(books, serializer);
+        sse_encode_String(topics, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 3, port: port_);
+            funcId: 4, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_u_32,
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineCountConstMeta,
-      argValues: [that, query, books, fuzzy],
+      argValues: [that, query, books, topics, fuzzy],
       apiImpl: this,
     ));
   }
@@ -259,7 +307,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count",
-        argNames: ["that", "query", "books", "fuzzy"],
+        argNames: ["that", "query", "books", "topics", "fuzzy"],
       );
 
   @override
@@ -277,7 +325,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_list_String(bookTitles, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 4, port: port_);
+            funcId: 5, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -305,7 +353,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(path, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 5, port: port_);
+            funcId: 6, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -330,7 +378,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       required String query,
       required List<String> books,
       required int limit,
-      required bool fuzzy}) {
+      required bool fuzzy,
+      required ResultsOrder order}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
@@ -340,15 +389,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_list_String(books, serializer);
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
+        sse_encode_results_order(order, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 6, port: port_);
+            funcId: 7, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_search_result,
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineSearchConstMeta,
-      argValues: [that, query, books, limit, fuzzy],
+      argValues: [that, query, books, limit, fuzzy, order],
       apiImpl: this,
     ));
   }
@@ -356,7 +406,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_search",
-        argNames: ["that", "query", "books", "limit", "fuzzy"],
+        argNames: ["that", "query", "books", "limit", "fuzzy", "order"],
       );
 
   @override
@@ -378,7 +428,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 7, port: port_);
+            funcId: 8, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -403,7 +453,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: () {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(name, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_String,
@@ -482,6 +532,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SearchEngine
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   BoxQuery
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
           dynamic raw) {
@@ -525,6 +583,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int dco_decode_i_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
@@ -540,6 +604,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<SearchResult> dco_decode_list_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_search_result).toList();
+  }
+
+  @protected
+  ResultsOrder dco_decode_results_order(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return ResultsOrder.values[raw as int];
   }
 
   @protected
@@ -633,6 +703,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SearchEngine
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return SearchEngineImpl.frbInternalSseDecode(
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
+  }
+
+  @protected
   BoxQuery
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
           SseDeserializer deserializer) {
@@ -681,6 +760,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int sse_decode_i_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getInt32();
+  }
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -710,6 +795,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ans_.add(sse_decode_search_result(deserializer));
     }
     return ans_;
+  }
+
+  @protected
+  ResultsOrder sse_decode_results_order(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return ResultsOrder.values[inner];
   }
 
   @protected
@@ -762,12 +854,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  int sse_decode_i_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getInt32();
-  }
-
-  @protected
   void sse_encode_AnyhowException(
       AnyhowException self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -810,6 +896,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
         (self as IndexImpl).frbInternalSseEncode(move: false), serializer);
+  }
+
+  @protected
+  void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SearchEngine self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+        (self as SearchEngineImpl).frbInternalSseEncode(move: false),
+        serializer);
   }
 
   @protected
@@ -866,6 +962,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_i_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putInt32(self);
+  }
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
@@ -890,6 +992,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     for (final item in self) {
       sse_encode_search_result(item, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_results_order(ResultsOrder self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -931,12 +1039,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_usize(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
-  }
-
-  @protected
-  void sse_encode_i_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putInt32(self);
   }
 }
 
@@ -1003,6 +1105,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
           {required BigInt id,
           required String title,
           required String reference,
+          required String topics,
           required String text,
           required BigInt segment,
           required bool isPdf,
@@ -1012,10 +1115,16 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
           id: id,
           title: title,
           reference: reference,
+          topics: topics,
           text: text,
           segment: segment,
           isPdf: isPdf,
           filePath: filePath);
+
+  Future<void> clear() =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineClear(
+        that: this,
+      );
 
   Future<void> commit() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(
@@ -1025,17 +1134,24 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<int> count(
           {required String query,
           required List<String> books,
+          required String topics,
           required bool fuzzy}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
-          that: this, query: query, books: books, fuzzy: fuzzy);
+          that: this, query: query, books: books, topics: topics, fuzzy: fuzzy);
 
   Future<List<SearchResult>> search(
           {required String query,
           required List<String> books,
           required int limit,
-          required bool fuzzy}) =>
+          required bool fuzzy,
+          required ResultsOrder order}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearch(
-          that: this, query: query, books: books, limit: limit, fuzzy: fuzzy);
+          that: this,
+          query: query,
+          books: books,
+          limit: limit,
+          fuzzy: fuzzy,
+          order: order);
 
   Stream<List<SearchResult>> searchStream(
           {required String query,

@@ -62,6 +62,7 @@ impl SearchEngine {
         let segment = schema_builder.add_u64_field("segment", STORED);
         let isPdf = schema_builder.add_bool_field("isPdf", STORED);
         let file_path = schema_builder.add_text_field("filePath", TEXT | STORED);
+        let topics = schema_builder.add_facet_field("topics", FacetOptions::default());
         let schema = schema_builder.build();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
         let index = Index::open_or_create(mmap_directory, schema.clone());
@@ -85,6 +86,7 @@ impl SearchEngine {
         _id: u64,
         _title: &str,
         _reference: &str,
+        _topics: &str,
         _text: &str,
         _segment: u64,
         _is_pdf: bool,
@@ -97,6 +99,8 @@ impl SearchEngine {
         let segment = self.schema.get_field("segment").unwrap();
         let is_pdf = self.schema.get_field("isPdf").unwrap();
         let file_path = self.schema.get_field("filePath").unwrap();
+        let topics= self.schema.get_field("topics").unwrap();
+        let _topics = Facet::from_text(_topics)?;
 
         self.index_writer.add_document(doc!(
         title => _title,
@@ -105,7 +109,8 @@ impl SearchEngine {
         id => _id,
         segment => _segment,
         is_pdf => _is_pdf,
-        file_path => _file_path
+        file_path => _file_path,
+        topics => _topics
         ))?;
 
         Ok(())
@@ -154,10 +159,22 @@ impl SearchEngine {
     pub fn count(
         &mut self,
         query: &str,
-        books: &Vec<String>,       
+        books: &Vec<String>,  
+        topics: &str,     
         fuzzy: bool,) -> Result<u32> {
         let index = &self.index;
-        let query = Self::create_search_query(index, query, books, fuzzy).unwrap();
+        let schema = index.schema();
+        let search_query = Self::create_search_query(index, query, books, fuzzy).unwrap();
+        let facet: Facet =  Facet::from_text(topics)?;
+        let facet_term = Term::from_facet(schema.get_field("topics")?,&facet);
+        let facet_query = TermQuery::new(facet_term,IndexRecordOption::Basic) ;
+        let query = BooleanQuery::new(
+            vec![
+                (Occur::Must, Box::new(search_query) as Box<dyn Query>),
+                (Occur::Must, Box::new(facet_query) as Box<dyn Query>),
+            ]
+        );
+
         let searcher = index.reader()?.searcher();
         let count = searcher.search(&query, &Count).unwrap() as u32;
         Ok(count)
@@ -170,6 +187,7 @@ impl SearchEngine {
         books: &Vec<String>,
         limit: u32,
         fuzzy: bool,
+        order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let index = &self.index;
         let schema = &self.schema;
@@ -187,8 +205,9 @@ impl SearchEngine {
         let mut snippet_generator = SnippetGenerator::create(&searcher, &*query, text_field)?;
         snippet_generator.set_max_num_chars(800);
 
+        let top_docs: Vec<DocAddress> = match order {
+            ResultsOrder::Catalogue => {
 
-        let top_docs: Vec<DocAddress> = {
             // sort by id (ascending)
             let collector_by_id =
                 TopDocs::with_limit(limit as usize).order_by_fast_field::<u64>("id", Order::Asc);
@@ -197,6 +216,16 @@ impl SearchEngine {
                 .into_iter()
                 .map(|(id, doc_address)| (doc_address))
                 .collect()
+        }
+            ResultsOrder::Relevance =>{
+            let coleector_by_score = TopDocs::with_limit(limit as usize);
+            let top_docs_by_score = searcher.search(&query, &coleector_by_score).unwrap();
+            top_docs_by_score
+                .into_iter()
+                .map(|(score, doc_address)| (doc_address))
+                .collect()
+
+        }
         };
 
         for doc_address in top_docs {
@@ -372,4 +401,55 @@ impl SearchEngine {
         }
         Ok(())
     }
+
+    pub fn clear(&self)->Result<()>{
+        self.index_writer.delete_all_documents()?;
+       Ok(())
+    }
+}
+
+pub enum ResultsOrder{
+    Catalogue, Relevance
+}
+
+#[cfg(test)]
+#[test]
+
+fn test_facet_search()->Result<()>{
+
+    // Create a temporary directory for testing
+
+    use std::str::FromStr;
+    let temp_dir = tempfile::Builder::new().prefix("search_engine_test").tempdir().unwrap();
+    let temp_path = temp_dir.path().to_str().unwrap();
+
+    // Create a new SearchEngine instance
+    let mut search_engine = SearchEngine::new(temp_path);
+
+    // Add some documents with different topics
+    search_engine.add_document(1, "Document 1", "Ref 1", "/topic1/subtopic1", "This is the text of document 1", 1, false, "/path/to/doc1").unwrap();
+    search_engine.add_document(2, "Document 2", "Ref 2", "/topic1/subtopic2", "This is the text of document 2", 2, false, "/path/to/doc2").unwrap();
+    search_engine.add_document(3, "Document 3", "Ref 3", "/topic2/subtopic1", "This is the text of document 3", 3, false, "/path/to/doc3").unwrap();
+
+    // Commit the changes
+    search_engine.commit().unwrap();
+    let books = vec![String::from_str("Document 1")?,String::from_str("Document 2")?,String::from_str("Document 3")?];
+
+    // Test facet search for topic1
+    let count = search_engine.count("text", &books, "/topic1", false).unwrap();
+    assert_eq!(count, 2);
+
+    // Test facet search for topic2
+    let count = search_engine.count("text",  &books, "/topic2", false).unwrap();
+    assert_eq!(count, 1);
+
+    // Test facet search for a subtopic
+    let count = search_engine.count("text",  &books, "/topic1/subtopic1", false).unwrap();
+    assert_eq!(count, 1);
+
+    // Test facet search for a non-existent topic
+    let count = search_engine.count("text",  &books, "/nonexistent", false).unwrap();
+    assert_eq!(count, 0);
+    
+    Ok(())
 }

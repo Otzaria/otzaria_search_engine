@@ -23,16 +23,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
       {required BigInt id,
       required String title,
       required String reference,
+      required String topics,
       required String text,
       required BigInt segment,
       required bool isPdf,
       required String filePath});
+
+  Future<void> clear();
 
   Future<void> commit();
 
   Future<int> count(
       {required String query,
       required List<String> books,
+      required String topics,
       required bool fuzzy});
 
   static Future<BoxQuery> createSearchQuery(
@@ -54,13 +58,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
       {required String query,
       required List<String> books,
       required int limit,
-      required bool fuzzy});
+      required bool fuzzy,
+      required ResultsOrder order});
 
   Stream<List<SearchResult>> searchStream(
       {required String query,
       required List<String> books,
       required int limit,
       required bool fuzzy});
+}
+
+enum ResultsOrder {
+  catalogue,
+  relevance,
+  ;
 }
 
 class SearchResult {
