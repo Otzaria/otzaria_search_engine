@@ -122,12 +122,12 @@ impl SearchEngine {
     pub fn create_search_query(
         index: &Index,
         search_term: &str,
-        book_titles: &[String],
+        facets: Vec<&str>,
         fuzzy: bool,
     ) -> Result<Box<dyn Query>> {
         let schema = index.schema();
         let text_field = schema.get_field("text").unwrap();
-        let title_field = schema.get_field("title").unwrap();
+        let topics_field = schema.get_field("topics").unwrap();
 
         // Create the main text search query
         let mut text_query = QueryParser::for_index(&index, vec![text_field]);
@@ -142,16 +142,16 @@ impl SearchEngine {
         let text_query = text_query.parse_query_lenient(search_term).0;
 
         // Create a TermSetQuery for exact matching of book titles
-        let title_terms: Vec<Term> = book_titles
+        let facet_terms: Vec<Term> = facets
             .iter()
-            .map(|title| Term::from_field_text(title_field, title))
+            .map(|facet| Term::from_facet(topics_field, &Facet::from_text(facet).unwrap()))
             .collect();
-        let title_filter = TermSetQuery::new(title_terms);
+        let facets_query = TermSetQuery::new(facet_terms);
 
         // Combine the text search and title filter
         let bool_query = BooleanQuery::new(vec![
             (Occur::Must, Box::new(text_query) as Box<dyn Query>),
-            (Occur::Must, Box::new(title_filter) as Box<dyn Query>),
+            (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
         ]);
         Ok(Box::new(bool_query))
     }
@@ -159,13 +159,12 @@ impl SearchEngine {
     pub fn count(
         &mut self,
         query: &str,
-        books: &Vec<String>,  
-        topics: &str,     
+        facet: &str,     
         fuzzy: bool,) -> Result<u32> {
         let index = &self.index;
         let schema = index.schema();
-        let search_query = Self::create_search_query(index, query, books, fuzzy).unwrap();
-        let facet: Facet =  Facet::from_text(topics)?;
+        let search_query = Self::create_search_query(index, query, vec![facet], fuzzy).unwrap();
+        let facet: Facet =  Facet::from_text(facet)?;
         let facet_term = Term::from_facet(schema.get_field("topics")?,&facet);
         let facet_query = TermQuery::new(facet_term,IndexRecordOption::Basic) ;
         let query = BooleanQuery::new(
@@ -184,14 +183,14 @@ impl SearchEngine {
     pub fn search(
         &mut self,
         query: &str,
-        books: &Vec<String>,
+        facets: Vec<&str>,
         limit: u32,
         fuzzy: bool,
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let index = &self.index;
         let schema = &self.schema;
-        let query = Self::create_search_query(index, query, books, fuzzy)?;
+        let query = Self::create_search_query(index, query, facets, fuzzy)?;
         let searcher = index.reader()?.searcher();
 
         let mut results = Vec::<SearchResult>::new();
@@ -311,13 +310,13 @@ impl SearchEngine {
         &mut self,
         query: &str,
         sink: StreamSink<Vec<SearchResult>>,
-        books: &Vec<String>,
+        facets: Vec<&str>,
         limit: u32,
         fuzzy: bool,
     ) -> Result<()> {
         let index = &self.index;
         let schema = &self.schema;
-        let query = Self::create_search_query(index, query, books, fuzzy).unwrap();
+        let query = Self::create_search_query(index, query, facets, fuzzy).unwrap();
         let searcher = index.reader().unwrap().searcher();
         let top_docs = searcher
             .search(&query, &TopDocs::with_limit(limit as usize))
@@ -433,22 +432,20 @@ fn test_facet_search()->Result<()>{
 
     // Commit the changes
     search_engine.commit().unwrap();
-    let books = vec![String::from_str("Document 1")?,String::from_str("Document 2")?,String::from_str("Document 3")?];
-
     // Test facet search for topic1
-    let count = search_engine.count("text", &books, "/topic1", false).unwrap();
+    let count = search_engine.count("text",  "/topic1", false).unwrap();
     assert_eq!(count, 2);
 
     // Test facet search for topic2
-    let count = search_engine.count("text",  &books, "/topic2", false).unwrap();
+    let count = search_engine.count("text",  "/topic2", false).unwrap();
     assert_eq!(count, 1);
 
     // Test facet search for a subtopic
-    let count = search_engine.count("text",  &books, "/topic1/subtopic1", false).unwrap();
+    let count = search_engine.count("text",   "/topic1/subtopic1", false).unwrap();
     assert_eq!(count, 1);
 
     // Test facet search for a non-existent topic
-    let count = search_engine.count("text",  &books, "/nonexistent", false).unwrap();
+    let count = search_engine.count("text",  "/nonexistent", false).unwrap();
     assert_eq!(count, 0);
     
     Ok(())
