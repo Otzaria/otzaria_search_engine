@@ -97,14 +97,13 @@ abstract class RustLibApi extends BaseApi {
   Future<int> crateApiSearchEngineSearchEngineCount(
       {required SearchEngine that,
       required String query,
-      required List<String> books,
-      required String topics,
+      required List<String> facets,
       required bool fuzzy});
 
   Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
       {required Index index,
       required String searchTerm,
-      required List<String> bookTitles,
+      required List<String> facets,
       required bool fuzzy});
 
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew(
@@ -113,7 +112,7 @@ abstract class RustLibApi extends BaseApi {
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
       {required SearchEngine that,
       required String query,
-      required List<String> books,
+      required List<String> facets,
       required int limit,
       required bool fuzzy,
       required ResultsOrder order});
@@ -121,7 +120,7 @@ abstract class RustLibApi extends BaseApi {
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchStream(
       {required SearchEngine that,
       required String query,
-      required List<String> books,
+      required List<String> facets,
       required int limit,
       required bool fuzzy});
 
@@ -279,8 +278,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<int> crateApiSearchEngineSearchEngineCount(
       {required SearchEngine that,
       required String query,
-      required List<String> books,
-      required String topics,
+      required List<String> facets,
       required bool fuzzy}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -288,8 +286,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that, serializer);
         sse_encode_String(query, serializer);
-        sse_encode_list_String(books, serializer);
-        sse_encode_String(topics, serializer);
+        sse_encode_list_String(facets, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
             funcId: 4, port: port_);
@@ -299,7 +296,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineCountConstMeta,
-      argValues: [that, query, books, topics, fuzzy],
+      argValues: [that, query, facets, fuzzy],
       apiImpl: this,
     ));
   }
@@ -307,14 +304,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count",
-        argNames: ["that", "query", "books", "topics", "fuzzy"],
+        argNames: ["that", "query", "facets", "fuzzy"],
       );
 
   @override
   Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
       {required Index index,
       required String searchTerm,
-      required List<String> bookTitles,
+      required List<String> facets,
       required bool fuzzy}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -322,7 +319,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
             index, serializer);
         sse_encode_String(searchTerm, serializer);
-        sse_encode_list_String(bookTitles, serializer);
+        sse_encode_list_String(facets, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
             funcId: 5, port: port_);
@@ -333,7 +330,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineCreateSearchQueryConstMeta,
-      argValues: [index, searchTerm, bookTitles, fuzzy],
+      argValues: [index, searchTerm, facets, fuzzy],
       apiImpl: this,
     ));
   }
@@ -342,7 +339,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       get kCrateApiSearchEngineSearchEngineCreateSearchQueryConstMeta =>
           const TaskConstMeta(
             debugName: "SearchEngine_create_search_query",
-            argNames: ["index", "searchTerm", "bookTitles", "fuzzy"],
+            argNames: ["index", "searchTerm", "facets", "fuzzy"],
           );
 
   @override
@@ -376,7 +373,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
       {required SearchEngine that,
       required String query,
-      required List<String> books,
+      required List<String> facets,
       required int limit,
       required bool fuzzy,
       required ResultsOrder order}) {
@@ -386,7 +383,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that, serializer);
         sse_encode_String(query, serializer);
-        sse_encode_list_String(books, serializer);
+        sse_encode_list_String(facets, serializer);
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
         sse_encode_results_order(order, serializer);
@@ -398,7 +395,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineSearchConstMeta,
-      argValues: [that, query, books, limit, fuzzy, order],
+      argValues: [that, query, facets, limit, fuzzy, order],
       apiImpl: this,
     ));
   }
@@ -406,14 +403,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_search",
-        argNames: ["that", "query", "books", "limit", "fuzzy", "order"],
+        argNames: ["that", "query", "facets", "limit", "fuzzy", "order"],
       );
 
   @override
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchStream(
       {required SearchEngine that,
       required String query,
-      required List<String> books,
+      required List<String> facets,
       required int limit,
       required bool fuzzy}) {
     final sink = RustStreamSink<List<SearchResult>>();
@@ -424,7 +421,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(query, serializer);
         sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
-        sse_encode_list_String(books, serializer);
+        sse_encode_list_String(facets, serializer);
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
@@ -435,7 +432,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineSearchStreamConstMeta,
-      argValues: [that, query, sink, books, limit, fuzzy],
+      argValues: [that, query, sink, facets, limit, fuzzy],
       apiImpl: this,
     )));
     return sink.stream;
@@ -444,7 +441,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchStreamConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_search_stream",
-        argNames: ["that", "query", "sink", "books", "limit", "fuzzy"],
+        argNames: ["that", "query", "sink", "facets", "limit", "fuzzy"],
       );
 
   @override
@@ -1133,31 +1130,30 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   Future<int> count(
           {required String query,
-          required List<String> books,
-          required String topics,
+          required List<String> facets,
           required bool fuzzy}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
-          that: this, query: query, books: books, topics: topics, fuzzy: fuzzy);
+          that: this, query: query, facets: facets, fuzzy: fuzzy);
 
   Future<List<SearchResult>> search(
           {required String query,
-          required List<String> books,
+          required List<String> facets,
           required int limit,
           required bool fuzzy,
           required ResultsOrder order}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearch(
           that: this,
           query: query,
-          books: books,
+          facets: facets,
           limit: limit,
           fuzzy: fuzzy,
           order: order);
 
   Stream<List<SearchResult>> searchStream(
           {required String query,
-          required List<String> books,
+          required List<String> facets,
           required int limit,
           required bool fuzzy}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchStream(
-          that: this, query: query, books: books, limit: limit, fuzzy: fuzzy);
+          that: this, query: query, facets: facets, limit: limit, fuzzy: fuzzy);
 }

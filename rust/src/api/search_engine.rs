@@ -122,7 +122,7 @@ impl SearchEngine {
     pub fn create_search_query(
         index: &Index,
         search_term: &str,
-        facets: Vec<&str>,
+        facets: Vec<String>,
         fuzzy: bool,
     ) -> Result<Box<dyn Query>> {
         let schema = index.schema();
@@ -159,18 +159,23 @@ impl SearchEngine {
     pub fn count(
         &mut self,
         query: &str,
-        facet: &str,     
+        facets: &Vec<String>,     
         fuzzy: bool,) -> Result<u32> {
         let index = &self.index;
         let schema = index.schema();
-        let search_query = Self::create_search_query(index, query, vec![facet], fuzzy).unwrap();
-        let facet: Facet =  Facet::from_text(facet)?;
-        let facet_term = Term::from_facet(schema.get_field("topics")?,&facet);
-        let facet_query = TermQuery::new(facet_term,IndexRecordOption::Basic) ;
-        let query = BooleanQuery::new(
+        let search_query = Self::create_search_query(index, query, facets.clone(), fuzzy).unwrap();
+        let topics_field = schema.get_field("topics").unwrap();
+
+        let facet_terms: Vec<Term> = facets
+        .iter()
+        .map(|facet| Term::from_facet(topics_field, &Facet::from_text(facet).unwrap()))
+        .collect();
+    let facets_query = TermSetQuery::new(facet_terms);
+
+       let query = BooleanQuery::new(
             vec![
                 (Occur::Must, Box::new(search_query) as Box<dyn Query>),
-                (Occur::Must, Box::new(facet_query) as Box<dyn Query>),
+                (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
             ]
         );
 
@@ -183,7 +188,7 @@ impl SearchEngine {
     pub fn search(
         &mut self,
         query: &str,
-        facets: Vec<&str>,
+        facets: Vec<String>,
         limit: u32,
         fuzzy: bool,
         order: ResultsOrder,
@@ -310,7 +315,7 @@ impl SearchEngine {
         &mut self,
         query: &str,
         sink: StreamSink<Vec<SearchResult>>,
-        facets: Vec<&str>,
+        facets: Vec<String>,
         limit: u32,
         fuzzy: bool,
     ) -> Result<()> {
@@ -433,19 +438,23 @@ fn test_facet_search()->Result<()>{
     // Commit the changes
     search_engine.commit().unwrap();
     // Test facet search for topic1
-    let count = search_engine.count("text",  "/topic1", false).unwrap();
+    let count = search_engine.count("text",  &vec!["/topic1".to_string()], false).unwrap();
     assert_eq!(count, 2);
 
     // Test facet search for topic2
-    let count = search_engine.count("text",  "/topic2", false).unwrap();
+    let count = search_engine.count("text",  &vec!["/topic2".to_string()], false).unwrap();
     assert_eq!(count, 1);
 
     // Test facet search for a subtopic
-    let count = search_engine.count("text",   "/topic1/subtopic1", false).unwrap();
+    let count = search_engine.count("text",   &vec!["/topic1".to_string()], false).unwrap();
     assert_eq!(count, 1);
 
+     // Test facet search for a subtopic
+     let count = search_engine.count("text",   &vec!["/topic1".to_string()], false).unwrap();
+     assert_eq!(count, 2);
+
     // Test facet search for a non-existent topic
-    let count = search_engine.count("text",  "/nonexistent", false).unwrap();
+    let count = search_engine.count("text",  &vec!["/nonexistent".to_string()], false).unwrap();
     assert_eq!(count, 0);
     
     Ok(())

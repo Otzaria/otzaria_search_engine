@@ -247,8 +247,7 @@ fn wire__crate__api__search_engine__SearchEngine_count_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
-            let api_books = <Vec<String>>::sse_decode(&mut deserializer);
-            let api_topics = <String>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_fuzzy = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -271,8 +270,7 @@ fn wire__crate__api__search_engine__SearchEngine_count_impl(
                         let output_ok = crate::api::search_engine::SearchEngine::count(
                             &mut *api_that_guard,
                             &api_query,
-                            &api_books,
-                            &api_topics,
+                            &api_facets,
                             api_fuzzy,
                         )?;
                         Ok(output_ok)
@@ -308,7 +306,7 @@ fn wire__crate__api__search_engine__SearchEngine_create_search_query_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Index>,
             >>::sse_decode(&mut deserializer);
             let api_search_term = <String>::sse_decode(&mut deserializer);
-            let api_book_titles = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_fuzzy = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -332,7 +330,7 @@ fn wire__crate__api__search_engine__SearchEngine_create_search_query_impl(
                             crate::api::search_engine::SearchEngine::create_search_query(
                                 &*api_index_guard,
                                 &api_search_term,
-                                &api_book_titles,
+                                api_facets,
                                 api_fuzzy,
                             )?;
                         Ok(output_ok)
@@ -403,7 +401,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
-            let api_books = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_fuzzy = <bool>::sse_decode(&mut deserializer);
             let api_order =
@@ -429,7 +427,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_impl(
                         let output_ok = crate::api::search_engine::SearchEngine::search(
                             &mut *api_that_guard,
                             &api_query,
-                            &api_books,
+                            api_facets,
                             api_limit,
                             api_fuzzy,
                             api_order,
@@ -471,7 +469,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_stream_impl(
                 Vec<crate::api::search_engine::SearchResult>,
                 flutter_rust_bridge::for_generated::SseCodec,
             >>::sse_decode(&mut deserializer);
-            let api_books = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_fuzzy = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -496,7 +494,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_stream_impl(
                             &mut *api_that_guard,
                             &api_query,
                             api_sink,
-                            &api_books,
+                            api_facets,
                             api_limit,
                             api_fuzzy,
                         )?;
