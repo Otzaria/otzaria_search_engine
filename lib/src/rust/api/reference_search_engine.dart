@@ -5,21 +5,22 @@
 
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'reference_search_engine.dart';
+import 'search_engine.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`
 
-String testBindings({required String name}) =>
-    RustLib.instance.api.crateApiSearchEngineTestBindings(name: name);
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Box < dyn Query >>>
+abstract class BoxQuery implements RustOpaqueInterface {}
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
-abstract class SearchEngine implements RustOpaqueInterface {
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Index>>
+abstract class Index implements RustOpaqueInterface {}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ReferenceSearchEngine>>
+abstract class ReferenceSearchEngine implements RustOpaqueInterface {
   Future<void> addDocument(
       {required BigInt id,
       required String title,
       required String reference,
-      required String topics,
-      required String text,
       required BigInt segment,
       required bool isPdf,
       required String filePath});
@@ -28,56 +29,37 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<void> commit();
 
-  Future<int> count(
-      {required String query,
-      required List<String> facets,
-      required bool fuzzy});
+  Future<int> count({required String query, required bool fuzzy});
 
   static Future<BoxQuery> createSearchQuery(
           {required Index index,
           required String searchTerm,
-          required List<String> facets,
           required bool fuzzy}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineCreateSearchQuery(
-          index: index, searchTerm: searchTerm, facets: facets, fuzzy: fuzzy);
+      RustLib.instance.api
+          .crateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQuery(
+              index: index, searchTerm: searchTerm, fuzzy: fuzzy);
 
-  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
-  static Future<SearchEngine> newInstance({required String path}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
+  factory ReferenceSearchEngine({required String path}) => RustLib.instance.api
+      .crateApiReferenceSearchEngineReferenceSearchEngineNew(path: path);
 
-  Future<List<SearchResult>> search(
+  Future<List<ReferenceSearchResult>> search(
       {required String query,
-      required List<String> facets,
       required int limit,
       required bool fuzzy,
       required ResultsOrder order});
-
-  Stream<List<SearchResult>> searchStream(
-      {required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy});
 }
 
-enum ResultsOrder {
-  catalogue,
-  relevance,
-  ;
-}
-
-class SearchResult {
+class ReferenceSearchResult {
   final String title;
   final String reference;
-  final String text;
   final BigInt id;
   final BigInt segment;
   final bool isPdf;
   final String filePath;
 
-  const SearchResult({
+  const ReferenceSearchResult({
     required this.title,
     required this.reference,
-    required this.text,
     required this.id,
     required this.segment,
     required this.isPdf,
@@ -88,7 +70,6 @@ class SearchResult {
   int get hashCode =>
       title.hashCode ^
       reference.hashCode ^
-      text.hashCode ^
       id.hashCode ^
       segment.hashCode ^
       isPdf.hashCode ^
@@ -97,11 +78,10 @@ class SearchResult {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is SearchResult &&
+      other is ReferenceSearchResult &&
           runtimeType == other.runtimeType &&
           title == other.title &&
           reference == other.reference &&
-          text == other.text &&
           id == other.id &&
           segment == other.segment &&
           isPdf == other.isPdf &&

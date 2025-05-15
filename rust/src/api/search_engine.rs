@@ -1,4 +1,6 @@
-#[flutter_rust_bridge::frb(sync)] // Synchronous mode for simplicity of the demo
+
+use flutter_rust_bridge::frb;
+#[frb(sync)] // Synchronous mode for simplicity of the demo
 pub fn test_bindings(name: String) -> String {
     format!("Hello, {name}!")
 }
@@ -13,9 +15,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::index::Index;
+pub use tantivy::index::Index;
 use tantivy::query::{self, BooleanQuery, Occur, QueryParser, TermQuery, TermSetQuery};
-use tantivy::query::{PhraseQuery, Query};
+pub use tantivy::query::{PhraseQuery, Query};
 use tantivy::{
     doc, tokenizer, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher,
     SnippetGenerator,
