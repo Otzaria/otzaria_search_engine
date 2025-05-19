@@ -60,6 +60,7 @@ fn wire__crate__api__reference_search_engine__ReferenceSearchEngine_add_document
 let api__id = <u64>::sse_decode(&mut deserializer);
 let api__title = <String>::sse_decode(&mut deserializer);
 let api__reference = <String>::sse_decode(&mut deserializer);
+let api__short_ref = <String>::sse_decode(&mut deserializer);
 let api__segment = <u64>::sse_decode(&mut deserializer);
 let api__is_pdf = <bool>::sse_decode(&mut deserializer);
 let api__file_path = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
@@ -73,7 +74,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let mut api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::reference_search_engine::ReferenceSearchEngine::add_document(&mut *api_that_guard, api__id, &api__title, &api__reference, api__segment, api__is_pdf, &api__file_path)?;   Ok(output_ok)
+ let output_ok = crate::api::reference_search_engine::ReferenceSearchEngine::add_document(&mut *api_that_guard, api__id, &api__title, &api__reference, &api__short_ref, api__segment, api__is_pdf, &api__file_path)?;   Ok(output_ok)
                     })())
                 } })
 }
@@ -1042,6 +1043,7 @@ impl SseDecode for crate::api::reference_search_engine::ReferenceSearchResult {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_title = <String>::sse_decode(deserializer);
         let mut var_reference = <String>::sse_decode(deserializer);
+        let mut var_shortRef = <String>::sse_decode(deserializer);
         let mut var_id = <u64>::sse_decode(deserializer);
         let mut var_segment = <u64>::sse_decode(deserializer);
         let mut var_isPdf = <bool>::sse_decode(deserializer);
@@ -1049,6 +1051,7 @@ impl SseDecode for crate::api::reference_search_engine::ReferenceSearchResult {
         return crate::api::reference_search_engine::ReferenceSearchResult {
             title: var_title,
             reference: var_reference,
+            short_ref: var_shortRef,
             id: var_id,
             segment: var_segment,
             is_pdf: var_isPdf,
@@ -1227,6 +1230,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::reference_search_engine::Refe
         [
             self.title.into_into_dart().into_dart(),
             self.reference.into_into_dart().into_dart(),
+            self.short_ref.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.segment.into_into_dart().into_dart(),
             self.is_pdf.into_into_dart().into_dart(),
@@ -1451,6 +1455,7 @@ impl SseEncode for crate::api::reference_search_engine::ReferenceSearchResult {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.title, serializer);
         <String>::sse_encode(self.reference, serializer);
+        <String>::sse_encode(self.short_ref, serializer);
         <u64>::sse_encode(self.id, serializer);
         <u64>::sse_encode(self.segment, serializer);
         <bool>::sse_encode(self.is_pdf, serializer);

@@ -23,6 +23,7 @@ use tantivy::{schema::*, Directory};
 pub struct ReferenceSearchResult {
     pub title: String,
     pub reference: String,
+    pub short_ref: String,
     pub id: u64,
     pub segment: u64,
     pub is_pdf: bool,
@@ -44,19 +45,10 @@ impl ReferenceSearchEngine {
         let mut schema_builder = Schema::builder();
         // Make reference field searchable with TEXT | STORED
         let reference = schema_builder.add_text_field("reference", TEXT | STORED);
-        let title = schema_builder.add_text_field(
-            "title",
-            TextOptions::default()
-                .set_indexing_options(
-                    TextFieldIndexing::default()
-                        .set_tokenizer("raw")
-                        .set_fieldnorms(false),
-                )
-                .set_stored(),
-        );
+        let title = schema_builder.add_text_field("shortRef", TEXT);
         let id = schema_builder.add_u64_field("id", STORED | FAST);
         let segment = schema_builder.add_u64_field("segment", STORED);
-        let isPdf = schema_builder.add_bool_field("isPdf", STORED);
+        let is_pdf = schema_builder.add_bool_field("isPdf", STORED);
         let file_path = schema_builder.add_text_field("filePath", TEXT | STORED);
         let schema = schema_builder.build();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
@@ -81,12 +73,14 @@ impl ReferenceSearchEngine {
         _id: u64,
         _title: &str,
         _reference: &str,
+        _short_ref: &str,
         _segment: u64,
         _is_pdf: bool,
         _file_path: &str,
     ) -> Result<()> {
         let title = self.schema.get_field("title").unwrap();
         let reference = self.schema.get_field("reference").unwrap();
+        let short_ref = self.schema.get_field("shortRef").unwrap();
         let id = self.schema.get_field("id").unwrap();
         let segment = self.schema.get_field("segment").unwrap();
         let is_pdf = self.schema.get_field("isPdf").unwrap();
@@ -115,7 +109,7 @@ impl ReferenceSearchEngine {
         fuzzy: bool,
     ) -> Result<Box<dyn Query>> {
         let schema = index.schema();
-        let reference_field = schema.get_field("reference").unwrap();
+        let reference_field = schema.get_field("shortRef").unwrap();
 
         // Create the main reference search query
         let mut reference_query = QueryParser::for_index(&index, vec![reference_field]);
@@ -160,6 +154,7 @@ impl ReferenceSearchEngine {
         let mut results = Vec::<ReferenceSearchResult>::new();
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
+        let short_ref_field = schema.get_field("short_ref")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
@@ -203,6 +198,13 @@ impl ReferenceSearchEngine {
                             _ => None,
                         })
                         .unwrap_or_default();
+                    let short_ref = retrieved_doc
+                        .get_first(short_ref_field)
+                        .and_then(|v| match v {
+                            OwnedValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
                     let id = retrieved_doc
                         .get_first(id_field)
                         .and_then(|v| match v {
@@ -235,6 +237,7 @@ impl ReferenceSearchEngine {
                     let result = ReferenceSearchResult {
                         title,
                         reference,
+                        short_ref,
                         id,
                         segment,
                         is_pdf,
@@ -269,9 +272,9 @@ mod tests {
         let mut search_engine = ReferenceSearchEngine::new(temp_path);
 
         // Add some documents with different references
-        search_engine.add_document(1, "Document 1", "Reference 1", 1, false, "/path/to/doc1").unwrap();
-        search_engine.add_document(2, "Document 2", "Reference 2", 2, false, "/path/to/doc2").unwrap();
-        search_engine.add_document(3, "Document 3", "Another Reference", 3, false, "/path/to/doc3").unwrap();
+        search_engine.add_document(1, "Document 1", "Reference 1", "R 1", 1, false, "/path/to/doc1").unwrap();
+        search_engine.add_document(2, "Document 2", "Reference 2","R 2" ,2, false, "/path/to/doc2").unwrap();
+        search_engine.add_document(3, "Document 3", "Another Reference", " A R",3, false, "/path/to/doc3").unwrap();
 
         // Commit the changes
         search_engine.commit().unwrap();

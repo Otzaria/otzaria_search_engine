@@ -21,6 +21,7 @@ abstract class ReferenceSearchEngine implements RustOpaqueInterface {
       {required BigInt id,
       required String title,
       required String reference,
+      required String shortRef,
       required BigInt segment,
       required bool isPdf,
       required String filePath});
@@ -52,6 +53,7 @@ abstract class ReferenceSearchEngine implements RustOpaqueInterface {
 class ReferenceSearchResult {
   final String title;
   final String reference;
+  final String shortRef;
   final BigInt id;
   final BigInt segment;
   final bool isPdf;
@@ -60,6 +62,7 @@ class ReferenceSearchResult {
   const ReferenceSearchResult({
     required this.title,
     required this.reference,
+    required this.shortRef,
     required this.id,
     required this.segment,
     required this.isPdf,
@@ -70,6 +73,7 @@ class ReferenceSearchResult {
   int get hashCode =>
       title.hashCode ^
       reference.hashCode ^
+      shortRef.hashCode ^
       id.hashCode ^
       segment.hashCode ^
       isPdf.hashCode ^
@@ -82,6 +86,7 @@ class ReferenceSearchResult {
           runtimeType == other.runtimeType &&
           title == other.title &&
           reference == other.reference &&
+          shortRef == other.shortRef &&
           id == other.id &&
           segment == other.segment &&
           isPdf == other.isPdf &&

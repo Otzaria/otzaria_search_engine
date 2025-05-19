@@ -83,6 +83,7 @@ abstract class RustLibApi extends BaseApi {
       required BigInt id,
       required String title,
       required String reference,
+      required String shortRef,
       required BigInt segment,
       required bool isPdf,
       required String filePath});
@@ -210,6 +211,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       required BigInt id,
       required String title,
       required String reference,
+      required String shortRef,
       required BigInt segment,
       required bool isPdf,
       required String filePath}) {
@@ -221,6 +223,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_64(id, serializer);
         sse_encode_String(title, serializer);
         sse_encode_String(reference, serializer);
+        sse_encode_String(shortRef, serializer);
         sse_encode_u_64(segment, serializer);
         sse_encode_bool(isPdf, serializer);
         sse_encode_String(filePath, serializer);
@@ -233,7 +236,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ),
       constMeta:
           kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta,
-      argValues: [that, id, title, reference, segment, isPdf, filePath],
+      argValues: [
+        that,
+        id,
+        title,
+        reference,
+        shortRef,
+        segment,
+        isPdf,
+        filePath
+      ],
       apiImpl: this,
     ));
   }
@@ -247,6 +259,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               "id",
               "title",
               "reference",
+              "shortRef",
               "segment",
               "isPdf",
               "filePath"
@@ -944,15 +957,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ReferenceSearchResult dco_decode_reference_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return ReferenceSearchResult(
       title: dco_decode_String(arr[0]),
       reference: dco_decode_String(arr[1]),
-      id: dco_decode_u_64(arr[2]),
-      segment: dco_decode_u_64(arr[3]),
-      isPdf: dco_decode_bool(arr[4]),
-      filePath: dco_decode_String(arr[5]),
+      shortRef: dco_decode_String(arr[2]),
+      id: dco_decode_u_64(arr[3]),
+      segment: dco_decode_u_64(arr[4]),
+      isPdf: dco_decode_bool(arr[5]),
+      filePath: dco_decode_String(arr[6]),
     );
   }
 
@@ -1202,6 +1216,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_title = sse_decode_String(deserializer);
     var var_reference = sse_decode_String(deserializer);
+    var var_shortRef = sse_decode_String(deserializer);
     var var_id = sse_decode_u_64(deserializer);
     var var_segment = sse_decode_u_64(deserializer);
     var var_isPdf = sse_decode_bool(deserializer);
@@ -1209,6 +1224,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return ReferenceSearchResult(
         title: var_title,
         reference: var_reference,
+        shortRef: var_shortRef,
         id: var_id,
         segment: var_segment,
         isPdf: var_isPdf,
@@ -1468,6 +1484,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.title, serializer);
     sse_encode_String(self.reference, serializer);
+    sse_encode_String(self.shortRef, serializer);
     sse_encode_u_64(self.id, serializer);
     sse_encode_u_64(self.segment, serializer);
     sse_encode_bool(self.isPdf, serializer);
@@ -1587,6 +1604,7 @@ class ReferenceSearchEngineImpl extends RustOpaque
           {required BigInt id,
           required String title,
           required String reference,
+          required String shortRef,
           required BigInt segment,
           required bool isPdf,
           required String filePath}) =>
@@ -1596,6 +1614,7 @@ class ReferenceSearchEngineImpl extends RustOpaque
               id: id,
               title: title,
               reference: reference,
+              shortRef: shortRef,
               segment: segment,
               isPdf: isPdf,
               filePath: filePath);
