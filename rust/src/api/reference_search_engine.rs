@@ -43,7 +43,6 @@ impl ReferenceSearchEngine {
     pub fn new(path: &str) -> Self {
         debug!("new path={}", path,);
         let mut schema_builder = Schema::builder();
-        let 
         let reference = schema_builder.add_text_field("reference", TEXT | STORED);
         let short_ref = schema_builder.add_text_field("shortRef", TEXT | STORED);
         let title = schema_builder.add_text_field("title", TEXT);
