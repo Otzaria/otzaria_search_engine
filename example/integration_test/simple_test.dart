@@ -16,6 +16,7 @@ void main() {
         id: BigInt.from(1),
         title: "Document 1",
         reference: "Reference 1",
+        shortRef: "Ref 1",
         segment: BigInt.from(2),
         isPdf: false,
         filePath: "/path/to/doc1");
