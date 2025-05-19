@@ -89,7 +89,7 @@ impl ReferenceSearchEngine {
         self.index_writer.add_document(doc!(
             title => _title,
             reference => _reference,
-            short_ref => _short_ref
+            short_ref => _short_ref,
             id => _id,
             segment => _segment,
             is_pdf => _is_pdf,
