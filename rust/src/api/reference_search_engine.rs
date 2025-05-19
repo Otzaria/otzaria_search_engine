@@ -43,9 +43,10 @@ impl ReferenceSearchEngine {
     pub fn new(path: &str) -> Self {
         debug!("new path={}", path,);
         let mut schema_builder = Schema::builder();
-        // Make reference field searchable with TEXT | STORED
+        let 
         let reference = schema_builder.add_text_field("reference", TEXT | STORED);
-        let title = schema_builder.add_text_field("shortRef", TEXT);
+        let short_ref = schema_builder.add_text_field("shortRef", TEXT | STORED);
+        let title = schema_builder.add_text_field("title", TEXT);
         let id = schema_builder.add_u64_field("id", STORED | FAST);
         let segment = schema_builder.add_u64_field("segment", STORED);
         let is_pdf = schema_builder.add_bool_field("isPdf", STORED);
@@ -154,7 +155,7 @@ impl ReferenceSearchEngine {
         let mut results = Vec::<ReferenceSearchResult>::new();
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
-        let short_ref_field = schema.get_field("short_ref")?;
+        let short_ref_field = schema.get_field("shortRef")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
