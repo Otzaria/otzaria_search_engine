@@ -44,8 +44,8 @@ impl ReferenceSearchEngine {
         debug!("new path={}", path,);
         let mut schema_builder = Schema::builder();
         let reference = schema_builder.add_text_field("reference", TEXT | STORED);
-        let short_ref = schema_builder.add_text_field("shortRef", TEXT | STORED);
-        let title = schema_builder.add_text_field("title", TEXT);
+        let short_ref = schema_builder.add_text_field("shortRef", TEXT );
+        let title = schema_builder.add_text_field("title", TEXT | STORED);
         let id = schema_builder.add_u64_field("id", STORED | FAST);
         let segment = schema_builder.add_u64_field("segment", STORED);
         let is_pdf = schema_builder.add_bool_field("isPdf", STORED);
