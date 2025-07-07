@@ -22,7 +22,7 @@ use tantivy::query::{self, BooleanQuery, Occur, QueryParser, TermQuery, TermSetQ
 pub use tantivy::query::{PhraseQuery, Query};
 use tantivy::tokenizer::{SimpleTokenizer, TextAnalyzer, RemoveLongFilter, LowerCaser};
 use tantivy::{
-    doc, tokenizer, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher,
+    doc, snippet, tokenizer, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher
 };
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{schema::*, Directory};
@@ -451,7 +451,7 @@ impl SearchEngine {
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
         let file_path_field = schema.get_field("filePath")?;
-        let mut snippet_generator = SnippetGenerator::create(&searcher, &*query, hebrew_text_field)?;
+        let mut snippet_generator = SnippetGenerator::create(&searcher, &*query, text_field)?;
         snippet_generator.set_max_num_chars(800);
 
         let top_docs: Vec<DocAddress> = match order {
@@ -519,12 +519,12 @@ impl SearchEngine {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
-                    let result_text = {
-                        if fuzzy {
-                            text
-                        } else {
-                            snippet.to_html()
-                        }
+                    let snippet_text = snippet.to_html();
+                    let result_text =
+                    if snippet_text.is_empty() {
+                         text.to_string() }
+                          else {
+                        snippet_text
                     };
 
                     let result = SearchResult {
@@ -655,6 +655,7 @@ mod tests {
         // Test count with Hebrew search
         let count = search_engine.count_hebrew("בתי", &vec!["/hebrew".to_string()], false).unwrap();
         assert!(count >= 1, "Should count documents containing 'ביתי' when searching for 'בתי'");
+       
 
         Ok(())
     }

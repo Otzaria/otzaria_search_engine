@@ -2,31 +2,35 @@ import 'package:flutter/rendering.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:search_engine/search_engine.dart';
-import 'package:search_engine/src/rust/api/reference_search_engine.dart';
-
-void main() {
+void main()async  {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  debugPrint("test1");
-  setUpAll(() async => await RustLib.init());
-  debugPrint("test2");
-  test('Reference Search Engine', () async {
-    final engine = ReferenceSearchEngine(path: "./ref_index");
+   await RustLib.init();
+
+    test('Search Engine with custom tokenizer', () async {
+    debugPrint("hello from test");
+    final engine = await SearchEngine.newInstance(path: "c:\\dev\\index");
     debugPrint(engine.toString());
     engine.addDocument(
         id: BigInt.from(1),
         title: "Document 1",
         reference: "Reference 1",
-        shortRef: "Ref 1",
+        text: "יהודים",
         segment: BigInt.from(2),
+        topics: "/מוסק",
         isPdf: false,
         filePath: "/path/to/doc1");
     engine.commit();
-    final results = await engine.search(
-        query: "Reference",
-        limit: 10,
+    final results = await engine.searchHebrew(
+        query: "יהדים",
+        facets: ["/"],
+        limit: 1,
         fuzzy: false,
         order: ResultsOrder.relevance);
     expect(results.length, 1);
+    expect(results[0].text,"יהודים");
+    expect(results[0].id, BigInt.from(1));  
+    expect(results[0].title, "Document 1");
     expect(results[0].reference, "Reference 1");
+    expect(results[0].segment, BigInt.from(2));
   });
 }
