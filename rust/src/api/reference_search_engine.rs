@@ -1,7 +1,6 @@
-use crate::frb_generated::StreamSink;
 use flutter_rust_bridge::frb;
 use crate::api::search_engine::ResultsOrder;
-use anyhow::{Error, Result};
+use anyhow::Result;
 use futures::stream::{Stream, StreamExt};
 use log::debug;
 use serde_json::{json, Value};
@@ -14,6 +13,7 @@ use tantivy::directory::MmapDirectory;
 use tantivy::index::Index;
 use tantivy::query::{self, BooleanQuery, Occur, QueryParser, TermQuery, TermSetQuery};
 use tantivy::query::{PhraseQuery, Query};
+use tantivy::schema::Value as TantivyValue;
 use tantivy::{
     doc, tokenizer, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher,
 };
@@ -187,53 +187,36 @@ impl ReferenceSearchEngine {
                 Ok(retrieved_doc) => {
                     let title = retrieved_doc
                         .get_first(title_field)
-                        .and_then(|v| match v {
-                            OwnedValue::Str(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let reference = retrieved_doc
                         .get_first(reference_field)
-                        .and_then(|v| match v {
-                            OwnedValue::Str(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let short_ref = retrieved_doc
                         .get_first(short_ref_field)
-                        .and_then(|v| match v {
-                            OwnedValue::Str(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let id = retrieved_doc
                         .get_first(id_field)
-                        .and_then(|v| match v {
-                            OwnedValue::U64(y) => Some(*y),
-                            _ => None,
-                        })
+                        .and_then(|v| v.as_u64())
                         .unwrap_or_default();
                     let segment = retrieved_doc
                         .get_first(segment_field)
-                        .and_then(|v| match v {
-                            OwnedValue::U64(y) => Some(*y),
-                            _ => None,
-                        })
+                        .and_then(|v| v.as_u64())
                         .unwrap_or_default();
                     let is_pdf = retrieved_doc
                         .get_first(is_pdf_field)
-                        .and_then(|v| match v {
-                            OwnedValue::Bool(y) => Some(*y),
-                            _ => None,
-                        })
+                        .and_then(|v| v.as_bool())
                         .unwrap_or_default();
                     let file_path = retrieved_doc
                         .get_first(file_path_field)
-                        .and_then(|v| match v {
-                            OwnedValue::Str(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
 
                     let result = ReferenceSearchResult {
                         title,

@@ -27,4 +27,12 @@ migrate_working_dir/
 **/doc/api/
 .dart_tool/
 build/
-rust/Cargo.lock
+android/
+cargokit/
+example/
+
+ios/
+lib/
+linux/
+macos/
+windows/
