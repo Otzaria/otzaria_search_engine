@@ -21,10 +21,11 @@ void main()async  {
         filePath: "/path/to/doc1");
     engine.commit();
     final results = await engine.search(
-        query: "יהדים",
+        regexTerms: ["יה.*דים"],
         facets: ["/"],
         limit: 1,
-        fuzzy: false,
+        slop: 0,
+        maxExpansions: 50,
         order: ResultsOrder.relevance);
     expect(results.length, 1);
     expect(results[0].text,"יהודים");
