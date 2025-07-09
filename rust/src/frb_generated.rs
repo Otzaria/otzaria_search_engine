@@ -661,16 +661,15 @@ fn wire__crate__api__search_engine__SearchEngine_create_query_impl(
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_new_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_new",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
             let message = unsafe {
@@ -684,14 +683,11 @@ fn wire__crate__api__search_engine__SearchEngine_new_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_path = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            move |context| {
-                transform_result_sse::<_, ()>((move || {
-                    let output_ok = Result::<_, ()>::Ok(
-                        crate::api::search_engine::SearchEngine::new(&api_path),
-                    )?;
-                    Ok(output_ok)
-                })())
-            }
+            transform_result_sse::<_, ()>((move || {
+                let output_ok =
+                    Result::<_, ()>::Ok(crate::api::search_engine::SearchEngine::new(&api_path))?;
+                Ok(output_ok)
+            })())
         },
     )
 }
@@ -1099,7 +1095,6 @@ fn pde_ffi_dispatcher_primary_impl(
 10 => wire__crate__api__search_engine__SearchEngine_commit_impl(port, ptr, rust_vec_len, data_len),
 11 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
 12 => wire__crate__api__search_engine__SearchEngine_create_query_impl(port, ptr, rust_vec_len, data_len),
-13 => wire__crate__api__search_engine__SearchEngine_new_impl(port, ptr, rust_vec_len, data_len),
 14 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
 15 => wire__crate__api__search_engine__SearchEngine_search_phrase_regex_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
@@ -1119,6 +1114,7 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
+        13 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

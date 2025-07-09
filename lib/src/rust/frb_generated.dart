@@ -149,8 +149,7 @@ abstract class RustLibApi extends BaseApi {
       required int slop,
       required int maxExpansions});
 
-  Future<SearchEngine> crateApiSearchEngineSearchEngineNew(
-      {required String path});
+  SearchEngine crateApiSearchEngineSearchEngineNew({required String path});
 
   Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
       {required SearchEngine that, required String title});
@@ -646,14 +645,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<SearchEngine> crateApiSearchEngineSearchEngineNew(
-      {required String path}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
+  SearchEngine crateApiSearchEngineSearchEngineNew({required String path}) {
+    return handler.executeSync(SyncTask(
+      callFfi: () {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(path, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 13, port: port_);
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
       },
       codec: SseCodec(
         decodeSuccessData:

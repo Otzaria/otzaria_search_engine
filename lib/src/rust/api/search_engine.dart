@@ -44,8 +44,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
           slop: slop,
           maxExpansions: maxExpansions);
 
-  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
-  static Future<SearchEngine> newInstance({required String path}) =>
+  factory SearchEngine({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
 
   Future<void> removeDocumentsByTitle({required String title});

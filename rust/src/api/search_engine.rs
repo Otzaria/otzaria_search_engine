@@ -36,6 +36,7 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
+    #[frb(sync)]
     pub fn new(path: &str) -> Self {
         debug!("new path={}", path,);
         let mut schema_builder = Schema::builder();
