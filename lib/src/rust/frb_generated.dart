@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 2116068237;
+  int get rustContentHash => 538380127;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -161,6 +161,9 @@ abstract class RustLibApi extends BaseApi {
 
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew(
       {required String path});
+
+  Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
+      {required SearchEngine that, required String title});
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
       {required SearchEngine that,
@@ -762,6 +765,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
+      {required SearchEngine that, required String title}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_String(title, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 16, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta:
+          kCrateApiSearchEngineSearchEngineRemoveDocumentsByTitleConstMeta,
+      argValues: [that, title],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta
+      get kCrateApiSearchEngineSearchEngineRemoveDocumentsByTitleConstMeta =>
+          const TaskConstMeta(
+            debugName: "SearchEngine_remove_documents_by_title",
+            argNames: ["that", "title"],
+          );
+
+  @override
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
       {required SearchEngine that,
       required String query,
@@ -780,7 +813,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_bool(fuzzy, serializer);
         sse_encode_results_order(order, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 16, port: port_);
+            funcId: 17, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_search_result,
@@ -817,7 +850,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_bool(fuzzy, serializer);
         sse_encode_results_order(order, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 17, port: port_);
+            funcId: 18, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_search_result,
@@ -854,7 +887,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(limit, serializer);
         sse_encode_bool(fuzzy, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 18, port: port_);
+            funcId: 19, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -879,7 +912,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: () {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(name, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_String,
@@ -1838,6 +1871,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
           required bool fuzzy}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountHebrew(
           that: this, query: query, facets: facets, fuzzy: fuzzy);
+
+  Future<void> removeDocumentsByTitle({required String title}) =>
+      RustLib.instance.api
+          .crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
+              that: this, title: title);
 
   Future<List<SearchResult>> search(
           {required String query,

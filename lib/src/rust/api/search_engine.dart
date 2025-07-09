@@ -62,6 +62,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   static Future<SearchEngine> newInstance({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
 
+  Future<void> removeDocumentsByTitle({required String title});
+
   Future<List<SearchResult>> search(
       {required String query,
       required List<String> facets,

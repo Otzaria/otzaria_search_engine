@@ -577,6 +577,13 @@ impl SearchEngine {
         self.index_writer.delete_all_documents()?;
        Ok(())
     }
+
+    pub fn remove_documents_by_title(&mut self, title: &str) -> Result<()> {
+        let title_field = self.schema.get_field("title")?;
+        let title_term = Term::from_field_text(title_field, title);
+        self.index_writer.delete_term(title_term);
+        Ok(())
+    }
 }
 
 pub enum ResultsOrder{
@@ -656,6 +663,34 @@ mod tests {
         let count = search_engine.count_hebrew("בתי", &vec!["/hebrew".to_string()], false).unwrap();
         assert!(count >= 1, "Should count documents containing 'ביתי' when searching for 'בתי'");
        
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_advanced_search() -> Result<()> {
+        // Create a temporary directory for testing
+        let temp_dir = tempfile::Builder::new().prefix("advanced_search_test").tempdir().unwrap();
+        let temp_path = temp_dir.path().to_str().unwrap();
+
+        // Create a new SearchEngine instance
+        let mut search_engine = SearchEngine::new(temp_path);
+
+        // Add some documents
+        search_engine.add_document(1, "Document 1", "Ref 1", "/topic1/subtopic1", "This is the text of document 1", 1, false, "/path/to/doc1").unwrap();
+        search_engine.add_document(2, "Document 2", "Ref 2", "/topic1/subtopic2", "This is the text of document 2", 2, false, "/path/to/doc2").unwrap();
+        search_engine.add_document(3, "Document 3", "Ref 3", "/topic2/subtopic1", "This is the text of document 3", 3, false, "/path/to/doc3").unwrap();
+
+        // Commit the changes
+        search_engine.commit().unwrap();
+
+        // Test advanced search with facets and fuzzy matching
+        let results = search_engine.search("text of document", vec!["/topic1".to_string()], 10, true, ResultsOrder::Relevance).unwrap();
+        assert!(results.len() >= 2, "Should find at least two documents matching 'text of document' in topic1");
+
+        // Test advanced search with Hebrew query
+        let hebrew_results = search_engine.search_hebrew("הטקסט של ביתי הגדול והיפה", vec!["/hebrew/books".to_string()], 10, false, ResultsOrder::Relevance).unwrap();
+        assert!(hebrew_results.len() >= 1, "Should find documents containing 'הטקסט של ביתי הגדול והיפה'");
 
         Ok(())
     }
