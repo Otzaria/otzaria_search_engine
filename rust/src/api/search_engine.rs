@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
 pub use tantivy::index::Index;
-use tantivy::query::{self, BooleanQuery, Occur, QueryParser, TermQuery, TermSetQuery};
-pub use tantivy::query::{PhraseQuery, Query};
+use tantivy::query::{self, BooleanQuery, Occur, QueryParser, RegexQuery, TermQuery, TermSetQuery};
+pub use tantivy::query::{PhraseQuery, RegexPhraseQuery, Query};
 use tantivy::tokenizer::{SimpleTokenizer, TextAnalyzer, RemoveLongFilter, LowerCaser};
 use tantivy::{
     doc, snippet, tokenizer, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher
@@ -573,6 +573,189 @@ impl SearchEngine {
         Ok(count)
     }
 
+    pub fn create_phrase_regex_query(
+        index: &Index,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+        use_hebrew: bool,
+    ) -> Result<Box<dyn Query>> {
+        let schema = index.schema();
+        let text_field = if use_hebrew {
+            schema.get_field("hebrew_text").unwrap()
+        } else {
+            schema.get_field("text").unwrap()
+        };
+        let topics_field = schema.get_field("topics").unwrap();
+
+        let main_query: Box<dyn Query> = if regex_terms.len() == 1 {
+            // Single term: use RegexQuery
+            Box::new(RegexQuery::from_pattern(&regex_terms[0], text_field)?)
+        } else {
+            // Multiple terms: use RegexPhraseQuery
+            let mut phrase_query = RegexPhraseQuery::new(text_field, regex_terms);
+            phrase_query.set_slop(slop);
+            phrase_query.set_max_expansions(max_expansions);
+            Box::new(phrase_query)
+        };
+
+        // Create facet filtering query
+        let facet_terms: Vec<Term> = facets
+            .iter()
+            .map(|facet| Term::from_facet(topics_field, &Facet::from_text(facet).unwrap()))
+            .collect();
+        let facets_query = TermSetQuery::new(facet_terms);
+
+        // Combine the regex query and facet filter
+        let bool_query = BooleanQuery::new(vec![
+            (Occur::Must, main_query),
+            (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
+        ]);
+
+        Ok(Box::new(bool_query))
+    }
+
+    pub fn search_phrase_regex(
+        &mut self,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        limit: u32,
+        slop: u32,
+        max_expansions: u32,
+        use_hebrew: bool,
+        order: ResultsOrder,
+    ) -> Result<Vec<SearchResult>> {
+        let index = &self.index;
+        let schema = &self.schema;
+        let query = Self::create_phrase_regex_query(index, regex_terms, facets, slop, max_expansions, use_hebrew)?;
+        let searcher = index.reader()?.searcher();
+
+        let mut results = Vec::<SearchResult>::new();
+        let title_field = schema.get_field("title")?;
+        let reference_field = schema.get_field("reference")?;
+        let text_field = schema.get_field("text")?;
+        let hebrew_text_field = schema.get_field("hebrew_text")?;
+        let id_field = schema.get_field("id")?;
+        let segment_field = schema.get_field("segment")?;
+        let is_pdf_field = schema.get_field("isPdf")?;
+        let file_path_field = schema.get_field("filePath")?;
+
+        // Use the appropriate text field for snippet generation
+        let snippet_text_field = if use_hebrew { hebrew_text_field } else { text_field };
+        let mut snippet_generator = SnippetGenerator::create(&searcher, &*query, snippet_text_field)?;
+        snippet_generator.set_max_num_chars(800);
+
+        let top_docs: Vec<DocAddress> = match order {
+            ResultsOrder::Catalogue => {
+                // sort by id (ascending)
+                let collector_by_id =
+                    TopDocs::with_limit(limit as usize).order_by_fast_field::<u64>("id", Order::Asc);
+                let top_docs_by_id = searcher.search(&query, &collector_by_id).unwrap();
+                top_docs_by_id
+                    .into_iter()
+                    .map(|(id, doc_address)| (doc_address))
+                    .collect()
+            }
+            ResultsOrder::Relevance => {
+                let collector_by_score = TopDocs::with_limit(limit as usize);
+                let top_docs_by_score = searcher.search(&query, &collector_by_score).unwrap();
+                top_docs_by_score
+                    .into_iter()
+                    .map(|(score, doc_address)| (doc_address))
+                    .collect()
+            }
+        };
+
+        for doc_address in top_docs {
+            match searcher.doc::<TantivyDocument>(doc_address) {
+                Ok(retrieved_doc) => {
+                    let title = retrieved_doc
+                        .get_first(title_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let reference = retrieved_doc
+                        .get_first(reference_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    
+                    let text = retrieved_doc
+                        .get_first(text_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    
+                    let snippet_source_text = if use_hebrew {
+                        retrieved_doc
+                            .get_first(hebrew_text_field)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                    } else {
+                        &text
+                    };
+                    
+                    let mut snippet = snippet_generator.snippet(snippet_source_text);
+                    snippet.set_snippet_prefix_postfix("<font color=red>", "</font>");
+                    
+                    let id = retrieved_doc
+                        .get_first(id_field)
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default();
+                    let segment = retrieved_doc
+                        .get_first(segment_field)
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default();
+                    let is_pdf = retrieved_doc
+                        .get_first(is_pdf_field)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or_default();
+                    let file_path = retrieved_doc
+                        .get_first(file_path_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    
+                    let snippet_text = snippet.to_html();
+                    let result_text = if snippet_text.is_empty() {
+                        text
+                    } else {
+                        snippet_text
+                    };
+
+                    let result = SearchResult {
+                        title,
+                        reference,
+                        text: result_text,
+                        id,
+                        segment,
+                        is_pdf,
+                        file_path,
+                    };
+                    results.push(result);
+                }
+                Err(_) => continue,
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn count_phrase_regex(
+        &mut self,
+        regex_terms: Vec<String>,
+        facets: &Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+        use_hebrew: bool,
+    ) -> Result<u32> {
+        let index = &self.index;
+        let query = Self::create_phrase_regex_query(index, regex_terms, facets.clone(), slop, max_expansions, use_hebrew)?;
+        let searcher = index.reader()?.searcher();
+        let count = searcher.search(&query, &Count).unwrap() as u32;
+        Ok(count)
+    }
+
     pub fn clear(&self)->Result<()>{
         self.index_writer.delete_all_documents()?;
        Ok(())
@@ -584,6 +767,8 @@ impl SearchEngine {
         self.index_writer.delete_term(title_term);
         Ok(())
     }
+
+   
 }
 
 pub enum ResultsOrder{
@@ -691,6 +876,72 @@ mod tests {
         // Test advanced search with Hebrew query
         let hebrew_results = search_engine.search_hebrew("הטקסט של ביתי הגדול והיפה", vec!["/hebrew/books".to_string()], 10, false, ResultsOrder::Relevance).unwrap();
         assert!(hebrew_results.len() >= 1, "Should find documents containing 'הטקסט של ביתי הגדול והיפה'");
+
+        Ok(())
+    }
+     #[test]
+    fn test_phrase_regex_search() -> Result<()> {
+        // Create a temporary directory for testing
+        let temp_dir = tempfile::Builder::new().prefix("phrase_regex_test").tempdir().unwrap();
+        let temp_path = temp_dir.path().to_str().unwrap();
+
+        // Create a new SearchEngine instance
+        let mut search_engine = SearchEngine::new(temp_path);
+
+        // Add some documents with different patterns
+        search_engine.add_document(1, "Document 1", "Ref 1", "/topic1/subtopic1", "This is a part time job opportunity", 1, false, "/path/to/doc1").unwrap();
+        search_engine.add_document(2, "Document 2", "Ref 2", "/topic1/subtopic2", "Alan just got a part time job", 2, false, "/path/to/doc2").unwrap();
+        search_engine.add_document(3, "Document 3", "Ref 3", "/topic2/subtopic1", "This is my favorite part of the job", 3, false, "/path/to/doc3").unwrap();
+        search_engine.add_document(4, "Document 4", "Ref 4", "/topic1/subtopic1", "He works full time now", 4, false, "/path/to/doc4").unwrap();
+
+        // Commit the changes
+        search_engine.commit().unwrap();
+
+        // Test single regex term - should use RegexQuery
+        let results = search_engine.search_phrase_regex(
+            vec!["pa.*".to_string()], 
+            vec!["/topic1".to_string()], 
+            10, 
+            2, 
+            1000, 
+            false, 
+            ResultsOrder::Relevance
+        ).unwrap();
+        assert!(results.len() >= 1, "Should find documents containing words starting with 'pa'");
+
+        // Test phrase regex query - should use RegexPhraseQuery
+        let results = search_engine.search_phrase_regex(
+            vec!["pa.*".to_string(), "time".to_string()], 
+            vec!["/topic1".to_string()], 
+            10, 
+            2, 
+            1000, 
+            false, 
+            ResultsOrder::Relevance
+        ).unwrap();
+        assert!(results.len() >= 2, "Should find documents containing 'pa.* time' phrase");
+
+        // Test count function
+        let count = search_engine.count_phrase_regex(
+            vec!["pa.*".to_string(), "time".to_string()], 
+            &vec!["/topic1".to_string()], 
+            2, 
+            1000, 
+            false
+        ).unwrap();
+        assert!(count >= 2, "Should count documents containing 'pa.* time' phrase");
+
+        // Test with slop = 0 (exact phrase)
+        let results = search_engine.search_phrase_regex(
+            vec!["pa.*".to_string(), "time".to_string()], 
+            vec!["/topic1".to_string()], 
+            10, 
+            0, 
+            1000, 
+            false, 
+            ResultsOrder::Relevance
+        ).unwrap();
+        assert!(results.len() >= 2, "Should find exact 'pa.* time' phrases");
 
         Ok(())
     }
