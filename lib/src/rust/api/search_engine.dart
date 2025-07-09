@@ -9,9 +9,6 @@ import 'reference_search_engine.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`
 
-String testBindings({required String name}) =>
-    RustLib.instance.api.crateApiSearchEngineTestBindings(name: name);
-
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
   Future<void> addDocument(
@@ -29,57 +26,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
   Future<void> commit();
 
   Future<int> count(
-      {required String query,
-      required List<String> facets,
-      required bool fuzzy});
-
-  Future<int> countHebrew(
-      {required String query,
-      required List<String> facets,
-      required bool fuzzy});
-
-  Future<int> countPhraseRegex(
       {required List<String> regexTerms,
       required List<String> facets,
       required int slop,
-      required int maxExpansions,
-      required bool useHebrew});
+      required int maxExpansions});
 
-  static Future<BoxQuery> createHebrewSearchQuery(
-          {required Index index,
-          required String searchTerm,
-          required List<String> facets,
-          required bool fuzzy}) =>
-      RustLib.instance.api
-          .crateApiSearchEngineSearchEngineCreateHebrewSearchQuery(
-              index: index,
-              searchTerm: searchTerm,
-              facets: facets,
-              fuzzy: fuzzy);
-
-  static Future<BoxQuery> createPhraseRegexQuery(
+  static Future<BoxQuery> createQuery(
           {required Index index,
           required List<String> regexTerms,
           required List<String> facets,
           required int slop,
-          required int maxExpansions,
-          required bool useHebrew}) =>
-      RustLib.instance.api
-          .crateApiSearchEngineSearchEngineCreatePhraseRegexQuery(
-              index: index,
-              regexTerms: regexTerms,
-              facets: facets,
-              slop: slop,
-              maxExpansions: maxExpansions,
-              useHebrew: useHebrew);
-
-  static Future<BoxQuery> createSearchQuery(
-          {required Index index,
-          required String searchTerm,
-          required List<String> facets,
-          required bool fuzzy}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineCreateSearchQuery(
-          index: index, searchTerm: searchTerm, facets: facets, fuzzy: fuzzy);
+          required int maxExpansions}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCreateQuery(
+          index: index,
+          regexTerms: regexTerms,
+          facets: facets,
+          slop: slop,
+          maxExpansions: maxExpansions);
 
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   static Future<SearchEngine> newInstance({required String path}) =>
@@ -87,34 +50,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<void> removeDocumentsByTitle({required String title});
 
-  Future<List<SearchResult>> search(
-      {required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy,
-      required ResultsOrder order});
-
-  Future<List<SearchResult>> searchHebrew(
-      {required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy,
-      required ResultsOrder order});
-
   Future<List<SearchResult>> searchPhraseRegex(
       {required List<String> regexTerms,
       required List<String> facets,
       required int limit,
       required int slop,
       required int maxExpansions,
-      required bool useHebrew,
       required ResultsOrder order});
-
-  Stream<List<SearchResult>> searchStream(
-      {required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy});
 }
 
 enum ResultsOrder {

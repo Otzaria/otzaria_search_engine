@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => -1127833251;
+  int get rustContentHash => 130562405;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -137,65 +137,23 @@ abstract class RustLibApi extends BaseApi {
 
   Future<int> crateApiSearchEngineSearchEngineCount(
       {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required bool fuzzy});
-
-  Future<int> crateApiSearchEngineSearchEngineCountHebrew(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required bool fuzzy});
-
-  Future<int> crateApiSearchEngineSearchEngineCountPhraseRegex(
-      {required SearchEngine that,
       required List<String> regexTerms,
       required List<String> facets,
       required int slop,
-      required int maxExpansions,
-      required bool useHebrew});
+      required int maxExpansions});
 
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateHebrewSearchQuery(
-      {required Index index,
-      required String searchTerm,
-      required List<String> facets,
-      required bool fuzzy});
-
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreatePhraseRegexQuery(
+  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateQuery(
       {required Index index,
       required List<String> regexTerms,
       required List<String> facets,
       required int slop,
-      required int maxExpansions,
-      required bool useHebrew});
-
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
-      {required Index index,
-      required String searchTerm,
-      required List<String> facets,
-      required bool fuzzy});
+      required int maxExpansions});
 
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew(
       {required String path});
 
   Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
       {required SearchEngine that, required String title});
-
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy,
-      required ResultsOrder order});
-
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchHebrew(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy,
-      required ResultsOrder order});
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchPhraseRegex(
       {required SearchEngine that,
@@ -204,17 +162,7 @@ abstract class RustLibApi extends BaseApi {
       required int limit,
       required int slop,
       required int maxExpansions,
-      required bool useHebrew,
       required ResultsOrder order});
-
-  Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchStream(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy});
-
-  String crateApiSearchEngineTestBindings({required String name});
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_BoxQuery;
@@ -629,17 +577,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<int> crateApiSearchEngineSearchEngineCount(
       {required SearchEngine that,
-      required String query,
+      required List<String> regexTerms,
       required List<String> facets,
-      required bool fuzzy}) {
+      required int slop,
+      required int maxExpansions}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that, serializer);
-        sse_encode_String(query, serializer);
+        sse_encode_list_String(regexTerms, serializer);
         sse_encode_list_String(facets, serializer);
-        sse_encode_bool(fuzzy, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
             funcId: 11, port: port_);
       },
@@ -648,7 +598,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineCountConstMeta,
-      argValues: [that, query, facets, fuzzy],
+      argValues: [that, regexTerms, facets, slop, maxExpansions],
       apiImpl: this,
     ));
   }
@@ -656,204 +606,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count",
-        argNames: ["that", "query", "facets", "fuzzy"],
+        argNames: ["that", "regexTerms", "facets", "slop", "maxExpansions"],
       );
 
   @override
-  Future<int> crateApiSearchEngineSearchEngineCountHebrew(
-      {required SearchEngine that,
-      required String query,
+  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateQuery(
+      {required Index index,
+      required List<String> regexTerms,
       required List<String> facets,
-      required bool fuzzy}) {
+      required int slop,
+      required int maxExpansions}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that, serializer);
-        sse_encode_String(query, serializer);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+            index, serializer);
+        sse_encode_list_String(regexTerms, serializer);
         sse_encode_list_String(facets, serializer);
-        sse_encode_bool(fuzzy, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
             funcId: 12, port: port_);
       },
       codec: SseCodec(
-        decodeSuccessData: sse_decode_u_32,
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
         decodeErrorData: sse_decode_AnyhowException,
       ),
-      constMeta: kCrateApiSearchEngineSearchEngineCountHebrewConstMeta,
-      argValues: [that, query, facets, fuzzy],
+      constMeta: kCrateApiSearchEngineSearchEngineCreateQueryConstMeta,
+      argValues: [index, regexTerms, facets, slop, maxExpansions],
       apiImpl: this,
     ));
   }
 
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineCountHebrewConstMeta =>
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineCreateQueryConstMeta =>
       const TaskConstMeta(
-        debugName: "SearchEngine_count_hebrew",
-        argNames: ["that", "query", "facets", "fuzzy"],
+        debugName: "SearchEngine_create_query",
+        argNames: ["index", "regexTerms", "facets", "slop", "maxExpansions"],
       );
-
-  @override
-  Future<int> crateApiSearchEngineSearchEngineCountPhraseRegex(
-      {required SearchEngine that,
-      required List<String> regexTerms,
-      required List<String> facets,
-      required int slop,
-      required int maxExpansions,
-      required bool useHebrew}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that, serializer);
-        sse_encode_list_String(regexTerms, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_u_32(slop, serializer);
-        sse_encode_u_32(maxExpansions, serializer);
-        sse_encode_bool(useHebrew, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 13, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_u_32,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiSearchEngineSearchEngineCountPhraseRegexConstMeta,
-      argValues: [that, regexTerms, facets, slop, maxExpansions, useHebrew],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta
-      get kCrateApiSearchEngineSearchEngineCountPhraseRegexConstMeta =>
-          const TaskConstMeta(
-            debugName: "SearchEngine_count_phrase_regex",
-            argNames: [
-              "that",
-              "regexTerms",
-              "facets",
-              "slop",
-              "maxExpansions",
-              "useHebrew"
-            ],
-          );
-
-  @override
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateHebrewSearchQuery(
-      {required Index index,
-      required String searchTerm,
-      required List<String> facets,
-      required bool fuzzy}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-            index, serializer);
-        sse_encode_String(searchTerm, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_bool(fuzzy, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 14, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData:
-            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta:
-          kCrateApiSearchEngineSearchEngineCreateHebrewSearchQueryConstMeta,
-      argValues: [index, searchTerm, facets, fuzzy],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta
-      get kCrateApiSearchEngineSearchEngineCreateHebrewSearchQueryConstMeta =>
-          const TaskConstMeta(
-            debugName: "SearchEngine_create_hebrew_search_query",
-            argNames: ["index", "searchTerm", "facets", "fuzzy"],
-          );
-
-  @override
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreatePhraseRegexQuery(
-      {required Index index,
-      required List<String> regexTerms,
-      required List<String> facets,
-      required int slop,
-      required int maxExpansions,
-      required bool useHebrew}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-            index, serializer);
-        sse_encode_list_String(regexTerms, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_u_32(slop, serializer);
-        sse_encode_u_32(maxExpansions, serializer);
-        sse_encode_bool(useHebrew, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 15, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData:
-            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta:
-          kCrateApiSearchEngineSearchEngineCreatePhraseRegexQueryConstMeta,
-      argValues: [index, regexTerms, facets, slop, maxExpansions, useHebrew],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta
-      get kCrateApiSearchEngineSearchEngineCreatePhraseRegexQueryConstMeta =>
-          const TaskConstMeta(
-            debugName: "SearchEngine_create_phrase_regex_query",
-            argNames: [
-              "index",
-              "regexTerms",
-              "facets",
-              "slop",
-              "maxExpansions",
-              "useHebrew"
-            ],
-          );
-
-  @override
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateSearchQuery(
-      {required Index index,
-      required String searchTerm,
-      required List<String> facets,
-      required bool fuzzy}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-            index, serializer);
-        sse_encode_String(searchTerm, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_bool(fuzzy, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 16, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData:
-            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiSearchEngineSearchEngineCreateSearchQueryConstMeta,
-      argValues: [index, searchTerm, facets, fuzzy],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta
-      get kCrateApiSearchEngineSearchEngineCreateSearchQueryConstMeta =>
-          const TaskConstMeta(
-            debugName: "SearchEngine_create_search_query",
-            argNames: ["index", "searchTerm", "facets", "fuzzy"],
-          );
 
   @override
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew(
@@ -863,7 +653,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(path, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 17, port: port_);
+            funcId: 13, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -892,7 +682,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(title, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 18, port: port_);
+            funcId: 14, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -913,80 +703,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
 
   @override
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy,
-      required ResultsOrder order}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that, serializer);
-        sse_encode_String(query, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_u_32(limit, serializer);
-        sse_encode_bool(fuzzy, serializer);
-        sse_encode_results_order(order, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 19, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_list_search_result,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiSearchEngineSearchEngineSearchConstMeta,
-      argValues: [that, query, facets, limit, fuzzy, order],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchConstMeta =>
-      const TaskConstMeta(
-        debugName: "SearchEngine_search",
-        argNames: ["that", "query", "facets", "limit", "fuzzy", "order"],
-      );
-
-  @override
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchHebrew(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy,
-      required ResultsOrder order}) {
-    return handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that, serializer);
-        sse_encode_String(query, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_u_32(limit, serializer);
-        sse_encode_bool(fuzzy, serializer);
-        sse_encode_results_order(order, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 20, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_list_search_result,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiSearchEngineSearchEngineSearchHebrewConstMeta,
-      argValues: [that, query, facets, limit, fuzzy, order],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchHebrewConstMeta =>
-      const TaskConstMeta(
-        debugName: "SearchEngine_search_hebrew",
-        argNames: ["that", "query", "facets", "limit", "fuzzy", "order"],
-      );
-
-  @override
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchPhraseRegex(
       {required SearchEngine that,
       required List<String> regexTerms,
@@ -994,7 +710,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       required int limit,
       required int slop,
       required int maxExpansions,
-      required bool useHebrew,
       required ResultsOrder order}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -1006,26 +721,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(limit, serializer);
         sse_encode_u_32(slop, serializer);
         sse_encode_u_32(maxExpansions, serializer);
-        sse_encode_bool(useHebrew, serializer);
         sse_encode_results_order(order, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 21, port: port_);
+            funcId: 15, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_search_result,
         decodeErrorData: sse_decode_AnyhowException,
       ),
       constMeta: kCrateApiSearchEngineSearchEngineSearchPhraseRegexConstMeta,
-      argValues: [
-        that,
-        regexTerms,
-        facets,
-        limit,
-        slop,
-        maxExpansions,
-        useHebrew,
-        order
-      ],
+      argValues: [that, regexTerms, facets, limit, slop, maxExpansions, order],
       apiImpl: this,
     ));
   }
@@ -1041,72 +746,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               "limit",
               "slop",
               "maxExpansions",
-              "useHebrew",
               "order"
             ],
           );
-
-  @override
-  Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchStream(
-      {required SearchEngine that,
-      required String query,
-      required List<String> facets,
-      required int limit,
-      required bool fuzzy}) {
-    final sink = RustStreamSink<List<SearchResult>>();
-    unawaited(handler.executeNormal(NormalTask(
-      callFfi: (port_) {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that, serializer);
-        sse_encode_String(query, serializer);
-        sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
-        sse_encode_list_String(facets, serializer);
-        sse_encode_u_32(limit, serializer);
-        sse_encode_bool(fuzzy, serializer);
-        pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 22, port: port_);
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_unit,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiSearchEngineSearchEngineSearchStreamConstMeta,
-      argValues: [that, query, sink, facets, limit, fuzzy],
-      apiImpl: this,
-    )));
-    return sink.stream;
-  }
-
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchStreamConstMeta =>
-      const TaskConstMeta(
-        debugName: "SearchEngine_search_stream",
-        argNames: ["that", "query", "sink", "facets", "limit", "fuzzy"],
-      );
-
-  @override
-  String crateApiSearchEngineTestBindings({required String name}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_String(name, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_String,
-        decodeErrorData: null,
-      ),
-      constMeta: kCrateApiSearchEngineTestBindingsConstMeta,
-      argValues: [name],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta get kCrateApiSearchEngineTestBindingsConstMeta =>
-      const TaskConstMeta(
-        debugName: "test_bindings",
-        argNames: ["name"],
-      );
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_BoxQuery => wire
@@ -1238,13 +880,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  RustStreamSink<List<SearchResult>>
-      dco_decode_StreamSink_list_search_result_Sse(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    throw UnimplementedError();
   }
 
   @protected
@@ -1475,14 +1110,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SearchEngineImpl.frbInternalSseDecode(
         sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
-  }
-
-  @protected
-  RustStreamSink<List<SearchResult>>
-      sse_decode_StreamSink_list_search_result_Sse(
-          SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    throw UnimplementedError('Unreachable ()');
   }
 
   @protected
@@ -1746,19 +1373,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
         (self as SearchEngineImpl).frbInternalSseEncode(move: null),
-        serializer);
-  }
-
-  @protected
-  void sse_encode_StreamSink_list_search_result_Sse(
-      RustStreamSink<List<SearchResult>> self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(
-        self.setupAndSerialize(
-            codec: SseCodec(
-          decodeSuccessData: sse_decode_list_search_result,
-          decodeErrorData: sse_decode_AnyhowException,
-        )),
         serializer);
   }
 
@@ -2037,65 +1651,21 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
       );
 
   Future<int> count(
-          {required String query,
-          required List<String> facets,
-          required bool fuzzy}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
-          that: this, query: query, facets: facets, fuzzy: fuzzy);
-
-  Future<int> countHebrew(
-          {required String query,
-          required List<String> facets,
-          required bool fuzzy}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineCountHebrew(
-          that: this, query: query, facets: facets, fuzzy: fuzzy);
-
-  Future<int> countPhraseRegex(
           {required List<String> regexTerms,
           required List<String> facets,
           required int slop,
-          required int maxExpansions,
-          required bool useHebrew}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineCountPhraseRegex(
+          required int maxExpansions}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
           that: this,
           regexTerms: regexTerms,
           facets: facets,
           slop: slop,
-          maxExpansions: maxExpansions,
-          useHebrew: useHebrew);
+          maxExpansions: maxExpansions);
 
   Future<void> removeDocumentsByTitle({required String title}) =>
       RustLib.instance.api
           .crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
               that: this, title: title);
-
-  Future<List<SearchResult>> search(
-          {required String query,
-          required List<String> facets,
-          required int limit,
-          required bool fuzzy,
-          required ResultsOrder order}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineSearch(
-          that: this,
-          query: query,
-          facets: facets,
-          limit: limit,
-          fuzzy: fuzzy,
-          order: order);
-
-  Future<List<SearchResult>> searchHebrew(
-          {required String query,
-          required List<String> facets,
-          required int limit,
-          required bool fuzzy,
-          required ResultsOrder order}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineSearchHebrew(
-          that: this,
-          query: query,
-          facets: facets,
-          limit: limit,
-          fuzzy: fuzzy,
-          order: order);
 
   Future<List<SearchResult>> searchPhraseRegex(
           {required List<String> regexTerms,
@@ -2103,7 +1673,6 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
           required int limit,
           required int slop,
           required int maxExpansions,
-          required bool useHebrew,
           required ResultsOrder order}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchPhraseRegex(
           that: this,
@@ -2112,14 +1681,5 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
           limit: limit,
           slop: slop,
           maxExpansions: maxExpansions,
-          useHebrew: useHebrew,
           order: order);
-
-  Stream<List<SearchResult>> searchStream(
-          {required String query,
-          required List<String> facets,
-          required int limit,
-          required bool fuzzy}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineSearchStream(
-          that: this, query: query, facets: facets, limit: limit, fuzzy: fuzzy);
 }

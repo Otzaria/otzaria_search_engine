@@ -97,10 +97,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
-  RustStreamSink<List<SearchResult>>
-      dco_decode_StreamSink_list_search_result_Sse(dynamic raw);
-
-  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -207,11 +203,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-          SseDeserializer deserializer);
-
-  @protected
-  RustStreamSink<List<SearchResult>>
-      sse_decode_StreamSink_list_search_result_Sse(
           SseDeserializer deserializer);
 
   @protected
@@ -325,10 +316,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           SearchEngine self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_StreamSink_list_search_result_Sse(
-      RustStreamSink<List<SearchResult>> self, SseSerializer serializer);
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
