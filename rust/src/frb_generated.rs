@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 130562405;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 271381323;
 
 // Section: executor
 
@@ -747,7 +747,7 @@ fn wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(
         },
     )
 }
-fn wire__crate__api__search_engine__SearchEngine_search_phrase_regex_impl(
+fn wire__crate__api__search_engine__SearchEngine_search_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -755,7 +755,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_phrase_regex_impl(
 ) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "SearchEngine_search_phrase_regex",
+            debug_name: "SearchEngine_search",
             port: Some(port_),
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
@@ -797,16 +797,15 @@ fn wire__crate__api__search_engine__SearchEngine_search_phrase_regex_impl(
                             }
                         }
                         let mut api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::search_phrase_regex(
-                                &mut *api_that_guard,
-                                api_regex_terms,
-                                api_facets,
-                                api_limit,
-                                api_slop,
-                                api_max_expansions,
-                                api_order,
-                            )?;
+                        let output_ok = crate::api::search_engine::SearchEngine::search(
+                            &mut *api_that_guard,
+                            api_regex_terms,
+                            api_facets,
+                            api_limit,
+                            api_slop,
+                            api_max_expansions,
+                            api_order,
+                        )?;
                         Ok(output_ok)
                     })(),
                 )
@@ -1096,7 +1095,7 @@ fn pde_ffi_dispatcher_primary_impl(
 11 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
 12 => wire__crate__api__search_engine__SearchEngine_create_query_impl(port, ptr, rust_vec_len, data_len),
 14 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
-15 => wire__crate__api__search_engine__SearchEngine_search_phrase_regex_impl(port, ptr, rust_vec_len, data_len),
+15 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }

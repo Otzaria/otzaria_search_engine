@@ -8,7 +8,7 @@ void main()async  {
 
     test('Search Engine with custom tokenizer', () async {
     debugPrint("hello from test");
-    final engine = await SearchEngine.newInstance(path: "c:\\dev\\index");
+    final engine = SearchEngine(path: "c:\\dev\\index");
     debugPrint(engine.toString());
     engine.addDocument(
         id: BigInt.from(1),
@@ -20,7 +20,7 @@ void main()async  {
         isPdf: false,
         filePath: "/path/to/doc1");
     engine.commit();
-    final results = await engine.searchHebrew(
+    final results = await engine.search(
         query: "יהדים",
         facets: ["/"],
         limit: 1,

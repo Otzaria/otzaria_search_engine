@@ -155,7 +155,7 @@ impl SearchEngine {
         Ok(Box::new(bool_query))
     }
 
-    pub fn search_phrase_regex(
+    pub fn search(
         &mut self,
         regex_terms: Vec<String>,
         facets: Vec<String>,

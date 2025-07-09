@@ -49,7 +49,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<void> removeDocumentsByTitle({required String title});
 
-  Future<List<SearchResult>> searchPhraseRegex(
+  Future<List<SearchResult>> search(
       {required List<String> regexTerms,
       required List<String> facets,
       required int limit,

@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 130562405;
+  int get rustContentHash => 271381323;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -154,7 +154,7 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
       {required SearchEngine that, required String title});
 
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchPhraseRegex(
+  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
       {required SearchEngine that,
       required List<String> regexTerms,
       required List<String> facets,
@@ -700,7 +700,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
 
   @override
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchPhraseRegex(
+  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
       {required SearchEngine that,
       required List<String> regexTerms,
       required List<String> facets,
@@ -726,26 +726,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         decodeSuccessData: sse_decode_list_search_result,
         decodeErrorData: sse_decode_AnyhowException,
       ),
-      constMeta: kCrateApiSearchEngineSearchEngineSearchPhraseRegexConstMeta,
+      constMeta: kCrateApiSearchEngineSearchEngineSearchConstMeta,
       argValues: [that, regexTerms, facets, limit, slop, maxExpansions, order],
       apiImpl: this,
     ));
   }
 
-  TaskConstMeta
-      get kCrateApiSearchEngineSearchEngineSearchPhraseRegexConstMeta =>
-          const TaskConstMeta(
-            debugName: "SearchEngine_search_phrase_regex",
-            argNames: [
-              "that",
-              "regexTerms",
-              "facets",
-              "limit",
-              "slop",
-              "maxExpansions",
-              "order"
-            ],
-          );
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_search",
+        argNames: [
+          "that",
+          "regexTerms",
+          "facets",
+          "limit",
+          "slop",
+          "maxExpansions",
+          "order"
+        ],
+      );
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_BoxQuery => wire
@@ -1664,14 +1663,14 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
           .crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
               that: this, title: title);
 
-  Future<List<SearchResult>> searchPhraseRegex(
+  Future<List<SearchResult>> search(
           {required List<String> regexTerms,
           required List<String> facets,
           required int limit,
           required int slop,
           required int maxExpansions,
           required ResultsOrder order}) =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineSearchPhraseRegex(
+      RustLib.instance.api.crateApiSearchEngineSearchEngineSearch(
           that: this,
           regexTerms: regexTerms,
           facets: facets,
