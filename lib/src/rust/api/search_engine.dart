@@ -38,6 +38,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
       required List<String> facets,
       required bool fuzzy});
 
+  Future<int> countPhraseRegex(
+      {required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions,
+      required bool useHebrew});
+
   static Future<BoxQuery> createHebrewSearchQuery(
           {required Index index,
           required String searchTerm,
@@ -49,6 +56,22 @@ abstract class SearchEngine implements RustOpaqueInterface {
               searchTerm: searchTerm,
               facets: facets,
               fuzzy: fuzzy);
+
+  static Future<BoxQuery> createPhraseRegexQuery(
+          {required Index index,
+          required List<String> regexTerms,
+          required List<String> facets,
+          required int slop,
+          required int maxExpansions,
+          required bool useHebrew}) =>
+      RustLib.instance.api
+          .crateApiSearchEngineSearchEngineCreatePhraseRegexQuery(
+              index: index,
+              regexTerms: regexTerms,
+              facets: facets,
+              slop: slop,
+              maxExpansions: maxExpansions,
+              useHebrew: useHebrew);
 
   static Future<BoxQuery> createSearchQuery(
           {required Index index,
@@ -76,6 +99,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
       required List<String> facets,
       required int limit,
       required bool fuzzy,
+      required ResultsOrder order});
+
+  Future<List<SearchResult>> searchPhraseRegex(
+      {required List<String> regexTerms,
+      required List<String> facets,
+      required int limit,
+      required int slop,
+      required int maxExpansions,
+      required bool useHebrew,
       required ResultsOrder order});
 
   Stream<List<SearchResult>> searchStream(
