@@ -3,6 +3,9 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+import 'api/benchmark.dart';
+import 'api/diagnostic_test.dart';
+import 'api/focused_benchmark.dart';
 import 'api/reference_search_engine.dart';
 import 'api/search_engine.dart';
 import 'dart:async';
@@ -69,7 +72,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 271381323;
+  int get rustContentHash => -661470124;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -118,6 +121,18 @@ abstract class RustLibApi extends BaseApi {
           required bool fuzzy,
           required ResultsOrder order});
 
+  Future<BenchmarkSuite>
+      crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
+          {required RegexBenchmarker that,
+          required List<TestCase> customQueries});
+
+  Future<RegexBenchmarker> crateApiBenchmarkRegexBenchmarkerNew(
+      {required String indexPath});
+
+  Future<BenchmarkSuite>
+      crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(
+          {required RegexBenchmarker that});
+
   Future<void> crateApiSearchEngineSearchEngineAddDocument(
       {required SearchEngine that,
       required BigInt id,
@@ -163,6 +178,10 @@ abstract class RustLibApi extends BaseApi {
       required int maxExpansions,
       required ResultsOrder order});
 
+  Future<void> crateApiDiagnosticTestRunDiagnosticTest();
+
+  Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark();
+
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_BoxQuery;
 
@@ -185,6 +204,15 @@ abstract class RustLibApi extends BaseApi {
 
   CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_ReferenceSearchEnginePtr;
+
+  RustArcIncrementStrongCountFnType
+      get rust_arc_increment_strong_count_RegexBenchmarker;
+
+  RustArcDecrementStrongCountFnType
+      get rust_arc_decrement_strong_count_RegexBenchmarker;
+
+  CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_RegexBenchmarkerPtr;
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_SearchEngine;
@@ -457,6 +485,95 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
 
   @override
+  Future<BenchmarkSuite>
+      crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
+          {required RegexBenchmarker that,
+          required List<TestCase> customQueries}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+            that, serializer);
+        sse_encode_list_test_case(customQueries, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 8, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_benchmark_suite,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta:
+          kCrateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueriesConstMeta,
+      argValues: [that, customQueries],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta
+      get kCrateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueriesConstMeta =>
+          const TaskConstMeta(
+            debugName: "RegexBenchmarker_benchmark_custom_queries",
+            argNames: ["that", "customQueries"],
+          );
+
+  @override
+  Future<RegexBenchmarker> crateApiBenchmarkRegexBenchmarkerNew(
+      {required String indexPath}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(indexPath, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 9, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker,
+        decodeErrorData: null,
+      ),
+      constMeta: kCrateApiBenchmarkRegexBenchmarkerNewConstMeta,
+      argValues: [indexPath],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiBenchmarkRegexBenchmarkerNewConstMeta =>
+      const TaskConstMeta(
+        debugName: "RegexBenchmarker_new",
+        argNames: ["indexPath"],
+      );
+
+  @override
+  Future<BenchmarkSuite>
+      crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(
+          {required RegexBenchmarker that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 10, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_benchmark_suite,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta:
+          kCrateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmarkConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta
+      get kCrateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmarkConstMeta =>
+          const TaskConstMeta(
+            debugName: "RegexBenchmarker_run_comprehensive_benchmark",
+            argNames: ["that"],
+          );
+
+  @override
   Future<void> crateApiSearchEngineSearchEngineAddDocument(
       {required SearchEngine that,
       required BigInt id,
@@ -481,7 +598,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_bool(isPdf, serializer);
         sse_encode_String(filePath, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 8, port: port_);
+            funcId: 11, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -528,7 +645,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 9, port: port_);
+            funcId: 12, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -555,7 +672,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 10, port: port_);
+            funcId: 13, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -590,7 +707,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(slop, serializer);
         sse_encode_u_32(maxExpansions, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 11, port: port_);
+            funcId: 14, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_u_32,
@@ -625,7 +742,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(slop, serializer);
         sse_encode_u_32(maxExpansions, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 12, port: port_);
+            funcId: 15, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -650,7 +767,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: () {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(path, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -679,7 +796,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(title, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 14, port: port_);
+            funcId: 17, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -720,7 +837,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(maxExpansions, serializer);
         sse_encode_results_order(order, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 15, port: port_);
+            funcId: 18, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_search_result,
@@ -746,6 +863,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ],
       );
 
+  @override
+  Future<void> crateApiDiagnosticTestRunDiagnosticTest() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 19, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta: kCrateApiDiagnosticTestRunDiagnosticTestConstMeta,
+      argValues: [],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiDiagnosticTestRunDiagnosticTestConstMeta =>
+      const TaskConstMeta(
+        debugName: "run_diagnostic_test",
+        argNames: [],
+      );
+
+  @override
+  Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 20, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta: kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta,
+      argValues: [],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta =>
+      const TaskConstMeta(
+        debugName: "run_focused_benchmark",
+        argNames: [],
+      );
+
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_BoxQuery => wire
           .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery;
@@ -767,6 +932,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RustArcDecrementStrongCountFnType
       get rust_arc_decrement_strong_count_ReferenceSearchEngine => wire
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
+
+  RustArcIncrementStrongCountFnType
+      get rust_arc_increment_strong_count_RegexBenchmarker => wire
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
+
+  RustArcDecrementStrongCountFnType
+      get rust_arc_decrement_strong_count_RegexBenchmarker => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_SearchEngine => wire
@@ -799,6 +972,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RegexBenchmarker
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return RegexBenchmarkerImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   SearchEngine
       dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           dynamic raw) {
@@ -812,6 +993,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  RegexBenchmarker
+      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return RegexBenchmarkerImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -871,6 +1060,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RegexBenchmarker
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return RegexBenchmarkerImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   SearchEngine
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           dynamic raw) {
@@ -885,9 +1082,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BenchmarkResult dco_decode_benchmark_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return BenchmarkResult(
+      queryName: dco_decode_String(arr[0]),
+      regexTerms: dco_decode_list_String(arr[1]),
+      facets: dco_decode_list_String(arr[2]),
+      slop: dco_decode_u_32(arr[3]),
+      maxExpansions: dco_decode_u_32(arr[4]),
+      executionTimeMs: dco_decode_u_64(arr[5]),
+      resultCount: dco_decode_u_32(arr[6]),
+      memoryUsageMb: dco_decode_f_64(arr[7]),
+    );
+  }
+
+  @protected
+  BenchmarkSuite dco_decode_benchmark_suite(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return BenchmarkSuite(
+      totalQueries: dco_decode_usize(arr[0]),
+      totalTimeMs: dco_decode_u_64(arr[1]),
+      averageTimeMs: dco_decode_f_64(arr[2]),
+      fastestQuery: dco_decode_opt_box_autoadd_benchmark_result(arr[3]),
+      slowestQuery: dco_decode_opt_box_autoadd_benchmark_result(arr[4]),
+      results: dco_decode_list_benchmark_result(arr[5]),
+    );
+  }
+
+  @protected
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
+  }
+
+  @protected
+  BenchmarkResult dco_decode_box_autoadd_benchmark_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_benchmark_result(raw);
+  }
+
+  @protected
+  double dco_decode_f_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as double;
   }
 
   @protected
@@ -900,6 +1143,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
+  List<BenchmarkResult> dco_decode_list_benchmark_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_benchmark_result).toList();
   }
 
   @protected
@@ -921,6 +1170,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<SearchResult> dco_decode_list_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_search_result).toList();
+  }
+
+  @protected
+  List<TestCase> dco_decode_list_test_case(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_test_case).toList();
+  }
+
+  @protected
+  BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_benchmark_result(raw);
   }
 
   @protected
@@ -960,6 +1221,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       segment: dco_decode_u_64(arr[4]),
       isPdf: dco_decode_bool(arr[5]),
       filePath: dco_decode_String(arr[6]),
+    );
+  }
+
+  @protected
+  TestCase dco_decode_test_case(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return TestCase(
+      queryName: dco_decode_String(arr[0]),
+      regexTerms: dco_decode_list_String(arr[1]),
+      facets: dco_decode_list_String(arr[2]),
+      slop: dco_decode_u_32(arr[3]),
+      maxExpansions: dco_decode_u_32(arr[4]),
     );
   }
 
@@ -1019,6 +1295,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RegexBenchmarker
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return RegexBenchmarkerImpl.frbInternalSseDecode(
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
+  }
+
+  @protected
   SearchEngine
       sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           SseDeserializer deserializer) {
@@ -1033,6 +1318,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalSseDecode(
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
+  }
+
+  @protected
+  RegexBenchmarker
+      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return RegexBenchmarkerImpl.frbInternalSseDecode(
         sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
@@ -1100,6 +1394,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RegexBenchmarker
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return RegexBenchmarkerImpl.frbInternalSseDecode(
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
+  }
+
+  @protected
   SearchEngine
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           SseDeserializer deserializer) {
@@ -1116,9 +1419,64 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BenchmarkResult sse_decode_benchmark_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_queryName = sse_decode_String(deserializer);
+    var var_regexTerms = sse_decode_list_String(deserializer);
+    var var_facets = sse_decode_list_String(deserializer);
+    var var_slop = sse_decode_u_32(deserializer);
+    var var_maxExpansions = sse_decode_u_32(deserializer);
+    var var_executionTimeMs = sse_decode_u_64(deserializer);
+    var var_resultCount = sse_decode_u_32(deserializer);
+    var var_memoryUsageMb = sse_decode_f_64(deserializer);
+    return BenchmarkResult(
+        queryName: var_queryName,
+        regexTerms: var_regexTerms,
+        facets: var_facets,
+        slop: var_slop,
+        maxExpansions: var_maxExpansions,
+        executionTimeMs: var_executionTimeMs,
+        resultCount: var_resultCount,
+        memoryUsageMb: var_memoryUsageMb);
+  }
+
+  @protected
+  BenchmarkSuite sse_decode_benchmark_suite(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_totalQueries = sse_decode_usize(deserializer);
+    var var_totalTimeMs = sse_decode_u_64(deserializer);
+    var var_averageTimeMs = sse_decode_f_64(deserializer);
+    var var_fastestQuery =
+        sse_decode_opt_box_autoadd_benchmark_result(deserializer);
+    var var_slowestQuery =
+        sse_decode_opt_box_autoadd_benchmark_result(deserializer);
+    var var_results = sse_decode_list_benchmark_result(deserializer);
+    return BenchmarkSuite(
+        totalQueries: var_totalQueries,
+        totalTimeMs: var_totalTimeMs,
+        averageTimeMs: var_averageTimeMs,
+        fastestQuery: var_fastestQuery,
+        slowestQuery: var_slowestQuery,
+        results: var_results);
+  }
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
+  BenchmarkResult sse_decode_box_autoadd_benchmark_result(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_benchmark_result(deserializer));
+  }
+
+  @protected
+  double sse_decode_f_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getFloat64();
   }
 
   @protected
@@ -1135,6 +1493,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <String>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<BenchmarkResult> sse_decode_list_benchmark_result(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <BenchmarkResult>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_benchmark_result(deserializer));
     }
     return ans_;
   }
@@ -1170,6 +1541,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ans_.add(sse_decode_search_result(deserializer));
     }
     return ans_;
+  }
+
+  @protected
+  List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <TestCase>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_test_case(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  BenchmarkResult? sse_decode_opt_box_autoadd_benchmark_result(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_benchmark_result(deserializer));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -1218,6 +1613,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         segment: var_segment,
         isPdf: var_isPdf,
         filePath: var_filePath);
+  }
+
+  @protected
+  TestCase sse_decode_test_case(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_queryName = sse_decode_String(deserializer);
+    var var_regexTerms = sse_decode_list_String(deserializer);
+    var var_facets = sse_decode_list_String(deserializer);
+    var var_slop = sse_decode_u_32(deserializer);
+    var var_maxExpansions = sse_decode_u_32(deserializer);
+    return TestCase(
+        queryName: var_queryName,
+        regexTerms: var_regexTerms,
+        facets: var_facets,
+        slop: var_slop,
+        maxExpansions: var_maxExpansions);
   }
 
   @protected
@@ -1277,6 +1688,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          RegexBenchmarker self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+        (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: true),
+        serializer);
+  }
+
+  @protected
+  void
       sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           SearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1292,6 +1713,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
         (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
+        serializer);
+  }
+
+  @protected
+  void
+      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          RegexBenchmarker self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+        (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: false),
         serializer);
   }
 
@@ -1364,6 +1795,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          RegexBenchmarker self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+        (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: null),
+        serializer);
+  }
+
+  @protected
+  void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
           SearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1379,9 +1820,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_benchmark_result(
+      BenchmarkResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.queryName, serializer);
+    sse_encode_list_String(self.regexTerms, serializer);
+    sse_encode_list_String(self.facets, serializer);
+    sse_encode_u_32(self.slop, serializer);
+    sse_encode_u_32(self.maxExpansions, serializer);
+    sse_encode_u_64(self.executionTimeMs, serializer);
+    sse_encode_u_32(self.resultCount, serializer);
+    sse_encode_f_64(self.memoryUsageMb, serializer);
+  }
+
+  @protected
+  void sse_encode_benchmark_suite(
+      BenchmarkSuite self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(self.totalQueries, serializer);
+    sse_encode_u_64(self.totalTimeMs, serializer);
+    sse_encode_f_64(self.averageTimeMs, serializer);
+    sse_encode_opt_box_autoadd_benchmark_result(self.fastestQuery, serializer);
+    sse_encode_opt_box_autoadd_benchmark_result(self.slowestQuery, serializer);
+    sse_encode_list_benchmark_result(self.results, serializer);
+  }
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_benchmark_result(
+      BenchmarkResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_benchmark_result(self, serializer);
+  }
+
+  @protected
+  void sse_encode_f_64(double self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putFloat64(self);
   }
 
   @protected
@@ -1396,6 +1876,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_benchmark_result(
+      List<BenchmarkResult> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_benchmark_result(item, serializer);
     }
   }
 
@@ -1428,6 +1918,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_test_case(
+      List<TestCase> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_test_case(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_benchmark_result(
+      BenchmarkResult? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_benchmark_result(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_reference_search_result(
       ReferenceSearchResult self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1456,6 +1967,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.segment, serializer);
     sse_encode_bool(self.isPdf, serializer);
     sse_encode_String(self.filePath, serializer);
+  }
+
+  @protected
+  void sse_encode_test_case(TestCase self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.queryName, serializer);
+    sse_encode_list_String(self.regexTerms, serializer);
+    sse_encode_list_String(self.facets, serializer);
+    sse_encode_u_32(self.slop, serializer);
+    sse_encode_u_32(self.maxExpansions, serializer);
   }
 
   @protected
@@ -1595,6 +2116,40 @@ class ReferenceSearchEngineImpl extends RustOpaque
               limit: limit,
               fuzzy: fuzzy,
               order: order);
+}
+
+@sealed
+class RegexBenchmarkerImpl extends RustOpaque implements RegexBenchmarker {
+  // Not to be used by end users
+  RegexBenchmarkerImpl.frbInternalDcoDecode(List<dynamic> wire)
+      : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  RegexBenchmarkerImpl.frbInternalSseDecode(
+      BigInt ptr, int externalSizeOnNative)
+      : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_RegexBenchmarker,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_RegexBenchmarker,
+    rustArcDecrementStrongCountPtr: RustLib
+        .instance.api.rust_arc_decrement_strong_count_RegexBenchmarkerPtr,
+  );
+
+  /// Run a custom benchmark with user-defined queries
+  Future<BenchmarkSuite> benchmarkCustomQueries(
+          {required List<TestCase> customQueries}) =>
+      RustLib.instance.api
+          .crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
+              that: this, customQueries: customQueries);
+
+  /// Run a comprehensive benchmark suite with various regex complexity levels
+  Future<BenchmarkSuite> runComprehensiveBenchmark() => RustLib.instance.api
+          .crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(
+        that: this,
+      );
 }
 
 @sealed

@@ -25,6 +25,7 @@
 
 // Section: imports
 
+use crate::api::benchmark::*;
 use crate::api::reference_search_engine::*;
 use crate::api::search_engine::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
@@ -39,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 271381323;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -661470124;
 
 // Section: executor
 
@@ -357,6 +358,152 @@ fn wire__crate__api__reference_search_engine__ReferenceSearchEngine_search_impl(
                                 api_limit,
                                 api_fuzzy,
                                 api_order,
+                            )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__benchmark__RegexBenchmarker_benchmark_custom_queries_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "RegexBenchmarker_benchmark_custom_queries",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>,
+            >>::sse_decode(&mut deserializer);
+            let api_custom_queries =
+                <Vec<crate::api::benchmark::TestCase>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, true,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        let mut api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::benchmark::RegexBenchmarker::benchmark_custom_queries(
+                                &mut *api_that_guard,
+                                api_custom_queries,
+                            )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__benchmark__RegexBenchmarker_new_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "RegexBenchmarker_new",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_index_path = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Result::<_, ()>::Ok(
+                        crate::api::benchmark::RegexBenchmarker::new(&api_index_path),
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__benchmark__RegexBenchmarker_run_comprehensive_benchmark_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "RegexBenchmarker_run_comprehensive_benchmark",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, true,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        let mut api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::benchmark::RegexBenchmarker::run_comprehensive_benchmark(
+                                &mut *api_that_guard,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -813,6 +960,74 @@ fn wire__crate__api__search_engine__SearchEngine_search_impl(
         },
     )
 }
+fn wire__crate__api__diagnostic_test__run_diagnostic_test_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "run_diagnostic_test",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::diagnostic_test::run_diagnostic_test()?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__focused_benchmark__run_focused_benchmark_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "run_focused_benchmark",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::focused_benchmark::run_focused_benchmark()?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
 
 // Section: related_funcs
 
@@ -824,6 +1039,9 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ReferenceSearchEngine>
+);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
+    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>
@@ -854,6 +1072,16 @@ impl SseDecode for ReferenceSearchEngine {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <RustOpaqueMoi<
             flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ReferenceSearchEngine>,
+        >>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
+    }
+}
+
+impl SseDecode for RegexBenchmarker {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>,
         >>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
@@ -900,6 +1128,16 @@ impl SseDecode
 }
 
 impl SseDecode
+    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);
+    }
+}
+
+impl SseDecode
     for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -917,10 +1155,64 @@ impl SseDecode for String {
     }
 }
 
+impl SseDecode for crate::api::benchmark::BenchmarkResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_queryName = <String>::sse_decode(deserializer);
+        let mut var_regexTerms = <Vec<String>>::sse_decode(deserializer);
+        let mut var_facets = <Vec<String>>::sse_decode(deserializer);
+        let mut var_slop = <u32>::sse_decode(deserializer);
+        let mut var_maxExpansions = <u32>::sse_decode(deserializer);
+        let mut var_executionTimeMs = <u64>::sse_decode(deserializer);
+        let mut var_resultCount = <u32>::sse_decode(deserializer);
+        let mut var_memoryUsageMb = <f64>::sse_decode(deserializer);
+        return crate::api::benchmark::BenchmarkResult {
+            query_name: var_queryName,
+            regex_terms: var_regexTerms,
+            facets: var_facets,
+            slop: var_slop,
+            max_expansions: var_maxExpansions,
+            execution_time_ms: var_executionTimeMs,
+            result_count: var_resultCount,
+            memory_usage_mb: var_memoryUsageMb,
+        };
+    }
+}
+
+impl SseDecode for crate::api::benchmark::BenchmarkSuite {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_totalQueries = <usize>::sse_decode(deserializer);
+        let mut var_totalTimeMs = <u64>::sse_decode(deserializer);
+        let mut var_averageTimeMs = <f64>::sse_decode(deserializer);
+        let mut var_fastestQuery =
+            <Option<crate::api::benchmark::BenchmarkResult>>::sse_decode(deserializer);
+        let mut var_slowestQuery =
+            <Option<crate::api::benchmark::BenchmarkResult>>::sse_decode(deserializer);
+        let mut var_results =
+            <Vec<crate::api::benchmark::BenchmarkResult>>::sse_decode(deserializer);
+        return crate::api::benchmark::BenchmarkSuite {
+            total_queries: var_totalQueries,
+            total_time_ms: var_totalTimeMs,
+            average_time_ms: var_averageTimeMs,
+            fastest_query: var_fastestQuery,
+            slowest_query: var_slowestQuery,
+            results: var_results,
+        };
+    }
+}
+
 impl SseDecode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u8().unwrap() != 0
+    }
+}
+
+impl SseDecode for f64 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_f64::<NativeEndian>().unwrap()
     }
 }
 
@@ -938,6 +1230,20 @@ impl SseDecode for Vec<String> {
         let mut ans_ = vec![];
         for idx_ in 0..len_ {
             ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::benchmark::BenchmarkResult> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = vec![];
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::benchmark::BenchmarkResult>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -982,6 +1288,31 @@ impl SseDecode for Vec<crate::api::search_engine::SearchResult> {
             ));
         }
         return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::benchmark::TestCase> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = vec![];
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::benchmark::TestCase>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Option<crate::api::benchmark::BenchmarkResult> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::benchmark::BenchmarkResult>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
     }
 }
 
@@ -1041,6 +1372,24 @@ impl SseDecode for crate::api::search_engine::SearchResult {
     }
 }
 
+impl SseDecode for crate::api::benchmark::TestCase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_queryName = <String>::sse_decode(deserializer);
+        let mut var_regexTerms = <Vec<String>>::sse_decode(deserializer);
+        let mut var_facets = <Vec<String>>::sse_decode(deserializer);
+        let mut var_slop = <u32>::sse_decode(deserializer);
+        let mut var_maxExpansions = <u32>::sse_decode(deserializer);
+        return crate::api::benchmark::TestCase {
+            query_name: var_queryName,
+            regex_terms: var_regexTerms,
+            facets: var_facets,
+            slop: var_slop,
+            max_expansions: var_maxExpansions,
+        };
+    }
+}
+
 impl SseDecode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1089,13 +1438,18 @@ fn pde_ffi_dispatcher_primary_impl(
 4 => wire__crate__api__reference_search_engine__ReferenceSearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
 5 => wire__crate__api__reference_search_engine__ReferenceSearchEngine_create_search_query_impl(port, ptr, rust_vec_len, data_len),
 7 => wire__crate__api__reference_search_engine__ReferenceSearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
-8 => wire__crate__api__search_engine__SearchEngine_add_document_impl(port, ptr, rust_vec_len, data_len),
-9 => wire__crate__api__search_engine__SearchEngine_clear_impl(port, ptr, rust_vec_len, data_len),
-10 => wire__crate__api__search_engine__SearchEngine_commit_impl(port, ptr, rust_vec_len, data_len),
-11 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
-12 => wire__crate__api__search_engine__SearchEngine_create_query_impl(port, ptr, rust_vec_len, data_len),
-14 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
-15 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
+8 => wire__crate__api__benchmark__RegexBenchmarker_benchmark_custom_queries_impl(port, ptr, rust_vec_len, data_len),
+9 => wire__crate__api__benchmark__RegexBenchmarker_new_impl(port, ptr, rust_vec_len, data_len),
+10 => wire__crate__api__benchmark__RegexBenchmarker_run_comprehensive_benchmark_impl(port, ptr, rust_vec_len, data_len),
+11 => wire__crate__api__search_engine__SearchEngine_add_document_impl(port, ptr, rust_vec_len, data_len),
+12 => wire__crate__api__search_engine__SearchEngine_clear_impl(port, ptr, rust_vec_len, data_len),
+13 => wire__crate__api__search_engine__SearchEngine_commit_impl(port, ptr, rust_vec_len, data_len),
+14 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
+15 => wire__crate__api__search_engine__SearchEngine_create_query_impl(port, ptr, rust_vec_len, data_len),
+17 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
+18 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
+19 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
+20 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -1113,7 +1467,7 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
-        13 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1156,6 +1510,21 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<ReferenceSearchEngine>>
 }
 
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<RegexBenchmarker> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
+            .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<RegexBenchmarker> {}
+
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<RegexBenchmarker>> for RegexBenchmarker {
+    fn into_into_dart(self) -> FrbWrapper<RegexBenchmarker> {
+        self.into()
+    }
+}
+
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for FrbWrapper<SearchEngine> {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
@@ -1170,6 +1539,58 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<SearchEngine>> for SearchEngin
     }
 }
 
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::benchmark::BenchmarkResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.query_name.into_into_dart().into_dart(),
+            self.regex_terms.into_into_dart().into_dart(),
+            self.facets.into_into_dart().into_dart(),
+            self.slop.into_into_dart().into_dart(),
+            self.max_expansions.into_into_dart().into_dart(),
+            self.execution_time_ms.into_into_dart().into_dart(),
+            self.result_count.into_into_dart().into_dart(),
+            self.memory_usage_mb.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::benchmark::BenchmarkResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::benchmark::BenchmarkResult>
+    for crate::api::benchmark::BenchmarkResult
+{
+    fn into_into_dart(self) -> crate::api::benchmark::BenchmarkResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::benchmark::BenchmarkSuite {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.total_queries.into_into_dart().into_dart(),
+            self.total_time_ms.into_into_dart().into_dart(),
+            self.average_time_ms.into_into_dart().into_dart(),
+            self.fastest_query.into_into_dart().into_dart(),
+            self.slowest_query.into_into_dart().into_dart(),
+            self.results.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::benchmark::BenchmarkSuite
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::benchmark::BenchmarkSuite>
+    for crate::api::benchmark::BenchmarkSuite
+{
+    fn into_into_dart(self) -> crate::api::benchmark::BenchmarkSuite {
+        self
+    }
+}
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::reference_search_engine::ReferenceSearchResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -1243,6 +1664,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SearchResult>
         self
     }
 }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::benchmark::TestCase {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.query_name.into_into_dart().into_dart(),
+            self.regex_terms.into_into_dart().into_dart(),
+            self.facets.into_into_dart().into_dart(),
+            self.slop.into_into_dart().into_dart(),
+            self.max_expansions.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::benchmark::TestCase
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::benchmark::TestCase>
+    for crate::api::benchmark::TestCase
+{
+    fn into_into_dart(self) -> crate::api::benchmark::TestCase {
+        self
+    }
+}
 
 impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1267,6 +1712,13 @@ impl SseEncode for ReferenceSearchEngine {
             flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self),
             serializer,
         );
+    }
+}
+
+impl SseEncode for RegexBenchmarker {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);
     }
 }
 
@@ -1311,6 +1763,17 @@ impl SseEncode
 }
 
 impl SseEncode
+    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        let (ptr, size) = self.sse_encode_raw();
+        <usize>::sse_encode(ptr, serializer);
+        <i32>::sse_encode(size, serializer);
+    }
+}
+
+impl SseEncode
     for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1328,10 +1791,49 @@ impl SseEncode for String {
     }
 }
 
+impl SseEncode for crate::api::benchmark::BenchmarkResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.query_name, serializer);
+        <Vec<String>>::sse_encode(self.regex_terms, serializer);
+        <Vec<String>>::sse_encode(self.facets, serializer);
+        <u32>::sse_encode(self.slop, serializer);
+        <u32>::sse_encode(self.max_expansions, serializer);
+        <u64>::sse_encode(self.execution_time_ms, serializer);
+        <u32>::sse_encode(self.result_count, serializer);
+        <f64>::sse_encode(self.memory_usage_mb, serializer);
+    }
+}
+
+impl SseEncode for crate::api::benchmark::BenchmarkSuite {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <usize>::sse_encode(self.total_queries, serializer);
+        <u64>::sse_encode(self.total_time_ms, serializer);
+        <f64>::sse_encode(self.average_time_ms, serializer);
+        <Option<crate::api::benchmark::BenchmarkResult>>::sse_encode(
+            self.fastest_query,
+            serializer,
+        );
+        <Option<crate::api::benchmark::BenchmarkResult>>::sse_encode(
+            self.slowest_query,
+            serializer,
+        );
+        <Vec<crate::api::benchmark::BenchmarkResult>>::sse_encode(self.results, serializer);
+    }
+}
+
 impl SseEncode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_u8(self as _).unwrap();
+    }
+}
+
+impl SseEncode for f64 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_f64::<NativeEndian>(self).unwrap();
     }
 }
 
@@ -1348,6 +1850,16 @@ impl SseEncode for Vec<String> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <String>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::benchmark::BenchmarkResult> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::benchmark::BenchmarkResult>::sse_encode(item, serializer);
         }
     }
 }
@@ -1380,6 +1892,26 @@ impl SseEncode for Vec<crate::api::search_engine::SearchResult> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::search_engine::SearchResult>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::benchmark::TestCase> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::benchmark::TestCase>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::benchmark::BenchmarkResult> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::benchmark::BenchmarkResult>::sse_encode(value, serializer);
         }
     }
 }
@@ -1423,6 +1955,17 @@ impl SseEncode for crate::api::search_engine::SearchResult {
         <u64>::sse_encode(self.segment, serializer);
         <bool>::sse_encode(self.is_pdf, serializer);
         <String>::sse_encode(self.file_path, serializer);
+    }
+}
+
+impl SseEncode for crate::api::benchmark::TestCase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.query_name, serializer);
+        <Vec<String>>::sse_encode(self.regex_terms, serializer);
+        <Vec<String>>::sse_encode(self.facets, serializer);
+        <u32>::sse_encode(self.slop, serializer);
+        <u32>::sse_encode(self.max_expansions, serializer);
     }
 }
 
@@ -1470,6 +2013,7 @@ mod io {
     // Section: imports
 
     use super::*;
+    use crate::api::benchmark::*;
     use crate::api::reference_search_engine::*;
     use crate::api::search_engine::*;
     use flutter_rust_bridge::for_generated::byteorder::{
@@ -1525,6 +2069,20 @@ mod io {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "C" fn frbgen_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>::increment_strong_count(ptr as _);
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn frbgen_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>::decrement_strong_count(ptr as _);
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "C" fn frbgen_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
         ptr: *const std::ffi::c_void,
     ) {
@@ -1550,6 +2108,7 @@ mod web {
     // Section: imports
 
     use super::*;
+    use crate::api::benchmark::*;
     use crate::api::reference_search_engine::*;
     use crate::api::search_engine::*;
     use flutter_rust_bridge::for_generated::byteorder::{
@@ -1604,6 +2163,20 @@ mod web {
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ReferenceSearchEngine>>::decrement_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>::increment_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>>::decrement_strong_count(ptr as _);
     }
 
     #[wasm_bindgen]
