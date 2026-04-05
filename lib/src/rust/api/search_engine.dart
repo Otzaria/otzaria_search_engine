@@ -5,12 +5,14 @@
 
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'reference_search_engine.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`
+// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_query`, `build_results`, `collect_addresses`, `default`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `collect`, `for_segment`, `harvest`, `merge_fruits`, `requires_scoring`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
+  /// Add a single document. Does not commit.
   Future<void> addDocument({
     required BigInt id,
     required String title,
@@ -22,8 +24,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String filePath,
   });
 
+  /// Add many documents in a single FFI call. Does not commit.
+  /// For initial bulk loads – no duplicate checking.
+  Future<void> addDocumentsBatch({required List<DocumentInput> docs});
+
+  /// Delete all documents. Does not commit.
   Future<void> clear();
 
+  /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 
   Future<int> count({
@@ -40,36 +48,225 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
-  static Future<BoxQuery> createQuery({
-    required Index index,
+  /// Delete a document by its numeric id. Does not commit.
+  Future<void> deleteDocumentById({required BigInt id});
+
+  /// Fetch a single document by its numeric id. Returns None if not found.
+  /// The `text` field contains the raw stored text (no snippet/highlight).
+  Future<SearchResult?> getDocumentById({required BigInt id});
+
+  Future<BigInt> getDocumentCount();
+
+  /// Return per-child facet counts for a given prefix (e.g. "/").
+  Future<List<FacetCount>> getFacetCounts({
     required List<String> regexTerms,
     required List<String> facets,
+    required String facetPrefix,
     required int slop,
     required int maxExpansions,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCreateQuery(
-    index: index,
-    regexTerms: regexTerms,
-    facets: facets,
-    slop: slop,
-    maxExpansions: maxExpansions,
-  );
+  });
+
+  Future<int> getSegmentCount();
 
   factory SearchEngine({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
 
+  /// Merge all segments into one. Run occasionally in the background after
+  /// many upserts/deletes to reclaim disk space and improve read performance.
+  /// Reloads the reader after merge so subsequent searches use the merged state.
+  Future<void> optimize();
+
+  /// Delete all documents matching a title. Does not commit.
+  /// Kept for backward compatibility – prefer delete_document_by_id.
   Future<void> removeDocumentsByTitle({required String title});
+
+  /// Discard all pending writes since the last commit.
+  Future<void> rollback();
 
   Future<List<SearchResult>> search({
     required List<String> regexTerms,
     required List<String> facets,
     required int limit,
+    required int offset,
     required int slop,
     required int maxExpansions,
     required ResultsOrder order,
+    HighlightConfig? highlight,
   });
+
+  /// Search and return total hit count alongside paged results in one call.
+  /// Uses a tuple collector so Tantivy executes a single index pass.
+  Future<SearchPageResult> searchAndCount({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int slop,
+    required int maxExpansions,
+    required ResultsOrder order,
+    HighlightConfig? highlight,
+  });
+
+  /// Fuzzy (Levenshtein) search on plain text terms.
+  /// Unlike `search()` which requires regex patterns, this accepts plain words
+  /// and matches terms within `max_distance` edits (0 = exact, 1–2 = fuzzy).
+  /// Multiple terms are ANDed together; each term is matched fuzzily.
+  Future<List<SearchResult>> searchFuzzy({
+    required List<String> terms,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int maxDistance,
+    required ResultsOrder order,
+    HighlightConfig? highlight,
+  });
+
+  /// Stream search results in chunks of `chunk_size` documents.
+  ///
+  /// The TopDocs phase (scoring and ranking) completes upfront – this is
+  /// inherent to how Tantivy's collectors work and cannot be avoided without
+  /// a custom collector. What IS incremental is the stored-document retrieval
+  /// and snippet generation: the Dart side receives the first chunk of results
+  /// as soon as those are ready, without waiting for all snippets to be built.
+  /// This is useful when `limit` is large and snippet generation is the
+  /// bottleneck. For typical limits (≤ 200) the difference is negligible.
+  Stream<List<SearchResult>> searchStream({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int slop,
+    required int maxExpansions,
+    required ResultsOrder order,
+    HighlightConfig? highlight,
+    required int chunkSize,
+  });
+
+  /// Delete then re-insert a single document by id. Does not commit.
+  Future<void> upsertDocument({
+    required BigInt id,
+    required String title,
+    required String reference,
+    required String topics,
+    required String text,
+    required BigInt segment,
+    required bool isPdf,
+    required String filePath,
+  });
+
+  /// Upsert many documents in a single FFI call. Does not commit.
+  Future<void> upsertDocumentsBatch({required List<DocumentInput> docs});
+}
+
+class DocumentInput {
+  final BigInt id;
+  final String title;
+  final String reference;
+  final String topics;
+  final String text;
+  final BigInt segment;
+  final bool isPdf;
+  final String filePath;
+
+  const DocumentInput({
+    required this.id,
+    required this.title,
+    required this.reference,
+    required this.topics,
+    required this.text,
+    required this.segment,
+    required this.isPdf,
+    required this.filePath,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      title.hashCode ^
+      reference.hashCode ^
+      topics.hashCode ^
+      text.hashCode ^
+      segment.hashCode ^
+      isPdf.hashCode ^
+      filePath.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DocumentInput &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          title == other.title &&
+          reference == other.reference &&
+          topics == other.topics &&
+          text == other.text &&
+          segment == other.segment &&
+          isPdf == other.isPdf &&
+          filePath == other.filePath;
+}
+
+class FacetCount {
+  final String path;
+  final BigInt count;
+
+  const FacetCount({required this.path, required this.count});
+
+  @override
+  int get hashCode => path.hashCode ^ count.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FacetCount &&
+          runtimeType == other.runtimeType &&
+          path == other.path &&
+          count == other.count;
+}
+
+class HighlightConfig {
+  final String highlightPrefix;
+  final String highlightPostfix;
+  final int maxChars;
+
+  const HighlightConfig({
+    required this.highlightPrefix,
+    required this.highlightPostfix,
+    required this.maxChars,
+  });
+
+  @override
+  int get hashCode =>
+      highlightPrefix.hashCode ^ highlightPostfix.hashCode ^ maxChars.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HighlightConfig &&
+          runtimeType == other.runtimeType &&
+          highlightPrefix == other.highlightPrefix &&
+          highlightPostfix == other.highlightPostfix &&
+          maxChars == other.maxChars;
 }
 
 enum ResultsOrder { catalogue, relevance }
+
+class SearchPageResult {
+  final int totalCount;
+  final List<SearchResult> results;
+
+  const SearchPageResult({required this.totalCount, required this.results});
+
+  @override
+  int get hashCode => totalCount.hashCode ^ results.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SearchPageResult &&
+          runtimeType == other.runtimeType &&
+          totalCount == other.totalCount &&
+          results == other.results;
+}
 
 class SearchResult {
   final String title;

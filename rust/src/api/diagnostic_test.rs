@@ -45,9 +45,11 @@ pub fn run_diagnostic_test() -> Result<()> {
             regex_terms,
             vec![], // No facet filtering
             10,     // Small limit for testing
+            0,      // No offset
             0,      // No slop
             100,    // Reasonable expansion limit
             ResultsOrder::Relevance,
+            None,
         ) {
             Ok(results) => {
                 let duration = start.elapsed();

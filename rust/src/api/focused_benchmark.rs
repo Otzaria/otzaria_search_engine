@@ -55,9 +55,11 @@ pub fn run_focused_benchmark() -> Result<()> {
             regex_terms.clone(),
             vec![],
             10,
+            0,
             slop,
             max_expansions,
             ResultsOrder::Relevance,
+            None,
         );
 
         // Actual benchmark
@@ -66,9 +68,11 @@ pub fn run_focused_benchmark() -> Result<()> {
             regex_terms,
             vec![],
             100,
+            0,
             slop,
             max_expansions,
             ResultsOrder::Relevance,
+            None,
         ) {
             Ok(results) => {
                 let duration = start.elapsed();

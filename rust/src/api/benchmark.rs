@@ -261,9 +261,11 @@ impl RegexBenchmarker {
                 regex_terms.to_vec(),
                 facets.to_vec(),
                 10,
+                0,
                 slop,
                 max_expansions,
                 ResultsOrder::Relevance,
+                None,
             )?;
         }
 
@@ -277,9 +279,11 @@ impl RegexBenchmarker {
                 regex_terms.to_vec(),
                 facets.to_vec(),
                 100,
+                0,
                 slop,
                 max_expansions,
                 ResultsOrder::Relevance,
+                None,
             )?;
             let duration = start.elapsed();
             

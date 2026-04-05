@@ -7,16 +7,12 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'search_engine.dart';
 
+// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_query`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Box < dyn Query >>>
-abstract class BoxQuery implements RustOpaqueInterface {}
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Index>>
-abstract class Index implements RustOpaqueInterface {}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ReferenceSearchEngine>>
 abstract class ReferenceSearchEngine implements RustOpaqueInterface {
+  /// Add a single document. Does not commit.
   Future<void> addDocument({
     required BigInt id,
     required String title,
@@ -27,25 +23,25 @@ abstract class ReferenceSearchEngine implements RustOpaqueInterface {
     required String filePath,
   });
 
+  /// Add many documents in a single FFI call. Does not commit.
+  Future<void> addDocumentsBatch({required List<ReferenceDocumentInput> docs});
+
+  /// Delete all documents. Does not commit.
   Future<void> clear();
 
+  /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 
   Future<int> count({required String query, required bool fuzzy});
 
-  static Future<BoxQuery> createSearchQuery({
-    required Index index,
-    required String searchTerm,
-    required bool fuzzy,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQuery(
-        index: index,
-        searchTerm: searchTerm,
-        fuzzy: fuzzy,
-      );
+  /// Delete a document by its numeric id. Does not commit.
+  Future<void> deleteDocumentById({required BigInt id});
 
   factory ReferenceSearchEngine({required String path}) => RustLib.instance.api
       .crateApiReferenceSearchEngineReferenceSearchEngineNew(path: path);
+
+  /// Discard all pending writes since the last commit.
+  Future<void> rollback();
 
   Future<List<ReferenceSearchResult>> search({
     required String query,
@@ -53,6 +49,65 @@ abstract class ReferenceSearchEngine implements RustOpaqueInterface {
     required bool fuzzy,
     required ResultsOrder order,
   });
+
+  /// Delete then re-insert a single document by id. Does not commit.
+  Future<void> upsertDocument({
+    required BigInt id,
+    required String title,
+    required String reference,
+    required String shortRef,
+    required BigInt segment,
+    required bool isPdf,
+    required String filePath,
+  });
+
+  /// Upsert many documents in a single FFI call. Does not commit.
+  Future<void> upsertDocumentsBatch({
+    required List<ReferenceDocumentInput> docs,
+  });
+}
+
+class ReferenceDocumentInput {
+  final BigInt id;
+  final String title;
+  final String reference;
+  final String shortRef;
+  final BigInt segment;
+  final bool isPdf;
+  final String filePath;
+
+  const ReferenceDocumentInput({
+    required this.id,
+    required this.title,
+    required this.reference,
+    required this.shortRef,
+    required this.segment,
+    required this.isPdf,
+    required this.filePath,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      title.hashCode ^
+      reference.hashCode ^
+      shortRef.hashCode ^
+      segment.hashCode ^
+      isPdf.hashCode ^
+      filePath.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReferenceDocumentInput &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          title == other.title &&
+          reference == other.reference &&
+          shortRef == other.shortRef &&
+          segment == other.segment &&
+          isPdf == other.isPdf &&
+          filePath == other.filePath;
 }
 
 class ReferenceSearchResult {

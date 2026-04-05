@@ -1,23 +1,19 @@
+
 use flutter_rust_bridge::frb;
 use crate::api::search_engine::ResultsOrder;
 use anyhow::Result;
-use futures::stream::{Stream, StreamExt};
 use log::debug;
-use serde_json::{json, Value};
-use std::borrow::{Borrow, BorrowMut};
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::index::Index;
-use tantivy::query::{self, BooleanQuery, Occur, QueryParser, TermQuery, TermSetQuery};
-use tantivy::query::{PhraseQuery, Query};
+use tantivy::query::{QueryParser, Query};
 use tantivy::schema::Value as TantivyValue;
 use tantivy::{
-    doc, tokenizer, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher,
+    doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Term,
 };
-use tantivy::{schema::*, Directory};
+use tantivy::schema::*;
+
+// ── Public data types ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct ReferenceSearchResult {
@@ -30,8 +26,19 @@ pub struct ReferenceSearchResult {
     pub file_path: String,
 }
 
+pub struct ReferenceDocumentInput {
+    pub id: u64,
+    pub title: String,
+    pub reference: String,
+    pub short_ref: String,
+    pub segment: u64,
+    pub is_pdf: bool,
+    pub file_path: String,
+}
+
+// ── ReferenceSearchEngine ──────────────────────────────────────────────────────
+
 pub struct ReferenceSearchEngine {
-    path: String,
     schema: Schema,
     index: Index,
     index_writer: IndexWriter,
@@ -41,33 +48,34 @@ pub struct ReferenceSearchEngine {
 impl ReferenceSearchEngine {
     #[frb(sync)]
     pub fn new(path: &str) -> Self {
-        debug!("new path={}", path,);
+        debug!("new path={}", path);
         let mut schema_builder = Schema::builder();
-        let reference = schema_builder.add_text_field("reference", TEXT | STORED);
-        let short_ref = schema_builder.add_text_field("shortRef", TEXT );
-        let title = schema_builder.add_text_field("title", TEXT | STORED);
-        let id = schema_builder.add_u64_field("id", STORED | FAST);
-        let segment = schema_builder.add_u64_field("segment", STORED);
-        let is_pdf = schema_builder.add_bool_field("isPdf", STORED);
-        let file_path = schema_builder.add_text_field("filePath", TEXT | STORED);
+        schema_builder.add_text_field("reference", TEXT | STORED);
+        schema_builder.add_text_field("shortRef", TEXT);
+        schema_builder.add_text_field("title", TEXT | STORED);
+        // INDEXED is required for delete_term / upsert by id to work.
+        schema_builder.add_u64_field("id", STORED | FAST | INDEXED);
+        schema_builder.add_u64_field("segment", STORED);
+        schema_builder.add_bool_field("isPdf", STORED);
+        schema_builder.add_text_field("filePath", TEXT | STORED);
+
         let schema = schema_builder.build();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = Index::open_or_create(mmap_directory, schema.clone());
-        let index = index.expect("Failed to create index").clone();
-        let index_reader = index.reader().expect("Failed to create index reader");
-        let index_writer = index
-            .writer(50_000_000)
-            .expect("Failed to create index writer");
+        let index = Index::open_or_create(mmap_directory, schema.clone())
+            .expect("Failed to create index");
+        let index_reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .expect("Failed to create index reader");
+        let index_writer = index.writer(50_000_000).expect("Failed to create index writer");
 
-        ReferenceSearchEngine {
-            path: path.to_string(),
-            index: index,
-            schema: schema,
-            index_writer: index_writer,
-            index_reader: index_reader,
-        }
+        ReferenceSearchEngine { schema, index, index_writer, index_reader }
     }
 
+    // ── Write API ──────────────────────────────────────────────────────────────
+
+    /// Add a single document. Does not commit.
     pub fn add_document(
         &mut self,
         _id: u64,
@@ -78,70 +86,100 @@ impl ReferenceSearchEngine {
         _is_pdf: bool,
         _file_path: &str,
     ) -> Result<()> {
-        let title = self.schema.get_field("title").unwrap();
-        let reference = self.schema.get_field("reference").unwrap();
-        let short_ref = self.schema.get_field("shortRef").unwrap();
-        let id = self.schema.get_field("id").unwrap();
-        let segment = self.schema.get_field("segment").unwrap();
-        let is_pdf = self.schema.get_field("isPdf").unwrap();
-        let file_path = self.schema.get_field("filePath").unwrap();
-
+        let (title_f, reference_f, short_ref_f, id_f, segment_f, is_pdf_f, file_path_f) =
+            self.all_fields()?;
         self.index_writer.add_document(doc!(
-            title => _title,
-            reference => _reference,
-            short_ref => _short_ref,
-            id => _id,
-            segment => _segment,
-            is_pdf => _is_pdf,
-            file_path => _file_path
+            title_f     => _title,
+            reference_f => _reference,
+            short_ref_f => _short_ref,
+            id_f        => _id,
+            segment_f   => _segment,
+            is_pdf_f    => _is_pdf,
+            file_path_f => _file_path
         ))?;
-
         Ok(())
     }
 
+    /// Add many documents in a single FFI call. Does not commit.
+    pub fn add_documents_batch(&mut self, docs: Vec<ReferenceDocumentInput>) -> Result<()> {
+        let (title_f, reference_f, short_ref_f, id_f, segment_f, is_pdf_f, file_path_f) =
+            self.all_fields()?;
+        for doc in docs {
+            self.index_writer.add_document(doc!(
+                title_f     => doc.title,
+                reference_f => doc.reference,
+                short_ref_f => doc.short_ref,
+                id_f        => doc.id,
+                segment_f   => doc.segment,
+                is_pdf_f    => doc.is_pdf,
+                file_path_f => doc.file_path
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Delete then re-insert a single document by id. Does not commit.
+    pub fn upsert_document(
+        &mut self,
+        _id: u64,
+        _title: &str,
+        _reference: &str,
+        _short_ref: &str,
+        _segment: u64,
+        _is_pdf: bool,
+        _file_path: &str,
+    ) -> Result<()> {
+        self.delete_document_by_id(_id)?;
+        self.add_document(_id, _title, _reference, _short_ref, _segment, _is_pdf, _file_path)
+    }
+
+    /// Upsert many documents in a single FFI call. Does not commit.
+    pub fn upsert_documents_batch(&mut self, docs: Vec<ReferenceDocumentInput>) -> Result<()> {
+        let (title_f, reference_f, short_ref_f, id_f, segment_f, is_pdf_f, file_path_f) =
+            self.all_fields()?;
+        for doc in docs {
+            self.index_writer.delete_term(Term::from_field_u64(id_f, doc.id));
+            self.index_writer.add_document(doc!(
+                title_f     => doc.title,
+                reference_f => doc.reference,
+                short_ref_f => doc.short_ref,
+                id_f        => doc.id,
+                segment_f   => doc.segment,
+                is_pdf_f    => doc.is_pdf,
+                file_path_f => doc.file_path
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Delete a document by its numeric id. Does not commit.
+    pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
+        let id_f = self.schema.get_field("id").unwrap();
+        self.index_writer.delete_term(Term::from_field_u64(id_f, id));
+        Ok(())
+    }
+
+    /// Delete all documents. Does not commit.
+    pub fn clear(&self) -> Result<()> {
+        self.index_writer.delete_all_documents()?;
+        Ok(())
+    }
+
+    /// Flush pending writes to disk and refresh the reader.
     pub fn commit(&mut self) -> Result<()> {
         self.index_writer.commit()?;
+        self.index_reader.reload()?;
         Ok(())
     }
 
-    pub fn create_search_query(
-        index: &Index,
-        search_term: &str,
-        fuzzy: bool,
-    ) -> Result<Box<dyn Query>> {
-        let schema = index.schema();
-        let reference_field = schema.get_field("reference").unwrap();
-        let short_ref_field = schema.get_field("shortRef").unwrap();
-
-        // Create the main reference search query (search both reference and shortRef)
-        let mut reference_query = QueryParser::for_index(&index, vec![reference_field, short_ref_field]);
-        reference_query.set_conjunction_by_default();
-
-        // In case of fuzzy search, set the fuzziness
-        if fuzzy {
-            reference_query.set_field_fuzzy(reference_field, false, 1, false);
-            reference_query.set_field_fuzzy(short_ref_field, false, 1, false);
-        }
-
-        // Parse the search term
-        let reference_query = reference_query.parse_query_lenient(search_term).0;
-
-        Ok(Box::new(reference_query))
+    /// Discard all pending writes since the last commit.
+    pub fn rollback(&mut self) -> Result<()> {
+        self.index_writer.rollback()?;
+        Ok(())
     }
 
-    pub fn count(
-        &mut self,
-        query: &str,
-        fuzzy: bool,
-    ) -> Result<u32> {
-        let index = &self.index;
-        let search_query = Self::create_search_query(index, query, fuzzy).unwrap();
+    // ── Search API ─────────────────────────────────────────────────────────────
 
-        let searcher = index.reader()?.searcher();
-        let count = searcher.search(&search_query, &Count).unwrap() as u32;
-        Ok(count)
-    }
-    
     pub fn search(
         &mut self,
         query: &str,
@@ -149,12 +187,10 @@ impl ReferenceSearchEngine {
         fuzzy: bool,
         order: ResultsOrder,
     ) -> Result<Vec<ReferenceSearchResult>> {
-        let index = &self.index;
+        let search_query = Self::build_query(&self.index, query, fuzzy)?;
+        let searcher = self.index_reader.searcher();
         let schema = &self.schema;
-        let query = Self::create_search_query(index, query, fuzzy)?;
-        let searcher = index.reader()?.searcher();
 
-        let mut results = Vec::<ReferenceSearchResult>::new();
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
         let short_ref_field = schema.get_field("shortRef")?;
@@ -163,86 +199,82 @@ impl ReferenceSearchEngine {
         let is_pdf_field = schema.get_field("isPdf")?;
         let file_path_field = schema.get_field("filePath")?;
 
-        let top_docs: Vec<DocAddress> = match order {
+        let addresses: Vec<DocAddress> = match order {
             ResultsOrder::Catalogue => {
-                // sort by id (ascending)
-                let collector_by_id =
-                    TopDocs::with_limit(limit as usize).order_by_fast_field::<u64>("id", Order::Asc);
-                let top_docs_by_id = searcher.search(&query, &collector_by_id).unwrap();
-                top_docs_by_id
+                let collector = TopDocs::with_limit(limit as usize)
+                    .order_by_fast_field::<u64>("id", Order::Asc);
+                searcher
+                    .search(&*search_query, &collector)?
                     .into_iter()
-                    .map(|(_, doc_address)| doc_address)
+                    .map(|(_, addr)| addr)
                     .collect()
             }
             ResultsOrder::Relevance => {
-                let collector_by_score = TopDocs::with_limit(limit as usize).order_by_score();
-                let top_docs_by_score = searcher.search(&query, &collector_by_score).unwrap();
-                top_docs_by_score
+                let collector = TopDocs::with_limit(limit as usize).order_by_score();
+                searcher
+                    .search(&*search_query, &collector)?
                     .into_iter()
-                    .map(|(_, doc_address)| doc_address)
+                    .map(|(_, addr)| addr)
                     .collect()
             }
         };
 
-        for doc_address in top_docs {
-            match searcher.doc::<TantivyDocument>(doc_address) {
-                Ok(retrieved_doc) => {
-                    let title = retrieved_doc
-                        .get_first(title_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let reference = retrieved_doc
-                        .get_first(reference_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let short_ref = retrieved_doc
-                        .get_first(short_ref_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let id = retrieved_doc
-                        .get_first(id_field)
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or_default();
-                    let segment = retrieved_doc
-                        .get_first(segment_field)
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or_default();
-                    let is_pdf = retrieved_doc
-                        .get_first(is_pdf_field)
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or_default();
-                    let file_path = retrieved_doc
-                        .get_first(file_path_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-
-                    let result = ReferenceSearchResult {
-                        title,
-                        reference,
-                        short_ref,
-                        id,
-                        segment,
-                        is_pdf,
-                        file_path,
-                    };
-                    results.push(result);
-                }
+        let mut results = Vec::with_capacity(addresses.len());
+        for doc_address in addresses {
+            let retrieved_doc = match searcher.doc::<TantivyDocument>(doc_address) {
+                Ok(d) => d,
                 Err(_) => continue,
-            }
+            };
+            let title = retrieved_doc.get_first(title_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let reference = retrieved_doc.get_first(reference_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let short_ref = retrieved_doc.get_first(short_ref_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let id = retrieved_doc.get_first(id_field).and_then(|v| v.as_u64()).unwrap_or_default();
+            let segment = retrieved_doc.get_first(segment_field).and_then(|v| v.as_u64()).unwrap_or_default();
+            let is_pdf = retrieved_doc.get_first(is_pdf_field).and_then(|v| v.as_bool()).unwrap_or_default();
+            let file_path = retrieved_doc.get_first(file_path_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+
+            results.push(ReferenceSearchResult { title, reference, short_ref, id, segment, is_pdf, file_path });
         }
         Ok(results)
     }
 
-    pub fn clear(&self) -> Result<()> {
-        self.index_writer.delete_all_documents()?;
-        Ok(())
+    pub fn count(&mut self, query: &str, fuzzy: bool) -> Result<u32> {
+        let search_query = Self::build_query(&self.index, query, fuzzy)?;
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(&*search_query, &Count)? as u32)
+    }
+
+    // ── Private helpers ────────────────────────────────────────────────────────
+
+    fn all_fields(&self) -> Result<(Field, Field, Field, Field, Field, Field, Field)> {
+        Ok((
+            self.schema.get_field("title")?,
+            self.schema.get_field("reference")?,
+            self.schema.get_field("shortRef")?,
+            self.schema.get_field("id")?,
+            self.schema.get_field("segment")?,
+            self.schema.get_field("isPdf")?,
+            self.schema.get_field("filePath")?,
+        ))
+    }
+
+    fn build_query(index: &Index, search_term: &str, fuzzy: bool) -> Result<Box<dyn Query>> {
+        let schema = index.schema();
+        let reference_field = schema.get_field("reference").unwrap();
+        let short_ref_field = schema.get_field("shortRef").unwrap();
+
+        let mut qp = QueryParser::for_index(index, vec![reference_field, short_ref_field]);
+        qp.set_conjunction_by_default();
+        if fuzzy {
+            qp.set_field_fuzzy(reference_field, false, 1, false);
+            qp.set_field_fuzzy(short_ref_field, false, 1, false);
+        }
+
+        Ok(Box::new(qp.parse_query_lenient(search_term).0))
     }
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -250,42 +282,68 @@ mod tests {
 
     #[test]
     fn test_reference_search() -> Result<()> {
-        // Create a temporary directory for testing
-        let temp_dir = tempfile::Builder::new().prefix("reference_search_engine_test").tempdir().unwrap();
+        let temp_dir = tempfile::Builder::new()
+            .prefix("reference_search_engine_test")
+            .tempdir()
+            .unwrap();
         let temp_path = temp_dir.path().to_str().unwrap();
+        let mut engine = ReferenceSearchEngine::new(temp_path);
 
-        // Create a new ReferenceSearchEngine instance
-        let mut search_engine = ReferenceSearchEngine::new(temp_path);
+        engine.add_document(1, "Document 1", "Reference 1", "R 1", 1, false, "/path/to/doc1").unwrap();
+        engine.add_document(2, "Document 2", "Reference 2", "R 2", 2, false, "/path/to/doc2").unwrap();
+        engine.add_document(3, "Document 3", "Another Reference", "A R", 3, false, "/path/to/doc3").unwrap();
+        engine.commit().unwrap();
 
-        // Add some documents with different references
-        search_engine.add_document(1, "Document 1", "Reference 1", "R 1", 1, false, "/path/to/doc1").unwrap();
-        search_engine.add_document(2, "Document 2", "Reference 2","R 2" ,2, false, "/path/to/doc2").unwrap();
-        search_engine.add_document(3, "Document 3", "Another Reference", " A R",3, false, "/path/to/doc3").unwrap();
-
-        // Commit the changes
-        search_engine.commit().unwrap();
-
-        // Test basic search
-        let results = search_engine.search("Reference", 10, false, ResultsOrder::Catalogue).unwrap();
+        let results = engine.search("Reference", 10, false, ResultsOrder::Catalogue).unwrap();
         assert_eq!(results.len(), 3);
 
-        // Test more specific search
-        let results = search_engine.search("Reference 1", 10, false, ResultsOrder::Catalogue).unwrap();
+        let results = engine.search("Reference 1", 10, false, ResultsOrder::Catalogue).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].reference, "Reference 1");
 
-        // Test fuzzy search
-        let results = search_engine.search("Referenc", 10, true, ResultsOrder::Catalogue).unwrap();
+        let results = engine.search("Referenc", 10, true, ResultsOrder::Catalogue).unwrap();
         assert!(results.len() > 0);
 
-        // Test count
-        let count = search_engine.count("Reference", false).unwrap();
+        let count = engine.count("Reference", false).unwrap();
         assert_eq!(count, 3);
 
-        // Test count with more specific query
-        let count = search_engine.count("Reference 1", false).unwrap();
+        let count = engine.count("Reference 1", false).unwrap();
         assert_eq!(count, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_document_by_id() -> Result<()> {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut engine = ReferenceSearchEngine::new(temp_dir.path().to_str().unwrap());
+
+        engine.add_document(1, "Doc 1", "Ref 1", "R1", 1, false, "/a").unwrap();
+        engine.add_document(2, "Doc 2", "Ref 2", "R2", 2, false, "/b").unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.count("Ref", false).unwrap(), 2);
+
+        engine.delete_document_by_id(1).unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.count("Ref", false).unwrap(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_upsert_document() -> Result<()> {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut engine = ReferenceSearchEngine::new(temp_dir.path().to_str().unwrap());
+
+        engine.add_document(1, "Doc 1", "Old Reference", "OR", 1, false, "/a").unwrap();
+        engine.commit().unwrap();
+
+        engine.upsert_document(1, "Doc 1", "New Reference", "NR", 1, false, "/a").unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.count("Old", false).unwrap(), 0);
+        assert_eq!(engine.count("New", false).unwrap(), 1);
         Ok(())
     }
 }

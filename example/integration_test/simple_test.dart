@@ -24,6 +24,7 @@ void main()async  {
         regexTerms: ["יה.*דים"],
         facets: ["/"],
         limit: 1,
+        offset: 0,
         slop: 0,
         maxExpansions: 50,
         order: ResultsOrder.relevance);
