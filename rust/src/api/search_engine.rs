@@ -6,7 +6,8 @@ use tantivy::schema::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tantivy::collector::{Count, DocSetCollector, TopDocs};
+use tantivy::collector::{Collector, Count, SegmentCollector, TopDocs};
+use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy::directory::MmapDirectory;
 pub use tantivy::index::Index;
 use tantivy::query::{self, BooleanQuery, Occur, QueryParser, RegexQuery, TermQuery, TermSetQuery};
@@ -56,7 +57,7 @@ impl SearchEngine {
         let id = schema_builder.add_u64_field("id", STORED | FAST);
         let segment = schema_builder.add_u64_field("segment", STORED);
         let isPdf = schema_builder.add_bool_field("isPdf", STORED);
-        let file_path = schema_builder.add_text_field("filePath", TEXT | STORED);
+        let file_path = schema_builder.add_text_field("filePath", STRING | FAST | STORED);
         let topics = schema_builder.add_facet_field("topics", FacetOptions::default());
         let schema = schema_builder.build();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
@@ -293,24 +294,9 @@ impl SearchEngine {
         max_expansions: u32,
     ) -> Result<HashMap<String, u32>> {
         let index = &self.index;
-        let schema = &self.schema;
         let query = Self::create_query(index, regex_terms, facets, slop, max_expansions)?;
         let searcher = index.reader()?.searcher();
-        let file_path_field = schema.get_field("filePath")?;
-
-        let doc_addresses = searcher.search(&query, &DocSetCollector)?;
-
-        let mut counts: HashMap<String, u32> = HashMap::new();
-        for doc_address in doc_addresses {
-            let doc = searcher.doc::<TantivyDocument>(doc_address)?;
-            let file_path = doc
-                .get_first(file_path_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            *counts.entry(file_path).or_insert(0) += 1;
-        }
-
+        let counts = searcher.search(&query, &BookCountCollector)?;
         Ok(counts)
     }
 
@@ -333,6 +319,152 @@ pub enum ResultsOrder{
     Catalogue, Relevance
 }
 
+/// Collector that counts matching documents grouped by the `filePath` fast field.
+/// Operates entirely on the column-oriented fast field — no stored-document reads.
+/// Per-segment counts are collected using term ordinals (integers), decoded to strings
+/// only once in `harvest()`, then merged across segments in `merge_fruits()`.
+struct BookCountCollector;
+
+struct BookCountSegmentCollector {
+    str_col: Option<tantivy::columnar::StrColumn>,
+    // term_ord -> count within this segment
+    counts: HashMap<u64, u32>,
+}
+
+impl Collector for BookCountCollector {
+    type Fruit = HashMap<String, u32>;
+    type Child = BookCountSegmentCollector;
+
+    fn for_segment(
+        &self,
+        _seg_ord: SegmentOrdinal,
+        reader: &SegmentReader,
+    ) -> tantivy::Result<BookCountSegmentCollector> {
+        let str_col = reader.fast_fields().str("filePath")?;
+        Ok(BookCountSegmentCollector { str_col, counts: HashMap::new() })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(&self, per_segment: Vec<tantivy::Result<HashMap<String, u32>>>) -> tantivy::Result<HashMap<String, u32>> {
+        let mut merged: HashMap<String, u32> = HashMap::new();
+        for seg_result in per_segment {
+            for (path, count) in seg_result? {
+                *merged.entry(path).or_insert(0) += count;
+            }
+        }
+        Ok(merged)
+    }
+}
+
+impl SegmentCollector for BookCountSegmentCollector {
+    type Fruit = tantivy::Result<HashMap<String, u32>>;
+
+    fn collect(&mut self, doc_id: DocId, _score: Score) {
+        if let Some(col) = &self.str_col {
+            // STRING field: each doc has exactly one term ordinal
+            if let Some(term_ord) = col.term_ords(doc_id).next() {
+                *self.counts.entry(term_ord).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn harvest(self) -> tantivy::Result<HashMap<String, u32>> {
+        let Some(col) = self.str_col else { return Ok(HashMap::new()) };
+        let mut result = HashMap::with_capacity(self.counts.len());
+        let mut buf = String::new();
+        for (term_ord, count) in self.counts {
+            buf.clear();
+            if col.ord_to_str(term_ord, &mut buf)? {
+                result.insert(buf.clone(), count);
+            }
+        }
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_engine() -> (SearchEngine, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let engine = SearchEngine::new(dir.path().to_str().unwrap());
+        (engine, dir)
+    }
+
+    fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {
+        engine
+            .add_document(id, "title", "ref", "/root", text, 0, false, file_path)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_count_by_book_basic() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        add(&mut engine, 2, "שלום רב", "/books/a.txt");
+        add(&mut engine, 3, "שלום חבר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let counts = engine
+            .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
+            .unwrap();
+
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
+        assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn test_count_by_book_empty_result() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let counts = engine
+            .count_by_book(vec!["ביי".to_string()], vec!["/root".to_string()], 0, 100)
+            .unwrap();
+
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_count_by_book_no_cross_contamination() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        add(&mut engine, 2, "שלום ביי", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let counts = engine
+            .count_by_book(vec!["עולם".to_string()], vec!["/root".to_string()], 0, 100)
+            .unwrap();
+
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(1));
+        assert_eq!(counts.get("/books/b.txt"), None);
+    }
+
+    #[test]
+    fn test_count_by_book_multi_segment() {
+        // Each commit() creates a new segment; same filePath must merge correctly
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();  // segment 1
+
+        add(&mut engine, 2, "שלום רב", "/books/a.txt");
+        add(&mut engine, 3, "שלום חבר", "/books/b.txt");
+        engine.commit().unwrap();  // segment 2
+
+        let counts = engine
+            .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
+            .unwrap();
+
+        // a.txt has hits in both segments; must be summed correctly
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
+        assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
 }
