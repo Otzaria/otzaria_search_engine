@@ -371,11 +371,13 @@ fn collect_facet_levels(
 ) {
     let children: Vec<(String, u32)> = facet_counts
         .get(parent_path)
-        .map(|(facet, count)| (facet.to_path_str().to_string(), count as u32))
+        .map(|(facet, count): (&tantivy::schema::Facet, u64)| {
+            (facet.to_path_string(), count as u32)
+        })
         .collect();
 
     if parent_path == "/" {
-        let total: u32 = children.iter().map(|(_, c)| c).sum();
+        let total: u32 = children.iter().map(|(_, c)| *c).sum();
         if total > 0 {
             result.insert("/".to_string(), total);
         }
