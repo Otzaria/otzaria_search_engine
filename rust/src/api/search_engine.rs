@@ -195,7 +195,7 @@ impl SearchEngine {
                     .collect()
             }
             ResultsOrder::Relevance => {
-                let collector_by_score = TopDocs::with_limit(limit as usize);
+                let collector_by_score = TopDocs::with_limit(limit as usize).order_by_score();
                 let top_docs_by_score = searcher.search(&query, &collector_by_score).unwrap();
                 top_docs_by_score
                     .into_iter()

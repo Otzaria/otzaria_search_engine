@@ -110,15 +110,17 @@ impl ReferenceSearchEngine {
         fuzzy: bool,
     ) -> Result<Box<dyn Query>> {
         let schema = index.schema();
-        let reference_field = schema.get_field("shortRef").unwrap();
+        let reference_field = schema.get_field("reference").unwrap();
+        let short_ref_field = schema.get_field("shortRef").unwrap();
 
-        // Create the main reference search query
-        let mut reference_query = QueryParser::for_index(&index, vec![reference_field]);
+        // Create the main reference search query (search both reference and shortRef)
+        let mut reference_query = QueryParser::for_index(&index, vec![reference_field, short_ref_field]);
         reference_query.set_conjunction_by_default();
 
         // In case of fuzzy search, set the fuzziness
         if fuzzy {
             reference_query.set_field_fuzzy(reference_field, false, 1, false);
+            reference_query.set_field_fuzzy(short_ref_field, false, 1, false);
         }
 
         // Parse the search term
@@ -173,7 +175,7 @@ impl ReferenceSearchEngine {
                     .collect()
             }
             ResultsOrder::Relevance => {
-                let collector_by_score = TopDocs::with_limit(limit as usize);
+                let collector_by_score = TopDocs::with_limit(limit as usize).order_by_score();
                 let top_docs_by_score = searcher.search(&query, &collector_by_score).unwrap();
                 top_docs_by_score
                     .into_iter()
