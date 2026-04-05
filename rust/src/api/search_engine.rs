@@ -6,7 +6,7 @@ use tantivy::schema::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::{Count, DocSetCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 pub use tantivy::index::Index;
 use tantivy::query::{self, BooleanQuery, Occur, QueryParser, RegexQuery, TermQuery, TermSetQuery};
@@ -283,6 +283,35 @@ impl SearchEngine {
         let searcher = index.reader()?.searcher();
         let count = searcher.search(&query, &Count).unwrap() as u32;
         Ok(count)
+    }
+
+    pub fn count_by_book(
+        &mut self,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<HashMap<String, u32>> {
+        let index = &self.index;
+        let schema = &self.schema;
+        let query = Self::create_query(index, regex_terms, facets, slop, max_expansions)?;
+        let searcher = index.reader()?.searcher();
+        let file_path_field = schema.get_field("filePath")?;
+
+        let doc_addresses = searcher.search(&query, &DocSetCollector)?;
+
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for doc_address in doc_addresses {
+            let doc = searcher.doc::<TantivyDocument>(doc_address)?;
+            let file_path = doc
+                .get_first(file_path_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            *counts.entry(file_path).or_insert(0) += 1;
+        }
+
+        Ok(counts)
     }
 
     pub fn clear(&self)->Result<()>{
