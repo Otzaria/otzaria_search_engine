@@ -6,7 +6,7 @@ use tantivy::schema::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::{Count, FacetCollector, FacetCounts, TopDocs};
 use tantivy::directory::MmapDirectory;
 pub use tantivy::index::Index;
 use tantivy::query::{self, BooleanQuery, Occur, QueryParser, RegexQuery, TermQuery, TermSetQuery};
@@ -316,6 +316,32 @@ impl SearchEngine {
         Ok(counts)
     }
 
+    /// Returns facet counts for all levels of the topics hierarchy.
+    /// Uses FacetCollector which reads the column-oriented facet index —
+    /// no stored field reads, dramatically faster than count_by_title.
+    /// Result includes every facet path plus "/$title" entries for tree fallback lookup.
+    pub fn count_by_facet(
+        &mut self,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<HashMap<String, u32>> {
+        let index = &self.index;
+        let query = Self::create_query(index, regex_terms, facets, slop, max_expansions)?;
+        let searcher = index.reader()?.searcher();
+
+        let mut facet_collector = FacetCollector::for_field("topics");
+        facet_collector.add_facet("/");
+
+        let facet_counts = searcher.search(&query, &facet_collector)?;
+
+        let mut result: HashMap<String, u32> = HashMap::new();
+        collect_facet_levels(&facet_counts, "/", &mut result);
+
+        Ok(result)
+    }
+
     pub fn clear(&self)->Result<()>{
         self.index_writer.delete_all_documents()?;
        Ok(())
@@ -333,6 +359,42 @@ impl SearchEngine {
 
 pub enum ResultsOrder{
     Catalogue, Relevance
+}
+
+/// Recursively collects facet counts at all levels of the hierarchy.
+/// For each leaf facet (e.g. /תנ"ך/תורה/ספר בראשית) also adds a /$title entry
+/// so the Dart tree can find book counts via both fullFacet and titleOnlyFacet lookups.
+fn collect_facet_levels(
+    facet_counts: &FacetCounts,
+    parent_path: &str,
+    result: &mut HashMap<String, u32>,
+) {
+    let children: Vec<(String, u32)> = facet_counts
+        .get(parent_path)
+        .map(|(facet, count)| (facet.to_path_str().to_string(), count as u32))
+        .collect();
+
+    if parent_path == "/" {
+        let total: u32 = children.iter().map(|(_, c)| c).sum();
+        if total > 0 {
+            result.insert("/".to_string(), total);
+        }
+    }
+
+    for (path, count) in &children {
+        result.insert(path.clone(), *count);
+        collect_facet_levels(facet_counts, path, result);
+    }
+
+    // Leaf facet: also add "/$title" for tree fallback lookup
+    if children.is_empty() && parent_path != "/" {
+        if let Some(title) = parent_path.rsplit('/').next() {
+            if !title.is_empty() {
+                let count = result.get(parent_path).copied().unwrap_or(0);
+                result.entry(format!("/{}", title)).or_insert(count);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

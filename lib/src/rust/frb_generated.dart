@@ -39,8 +39,12 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 
   /// Initialize flutter_rust_bridge in mock mode.
   /// No libraries for FFI are loaded.
-  static void initMock({required RustLibApi api}) {
-    instance.initMockImpl(api: api);
+  static void initMock({
+    required RustLibApi api,
+  }) {
+    instance.initMockImpl(
+      api: api,
+    );
   }
 
   /// Dispose flutter_rust_bridge
@@ -68,148 +72,136 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 609878941;
+  int get rustContentHash => 1029162190;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
-        stem: 'search_engine',
-        ioDirectory: 'rust/target/release/',
-        webPrefix: 'pkg/',
-        wasmBindgenName: 'wasm_bindgen',
-      );
+    stem: 'search_engine',
+    ioDirectory: 'rust/target/release/',
+    webPrefix: 'pkg/',
+    wasmBindgenName: 'wasm_bindgen',
+  );
 }
 
 abstract class RustLibApi extends BaseApi {
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineAddDocument({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  });
+  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineAddDocument(
+      {required ReferenceSearchEngine that,
+      required BigInt id,
+      required String title,
+      required String reference,
+      required String shortRef,
+      required BigInt segment,
+      required bool isPdf,
+      required String filePath});
 
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineClear({
-    required ReferenceSearchEngine that,
-  });
+  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineClear(
+      {required ReferenceSearchEngine that});
 
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineCommit({
-    required ReferenceSearchEngine that,
-  });
+  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineCommit(
+      {required ReferenceSearchEngine that});
 
-  Future<int> crateApiReferenceSearchEngineReferenceSearchEngineCount({
-    required ReferenceSearchEngine that,
-    required String query,
-    required bool fuzzy,
-  });
+  Future<int> crateApiReferenceSearchEngineReferenceSearchEngineCount(
+      {required ReferenceSearchEngine that,
+      required String query,
+      required bool fuzzy});
 
   Future<BoxQuery>
-  crateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQuery({
-    required Index index,
-    required String searchTerm,
-    required bool fuzzy,
-  });
+      crateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQuery(
+          {required Index index,
+          required String searchTerm,
+          required bool fuzzy});
 
-  ReferenceSearchEngine crateApiReferenceSearchEngineReferenceSearchEngineNew({
-    required String path,
-  });
+  ReferenceSearchEngine crateApiReferenceSearchEngineReferenceSearchEngineNew(
+      {required String path});
 
   Future<List<ReferenceSearchResult>>
-  crateApiReferenceSearchEngineReferenceSearchEngineSearch({
-    required ReferenceSearchEngine that,
-    required String query,
-    required int limit,
-    required bool fuzzy,
-    required ResultsOrder order,
-  });
+      crateApiReferenceSearchEngineReferenceSearchEngineSearch(
+          {required ReferenceSearchEngine that,
+          required String query,
+          required int limit,
+          required bool fuzzy,
+          required ResultsOrder order});
 
   Future<BenchmarkSuite>
-  crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries({
-    required RegexBenchmarker that,
-    required List<TestCase> customQueries,
-  });
+      crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
+          {required RegexBenchmarker that,
+          required List<TestCase> customQueries});
 
-  Future<RegexBenchmarker> crateApiBenchmarkRegexBenchmarkerNew({
-    required String indexPath,
-  });
+  Future<RegexBenchmarker> crateApiBenchmarkRegexBenchmarkerNew(
+      {required String indexPath});
 
   Future<BenchmarkSuite>
-  crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark({
-    required RegexBenchmarker that,
-  });
+      crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(
+          {required RegexBenchmarker that});
 
-  Future<void> crateApiSearchEngineSearchEngineAddDocument({
-    required SearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String topics,
-    required String text,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  });
+  Future<void> crateApiSearchEngineSearchEngineAddDocument(
+      {required SearchEngine that,
+      required BigInt id,
+      required String title,
+      required String reference,
+      required String topics,
+      required String text,
+      required BigInt segment,
+      required bool isPdf,
+      required String filePath});
 
-  Future<void> crateApiSearchEngineSearchEngineClear({
-    required SearchEngine that,
-  });
+  Future<void> crateApiSearchEngineSearchEngineClear(
+      {required SearchEngine that});
 
-  Future<void> crateApiSearchEngineSearchEngineCommit({
-    required SearchEngine that,
-  });
+  Future<void> crateApiSearchEngineSearchEngineCommit(
+      {required SearchEngine that});
 
-  Future<int> crateApiSearchEngineSearchEngineCount({
-    required SearchEngine that,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  });
+  Future<int> crateApiSearchEngineSearchEngineCount(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
 
-  Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByTitle({
-    required SearchEngine that,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  });
+  Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByFacet(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
 
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateQuery({
-    required Index index,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  });
+  Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByTitle(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
+
+  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateQuery(
+      {required Index index,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
 
   SearchEngine crateApiSearchEngineSearchEngineNew({required String path});
 
-  Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle({
-    required SearchEngine that,
-    required String title,
-  });
+  Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
+      {required SearchEngine that, required String title});
 
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch({
-    required SearchEngine that,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int limit,
-    required int slop,
-    required int maxExpansions,
-    required ResultsOrder order,
-  });
+  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int limit,
+      required int slop,
+      required int maxExpansions,
+      required ResultsOrder order});
 
   Future<void> crateApiDiagnosticTestRunDiagnosticTest();
 
   Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark();
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_BoxQuery;
+      get rust_arc_increment_strong_count_BoxQuery;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_BoxQuery;
+      get rust_arc_decrement_strong_count_BoxQuery;
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_BoxQueryPtr;
 
@@ -220,28 +212,28 @@ abstract class RustLibApi extends BaseApi {
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_IndexPtr;
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ReferenceSearchEngine;
+      get rust_arc_increment_strong_count_ReferenceSearchEngine;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ReferenceSearchEngine;
+      get rust_arc_decrement_strong_count_ReferenceSearchEngine;
 
   CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ReferenceSearchEnginePtr;
+      get rust_arc_decrement_strong_count_ReferenceSearchEnginePtr;
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_RegexBenchmarker;
+      get rust_arc_increment_strong_count_RegexBenchmarker;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_RegexBenchmarker;
+      get rust_arc_decrement_strong_count_RegexBenchmarker;
 
   CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_RegexBenchmarkerPtr;
+      get rust_arc_decrement_strong_count_RegexBenchmarkerPtr;
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_SearchEngine;
+      get rust_arc_increment_strong_count_SearchEngine;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_SearchEngine;
+      get rust_arc_decrement_strong_count_SearchEngine;
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_SearchEnginePtr;
 }
@@ -255,382 +247,309 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineAddDocument({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_u_64(id, serializer);
-          sse_encode_String(title, serializer);
-          sse_encode_String(reference, serializer);
-          sse_encode_String(shortRef, serializer);
-          sse_encode_u_64(segment, serializer);
-          sse_encode_bool(isPdf, serializer);
-          sse_encode_String(filePath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 1,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta,
-        argValues: [
-          that,
-          id,
-          title,
-          reference,
-          shortRef,
-          segment,
-          isPdf,
-          filePath,
-        ],
-        apiImpl: this,
+  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineAddDocument(
+      {required ReferenceSearchEngine that,
+      required BigInt id,
+      required String title,
+      required String reference,
+      required String shortRef,
+      required BigInt segment,
+      required bool isPdf,
+      required String filePath}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+            that, serializer);
+        sse_encode_u_64(id, serializer);
+        sse_encode_String(title, serializer);
+        sse_encode_String(reference, serializer);
+        sse_encode_String(shortRef, serializer);
+        sse_encode_u_64(segment, serializer);
+        sse_encode_bool(isPdf, serializer);
+        sse_encode_String(filePath, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 1, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta,
+      argValues: [
+        that,
+        id,
+        title,
+        reference,
+        shortRef,
+        segment,
+        isPdf,
+        filePath
+      ],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_add_document",
-        argNames: [
-          "that",
-          "id",
-          "title",
-          "reference",
-          "shortRef",
-          "segment",
-          "isPdf",
-          "filePath",
-        ],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_add_document",
+            argNames: [
+              "that",
+              "id",
+              "title",
+              "reference",
+              "shortRef",
+              "segment",
+              "isPdf",
+              "filePath"
+            ],
+          );
 
   @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineClear({
-    required ReferenceSearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 2,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineClearConstMeta,
-        argValues: [that],
-        apiImpl: this,
+  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineClear(
+      {required ReferenceSearchEngine that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 2, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineClearConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineClearConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_clear",
-        argNames: ["that"],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineClearConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_clear",
+            argNames: ["that"],
+          );
 
   @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineCommit({
-    required ReferenceSearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 3,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineCommitConstMeta,
-        argValues: [that],
-        apiImpl: this,
+  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineCommit(
+      {required ReferenceSearchEngine that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 3, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineCommitConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineCommitConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_commit",
-        argNames: ["that"],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineCommitConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_commit",
+            argNames: ["that"],
+          );
 
   @override
-  Future<int> crateApiReferenceSearchEngineReferenceSearchEngineCount({
-    required ReferenceSearchEngine that,
-    required String query,
-    required bool fuzzy,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_String(query, serializer);
-          sse_encode_bool(fuzzy, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 4,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_u_32,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineCountConstMeta,
-        argValues: [that, query, fuzzy],
-        apiImpl: this,
+  Future<int> crateApiReferenceSearchEngineReferenceSearchEngineCount(
+      {required ReferenceSearchEngine that,
+      required String query,
+      required bool fuzzy}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+            that, serializer);
+        sse_encode_String(query, serializer);
+        sse_encode_bool(fuzzy, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 4, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_u_32,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineCountConstMeta,
+      argValues: [that, query, fuzzy],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineCountConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_count",
-        argNames: ["that", "query", "fuzzy"],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineCountConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_count",
+            argNames: ["that", "query", "fuzzy"],
+          );
 
   @override
   Future<BoxQuery>
-  crateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQuery({
-    required Index index,
-    required String searchTerm,
-    required bool fuzzy,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-            index,
-            serializer,
-          );
-          sse_encode_String(searchTerm, serializer);
-          sse_encode_bool(fuzzy, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 5,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQueryConstMeta,
-        argValues: [index, searchTerm, fuzzy],
-        apiImpl: this,
+      crateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQuery(
+          {required Index index,
+          required String searchTerm,
+          required bool fuzzy}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+            index, serializer);
+        sse_encode_String(searchTerm, serializer);
+        sse_encode_bool(fuzzy, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 5, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQueryConstMeta,
+      argValues: [index, searchTerm, fuzzy],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQueryConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_create_search_query",
-        argNames: ["index", "searchTerm", "fuzzy"],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineCreateSearchQueryConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_create_search_query",
+            argNames: ["index", "searchTerm", "fuzzy"],
+          );
 
   @override
-  ReferenceSearchEngine crateApiReferenceSearchEngineReferenceSearchEngineNew({
-    required String path,
-  }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine,
-          decodeErrorData: null,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineNewConstMeta,
-        argValues: [path],
-        apiImpl: this,
+  ReferenceSearchEngine crateApiReferenceSearchEngineReferenceSearchEngineNew(
+      {required String path}) {
+    return handler.executeSync(SyncTask(
+      callFfi: () {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(path, serializer);
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine,
+        decodeErrorData: null,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineNewConstMeta,
+      argValues: [path],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineNewConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_new",
-        argNames: ["path"],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineNewConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_new",
+            argNames: ["path"],
+          );
 
   @override
   Future<List<ReferenceSearchResult>>
-  crateApiReferenceSearchEngineReferenceSearchEngineSearch({
-    required ReferenceSearchEngine that,
-    required String query,
-    required int limit,
-    required bool fuzzy,
-    required ResultsOrder order,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_String(query, serializer);
-          sse_encode_u_32(limit, serializer);
-          sse_encode_bool(fuzzy, serializer);
-          sse_encode_results_order(order, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 7,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_list_reference_search_result,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineSearchConstMeta,
-        argValues: [that, query, limit, fuzzy, order],
-        apiImpl: this,
+      crateApiReferenceSearchEngineReferenceSearchEngineSearch(
+          {required ReferenceSearchEngine that,
+          required String query,
+          required int limit,
+          required bool fuzzy,
+          required ResultsOrder order}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+            that, serializer);
+        sse_encode_String(query, serializer);
+        sse_encode_u_32(limit, serializer);
+        sse_encode_bool(fuzzy, serializer);
+        sse_encode_results_order(order, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 7, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_list_reference_search_result,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiReferenceSearchEngineReferenceSearchEngineSearchConstMeta,
+      argValues: [that, query, limit, fuzzy, order],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineSearchConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_search",
-        argNames: ["that", "query", "limit", "fuzzy", "order"],
-      );
+      get kCrateApiReferenceSearchEngineReferenceSearchEngineSearchConstMeta =>
+          const TaskConstMeta(
+            debugName: "ReferenceSearchEngine_search",
+            argNames: ["that", "query", "limit", "fuzzy", "order"],
+          );
 
   @override
   Future<BenchmarkSuite>
-  crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries({
-    required RegexBenchmarker that,
-    required List<TestCase> customQueries,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-            that,
-            serializer,
-          );
-          sse_encode_list_test_case(customQueries, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 8,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_benchmark_suite,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueriesConstMeta,
-        argValues: [that, customQueries],
-        apiImpl: this,
+      crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
+          {required RegexBenchmarker that,
+          required List<TestCase> customQueries}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+            that, serializer);
+        sse_encode_list_test_case(customQueries, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 8, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_benchmark_suite,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueriesConstMeta,
+      argValues: [that, customQueries],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueriesConstMeta =>
-      const TaskConstMeta(
-        debugName: "RegexBenchmarker_benchmark_custom_queries",
-        argNames: ["that", "customQueries"],
-      );
+      get kCrateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueriesConstMeta =>
+          const TaskConstMeta(
+            debugName: "RegexBenchmarker_benchmark_custom_queries",
+            argNames: ["that", "customQueries"],
+          );
 
   @override
-  Future<RegexBenchmarker> crateApiBenchmarkRegexBenchmarkerNew({
-    required String indexPath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(indexPath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 9,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateApiBenchmarkRegexBenchmarkerNewConstMeta,
-        argValues: [indexPath],
-        apiImpl: this,
+  Future<RegexBenchmarker> crateApiBenchmarkRegexBenchmarkerNew(
+      {required String indexPath}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(indexPath, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 9, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker,
+        decodeErrorData: null,
       ),
-    );
+      constMeta: kCrateApiBenchmarkRegexBenchmarkerNewConstMeta,
+      argValues: [indexPath],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiBenchmarkRegexBenchmarkerNewConstMeta =>
@@ -641,97 +560,79 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<BenchmarkSuite>
-  crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark({
-    required RegexBenchmarker that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 10,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_benchmark_suite,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmarkConstMeta,
-        argValues: [that],
-        apiImpl: this,
+      crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(
+          {required RegexBenchmarker that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 10, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_benchmark_suite,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmarkConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta
-  get kCrateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmarkConstMeta =>
-      const TaskConstMeta(
-        debugName: "RegexBenchmarker_run_comprehensive_benchmark",
-        argNames: ["that"],
-      );
+      get kCrateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmarkConstMeta =>
+          const TaskConstMeta(
+            debugName: "RegexBenchmarker_run_comprehensive_benchmark",
+            argNames: ["that"],
+          );
 
   @override
-  Future<void> crateApiSearchEngineSearchEngineAddDocument({
-    required SearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String topics,
-    required String text,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_u_64(id, serializer);
-          sse_encode_String(title, serializer);
-          sse_encode_String(reference, serializer);
-          sse_encode_String(topics, serializer);
-          sse_encode_String(text, serializer);
-          sse_encode_u_64(segment, serializer);
-          sse_encode_bool(isPdf, serializer);
-          sse_encode_String(filePath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 11,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineAddDocumentConstMeta,
-        argValues: [
-          that,
-          id,
-          title,
-          reference,
-          topics,
-          text,
-          segment,
-          isPdf,
-          filePath,
-        ],
-        apiImpl: this,
+  Future<void> crateApiSearchEngineSearchEngineAddDocument(
+      {required SearchEngine that,
+      required BigInt id,
+      required String title,
+      required String reference,
+      required String topics,
+      required String text,
+      required BigInt segment,
+      required bool isPdf,
+      required String filePath}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_u_64(id, serializer);
+        sse_encode_String(title, serializer);
+        sse_encode_String(reference, serializer);
+        sse_encode_String(topics, serializer);
+        sse_encode_String(text, serializer);
+        sse_encode_u_64(segment, serializer);
+        sse_encode_bool(isPdf, serializer);
+        sse_encode_String(filePath, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 11, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineAddDocumentConstMeta,
+      argValues: [
+        that,
+        id,
+        title,
+        reference,
+        topics,
+        text,
+        segment,
+        isPdf,
+        filePath
+      ],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineAddDocumentConstMeta =>
@@ -746,112 +647,91 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "text",
           "segment",
           "isPdf",
-          "filePath",
+          "filePath"
         ],
       );
 
   @override
-  Future<void> crateApiSearchEngineSearchEngineClear({
-    required SearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 12,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineClearConstMeta,
-        argValues: [that],
-        apiImpl: this,
+  Future<void> crateApiSearchEngineSearchEngineClear(
+      {required SearchEngine that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 12, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineClearConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineClearConstMeta =>
-      const TaskConstMeta(debugName: "SearchEngine_clear", argNames: ["that"]);
+      const TaskConstMeta(
+        debugName: "SearchEngine_clear",
+        argNames: ["that"],
+      );
 
   @override
-  Future<void> crateApiSearchEngineSearchEngineCommit({
-    required SearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 13,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineCommitConstMeta,
-        argValues: [that],
-        apiImpl: this,
+  Future<void> crateApiSearchEngineSearchEngineCommit(
+      {required SearchEngine that}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 13, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineCommitConstMeta,
+      argValues: [that],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCommitConstMeta =>
-      const TaskConstMeta(debugName: "SearchEngine_commit", argNames: ["that"]);
+      const TaskConstMeta(
+        debugName: "SearchEngine_commit",
+        argNames: ["that"],
+      );
 
   @override
-  Future<int> crateApiSearchEngineSearchEngineCount({
-    required SearchEngine that,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_list_String(regexTerms, serializer);
-          sse_encode_list_String(facets, serializer);
-          sse_encode_u_32(slop, serializer);
-          sse_encode_u_32(maxExpansions, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 14,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_u_32,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineCountConstMeta,
-        argValues: [that, regexTerms, facets, slop, maxExpansions],
-        apiImpl: this,
+  Future<int> crateApiSearchEngineSearchEngineCount(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_list_String(regexTerms, serializer);
+        sse_encode_list_String(facets, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 14, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_u_32,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineCountConstMeta,
+      argValues: [that, regexTerms, facets, slop, maxExpansions],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountConstMeta =>
@@ -861,41 +741,67 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByTitle({
-    required SearchEngine that,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_list_String(regexTerms, serializer);
-          sse_encode_list_String(facets, serializer);
-          sse_encode_u_32(slop, serializer);
-          sse_encode_u_32(maxExpansions, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 15,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_Map_String_u_32_None,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineCountByTitleConstMeta,
-        argValues: [that, regexTerms, facets, slop, maxExpansions],
-        apiImpl: this,
+  Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByFacet(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_list_String(regexTerms, serializer);
+        sse_encode_list_String(facets, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 15, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_Map_String_u_32_None,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineCountByFacetConstMeta,
+      argValues: [that, regexTerms, facets, slop, maxExpansions],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineCountByFacetConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_by_facet",
+        argNames: ["that", "regexTerms", "facets", "slop", "maxExpansions"],
+      );
+
+  @override
+  Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByTitle(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_list_String(regexTerms, serializer);
+        sse_encode_list_String(facets, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 16, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_Map_String_u_32_None,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta: kCrateApiSearchEngineSearchEngineCountByTitleConstMeta,
+      argValues: [that, regexTerms, facets, slop, maxExpansions],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountByTitleConstMeta =>
@@ -905,42 +811,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateQuery({
-    required Index index,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-            index,
-            serializer,
-          );
-          sse_encode_list_String(regexTerms, serializer);
-          sse_encode_list_String(facets, serializer);
-          sse_encode_u_32(slop, serializer);
-          sse_encode_u_32(maxExpansions, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 16,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineCreateQueryConstMeta,
-        argValues: [index, regexTerms, facets, slop, maxExpansions],
-        apiImpl: this,
+  Future<BoxQuery> crateApiSearchEngineSearchEngineCreateQuery(
+      {required Index index,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+            index, serializer);
+        sse_encode_list_String(regexTerms, serializer);
+        sse_encode_list_String(facets, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 17, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineCreateQueryConstMeta,
+      argValues: [index, regexTerms, facets, slop, maxExpansions],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCreateQueryConstMeta =>
@@ -951,116 +848,90 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   SearchEngine crateApiSearchEngineSearchEngineNew({required String path}) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineNewConstMeta,
-        argValues: [path],
-        apiImpl: this,
+    return handler.executeSync(SyncTask(
+      callFfi: () {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(path, serializer);
+        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine,
+        decodeErrorData: null,
       ),
-    );
+      constMeta: kCrateApiSearchEngineSearchEngineNewConstMeta,
+      argValues: [path],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineNewConstMeta =>
-      const TaskConstMeta(debugName: "SearchEngine_new", argNames: ["path"]);
-
-  @override
-  Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle({
-    required SearchEngine that,
-    required String title,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_String(title, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 18,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiSearchEngineSearchEngineRemoveDocumentsByTitleConstMeta,
-        argValues: [that, title],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiSearchEngineSearchEngineRemoveDocumentsByTitleConstMeta =>
       const TaskConstMeta(
-        debugName: "SearchEngine_remove_documents_by_title",
-        argNames: ["that", "title"],
+        debugName: "SearchEngine_new",
+        argNames: ["path"],
       );
 
   @override
-  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch({
-    required SearchEngine that,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int limit,
-    required int slop,
-    required int maxExpansions,
-    required ResultsOrder order,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_list_String(regexTerms, serializer);
-          sse_encode_list_String(facets, serializer);
-          sse_encode_u_32(limit, serializer);
-          sse_encode_u_32(slop, serializer);
-          sse_encode_u_32(maxExpansions, serializer);
-          sse_encode_results_order(order, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 19,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_list_search_result,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiSearchEngineSearchEngineSearchConstMeta,
-        argValues: [
-          that,
-          regexTerms,
-          facets,
-          limit,
-          slop,
-          maxExpansions,
-          order,
-        ],
-        apiImpl: this,
+  Future<void> crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
+      {required SearchEngine that, required String title}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_String(title, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 19, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta:
+          kCrateApiSearchEngineSearchEngineRemoveDocumentsByTitleConstMeta,
+      argValues: [that, title],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta
+      get kCrateApiSearchEngineSearchEngineRemoveDocumentsByTitleConstMeta =>
+          const TaskConstMeta(
+            debugName: "SearchEngine_remove_documents_by_title",
+            argNames: ["that", "title"],
+          );
+
+  @override
+  Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearch(
+      {required SearchEngine that,
+      required List<String> regexTerms,
+      required List<String> facets,
+      required int limit,
+      required int slop,
+      required int maxExpansions,
+      required ResultsOrder order}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that, serializer);
+        sse_encode_list_String(regexTerms, serializer);
+        sse_encode_list_String(facets, serializer);
+        sse_encode_u_32(limit, serializer);
+        sse_encode_u_32(slop, serializer);
+        sse_encode_u_32(maxExpansions, serializer);
+        sse_encode_results_order(order, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 20, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_list_search_result,
+        decodeErrorData: sse_decode_AnyhowException,
+      ),
+      constMeta: kCrateApiSearchEngineSearchEngineSearchConstMeta,
+      argValues: [that, regexTerms, facets, limit, slop, maxExpansions, order],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchConstMeta =>
@@ -1073,103 +944,95 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "limit",
           "slop",
           "maxExpansions",
-          "order",
+          "order"
         ],
       );
 
   @override
   Future<void> crateApiDiagnosticTestRunDiagnosticTest() {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 20,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiDiagnosticTestRunDiagnosticTestConstMeta,
-        argValues: [],
-        apiImpl: this,
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 21, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiDiagnosticTestRunDiagnosticTestConstMeta,
+      argValues: [],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiDiagnosticTestRunDiagnosticTestConstMeta =>
-      const TaskConstMeta(debugName: "run_diagnostic_test", argNames: []);
+      const TaskConstMeta(
+        debugName: "run_diagnostic_test",
+        argNames: [],
+      );
 
   @override
   Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark() {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 21,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta,
-        argValues: [],
-        apiImpl: this,
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 22, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_AnyhowException,
       ),
-    );
+      constMeta: kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta,
+      argValues: [],
+      apiImpl: this,
+    ));
   }
 
   TaskConstMeta get kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta =>
-      const TaskConstMeta(debugName: "run_focused_benchmark", argNames: []);
+      const TaskConstMeta(
+        debugName: "run_focused_benchmark",
+        argNames: [],
+      );
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_BoxQuery => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery;
+      get rust_arc_increment_strong_count_BoxQuery => wire
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_BoxQuery => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery;
+      get rust_arc_decrement_strong_count_BoxQuery => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery;
+
+  RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Index =>
+      wire.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex;
+
+  RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_Index =>
+      wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex;
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_Index => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex;
+      get rust_arc_increment_strong_count_ReferenceSearchEngine => wire
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_Index => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex;
+      get rust_arc_decrement_strong_count_ReferenceSearchEngine => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ReferenceSearchEngine => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
+      get rust_arc_increment_strong_count_RegexBenchmarker => wire
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ReferenceSearchEngine => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
+      get rust_arc_decrement_strong_count_RegexBenchmarker => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_RegexBenchmarker => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
+      get rust_arc_increment_strong_count_SearchEngine => wire
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine;
 
   RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_RegexBenchmarker => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_SearchEngine => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_SearchEngine => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine;
+      get rust_arc_decrement_strong_count_SearchEngine => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine;
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw) {
@@ -1179,90 +1042,80 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   BoxQuery
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BoxQueryImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   ReferenceSearchEngine
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   RegexBenchmarker
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return RegexBenchmarkerImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   SearchEngine
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   ReferenceSearchEngine
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   RegexBenchmarker
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return RegexBenchmarkerImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   SearchEngine
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   Index
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return IndexImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   ReferenceSearchEngine
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   SearchEngine
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
@@ -1270,52 +1123,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   Map<String, int> dco_decode_Map_String_u_32_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return Map.fromEntries(
-      dco_decode_list_record_string_u_32(raw).map((e) => MapEntry(e.$1, e.$2)),
-    );
+    return Map.fromEntries(dco_decode_list_record_string_u_32(raw)
+        .map((e) => MapEntry(e.$1, e.$2)));
   }
 
   @protected
   BoxQuery
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
-    dynamic raw,
-  ) {
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BoxQueryImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   Index
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-    dynamic raw,
-  ) {
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return IndexImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   ReferenceSearchEngine
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   RegexBenchmarker
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    dynamic raw,
-  ) {
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return RegexBenchmarkerImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
   SearchEngine
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    dynamic raw,
-  ) {
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
@@ -1410,8 +1257,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   List<ReferenceSearchResult> dco_decode_list_reference_search_result(
-    dynamic raw,
-  ) {
+      dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
         .map(dco_decode_reference_search_result)
@@ -1443,7 +1289,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 2) {
       throw Exception('Expected 2 elements, got ${arr.length}');
     }
-    return (dco_decode_String(arr[0]), dco_decode_u_32(arr[1]));
+    return (
+      dco_decode_String(arr[0]),
+      dco_decode_u_32(arr[1]),
+    );
   }
 
   @protected
@@ -1540,128 +1389,97 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   BoxQuery
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return BoxQueryImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   ReferenceSearchEngine
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   RegexBenchmarker
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return RegexBenchmarkerImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   SearchEngine
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   ReferenceSearchEngine
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   RegexBenchmarker
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return RegexBenchmarkerImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   SearchEngine
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   Index
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return IndexImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   ReferenceSearchEngine
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   SearchEngine
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   Map<String, int> sse_decode_Map_String_u_32_None(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_record_string_u_32(deserializer);
     return Map.fromEntries(inner.map((e) => MapEntry(e.$1, e.$2)));
@@ -1669,62 +1487,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   BoxQuery
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return BoxQueryImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   Index
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return IndexImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   ReferenceSearchEngine
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   RegexBenchmarker
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return RegexBenchmarkerImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
   SearchEngine
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SseDeserializer deserializer,
-  ) {
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
   @protected
@@ -1746,15 +1549,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_resultCount = sse_decode_u_32(deserializer);
     var var_memoryUsageMb = sse_decode_f_64(deserializer);
     return BenchmarkResult(
-      queryName: var_queryName,
-      regexTerms: var_regexTerms,
-      facets: var_facets,
-      slop: var_slop,
-      maxExpansions: var_maxExpansions,
-      executionTimeMs: var_executionTimeMs,
-      resultCount: var_resultCount,
-      memoryUsageMb: var_memoryUsageMb,
-    );
+        queryName: var_queryName,
+        regexTerms: var_regexTerms,
+        facets: var_facets,
+        slop: var_slop,
+        maxExpansions: var_maxExpansions,
+        executionTimeMs: var_executionTimeMs,
+        resultCount: var_resultCount,
+        memoryUsageMb: var_memoryUsageMb);
   }
 
   @protected
@@ -1763,21 +1565,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_totalQueries = sse_decode_usize(deserializer);
     var var_totalTimeMs = sse_decode_u_64(deserializer);
     var var_averageTimeMs = sse_decode_f_64(deserializer);
-    var var_fastestQuery = sse_decode_opt_box_autoadd_benchmark_result(
-      deserializer,
-    );
-    var var_slowestQuery = sse_decode_opt_box_autoadd_benchmark_result(
-      deserializer,
-    );
+    var var_fastestQuery =
+        sse_decode_opt_box_autoadd_benchmark_result(deserializer);
+    var var_slowestQuery =
+        sse_decode_opt_box_autoadd_benchmark_result(deserializer);
     var var_results = sse_decode_list_benchmark_result(deserializer);
     return BenchmarkSuite(
-      totalQueries: var_totalQueries,
-      totalTimeMs: var_totalTimeMs,
-      averageTimeMs: var_averageTimeMs,
-      fastestQuery: var_fastestQuery,
-      slowestQuery: var_slowestQuery,
-      results: var_results,
-    );
+        totalQueries: var_totalQueries,
+        totalTimeMs: var_totalTimeMs,
+        averageTimeMs: var_averageTimeMs,
+        fastestQuery: var_fastestQuery,
+        slowestQuery: var_slowestQuery,
+        results: var_results);
   }
 
   @protected
@@ -1788,8 +1587,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   BenchmarkResult sse_decode_box_autoadd_benchmark_result(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_benchmark_result(deserializer));
   }
@@ -1820,8 +1618,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   List<BenchmarkResult> sse_decode_list_benchmark_result(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var len_ = sse_decode_i_32(deserializer);
@@ -1841,8 +1638,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   List<(String, int)> sse_decode_list_record_string_u_32(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var len_ = sse_decode_i_32(deserializer);
@@ -1855,8 +1651,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   List<ReferenceSearchResult> sse_decode_list_reference_search_result(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var len_ = sse_decode_i_32(deserializer);
@@ -1869,8 +1664,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   List<SearchResult> sse_decode_list_search_result(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var len_ = sse_decode_i_32(deserializer);
@@ -1895,8 +1689,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   BenchmarkResult? sse_decode_opt_box_autoadd_benchmark_result(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     if (sse_decode_bool(deserializer)) {
@@ -1916,8 +1709,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   ReferenceSearchResult sse_decode_reference_search_result(
-    SseDeserializer deserializer,
-  ) {
+      SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_title = sse_decode_String(deserializer);
     var var_reference = sse_decode_String(deserializer);
@@ -1927,14 +1719,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_isPdf = sse_decode_bool(deserializer);
     var var_filePath = sse_decode_String(deserializer);
     return ReferenceSearchResult(
-      title: var_title,
-      reference: var_reference,
-      shortRef: var_shortRef,
-      id: var_id,
-      segment: var_segment,
-      isPdf: var_isPdf,
-      filePath: var_filePath,
-    );
+        title: var_title,
+        reference: var_reference,
+        shortRef: var_shortRef,
+        id: var_id,
+        segment: var_segment,
+        isPdf: var_isPdf,
+        filePath: var_filePath);
   }
 
   @protected
@@ -1955,14 +1746,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_isPdf = sse_decode_bool(deserializer);
     var var_filePath = sse_decode_String(deserializer);
     return SearchResult(
-      title: var_title,
-      reference: var_reference,
-      text: var_text,
-      id: var_id,
-      segment: var_segment,
-      isPdf: var_isPdf,
-      filePath: var_filePath,
-    );
+        title: var_title,
+        reference: var_reference,
+        text: var_text,
+        id: var_id,
+        segment: var_segment,
+        isPdf: var_isPdf,
+        filePath: var_filePath);
   }
 
   @protected
@@ -1974,12 +1764,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_slop = sse_decode_u_32(deserializer);
     var var_maxExpansions = sse_decode_u_32(deserializer);
     return TestCase(
-      queryName: var_queryName,
-      regexTerms: var_regexTerms,
-      facets: var_facets,
-      slop: var_slop,
-      maxExpansions: var_maxExpansions,
-    );
+        queryName: var_queryName,
+        regexTerms: var_regexTerms,
+        facets: var_facets,
+        slop: var_slop,
+        maxExpansions: var_maxExpansions);
   }
 
   @protected
@@ -2013,218 +1802,163 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_AnyhowException(
-    AnyhowException self,
-    SseSerializer serializer,
-  ) {
+      AnyhowException self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.message, serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
-    BoxQuery self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
+          BoxQuery self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as BoxQueryImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
+        (self as BoxQueryImpl).frbInternalSseEncode(move: true), serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          ReferenceSearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
+        (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: true),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    RegexBenchmarker self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          RegexBenchmarker self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
+        (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: true),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as SearchEngineImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
+        (self as SearchEngineImpl).frbInternalSseEncode(move: true),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          ReferenceSearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
+        (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    RegexBenchmarker self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          RegexBenchmarker self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
+        (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: false),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as SearchEngineImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
+        (self as SearchEngineImpl).frbInternalSseEncode(move: false),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-    Index self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+          Index self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as IndexImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
+        (self as IndexImpl).frbInternalSseEncode(move: false), serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          ReferenceSearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
+        (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as SearchEngineImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
+        (self as SearchEngineImpl).frbInternalSseEncode(move: false),
+        serializer);
   }
 
   @protected
   void sse_encode_Map_String_u_32_None(
-    Map<String, int> self,
-    SseSerializer serializer,
-  ) {
+      Map<String, int> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_record_string_u_32(
-      self.entries.map((e) => (e.key, e.value)).toList(),
-      serializer,
-    );
+        self.entries.map((e) => (e.key, e.value)).toList(), serializer);
   }
 
   @protected
   void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
-    BoxQuery self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBoxdynQuery(
+          BoxQuery self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as BoxQueryImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
+        (self as BoxQueryImpl).frbInternalSseEncode(move: null), serializer);
   }
 
   @protected
   void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
-    Index self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndex(
+          Index self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as IndexImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
+        (self as IndexImpl).frbInternalSseEncode(move: null), serializer);
   }
 
   @protected
   void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
+          ReferenceSearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
+        (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: null),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
-    RegexBenchmarker self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
+          RegexBenchmarker self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
+        (self as RegexBenchmarkerImpl).frbInternalSseEncode(move: null),
+        serializer);
   }
 
   @protected
   void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SearchEngine self,
-    SseSerializer serializer,
-  ) {
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          SearchEngine self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-      (self as SearchEngineImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
+        (self as SearchEngineImpl).frbInternalSseEncode(move: null),
+        serializer);
   }
 
   @protected
@@ -2235,9 +1969,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_benchmark_result(
-    BenchmarkResult self,
-    SseSerializer serializer,
-  ) {
+      BenchmarkResult self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.queryName, serializer);
     sse_encode_list_String(self.regexTerms, serializer);
@@ -2251,9 +1983,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_benchmark_suite(
-    BenchmarkSuite self,
-    SseSerializer serializer,
-  ) {
+      BenchmarkSuite self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(self.totalQueries, serializer);
     sse_encode_u_64(self.totalTimeMs, serializer);
@@ -2271,9 +2001,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_box_autoadd_benchmark_result(
-    BenchmarkResult self,
-    SseSerializer serializer,
-  ) {
+      BenchmarkResult self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_benchmark_result(self, serializer);
   }
@@ -2301,9 +2029,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_list_benchmark_result(
-    List<BenchmarkResult> self,
-    SseSerializer serializer,
-  ) {
+      List<BenchmarkResult> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
@@ -2313,9 +2039,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_list_prim_u_8_strict(
-    Uint8List self,
-    SseSerializer serializer,
-  ) {
+      Uint8List self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     serializer.buffer.putUint8List(self);
@@ -2323,9 +2047,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_list_record_string_u_32(
-    List<(String, int)> self,
-    SseSerializer serializer,
-  ) {
+      List<(String, int)> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
@@ -2335,9 +2057,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_list_reference_search_result(
-    List<ReferenceSearchResult> self,
-    SseSerializer serializer,
-  ) {
+      List<ReferenceSearchResult> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
@@ -2347,9 +2067,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_list_search_result(
-    List<SearchResult> self,
-    SseSerializer serializer,
-  ) {
+      List<SearchResult> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
@@ -2359,9 +2077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_list_test_case(
-    List<TestCase> self,
-    SseSerializer serializer,
-  ) {
+      List<TestCase> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
@@ -2371,9 +2087,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_opt_box_autoadd_benchmark_result(
-    BenchmarkResult? self,
-    SseSerializer serializer,
-  ) {
+      BenchmarkResult? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     sse_encode_bool(self != null, serializer);
@@ -2384,9 +2098,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_record_string_u_32(
-    (String, int) self,
-    SseSerializer serializer,
-  ) {
+      (String, int) self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.$1, serializer);
     sse_encode_u_32(self.$2, serializer);
@@ -2394,9 +2106,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void sse_encode_reference_search_result(
-    ReferenceSearchResult self,
-    SseSerializer serializer,
-  ) {
+      ReferenceSearchResult self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.title, serializer);
     sse_encode_String(self.reference, serializer);
@@ -2469,11 +2179,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 class BoxQueryImpl extends RustOpaque implements BoxQuery {
   // Not to be used by end users
   BoxQueryImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
+      : super.frbInternalDcoDecode(wire, _kStaticData);
 
   // Not to be used by end users
   BoxQueryImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
-    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+      : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
 
   static final _kStaticData = RustArcStaticData(
     rustArcIncrementStrongCount:
@@ -2489,11 +2199,11 @@ class BoxQueryImpl extends RustOpaque implements BoxQuery {
 class IndexImpl extends RustOpaque implements Index {
   // Not to be used by end users
   IndexImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
+      : super.frbInternalDcoDecode(wire, _kStaticData);
 
   // Not to be used by end users
   IndexImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
-    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+      : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
 
   static final _kStaticData = RustArcStaticData(
     rustArcIncrementStrongCount:
@@ -2510,90 +2220,80 @@ class ReferenceSearchEngineImpl extends RustOpaque
     implements ReferenceSearchEngine {
   // Not to be used by end users
   ReferenceSearchEngineImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
+      : super.frbInternalDcoDecode(wire, _kStaticData);
 
   // Not to be used by end users
   ReferenceSearchEngineImpl.frbInternalSseDecode(
-    BigInt ptr,
-    int externalSizeOnNative,
-  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+      BigInt ptr, int externalSizeOnNative)
+      : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
 
   static final _kStaticData = RustArcStaticData(
     rustArcIncrementStrongCount: RustLib
-        .instance
-        .api
-        .rust_arc_increment_strong_count_ReferenceSearchEngine,
+        .instance.api.rust_arc_increment_strong_count_ReferenceSearchEngine,
     rustArcDecrementStrongCount: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_ReferenceSearchEngine,
+        .instance.api.rust_arc_decrement_strong_count_ReferenceSearchEngine,
     rustArcDecrementStrongCountPtr: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_ReferenceSearchEnginePtr,
+        .instance.api.rust_arc_decrement_strong_count_ReferenceSearchEnginePtr,
   );
 
-  Future<void> addDocument({
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineAddDocument(
-        that: this,
-        id: id,
-        title: title,
-        reference: reference,
-        shortRef: shortRef,
-        segment: segment,
-        isPdf: isPdf,
-        filePath: filePath,
-      );
+  Future<void> addDocument(
+          {required BigInt id,
+          required String title,
+          required String reference,
+          required String shortRef,
+          required BigInt segment,
+          required bool isPdf,
+          required String filePath}) =>
+      RustLib.instance.api
+          .crateApiReferenceSearchEngineReferenceSearchEngineAddDocument(
+              that: this,
+              id: id,
+              title: title,
+              reference: reference,
+              shortRef: shortRef,
+              segment: segment,
+              isPdf: isPdf,
+              filePath: filePath);
 
   Future<void> clear() => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineClear(that: this);
+          .crateApiReferenceSearchEngineReferenceSearchEngineClear(
+        that: this,
+      );
 
   Future<void> commit() => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineCommit(that: this);
-
-  Future<int> count({required String query, required bool fuzzy}) => RustLib
-      .instance
-      .api
-      .crateApiReferenceSearchEngineReferenceSearchEngineCount(
+          .crateApiReferenceSearchEngineReferenceSearchEngineCommit(
         that: this,
-        query: query,
-        fuzzy: fuzzy,
       );
 
-  Future<List<ReferenceSearchResult>> search({
-    required String query,
-    required int limit,
-    required bool fuzzy,
-    required ResultsOrder order,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineSearch(
-        that: this,
-        query: query,
-        limit: limit,
-        fuzzy: fuzzy,
-        order: order,
-      );
+  Future<int> count({required String query, required bool fuzzy}) =>
+      RustLib.instance.api
+          .crateApiReferenceSearchEngineReferenceSearchEngineCount(
+              that: this, query: query, fuzzy: fuzzy);
+
+  Future<List<ReferenceSearchResult>> search(
+          {required String query,
+          required int limit,
+          required bool fuzzy,
+          required ResultsOrder order}) =>
+      RustLib.instance.api
+          .crateApiReferenceSearchEngineReferenceSearchEngineSearch(
+              that: this,
+              query: query,
+              limit: limit,
+              fuzzy: fuzzy,
+              order: order);
 }
 
 @sealed
 class RegexBenchmarkerImpl extends RustOpaque implements RegexBenchmarker {
   // Not to be used by end users
   RegexBenchmarkerImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
+      : super.frbInternalDcoDecode(wire, _kStaticData);
 
   // Not to be used by end users
   RegexBenchmarkerImpl.frbInternalSseDecode(
-    BigInt ptr,
-    int externalSizeOnNative,
-  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+      BigInt ptr, int externalSizeOnNative)
+      : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
 
   static final _kStaticData = RustArcStaticData(
     rustArcIncrementStrongCount:
@@ -2601,34 +2301,32 @@ class RegexBenchmarkerImpl extends RustOpaque implements RegexBenchmarker {
     rustArcDecrementStrongCount:
         RustLib.instance.api.rust_arc_decrement_strong_count_RegexBenchmarker,
     rustArcDecrementStrongCountPtr: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_RegexBenchmarkerPtr,
+        .instance.api.rust_arc_decrement_strong_count_RegexBenchmarkerPtr,
   );
 
   /// Run a custom benchmark with user-defined queries
-  Future<BenchmarkSuite> benchmarkCustomQueries({
-    required List<TestCase> customQueries,
-  }) => RustLib.instance.api
-      .crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
-        that: this,
-        customQueries: customQueries,
-      );
+  Future<BenchmarkSuite> benchmarkCustomQueries(
+          {required List<TestCase> customQueries}) =>
+      RustLib.instance.api
+          .crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries(
+              that: this, customQueries: customQueries);
 
   /// Run a comprehensive benchmark suite with various regex complexity levels
   Future<BenchmarkSuite> runComprehensiveBenchmark() => RustLib.instance.api
-      .crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(that: this);
+          .crateApiBenchmarkRegexBenchmarkerRunComprehensiveBenchmark(
+        that: this,
+      );
 }
 
 @sealed
 class SearchEngineImpl extends RustOpaque implements SearchEngine {
   // Not to be used by end users
   SearchEngineImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
+      : super.frbInternalDcoDecode(wire, _kStaticData);
 
   // Not to be used by end users
   SearchEngineImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
-    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+      : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
 
   static final _kStaticData = RustArcStaticData(
     rustArcIncrementStrongCount:
@@ -2639,84 +2337,97 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         RustLib.instance.api.rust_arc_decrement_strong_count_SearchEnginePtr,
   );
 
-  Future<void> addDocument({
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String topics,
-    required String text,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddDocument(
-    that: this,
-    id: id,
-    title: title,
-    reference: reference,
-    topics: topics,
-    text: text,
-    segment: segment,
-    isPdf: isPdf,
-    filePath: filePath,
-  );
+  Future<void> addDocument(
+          {required BigInt id,
+          required String title,
+          required String reference,
+          required String topics,
+          required String text,
+          required BigInt segment,
+          required bool isPdf,
+          required String filePath}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineAddDocument(
+          that: this,
+          id: id,
+          title: title,
+          reference: reference,
+          topics: topics,
+          text: text,
+          segment: segment,
+          isPdf: isPdf,
+          filePath: filePath);
 
   Future<void> clear() =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineClear(that: this);
+      RustLib.instance.api.crateApiSearchEngineSearchEngineClear(
+        that: this,
+      );
 
   Future<void> commit() =>
-      RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(that: this);
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(
+        that: this,
+      );
 
-  Future<int> count({
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
-    that: this,
-    regexTerms: regexTerms,
-    facets: facets,
-    slop: slop,
-    maxExpansions: maxExpansions,
-  );
+  Future<int> count(
+          {required List<String> regexTerms,
+          required List<String> facets,
+          required int slop,
+          required int maxExpansions}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCount(
+          that: this,
+          regexTerms: regexTerms,
+          facets: facets,
+          slop: slop,
+          maxExpansions: maxExpansions);
+
+  /// Returns facet counts for all levels of the topics hierarchy.
+  /// Uses FacetCollector which reads the column-oriented facet index —
+  /// no stored field reads, dramatically faster than count_by_title.
+  /// Result includes every facet path plus "/$title" entries for tree fallback lookup.
+  Future<Map<String, int>> countByFacet(
+          {required List<String> regexTerms,
+          required List<String> facets,
+          required int slop,
+          required int maxExpansions}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCountByFacet(
+          that: this,
+          regexTerms: regexTerms,
+          facets: facets,
+          slop: slop,
+          maxExpansions: maxExpansions);
 
   /// Returns count per book title for all matching documents.
   /// Much more efficient than fetching full SearchResult structs via FFI since only
   /// a small HashMap<title, count> is transferred instead of 50k full documents.
-  Future<Map<String, int>> countByTitle({
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountByTitle(
-    that: this,
-    regexTerms: regexTerms,
-    facets: facets,
-    slop: slop,
-    maxExpansions: maxExpansions,
-  );
+  Future<Map<String, int>> countByTitle(
+          {required List<String> regexTerms,
+          required List<String> facets,
+          required int slop,
+          required int maxExpansions}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCountByTitle(
+          that: this,
+          regexTerms: regexTerms,
+          facets: facets,
+          slop: slop,
+          maxExpansions: maxExpansions);
 
-  Future<void> removeDocumentsByTitle({required String title}) => RustLib
-      .instance
-      .api
-      .crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
-        that: this,
-        title: title,
-      );
+  Future<void> removeDocumentsByTitle({required String title}) =>
+      RustLib.instance.api
+          .crateApiSearchEngineSearchEngineRemoveDocumentsByTitle(
+              that: this, title: title);
 
-  Future<List<SearchResult>> search({
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int limit,
-    required int slop,
-    required int maxExpansions,
-    required ResultsOrder order,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearch(
-    that: this,
-    regexTerms: regexTerms,
-    facets: facets,
-    limit: limit,
-    slop: slop,
-    maxExpansions: maxExpansions,
-    order: order,
-  );
+  Future<List<SearchResult>> search(
+          {required List<String> regexTerms,
+          required List<String> facets,
+          required int limit,
+          required int slop,
+          required int maxExpansions,
+          required ResultsOrder order}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineSearch(
+          that: this,
+          regexTerms: regexTerms,
+          facets: facets,
+          limit: limit,
+          slop: slop,
+          maxExpansions: maxExpansions,
+          order: order);
 }

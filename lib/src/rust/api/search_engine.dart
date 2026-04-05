@@ -7,72 +7,82 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'reference_search_engine.dart';
 
+// These functions are ignored because they are not marked as `pub`: `collect_facet_levels`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
-  Future<void> addDocument({
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String topics,
-    required String text,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  });
+  Future<void> addDocument(
+      {required BigInt id,
+      required String title,
+      required String reference,
+      required String topics,
+      required String text,
+      required BigInt segment,
+      required bool isPdf,
+      required String filePath});
 
   Future<void> clear();
 
   Future<void> commit();
 
-  Future<int> count({
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  });
+  Future<int> count(
+      {required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
+
+  /// Returns facet counts for all levels of the topics hierarchy.
+  /// Uses FacetCollector which reads the column-oriented facet index —
+  /// no stored field reads, dramatically faster than count_by_title.
+  /// Result includes every facet path plus "/$title" entries for tree fallback lookup.
+  Future<Map<String, int>> countByFacet(
+      {required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
 
   /// Returns count per book title for all matching documents.
   /// Much more efficient than fetching full SearchResult structs via FFI since only
   /// a small HashMap<title, count> is transferred instead of 50k full documents.
-  Future<Map<String, int>> countByTitle({
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  });
+  Future<Map<String, int>> countByTitle(
+      {required List<String> regexTerms,
+      required List<String> facets,
+      required int slop,
+      required int maxExpansions});
 
-  static Future<BoxQuery> createQuery({
-    required Index index,
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int slop,
-    required int maxExpansions,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCreateQuery(
-    index: index,
-    regexTerms: regexTerms,
-    facets: facets,
-    slop: slop,
-    maxExpansions: maxExpansions,
-  );
+  static Future<BoxQuery> createQuery(
+          {required Index index,
+          required List<String> regexTerms,
+          required List<String> facets,
+          required int slop,
+          required int maxExpansions}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCreateQuery(
+          index: index,
+          regexTerms: regexTerms,
+          facets: facets,
+          slop: slop,
+          maxExpansions: maxExpansions);
 
   factory SearchEngine({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
 
   Future<void> removeDocumentsByTitle({required String title});
 
-  Future<List<SearchResult>> search({
-    required List<String> regexTerms,
-    required List<String> facets,
-    required int limit,
-    required int slop,
-    required int maxExpansions,
-    required ResultsOrder order,
-  });
+  Future<List<SearchResult>> search(
+      {required List<String> regexTerms,
+      required List<String> facets,
+      required int limit,
+      required int slop,
+      required int maxExpansions,
+      required ResultsOrder order});
 }
 
-enum ResultsOrder { catalogue, relevance }
+enum ResultsOrder {
+  catalogue,
+  relevance,
+  ;
+}
 
 class SearchResult {
   final String title;
