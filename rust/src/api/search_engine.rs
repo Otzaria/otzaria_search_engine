@@ -285,6 +285,37 @@ impl SearchEngine {
         Ok(count)
     }
 
+    /// Returns count per book title for all matching documents.
+    /// Much more efficient than fetching full SearchResult structs via FFI since only
+    /// a small HashMap<title, count> is transferred instead of 50k full documents.
+    pub fn count_by_title(
+        &mut self,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<HashMap<String, u32>> {
+        let index = &self.index;
+        let title_field = self.schema.get_field("title")?;
+        let query = Self::create_query(index, regex_terms, facets, slop, max_expansions)?;
+        let searcher = index.reader()?.searcher();
+
+        let collector = TopDocs::with_limit(500_000)
+            .order_by_fast_field::<u64>("id", Order::Asc);
+        let top_docs = searcher.search(&query, &collector)?;
+
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for (_, doc_address) in top_docs {
+            if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {
+                if let Some(title) = doc.get_first(title_field).and_then(|v| v.as_str()) {
+                    *counts.entry(title.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        Ok(counts)
+    }
+
     pub fn clear(&self)->Result<()>{
         self.index_writer.delete_all_documents()?;
        Ok(())
