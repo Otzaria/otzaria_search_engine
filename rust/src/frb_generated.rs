@@ -806,18 +806,18 @@ fn wire__crate__api__search_engine__SearchEngine_clear_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
+                                    &api_that, 0, true,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
                                 _ => unreachable!(),
                             }
                         }
-                        let api_that_guard = api_that_guard.unwrap();
+                        let mut api_that_guard = api_that_guard.unwrap();
                         let output_ok =
-                            crate::api::search_engine::SearchEngine::clear(&*api_that_guard)?;
+                            crate::api::search_engine::SearchEngine::clear(&mut *api_that_guard)?;
                         Ok(output_ok)
                     })(),
                 )
