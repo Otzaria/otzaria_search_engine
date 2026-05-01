@@ -13,7 +13,6 @@ import 'package:yaml/yaml.dart';
 
 import 'builder.dart';
 import 'environment.dart';
-import 'rustup.dart';
 
 final _log = Logger('options');
 
@@ -231,10 +230,10 @@ class CargokitCrateOptions {
 }
 
 class CargokitUserOptions {
-  // When Rustup is installed always build locally unless user opts into
-  // using precompiled binaries.
+  // Prefer precompiled binaries by default and fall back to local build when
+  // a signed artifact is not available for the current crate hash/target.
   static bool defaultUsePrecompiledBinaries() {
-    return Rustup.executablePath() == null;
+    return true;
   }
 
   CargokitUserOptions({

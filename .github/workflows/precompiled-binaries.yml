@@ -1,0 +1,164 @@
+name: Precompiled Binaries
+
+on:
+  push:
+    branches:
+      - main
+      - use-regex
+    paths:
+      - ".github/workflows/precompiled-binaries.yml"
+      - "cargokit/**"
+      - "rust/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: precompiled-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-apple-and-android:
+    name: Publish Apple + Android
+    runs-on: macos-15
+    env:
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install build tool dependencies
+        working-directory: cargokit/build_tool
+        run: dart pub get
+
+      - name: Publish Apple and Android artifacts
+        working-directory: cargokit/build_tool
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${PRIVATE_KEY:-}" ]]; then
+            echo "Missing PRIVATE_KEY secret"
+            exit 1
+          fi
+
+          ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "${ANDROID_SDK_ROOT}" ]]; then
+            echo "ANDROID_SDK_ROOT/ANDROID_HOME is not set"
+            exit 1
+          fi
+          if [[ ! -d "${ANDROID_SDK_ROOT}/ndk" ]]; then
+            echo "No Android NDK installations found under ${ANDROID_SDK_ROOT}/ndk"
+            exit 1
+          fi
+
+          ANDROID_NDK_VERSION="$(find "${ANDROID_SDK_ROOT}/ndk" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort -V | tail -n1)"
+          if [[ -z "${ANDROID_NDK_VERSION}" ]]; then
+            echo "Unable to determine Android NDK version"
+            exit 1
+          fi
+
+          dart run bin/build_tool.dart precompile-binaries \
+            --repository "${{ github.repository }}" \
+            --manifest-dir ../../rust \
+            --android-sdk-location "${ANDROID_SDK_ROOT}" \
+            --android-ndk-version "${ANDROID_NDK_VERSION}" \
+            --android-min-sdk-version 21 \
+            --target x86_64-apple-darwin \
+            --target aarch64-apple-darwin \
+            --target aarch64-apple-ios \
+            --target aarch64-apple-ios-sim \
+            --target x86_64-apple-ios \
+            --target armv7-linux-androideabi \
+            --target aarch64-linux-android \
+            --target i686-linux-android \
+            --target x86_64-linux-android
+
+  publish-linux:
+    name: Publish Linux (${{ matrix.target }})
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runs_on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build tool dependencies
+        working-directory: cargokit/build_tool
+        run: dart pub get
+
+      - name: Publish Linux artifacts
+        working-directory: cargokit/build_tool
+        run: |
+          dart run bin/build_tool.dart precompile-binaries \
+            --repository "${{ github.repository }}" \
+            --manifest-dir ../../rust \
+            --target "${{ matrix.target }}"
+
+  publish-windows:
+    name: Publish Windows
+    runs-on: windows-2022
+    env:
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build tool dependencies
+        working-directory: cargokit/build_tool
+        run: dart pub get
+
+      - name: Publish Windows artifacts
+        working-directory: cargokit/build_tool
+        shell: pwsh
+        run: >
+          dart run bin/build_tool.dart precompile-binaries
+          --repository "${{ github.repository }}"
+          --manifest-dir "../../rust"
+          --target x86_64-pc-windows-msvc
+
+  verify:
+    name: Verify published binaries
+    runs-on: ubuntu-24.04
+    needs:
+      - publish-apple-and-android
+      - publish-linux
+      - publish-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+
+      - name: Install build tool dependencies
+        working-directory: cargokit/build_tool
+        run: dart pub get
+
+      - name: Verify all signed artifacts are downloadable
+        working-directory: cargokit/build_tool
+        run: dart run bin/build_tool.dart verify-binaries --manifest-dir ../../rust
