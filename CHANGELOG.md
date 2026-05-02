@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] – Bridge Expansion (Tantivy 0.26 / FRB 2.12)
+## 0.5.0 – Bridge Expansion (Tantivy 0.26 / FRB 2.12) – 2026-05-02
 
 ---
 
