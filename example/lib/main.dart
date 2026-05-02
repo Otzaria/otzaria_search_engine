@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:search_engine/search_engine.dart';
+import 'package:tantivy_search_engine/tantivy_search_engine.dart';
 
 Future<void> main() async {
   await RustLib.init();

@@ -210,13 +210,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.0.5"
-  search_engine:
-    dependency: "direct main"
-    description:
-      path: ".."
-      relative: true
-    source: path
-    version: "0.0.1"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -262,6 +255,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.3.1"
+  tantivy_search_engine:
+    dependency: "direct main"
+    description:
+      path: ".."
+      relative: true
+    source: path
+    version: "0.5.0"
   term_glyph:
     dependency: transitive
     description:
