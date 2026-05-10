@@ -69,8 +69,9 @@ class PrecompileBinaries {
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
     final repo = github.repositories;
-    final release = await _getOrCreateRelease(
+    final release = await getOrCreateRelease(
       repo: repo,
+      repositorySlug: repositorySlug,
       tagName: tagName,
       packageName: crateInfo.packageName,
       hash: hash,
@@ -173,8 +174,9 @@ class PrecompileBinaries {
     tempDir.deleteSync(recursive: true);
   }
 
-  Future<Release> _getOrCreateRelease({
+  static Future<Release> getOrCreateRelease({
     required RepositoriesService repo,
+    required RepositorySlug repositorySlug,
     required String tagName,
     required String packageName,
     required String hash,
@@ -185,17 +187,27 @@ class PrecompileBinaries {
       release = await repo.getReleaseByTagName(repositorySlug, tagName);
     } on ReleaseNotFound {
       _log.info('Release not found - creating release $tagName');
-      release = await repo.createRelease(
-          repositorySlug,
-          CreateRelease.from(
-            tagName: tagName,
-            name: 'Precompiled binaries ${hash.substring(0, 8)}',
-            targetCommitish: null,
-            isDraft: false,
-            isPrerelease: false,
-            body: 'Precompiled binaries for crate $packageName, '
-                'crate hash $hash.',
-          ));
+      try {
+        release = await repo.createRelease(
+            repositorySlug,
+            CreateRelease.from(
+              tagName: tagName,
+              name: 'Precompiled binaries ${hash.substring(0, 8)}',
+              targetCommitish: null,
+              isDraft: false,
+              isPrerelease: false,
+              body: 'Precompiled binaries for crate $packageName, '
+                  'crate hash $hash.',
+            ));
+      } on GitHubError catch (e) {
+        if (e.toString().contains('already_exists')) {
+          _log.info(
+              'Release was created concurrently - re-fetching $tagName');
+          release = await repo.getReleaseByTagName(repositorySlug, tagName);
+        } else {
+          rethrow;
+        }
+      }
     }
     return release;
   }
