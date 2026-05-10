@@ -13,6 +13,7 @@ use tantivy::snippet::SnippetGenerator;
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
+use crate::api::hebrew_tokenizer::HebrewTokenizer;
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -76,7 +77,17 @@ impl SearchEngine {
     pub fn new(path: &str) -> Self {
         debug!("new path={}", path);
         let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field("text", TEXT | STORED | FAST);
+        schema_builder.add_text_field(
+            "text",
+            TextOptions::default()
+                .set_indexing_options(
+                    TextFieldIndexing::default()
+                        .set_tokenizer("hebrew")
+                        .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+                )
+                .set_stored()
+                .set_fast(None),
+        );
         schema_builder.add_text_field("reference", STORED);
         schema_builder.add_text_field(
             "title",
@@ -99,6 +110,7 @@ impl SearchEngine {
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
         let index =
             Index::open_or_create(mmap_directory, schema.clone()).expect("Failed to create index");
+        index.tokenizers().register("hebrew", HebrewTokenizer);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
