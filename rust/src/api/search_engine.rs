@@ -17,6 +17,7 @@ use tantivy::{
 };
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{schema::*, Directory};
+use crate::api::hebrew_tokenizer::HebrewTokenizer;
 
 #[derive(Clone)]
 pub struct SearchResult {
@@ -40,10 +41,19 @@ impl SearchEngine {
     pub fn new(path: &str) -> Self {
         debug!("new path={}", path,);
         let mut schema_builder = Schema::builder();
-        let text = schema_builder.add_text_field("text", TEXT | STORED | FAST);
- 
-        let reference = schema_builder.add_text_field("reference",  STORED );
-        let title = schema_builder.add_text_field(
+        schema_builder.add_text_field(
+            "text",
+            TextOptions::default()
+                .set_indexing_options(
+                    TextFieldIndexing::default()
+                        .set_tokenizer("hebrew")
+                        .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+                )
+                .set_stored()
+                .set_fast(None),
+        );
+        schema_builder.add_text_field("reference", STORED);
+        schema_builder.add_text_field(
             "title",
             TextOptions::default()
                 .set_indexing_options(
@@ -62,9 +72,8 @@ impl SearchEngine {
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
         let index = Index::open_or_create(mmap_directory, schema.clone());
         let index = index.expect("Failed to create index").clone();
-        
-        // Register the custom Hebrew tokenizer
-               let index_writer = index
+        index.tokenizers().register("hebrew", HebrewTokenizer);
+        let index_writer = index
             .writer(50_000_000)
             .expect("Failed to create index writer");
 
