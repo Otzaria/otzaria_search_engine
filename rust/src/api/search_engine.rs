@@ -10,6 +10,7 @@ use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, RegexQuery, TermQuery,
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
 use tantivy::snippet::SnippetGenerator;
+use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
@@ -110,7 +111,12 @@ impl SearchEngine {
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
         let index =
             Index::open_or_create(mmap_directory, schema.clone()).expect("Failed to create index");
-        index.tokenizers().register("hebrew", HebrewTokenizer);
+        index.tokenizers().register(
+            "hebrew",
+            TextAnalyzer::builder(HebrewTokenizer)
+                .filter(LowerCaser)
+                .build(),
+        );
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
