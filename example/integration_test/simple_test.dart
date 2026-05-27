@@ -1,7 +1,7 @@
 import 'package:flutter/rendering.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tantivy_search_engine/tantivy_search_engine.dart';
+import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 void main()async  {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
    await RustLib.init();

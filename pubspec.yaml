@@ -1,5 +1,5 @@
-name: tantivy_search_engine
-description: "tantivy based for otzaria"
+name: otzaria_search_engine
+description: "Tantivy search engine for Otzaria"
 version: 0.5.0
 homepage:
 
