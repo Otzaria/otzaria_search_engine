@@ -1,5 +1,5 @@
 # If this branch is merged into a different canonical repository, update the
 # owner/name below to point at the repository that publishes the release assets.
 precompiled_binaries:
-  url_prefix: https://github.com/Y-PLONI/otzaria_search_engine/releases/download/precompiled_
+  url_prefix: https://github.com/gwngdwl/otzaria_search_engine/releases/download/precompiled_
   public_key: 974c48a29c198f7b29fa52fa7fd824ddcaff851519724e93d048e4656ae31114
