@@ -14,7 +14,7 @@ apply_cargokit(${PROJECT_NAME} ../rust search_engine "")
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
-set(search_engine_bundled_libraries
+set(otzaria_search_engine_bundled_libraries
   "${${PROJECT_NAME}_cargokit_lib}"
   PARENT_SCOPE
 )
