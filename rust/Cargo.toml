@@ -6,6 +6,9 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
 [[bin]]
 name = "benchmark_cli"
 path = "src/bin/benchmark_cli.rs"

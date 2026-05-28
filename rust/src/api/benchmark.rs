@@ -1,5 +1,4 @@
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use anyhow::Result;
 use crate::api::search_engine::{SearchEngine, ResultsOrder};
 
