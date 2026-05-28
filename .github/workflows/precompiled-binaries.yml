@@ -25,6 +25,12 @@ jobs:
     env:
       PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Pin the iOS deployment target so cc-rs (C deps like zstd-sys) and rustc
+      # agree on it. Left unset, cc compiles C at the SDK default (e.g. iOS 18.x)
+      # while rustc links iOS at its default 10.0, where __chkstk_darwin is not
+      # in libSystem and the -nodefaultlibs link fails to resolve it. iOS 13 is
+      # Flutter's current floor and provides the symbol.
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@v4
 
