@@ -6,13 +6,19 @@ use std::collections::HashMap;
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
-use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, RegexQuery, TermQuery, TermSetQuery};
+use tantivy::query::{
+    BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, RegexQuery, TermQuery,
+    TermSetQuery,
+};
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
 use tantivy::snippet::SnippetGenerator;
+use tantivy::tokenizer::TokenStream;
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
+
+use crate::hebrew_query;
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -259,10 +265,8 @@ impl SearchEngine {
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
-        let searcher = self.index_reader.searcher();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, &order)?;
-        Self::build_results(&self.schema, &searcher, &*query, addresses, &hl)
+        self.run_search(query, limit, offset, &order, &hl)
     }
 
     /// Search and return total hit count alongside paged results in one call.
@@ -279,34 +283,8 @@ impl SearchEngine {
         highlight: Option<HighlightConfig>,
     ) -> Result<SearchPageResult> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
-        let searcher = self.index_reader.searcher();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-
-        // Tuple collector: single index pass for both count and top-docs.
-        let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
-            ResultsOrder::Catalogue => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("id", Order::Asc);
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-            ResultsOrder::Relevance => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_score();
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-        };
-
-        let results = Self::build_results(&self.schema, &searcher, &*query, addresses, &hl)?;
-        Ok(SearchPageResult {
-            total_count,
-            results,
-        })
+        self.run_search_and_count(query, limit, offset, &order, &hl)
     }
 
     pub fn count(
@@ -323,8 +301,7 @@ impl SearchEngine {
             slop,
             max_expansions,
         )?;
-        let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&*query, &Count)? as u32)
+        self.run_count(query)
     }
 
     pub fn count_by_book(
@@ -335,8 +312,7 @@ impl SearchEngine {
         max_expansions: u32,
     ) -> Result<HashMap<String, u32>> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
-        let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&*query, &BookCountCollector)?)
+        self.run_count_by_book(query)
     }
 
     /// Return per-child facet counts for a given prefix (e.g. "/").
@@ -349,19 +325,7 @@ impl SearchEngine {
         max_expansions: u32,
     ) -> Result<Vec<FacetCount>> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
-        let searcher = self.index_reader.searcher();
-        let mut facet_collector = FacetCollector::for_field("topics");
-        facet_collector.add_facet(&facet_prefix);
-        let facet_counts = searcher.search(&*query, &facet_collector)?;
-        // FacetCounts::get<T> requires Facet: From<T>; &str satisfies this.
-        let results = facet_counts
-            .get(facet_prefix.as_str())
-            .map(|(f, count)| FacetCount {
-                path: f.to_string(),
-                count,
-            })
-            .collect();
-        Ok(results)
+        self.run_facet_counts(query, facet_prefix)
     }
 
     // ── Operational API ────────────────────────────────────────────────────────
@@ -463,11 +427,12 @@ impl SearchEngine {
         }))
     }
 
-    /// Fuzzy (Levenshtein) search on plain text terms.
-    /// Unlike `search()` which requires regex patterns, this accepts plain words
-    /// and matches terms within `max_distance` edits (0 = exact, 1–2 = fuzzy).
-    /// Multiple terms are ANDed together; each term is matched fuzzily.
-    pub fn search_fuzzy(
+    /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
+    /// Low-level primitive retained for tests and the example app; the
+    /// high-level `search_fuzzy` accepts a raw query string instead.
+    /// Multiple terms are ANDed together; each is matched within `max_distance`
+    /// edits (0 = exact, 1–2 = fuzzy).
+    pub fn search_fuzzy_terms(
         &mut self,
         terms: Vec<String>,
         facets: Vec<String>,
@@ -477,31 +442,9 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
-        let searcher = self.index_reader.searcher();
-        let text_f = self.schema.get_field("text")?;
-        let topics_f = self.schema.get_field("topics")?;
+        let query = self.build_fuzzy_query_from_terms(&terms, &facets, max_distance)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-
-        // Build a fuzzy sub-query per term, ANDed together.
-        let mut clauses: Vec<(Occur, Box<dyn Query>)> = terms
-            .iter()
-            .map(|t| {
-                let term = Term::from_field_text(text_f, t);
-                let fq: Box<dyn Query> = Box::new(FuzzyTermQuery::new(term, max_distance, true));
-                (Occur::Must, fq)
-            })
-            .collect();
-
-        // Add facet filter (same as regular search).
-        let facet_terms: Vec<Term> = facets
-            .iter()
-            .map(|f| Term::from_facet(topics_f, &Facet::from_text(f).unwrap()))
-            .collect();
-        clauses.push((Occur::Must, Box::new(TermSetQuery::new(facet_terms))));
-
-        let query: Box<dyn Query> = Box::new(BooleanQuery::new(clauses));
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, &order)?;
-        Self::build_results(&self.schema, &searcher, &*query, addresses, &hl)
+        self.run_search(query, limit, offset, &order, &hl)
     }
 
     /// Stream search results in chunks of `chunk_size` documents.
@@ -527,21 +470,311 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
-        let searcher = self.index_reader.searcher();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        let chunk_size = (chunk_size.max(1)) as usize;
+        self.run_search_stream(query, limit, offset, &order, &hl, chunk_size, sink)
+    }
 
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, &order)?;
+    // ── High-level mode-specific search API ──────────────────────────────────────
+    //
+    // These are the methods the otzaria app calls through its SearchEngineGateway.
+    // Each builds the query for its mode (exact = Term/PhraseQuery, advanced =
+    // morphological regex, fuzzy = FuzzyTermQuery) then routes through the shared
+    // `run_*` executors. Snippet-returning methods apply the default `<font>`
+    // highlight, which the app's snippet parser expects.
 
-        for chunk in addresses.chunks(chunk_size) {
-            let results =
-                Self::build_results(&self.schema, &searcher, &*query, chunk.to_vec(), &hl)?;
-            // If the Dart side cancelled the stream, stop early.
-            if sink.add(results).is_err() {
-                break;
-            }
-        }
-        Ok(())
+    // -- Exact -------------------------------------------------------------------
+
+    pub fn search_exact(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        order: ResultsOrder,
+    ) -> Result<Vec<SearchResult>> {
+        let q = self.build_exact_query(&query, &facets)?;
+        self.run_search(q, limit, offset, &order, &HighlightConfig::default())
+    }
+
+    pub fn search_and_count_exact(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        order: ResultsOrder,
+    ) -> Result<SearchPageResult> {
+        let q = self.build_exact_query(&query, &facets)?;
+        self.run_search_and_count(q, limit, offset, &order, &HighlightConfig::default())
+    }
+
+    pub fn search_exact_stream(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        order: ResultsOrder,
+        chunk_size: u32,
+        sink: StreamSink<Vec<SearchResult>>,
+    ) -> Result<()> {
+        let q = self.build_exact_query(&query, &facets)?;
+        self.run_search_stream(
+            q,
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+            chunk_size,
+            sink,
+        )
+    }
+
+    pub fn count_exact(&self, query: String, facets: Vec<String>) -> Result<u32> {
+        let q = self.build_exact_query(&query, &facets)?;
+        self.run_count(q)
+    }
+
+    pub fn count_by_book_exact(
+        &self,
+        query: String,
+        facets: Vec<String>,
+    ) -> Result<HashMap<String, u32>> {
+        let q = self.build_exact_query(&query, &facets)?;
+        self.run_count_by_book(q)
+    }
+
+    pub fn get_facet_counts_exact(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+    ) -> Result<Vec<FacetCount>> {
+        let q = self.build_exact_query(&query, &facets)?;
+        self.run_facet_counts(q, facet_prefix)
+    }
+
+    // -- Advanced ----------------------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_advanced(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        order: ResultsOrder,
+    ) -> Result<Vec<SearchResult>> {
+        let q = self.build_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            facets,
+        )?;
+        self.run_search(q, limit, offset, &order, &HighlightConfig::default())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_and_count_advanced(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        order: ResultsOrder,
+    ) -> Result<SearchPageResult> {
+        let q = self.build_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            facets,
+        )?;
+        self.run_search_and_count(q, limit, offset, &order, &HighlightConfig::default())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_advanced_stream(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        order: ResultsOrder,
+        chunk_size: u32,
+        sink: StreamSink<Vec<SearchResult>>,
+    ) -> Result<()> {
+        let q = self.build_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            facets,
+        )?;
+        self.run_search_stream(
+            q,
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+            chunk_size,
+            sink,
+        )
+    }
+
+    pub fn count_advanced(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<u32> {
+        let q = self.build_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            facets,
+        )?;
+        self.run_count(q)
+    }
+
+    pub fn count_by_book_advanced(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<HashMap<String, u32>> {
+        let q = self.build_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            facets,
+        )?;
+        self.run_count_by_book(q)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_facet_counts_advanced(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<Vec<FacetCount>> {
+        let q = self.build_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            facets,
+        )?;
+        self.run_facet_counts(q, facet_prefix)
+    }
+
+    // -- Fuzzy -------------------------------------------------------------------
+
+    pub fn search_fuzzy(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        max_distance: u8,
+        order: ResultsOrder,
+    ) -> Result<Vec<SearchResult>> {
+        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        self.run_search(q, limit, offset, &order, &HighlightConfig::default())
+    }
+
+    pub fn search_and_count_fuzzy(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        max_distance: u8,
+        order: ResultsOrder,
+    ) -> Result<SearchPageResult> {
+        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        self.run_search_and_count(q, limit, offset, &order, &HighlightConfig::default())
+    }
+
+    pub fn search_fuzzy_stream(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        max_distance: u8,
+        order: ResultsOrder,
+        chunk_size: u32,
+        sink: StreamSink<Vec<SearchResult>>,
+    ) -> Result<()> {
+        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        self.run_search_stream(
+            q,
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+            chunk_size,
+            sink,
+        )
+    }
+
+    pub fn count_fuzzy(&self, query: String, facets: Vec<String>, max_distance: u8) -> Result<u32> {
+        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        self.run_count(q)
+    }
+
+    pub fn count_by_book_fuzzy(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        max_distance: u8,
+    ) -> Result<HashMap<String, u32>> {
+        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        self.run_count_by_book(q)
+    }
+
+    pub fn get_facet_counts_fuzzy(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+        max_distance: u8,
+    ) -> Result<Vec<FacetCount>> {
+        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        self.run_facet_counts(q, facet_prefix)
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
@@ -643,6 +876,219 @@ impl SearchEngine {
             (Occur::Must, main_query),
             (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
         ])))
+    }
+
+    /// Tokenizes `text` with the same `"default"` analyzer the `text` field is
+    /// indexed with, after stripping nikud — so exact/fuzzy terms line up with
+    /// the (normalized) index term dictionary.
+    fn default_token_texts(&self, text: &str) -> Result<Vec<String>> {
+        let normalized = hebrew_query::strip_nikud(text);
+        let mut analyzer = self
+            .index
+            .tokenizers()
+            .get("default")
+            .context("default tokenizer not registered")?;
+        let mut stream = analyzer.token_stream(&normalized);
+        let mut out = Vec::new();
+        while let Some(token) = stream.next() {
+            out.push(token.text.clone());
+        }
+        Ok(out)
+    }
+
+    /// Facet filter sub-query (a `TermSetQuery` over the `topics` facet field).
+    fn facet_filter_query(&self, facets: &[String]) -> Result<Box<dyn Query>> {
+        let topics_f = self.schema.get_field("topics")?;
+        let facet_terms: Vec<Term> = facets
+            .iter()
+            .map(|f| Ok(Term::from_facet(topics_f, &Facet::from_text(f)?)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Box::new(TermSetQuery::new(facet_terms)))
+    }
+
+    /// Exact mode: a `TermQuery` (one token) or `PhraseQuery` (several), filtered
+    /// by facets. No regex — fastest path.
+    fn build_exact_query(&self, query_str: &str, facets: &[String]) -> Result<Box<dyn Query>> {
+        let text_f = self.schema.get_field("text")?;
+        let token_texts = self.default_token_texts(query_str)?;
+        let mut terms: Vec<Term> = token_texts
+            .iter()
+            .map(|t| Term::from_field_text(text_f, t))
+            .collect();
+        let main_query: Box<dyn Query> = match terms.len() {
+            0 => Box::new(EmptyQuery),
+            1 => Box::new(TermQuery::new(terms.pop().unwrap(), IndexRecordOption::Basic)),
+            _ => Box::new(PhraseQuery::new(terms)),
+        };
+        Ok(Box::new(BooleanQuery::new(vec![
+            (Occur::Must, main_query),
+            (Occur::Must, self.facet_filter_query(facets)?),
+        ])))
+    }
+
+    /// Fuzzy mode from pre-tokenized terms: one `FuzzyTermQuery` per term, ANDed,
+    /// filtered by facets.
+    fn build_fuzzy_query_from_terms(
+        &self,
+        term_texts: &[String],
+        facets: &[String],
+        max_distance: u8,
+    ) -> Result<Box<dyn Query>> {
+        let text_f = self.schema.get_field("text")?;
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = term_texts
+            .iter()
+            .map(|t| {
+                let term = Term::from_field_text(text_f, t);
+                (
+                    Occur::Must,
+                    Box::new(FuzzyTermQuery::new(term, max_distance, true)) as Box<dyn Query>,
+                )
+            })
+            .collect();
+        clauses.push((Occur::Must, self.facet_filter_query(facets)?));
+        Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
+    /// Fuzzy mode from a raw query string (tokenized like the index).
+    fn build_fuzzy_query(
+        &self,
+        query: &str,
+        facets: &[String],
+        max_distance: u8,
+    ) -> Result<Box<dyn Query>> {
+        let token_texts = self.default_token_texts(query)?;
+        self.build_fuzzy_query_from_terms(&token_texts, facets, max_distance)
+    }
+
+    /// Advanced mode: ports the Dart morphological query builder to produce regex
+    /// terms + slop + max_expansions, then reuses `build_query`.
+    fn build_advanced_query(
+        &self,
+        query: &str,
+        distance: u32,
+        custom_spacing: &HashMap<String, String>,
+        alternative_words: &HashMap<u32, Vec<String>>,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        facets: Vec<String>,
+    ) -> Result<Box<dyn Query>> {
+        let prepared = hebrew_query::prepare_advanced_query(
+            query,
+            distance,
+            custom_spacing,
+            alternative_words,
+            search_options,
+        );
+        Self::build_query(
+            &self.index,
+            prepared.regex_terms,
+            facets,
+            prepared.slop,
+            prepared.max_expansions,
+        )
+    }
+
+    // ── Shared query executors (take a prebuilt query) ───────────────────────────
+
+    fn run_search(
+        &self,
+        query: Box<dyn Query>,
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+        hl: &HighlightConfig,
+    ) -> Result<Vec<SearchResult>> {
+        let searcher = self.index_reader.searcher();
+        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        Self::build_results(&self.schema, &searcher, &*query, addresses, hl)
+    }
+
+    fn run_search_and_count(
+        &self,
+        query: Box<dyn Query>,
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+        hl: &HighlightConfig,
+    ) -> Result<SearchPageResult> {
+        let searcher = self.index_reader.searcher();
+        // Tuple collector: single index pass for both count and top-docs.
+        let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
+            ResultsOrder::Catalogue => {
+                let top_collector = TopDocs::with_limit(limit as usize)
+                    .and_offset(offset as usize)
+                    .order_by_fast_field::<u64>("id", Order::Asc);
+                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
+                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
+                (addrs, count as u32)
+            }
+            ResultsOrder::Relevance => {
+                let top_collector = TopDocs::with_limit(limit as usize)
+                    .and_offset(offset as usize)
+                    .order_by_score();
+                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
+                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
+                (addrs, count as u32)
+            }
+        };
+        let results = Self::build_results(&self.schema, &searcher, &*query, addresses, hl)?;
+        Ok(SearchPageResult {
+            total_count,
+            results,
+        })
+    }
+
+    fn run_count(&self, query: Box<dyn Query>) -> Result<u32> {
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(&*query, &Count)? as u32)
+    }
+
+    fn run_count_by_book(&self, query: Box<dyn Query>) -> Result<HashMap<String, u32>> {
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(&*query, &BookCountCollector)?)
+    }
+
+    fn run_facet_counts(
+        &self,
+        query: Box<dyn Query>,
+        facet_prefix: String,
+    ) -> Result<Vec<FacetCount>> {
+        let searcher = self.index_reader.searcher();
+        let mut facet_collector = FacetCollector::for_field("topics");
+        facet_collector.add_facet(&facet_prefix);
+        let facet_counts = searcher.search(&*query, &facet_collector)?;
+        // FacetCounts::get<T> requires Facet: From<T>; &str satisfies this.
+        let results = facet_counts
+            .get(facet_prefix.as_str())
+            .map(|(f, count)| FacetCount {
+                path: f.to_string(),
+                count,
+            })
+            .collect();
+        Ok(results)
+    }
+
+    fn run_search_stream(
+        &self,
+        query: Box<dyn Query>,
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+        hl: &HighlightConfig,
+        chunk_size: u32,
+        sink: StreamSink<Vec<SearchResult>>,
+    ) -> Result<()> {
+        let searcher = self.index_reader.searcher();
+        let chunk_size = (chunk_size.max(1)) as usize;
+        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        for chunk in addresses.chunks(chunk_size) {
+            let results =
+                Self::build_results(&self.schema, &searcher, &*query, chunk.to_vec(), hl)?;
+            // If the Dart side cancelled the stream, stop early.
+            if sink.add(results).is_err() {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn collect_addresses(
@@ -1079,7 +1525,7 @@ mod tests {
 
         // distance=0: only exact match
         let exact = engine
-            .search_fuzzy(
+            .search_fuzzy_terms(
                 vec!["שלום".to_string()],
                 vec!["/root".to_string()],
                 10,
@@ -1101,7 +1547,7 @@ mod tests {
 
         // distance=1: must return both "שלום" and the near-match "שלם"
         let fuzzy = engine
-            .search_fuzzy(
+            .search_fuzzy_terms(
                 vec!["שלום".to_string()],
                 vec!["/root".to_string()],
                 10,
@@ -1354,5 +1800,178 @@ mod tests {
 
         assert_eq!(engine.get_document_count(), 0);
         assert_eq!(search_ids(&mut engine, "שלום"), Vec::<u64>::new());
+    }
+
+    // ── High-level mode-specific API ─────────────────────────────────────────────
+
+    fn ids(results: Vec<SearchResult>) -> Vec<u64> {
+        let mut v: Vec<u64> = results.into_iter().map(|r| r.id).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn test_search_exact_single_and_phrase() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        add(&mut engine, 2, "שלום רב", "/books/b.txt");
+        engine.commit().unwrap();
+
+        // Single token matches both docs containing the word.
+        let got = ids(engine
+            .search_exact(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1, 2]);
+
+        // Phrase matches only the doc with those adjacent words.
+        let got = ids(engine
+            .search_exact(
+                "שלום עולם".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1]);
+    }
+
+    #[test]
+    fn test_search_exact_strips_query_nikud() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/a.txt"); // indexed without nikud
+        engine.commit().unwrap();
+
+        // Query carries nikud; exact mode strips it before tokenizing.
+        let got = ids(engine
+            .search_exact(
+                "שָׁלוֹם".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1]);
+    }
+
+    #[test]
+    fn test_search_advanced_grammatical_prefix() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספר", "/books/b.txt");
+        add(&mut engine, 3, "מטבע", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let mut word_opts = HashMap::new();
+        word_opts.insert("קידומות דקדוקיות".to_string(), true);
+        let mut options = HashMap::new();
+        options.insert("ספר_0".to_string(), word_opts);
+
+        let got = ids(engine
+            .search_advanced(
+                "ספר".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1, 2], "grammatical prefix should match ספר and הספר");
+    }
+
+    #[test]
+    fn test_search_advanced_alternative_words() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "מלך", "/books/a.txt");
+        add(&mut engine, 2, "שר", "/books/b.txt");
+        add(&mut engine, 3, "עיר", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let mut alts = HashMap::new();
+        alts.insert(0u32, vec!["מלך".to_string()]);
+        let got = ids(engine
+            .search_advanced(
+                "שר".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                alts,
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1, 2], "alternatives should OR שר with מלך");
+    }
+
+    #[test]
+    fn test_search_fuzzy_high_level() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/a.txt");
+        add(&mut engine, 2, "שלם", "/books/b.txt");
+        add(&mut engine, 3, "ביי", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let texts: Vec<String> = engine
+            .search_fuzzy(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                1,
+                ResultsOrder::Relevance,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.text)
+            .collect();
+        assert!(texts.contains(&"שלום".to_string()));
+        assert!(texts.contains(&"שלם".to_string()));
+        assert!(!texts.contains(&"ביי".to_string()));
+    }
+
+    #[test]
+    fn test_high_level_counts() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        add(&mut engine, 2, "שלום רב", "/books/a.txt");
+        add(&mut engine, 3, "ביי", "/books/b.txt");
+        engine.commit().unwrap();
+
+        assert_eq!(
+            engine
+                .count_exact("שלום".to_string(), vec!["/root".to_string()])
+                .unwrap(),
+            2
+        );
+
+        let by_book = engine
+            .count_by_book_exact("שלום".to_string(), vec!["/root".to_string()])
+            .unwrap();
+        assert_eq!(by_book.get("/books/a.txt").copied(), Some(2));
+
+        let page = engine
+            .search_and_count_exact(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                1,
+                0,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.results.len(), 1);
     }
 }

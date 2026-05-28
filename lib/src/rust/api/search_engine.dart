@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_query`, `build_results`, `collect_addresses`, `default`
+// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_advanced_query`, `build_exact_query`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_query`, `build_results`, `collect_addresses`, `default_token_texts`, `default`, `ensure_writer`, `facet_filter_query`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `take_writer`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `collect`, `for_segment`, `harvest`, `merge_fruits`, `requires_scoring`
 
@@ -41,11 +41,48 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  Future<int> countAdvanced({
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
   Future<Map<String, int>> countByBook({
     required List<String> regexTerms,
     required List<String> facets,
     required int slop,
     required int maxExpansions,
+  });
+
+  Future<Map<String, int>> countByBookAdvanced({
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  Future<Map<String, int>> countByBookExact({
+    required String query,
+    required List<String> facets,
+  });
+
+  Future<Map<String, int>> countByBookFuzzy({
+    required String query,
+    required List<String> facets,
+    required int maxDistance,
+  });
+
+  Future<int> countExact({required String query, required List<String> facets});
+
+  Future<int> countFuzzy({
+    required String query,
+    required List<String> facets,
+    required int maxDistance,
   });
 
   /// Delete a document by its numeric id. Does not commit.
@@ -66,6 +103,29 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  Future<List<FacetCount>> getFacetCountsAdvanced({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  Future<List<FacetCount>> getFacetCountsExact({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+  });
+
+  Future<List<FacetCount>> getFacetCountsFuzzy({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int maxDistance,
+  });
+
   Future<int> getSegmentCount();
 
   factory SearchEngine({required String path}) =>
@@ -73,7 +133,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Merge all segments into one. Run occasionally in the background after
   /// many upserts/deletes to reclaim disk space and improve read performance.
-  /// Reloads the reader after merge so subsequent searches use the merged state.
+  /// Run only after `commit()`, because only committed segments participate in
+  /// manual merge maintenance.
   Future<void> optimize();
 
   /// Delete all documents matching a title. Does not commit.
@@ -94,6 +155,31 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
   });
 
+  Future<List<SearchResult>> searchAdvanced({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required ResultsOrder order,
+  });
+
+  Stream<List<SearchResult>> searchAdvancedStream({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required ResultsOrder order,
+    required int chunkSize,
+  });
+
   /// Search and return total hit count alongside paged results in one call.
   /// Uses a tuple collector so Tantivy executes a single index pass.
   Future<SearchPageResult> searchAndCount({
@@ -107,11 +193,77 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
   });
 
-  /// Fuzzy (Levenshtein) search on plain text terms.
-  /// Unlike `search()` which requires regex patterns, this accepts plain words
-  /// and matches terms within `max_distance` edits (0 = exact, 1–2 = fuzzy).
-  /// Multiple terms are ANDed together; each term is matched fuzzily.
+  Future<SearchPageResult> searchAndCountAdvanced({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required ResultsOrder order,
+  });
+
+  Future<SearchPageResult> searchAndCountExact({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+  });
+
+  Future<SearchPageResult> searchAndCountFuzzy({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int maxDistance,
+    required ResultsOrder order,
+  });
+
+  Future<List<SearchResult>> searchExact({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+  });
+
+  Stream<List<SearchResult>> searchExactStream({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required int chunkSize,
+  });
+
   Future<List<SearchResult>> searchFuzzy({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int maxDistance,
+    required ResultsOrder order,
+  });
+
+  Stream<List<SearchResult>> searchFuzzyStream({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int maxDistance,
+    required ResultsOrder order,
+    required int chunkSize,
+  });
+
+  /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
+  /// Low-level primitive retained for tests and the example app; the
+  /// high-level `search_fuzzy` accepts a raw query string instead.
+  /// Multiple terms are ANDed together; each is matched within `max_distance`
+  /// edits (0 = exact, 1–2 = fuzzy).
+  Future<List<SearchResult>> searchFuzzyTerms({
     required List<String> terms,
     required List<String> facets,
     required int limit,

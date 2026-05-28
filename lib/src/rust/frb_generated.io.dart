@@ -86,7 +86,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Map<String, Map<String, bool>>
+  dco_decode_Map_String_Map_String_bool_None_None(dynamic raw);
+
+  @protected
+  Map<String, String> dco_decode_Map_String_String_None(dynamic raw);
+
+  @protected
+  Map<String, bool> dco_decode_Map_String_bool_None(dynamic raw);
+
+  @protected
   Map<String, int> dco_decode_Map_String_u_32_None(dynamic raw);
+
+  @protected
+  Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw);
 
   @protected
   ReferenceSearchEngine
@@ -162,7 +175,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<(String, bool)> dco_decode_list_record_string_bool(dynamic raw);
+
+  @protected
+  List<(String, Map<String, bool>)>
+  dco_decode_list_record_string_map_string_bool_none(dynamic raw);
+
+  @protected
+  List<(String, String)> dco_decode_list_record_string_string(dynamic raw);
+
+  @protected
   List<(String, int)> dco_decode_list_record_string_u_32(dynamic raw);
+
+  @protected
+  List<(int, List<String>)> dco_decode_list_record_u_32_list_string(
+    dynamic raw,
+  );
 
   @protected
   List<ReferenceDocumentInput> dco_decode_list_reference_document_input(
@@ -190,7 +218,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
 
   @protected
+  (String, bool) dco_decode_record_string_bool(dynamic raw);
+
+  @protected
+  (String, Map<String, bool>) dco_decode_record_string_map_string_bool_none(
+    dynamic raw,
+  );
+
+  @protected
+  (String, String) dco_decode_record_string_string(dynamic raw);
+
+  @protected
   (String, int) dco_decode_record_string_u_32(dynamic raw);
+
+  @protected
+  (int, List<String>) dco_decode_record_u_32_list_string(dynamic raw);
 
   @protected
   ReferenceDocumentInput dco_decode_reference_document_input(dynamic raw);
@@ -277,7 +319,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Map<String, Map<String, bool>>
+  sse_decode_Map_String_Map_String_bool_None_None(SseDeserializer deserializer);
+
+  @protected
+  Map<String, String> sse_decode_Map_String_String_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Map<String, bool> sse_decode_Map_String_bool_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Map<String, int> sse_decode_Map_String_u_32_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Map<int, List<String>> sse_decode_Map_u_32_list_String_None(
     SseDeserializer deserializer,
   );
 
@@ -365,7 +426,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<(String, bool)> sse_decode_list_record_string_bool(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<(String, Map<String, bool>)>
+  sse_decode_list_record_string_map_string_bool_none(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<(String, String)> sse_decode_list_record_string_string(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(String, int)> sse_decode_list_record_string_u_32(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<(int, List<String>)> sse_decode_list_record_u_32_list_string(
     SseDeserializer deserializer,
   );
 
@@ -403,7 +485,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
+
+  @protected
+  (String, Map<String, bool>) sse_decode_record_string_map_string_bool_none(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  (String, String) sse_decode_record_string_string(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   (String, int) sse_decode_record_string_u_32(SseDeserializer deserializer);
+
+  @protected
+  (int, List<String>) sse_decode_record_u_32_list_string(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ReferenceDocumentInput sse_decode_reference_document_input(
@@ -505,8 +605,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_Map_String_Map_String_bool_None_None(
+    Map<String, Map<String, bool>> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_Map_String_String_None(
+    Map<String, String> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_Map_String_bool_None(
+    Map<String, bool> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_Map_String_u_32_None(
     Map<String, int> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_Map_u_32_list_String_None(
+    Map<int, List<String>> self,
     SseSerializer serializer,
   );
 
@@ -619,8 +743,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_record_string_bool(
+    List<(String, bool)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_string_map_string_bool_none(
+    List<(String, Map<String, bool>)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_string_string(
+    List<(String, String)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_string_u_32(
     List<(String, int)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_u_32_list_string(
+    List<(int, List<String>)> self,
     SseSerializer serializer,
   );
 
@@ -664,8 +812,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_record_string_bool(
+    (String, bool) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_string_map_string_bool_none(
+    (String, Map<String, bool>) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_string_string(
+    (String, String) self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_record_string_u_32(
     (String, int) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_u_32_list_string(
+    (int, List<String>) self,
     SseSerializer serializer,
   );
 
@@ -737,7 +909,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine',
+        'frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine',
       );
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine =
       _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr
@@ -754,7 +926,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine',
+        'frbgen_otzaria_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine',
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr
@@ -771,7 +943,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarkerPtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker',
+        'frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker',
       );
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker =
       _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarkerPtr
@@ -788,7 +960,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarkerPtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker',
+        'frbgen_otzaria_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker',
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarkerPtr
@@ -805,7 +977,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEnginePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine',
+        'frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine',
       );
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine =
       _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEnginePtr
@@ -822,7 +994,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEnginePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine',
+        'frbgen_otzaria_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine',
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEnginePtr
