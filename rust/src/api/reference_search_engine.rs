@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(results[0].reference, "Reference 1");
 
         let results = engine.search("Referenc", 10, true, ResultsOrder::Catalogue).unwrap();
-        assert!(results.len() > 0);
+        assert!(!results.is_empty());
 
         let count = engine.count("Reference", false).unwrap();
         assert_eq!(count, 3);

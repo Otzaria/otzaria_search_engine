@@ -2,7 +2,7 @@ use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
 use log::debug;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
@@ -68,6 +68,15 @@ pub enum ResultsOrder {
 // ── SearchEngine ───────────────────────────────────────────────────────────────
 
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
+
+/// Upper bound on distinct dictionary terms collected for highlighting an
+/// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
+/// expands very widely; far more matches than a snippet could ever show.
+const MAX_HIGHLIGHT_TERMS: usize = 512;
+
+/// The eight schema fields resolved together by [`SearchEngine::all_fields`]:
+/// `(title, reference, text, id, segment, isPdf, filePath, topics)`.
+type SchemaFields = (Field, Field, Field, Field, Field, Field, Field, Field);
 
 pub struct SearchEngine {
     schema: Schema,
@@ -266,7 +275,7 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, limit, offset, &order, &hl)
+        self.run_search(query, None, limit, offset, &order, &hl)
     }
 
     /// Search and return total hit count alongside paged results in one call.
@@ -284,20 +293,20 @@ impl SearchEngine {
     ) -> Result<SearchPageResult> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_and_count(query, limit, offset, &order, &hl)
+        self.run_search_and_count(query, None, limit, offset, &order, &hl)
     }
 
     pub fn count(
         &mut self,
         regex_terms: Vec<String>,
-        facets: &Vec<String>,
+        facets: &[String],
         slop: u32,
         max_expansions: u32,
     ) -> Result<u32> {
         let query = Self::build_query(
             &self.index,
             regex_terms,
-            facets.clone(),
+            facets.to_vec(),
             slop,
             max_expansions,
         )?;
@@ -444,7 +453,7 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let query = self.build_fuzzy_query_from_terms(&terms, &facets, max_distance)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, limit, offset, &order, &hl)
+        self.run_search(query, None, limit, offset, &order, &hl)
     }
 
     /// Stream search results in chunks of `chunk_size` documents.
@@ -471,7 +480,7 @@ impl SearchEngine {
     ) -> Result<()> {
         let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_stream(query, limit, offset, &order, &hl, chunk_size, sink)
+        self.run_search_stream(query, None, limit, offset, &order, &hl, chunk_size, sink)
     }
 
     // ── High-level mode-specific search API ──────────────────────────────────────
@@ -493,7 +502,7 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let q = self.build_exact_query(&query, &facets)?;
-        self.run_search(q, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(q, None, limit, offset, &order, &HighlightConfig::default())
     }
 
     pub fn search_and_count_exact(
@@ -505,7 +514,7 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
         let q = self.build_exact_query(&query, &facets)?;
-        self.run_search_and_count(q, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(q, None, limit, offset, &order, &HighlightConfig::default())
     }
 
     pub fn search_exact_stream(
@@ -521,6 +530,7 @@ impl SearchEngine {
         let q = self.build_exact_query(&query, &facets)?;
         self.run_search_stream(
             q,
+            None,
             limit,
             offset,
             &order,
@@ -556,7 +566,6 @@ impl SearchEngine {
 
     // -- Advanced ----------------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
     pub fn search_advanced(
         &self,
         query: String,
@@ -569,7 +578,7 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
-        let q = self.build_advanced_query(
+        let (q, regex_terms) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -577,10 +586,10 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        self.run_search(q, limit, offset, &order, &HighlightConfig::default())
+        let hq = self.build_regex_highlight_query(&regex_terms).ok();
+        self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn search_and_count_advanced(
         &self,
         query: String,
@@ -593,7 +602,7 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
-        let q = self.build_advanced_query(
+        let (q, regex_terms) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -601,10 +610,10 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        self.run_search_and_count(q, limit, offset, &order, &HighlightConfig::default())
+        let hq = self.build_regex_highlight_query(&regex_terms).ok();
+        self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn search_advanced_stream(
         &self,
         query: String,
@@ -619,7 +628,7 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let q = self.build_advanced_query(
+        let (q, regex_terms) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -627,8 +636,10 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
+        let hq = self.build_regex_highlight_query(&regex_terms).ok();
         self.run_search_stream(
             q,
+            hq,
             limit,
             offset,
             &order,
@@ -647,7 +658,7 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<u32> {
-        let q = self.build_advanced_query(
+        let (q, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -667,7 +678,7 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<HashMap<String, u32>> {
-        let q = self.build_advanced_query(
+        let (q, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -678,7 +689,6 @@ impl SearchEngine {
         self.run_count_by_book(q)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn get_facet_counts_advanced(
         &self,
         query: String,
@@ -689,7 +699,7 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<Vec<FacetCount>> {
-        let q = self.build_advanced_query(
+        let (q, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -712,7 +722,7 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
-        self.run_search(q, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(q, None, limit, offset, &order, &HighlightConfig::default())
     }
 
     pub fn search_and_count_fuzzy(
@@ -725,7 +735,7 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
         let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
-        self.run_search_and_count(q, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(q, None, limit, offset, &order, &HighlightConfig::default())
     }
 
     pub fn search_fuzzy_stream(
@@ -742,6 +752,7 @@ impl SearchEngine {
         let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
         self.run_search_stream(
             q,
+            None,
             limit,
             offset,
             &order,
@@ -779,7 +790,7 @@ impl SearchEngine {
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
-    fn all_fields(&self) -> Result<(Field, Field, Field, Field, Field, Field, Field, Field)> {
+    fn all_fields(&self) -> Result<SchemaFields> {
         Ok((
             self.schema.get_field("title")?,
             self.schema.get_field("reference")?,
@@ -961,7 +972,8 @@ impl SearchEngine {
     }
 
     /// Advanced mode: ports the Dart morphological query builder to produce regex
-    /// terms + slop + max_expansions, then reuses `build_query`.
+    /// terms + slop + max_expansions, then reuses `build_query`. Also returns the
+    /// regex patterns so callers can materialize concrete terms for highlighting.
     fn build_advanced_query(
         &self,
         query: &str,
@@ -970,7 +982,7 @@ impl SearchEngine {
         alternative_words: &HashMap<u32, Vec<String>>,
         search_options: &HashMap<String, HashMap<String, bool>>,
         facets: Vec<String>,
-    ) -> Result<Box<dyn Query>> {
+    ) -> Result<(Box<dyn Query>, Vec<String>)> {
         let prepared = hebrew_query::prepare_advanced_query(
             query,
             distance,
@@ -978,13 +990,15 @@ impl SearchEngine {
             alternative_words,
             search_options,
         );
-        Self::build_query(
+        let regex_terms = prepared.regex_terms.clone();
+        let query = Self::build_query(
             &self.index,
             prepared.regex_terms,
             facets,
             prepared.slop,
             prepared.max_expansions,
-        )
+        )?;
+        Ok((query, regex_terms))
     }
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
@@ -992,6 +1006,7 @@ impl SearchEngine {
     fn run_search(
         &self,
         query: Box<dyn Query>,
+        highlight_query: Option<Box<dyn Query>>,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -999,12 +1014,14 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let searcher = self.index_reader.searcher();
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
-        Self::build_results(&self.schema, &searcher, &*query, addresses, hl)
+        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)
     }
 
     fn run_search_and_count(
         &self,
         query: Box<dyn Query>,
+        highlight_query: Option<Box<dyn Query>>,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -1030,7 +1047,8 @@ impl SearchEngine {
                 (addrs, count as u32)
             }
         };
-        let results = Self::build_results(&self.schema, &searcher, &*query, addresses, hl)?;
+        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        let results = Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)?;
         Ok(SearchPageResult {
             total_count,
             results,
@@ -1070,6 +1088,7 @@ impl SearchEngine {
     fn run_search_stream(
         &self,
         query: Box<dyn Query>,
+        highlight_query: Option<Box<dyn Query>>,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -1080,9 +1099,10 @@ impl SearchEngine {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
         for chunk in addresses.chunks(chunk_size) {
             let results =
-                Self::build_results(&self.schema, &searcher, &*query, chunk.to_vec(), hl)?;
+                Self::build_results(&self.schema, &searcher, hl_q, chunk.to_vec(), hl)?;
             // If the Dart side cancelled the stream, stop early.
             if sink.add(results).is_err() {
                 break;
@@ -1123,6 +1143,43 @@ impl SearchEngine {
             }
         };
         Ok(addresses)
+    }
+
+    /// Materializes the concrete `text` terms that the advanced-mode regex
+    /// patterns actually match in the index dictionary, returning them as a
+    /// `TermSetQuery` for use as the highlight query.
+    ///
+    /// Regex/automaton queries (`RegexQuery`, `RegexPhraseQuery`) expose no
+    /// static terms to `SnippetGenerator`, so without this their results would
+    /// render with no highlighting. By streaming the term dictionary through the
+    /// same FST automaton the search itself uses, we highlight every morphological
+    /// variant that genuinely matched (prefixes, suffixes, alternatives), not just
+    /// the literal words the user typed.
+    fn build_regex_highlight_query(&self, regex_terms: &[String]) -> Result<Box<dyn Query>> {
+        let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
+        let mut matched: HashSet<String> = HashSet::new();
+        'patterns: for pattern in regex_terms {
+            let regex = tantivy_fst::Regex::new(pattern)
+                .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
+            for reader in searcher.segment_readers() {
+                let inverted = reader.inverted_index(text_f)?;
+                let mut stream = inverted.terms().search(&regex).into_stream()?;
+                while stream.advance() {
+                    if let Ok(term) = std::str::from_utf8(stream.key()) {
+                        matched.insert(term.to_string());
+                        if matched.len() >= MAX_HIGHLIGHT_TERMS {
+                            break 'patterns;
+                        }
+                    }
+                }
+            }
+        }
+        let terms: Vec<Term> = matched
+            .into_iter()
+            .map(|t| Term::from_field_text(text_f, &t))
+            .collect();
+        Ok(Box::new(TermSetQuery::new(terms)))
     }
 
     fn build_results(
@@ -1406,7 +1463,7 @@ mod tests {
 
         assert_eq!(
             engine
-                .count(vec!["שלום".to_string()], &vec!["/root".to_string()], 0, 100)
+                .count(vec!["שלום".to_string()], &["/root".to_string()], 0, 100)
                 .unwrap(),
             2
         );
@@ -1416,7 +1473,7 @@ mod tests {
 
         assert_eq!(
             engine
-                .count(vec!["שלום".to_string()], &vec!["/root".to_string()], 0, 100)
+                .count(vec!["שלום".to_string()], &["/root".to_string()], 0, 100)
                 .unwrap(),
             1
         );
@@ -1445,19 +1502,19 @@ mod tests {
         // Should have only one doc with id=1
         assert_eq!(
             engine
-                .count(vec!["טקסט".to_string()], &vec!["/root".to_string()], 0, 100)
+                .count(vec!["טקסט".to_string()], &["/root".to_string()], 0, 100)
                 .unwrap(),
             1
         );
         assert_eq!(
             engine
-                .count(vec!["ישן".to_string()], &vec!["/root".to_string()], 0, 100)
+                .count(vec!["ישן".to_string()], &["/root".to_string()], 0, 100)
                 .unwrap(),
             0
         );
         assert_eq!(
             engine
-                .count(vec!["חדש".to_string()], &vec!["/root".to_string()], 0, 100)
+                .count(vec!["חדש".to_string()], &["/root".to_string()], 0, 100)
                 .unwrap(),
             1
         );
@@ -1476,7 +1533,7 @@ mod tests {
         // doc 2 should not be present
         assert_eq!(
             engine
-                .count(vec!["שלום".to_string()], &vec!["/root".to_string()], 0, 100)
+                .count(vec!["שלום".to_string()], &["/root".to_string()], 0, 100)
                 .unwrap(),
             1
         );
@@ -1888,6 +1945,44 @@ mod tests {
             )
             .unwrap());
         assert_eq!(got, vec![1, 2], "grammatical prefix should match ספר and הספר");
+    }
+
+    #[test]
+    fn test_search_advanced_highlights_morphological_variant() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let mut word_opts = HashMap::new();
+        word_opts.insert("קידומות דקדוקיות".to_string(), true);
+        let mut options = HashMap::new();
+        options.insert("ספר_0".to_string(), word_opts);
+
+        let results = engine
+            .search_advanced(
+                "ספר".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+
+        // The query matched the prefixed variant "הספר" via regex; highlighting
+        // must wrap the variant that actually matched, not just the literal "ספר".
+        let variant = results
+            .iter()
+            .find(|r| r.id == 2)
+            .expect("הספר document should be in results");
+        assert_eq!(
+            variant.text, "<font color=red>הספר</font>",
+            "morphological variant should be highlighted"
+        );
     }
 
     #[test]

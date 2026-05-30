@@ -76,7 +76,7 @@ pub fn run_diagnostic_test() -> Result<()> {
 
     // Test count functionality to see if there's any data at all
     println!("Testing count functionality:");
-    match search_engine.count(vec![".*".to_string()], &vec![], 0, 1000) {
+    match search_engine.count(vec![".*".to_string()], &[], 0, 1000) {
         Ok(count) => println!("  Total documents matching '.*': {}", count),
         Err(e) => println!("  Count failed: {}", e),
     }
