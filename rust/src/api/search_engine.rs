@@ -931,10 +931,14 @@ impl SearchEngine {
             1 => Box::new(TermQuery::new(terms.pop().unwrap(), IndexRecordOption::Basic)),
             _ => Box::new(PhraseQuery::new(terms)),
         };
-        Ok(Box::new(BooleanQuery::new(vec![
-            (Occur::Must, main_query),
-            (Occur::Must, self.facet_filter_query(facets)?),
-        ])))
+        if facets.is_empty() {
+            Ok(main_query)
+        } else {
+            Ok(Box::new(BooleanQuery::new(vec![
+                (Occur::Must, main_query),
+                (Occur::Must, self.facet_filter_query(facets)?),
+            ])))
+        }
     }
 
     /// Fuzzy mode from pre-tokenized terms: one `FuzzyTermQuery` per term, ANDed,
