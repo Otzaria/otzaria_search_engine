@@ -41,7 +41,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1773173041;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2011510744;
 
 // Section: executor
 
@@ -3107,6 +3107,38 @@ fn wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(
         },
     )
 }
+fn wire__crate__api__search_engine__check_index_compatibility_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "check_index_compatibility",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_path = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Result::<_, ()>::Ok(
+                    crate::api::search_engine::check_index_compatibility(api_path),
+                )?;
+                Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__diagnostic_test__run_diagnostic_test_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3440,6 +3472,28 @@ impl SseDecode for i32 {
     }
 }
 
+impl SseDecode for crate::api::search_engine::IndexCompatibility {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_compatible = <bool>::sse_decode(deserializer);
+        let mut var_status = <String>::sse_decode(deserializer);
+        let mut var_foundSchemaVersion = <Option<u32>>::sse_decode(deserializer);
+        let mut var_requiredSchemaVersion = <u32>::sse_decode(deserializer);
+        let mut var_engineVersion = <String>::sse_decode(deserializer);
+        let mut var_metadataPath = <String>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        return crate::api::search_engine::IndexCompatibility {
+            compatible: var_compatible,
+            status: var_status,
+            found_schema_version: var_foundSchemaVersion,
+            required_schema_version: var_requiredSchemaVersion,
+            engine_version: var_engineVersion,
+            metadata_path: var_metadataPath,
+            reason: var_reason,
+        };
+    }
+}
+
 impl SseDecode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3626,6 +3680,17 @@ impl SseDecode for Vec<crate::api::benchmark::TestCase> {
     }
 }
 
+impl SseDecode for Option<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<String>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::benchmark::BenchmarkResult> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3659,6 +3724,17 @@ impl SseDecode for Option<crate::api::search_engine::SearchResult> {
             return Some(<crate::api::search_engine::SearchResult>::sse_decode(
                 deserializer,
             ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<u32> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<u32>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -3912,8 +3988,8 @@ fn pde_ffi_dispatcher_primary_impl(
 51 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
 52 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
 53 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
-54 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
-55 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
+55 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
+56 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -3932,6 +4008,11 @@ fn pde_ffi_dispatcher_sync_impl(
             data_len,
         ),
         35 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__search_engine__check_index_compatibility_impl(
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
         _ => unreachable!(),
     }
 }
@@ -4107,6 +4188,32 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::HighlightConfi
     for crate::api::search_engine::HighlightConfig
 {
     fn into_into_dart(self) -> crate::api::search_engine::HighlightConfig {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::IndexCompatibility {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.compatible.into_into_dart().into_dart(),
+            self.status.into_into_dart().into_dart(),
+            self.found_schema_version.into_into_dart().into_dart(),
+            self.required_schema_version.into_into_dart().into_dart(),
+            self.engine_version.into_into_dart().into_dart(),
+            self.metadata_path.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::IndexCompatibility
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::IndexCompatibility>
+    for crate::api::search_engine::IndexCompatibility
+{
+    fn into_into_dart(self) -> crate::api::search_engine::IndexCompatibility {
         self
     }
 }
@@ -4464,6 +4571,19 @@ impl SseEncode for i32 {
     }
 }
 
+impl SseEncode for crate::api::search_engine::IndexCompatibility {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.compatible, serializer);
+        <String>::sse_encode(self.status, serializer);
+        <Option<u32>>::sse_encode(self.found_schema_version, serializer);
+        <u32>::sse_encode(self.required_schema_version, serializer);
+        <String>::sse_encode(self.engine_version, serializer);
+        <String>::sse_encode(self.metadata_path, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
+    }
+}
+
 impl SseEncode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4608,6 +4728,16 @@ impl SseEncode for Vec<crate::api::benchmark::TestCase> {
     }
 }
 
+impl SseEncode for Option<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <String>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::benchmark::BenchmarkResult> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4634,6 +4764,16 @@ impl SseEncode for Option<crate::api::search_engine::SearchResult> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::search_engine::SearchResult>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<u32> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <u32>::sse_encode(value, serializer);
         }
     }
 }

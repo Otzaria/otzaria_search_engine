@@ -7,9 +7,12 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
 1. [Classes](#classes)
    - [SearchEngine](#searchengine)
    - [ReferenceSearchEngine](#referencesearchengine)
-2. [Data Models](#data-models)
+2. [Top-Level Functions](#top-level-functions)
+  - [checkIndexCompatibility](#checkindexcompatibility)
+3. [Data Models](#data-models)
    - [SearchResult](#searchresult)
    - [ReferenceSearchResult](#referencesearchresult)
+  - [IndexCompatibility](#indexcompatibility)
    - [ResultsOrder](#resultsorder)
 
 ---
@@ -275,6 +278,32 @@ Removes all references from the index.
 
 ---
 
+## Top-Level Functions
+
+### checkIndexCompatibility
+
+```dart
+IndexCompatibility checkIndexCompatibility({required String path})
+```
+
+Checks whether an existing index is compatible with the current search engine schema.
+
+The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies the current required schema shape.
+
+**Parameters:**
+- `path` (String): File system path of the Tantivy index directory
+
+**Returns:** IndexCompatibility
+
+Common `status` values:
+- `compatible`: Otzaria metadata exists and matches the current schema version
+- `legacy_compatible`: Otzaria metadata is missing, but Tantivy schema matches the current engine
+- `rebuild_required`: The index schema is older or incompatible and should be rebuilt
+- `engine_too_old`: The index schema is newer than this engine supports
+- `missing_index`: The index directory does not exist
+
+---
+
 ## Data Models
 
 ### SearchResult
@@ -314,6 +343,27 @@ class ReferenceSearchResult {
   String filePath;     // Path to document file
 }
 ```
+
+---
+
+### IndexCompatibility
+
+Result returned from `checkIndexCompatibility()`.
+
+**Fields:**
+```dart
+class IndexCompatibility {
+  bool compatible;             // Whether the current engine can use this index
+  String status;               // Machine-readable status
+  int? foundSchemaVersion;     // Version found in metadata, when known
+  int requiredSchemaVersion;   // Version required by this engine
+  String engineVersion;        // Rust engine package version
+  String metadataPath;         // Expected otzaria_index_meta.json path
+  String? reason;              // Human-readable detail for non-trivial states
+}
+```
+
+Compatibility is controlled by `requiredSchemaVersion`, not by the package release number. A patch release can keep the same schema version when no rebuild is required.
 
 ---
 

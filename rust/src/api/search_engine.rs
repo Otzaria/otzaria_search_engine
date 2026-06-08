@@ -2,7 +2,12 @@ use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
 use log::debug;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
@@ -60,6 +65,17 @@ pub struct FacetCount {
     pub count: u64,
 }
 
+#[derive(Clone)]
+pub struct IndexCompatibility {
+    pub compatible: bool,
+    pub status: String,
+    pub found_schema_version: Option<u32>,
+    pub required_schema_version: u32,
+    pub engine_version: String,
+    pub metadata_path: String,
+    pub reason: Option<String>,
+}
+
 pub enum ResultsOrder {
     Catalogue,
     Relevance,
@@ -68,6 +84,10 @@ pub enum ResultsOrder {
 // ── SearchEngine ───────────────────────────────────────────────────────────────
 
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
+const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
+const INDEX_FORMAT: &str = "otzaria-search-index";
+const INDEX_SCHEMA_VERSION: u32 = 2;
+const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
@@ -77,6 +97,269 @@ const MAX_HIGHLIGHT_TERMS: usize = 512;
 /// The eight schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics)`.
 type SchemaFields = (Field, Field, Field, Field, Field, Field, Field, Field);
+
+#[derive(Serialize, Deserialize)]
+struct IndexMetadata {
+    format: String,
+    schema_version: u32,
+    engine_version: String,
+    tantivy_version: String,
+    created_at_unix_seconds: u64,
+}
+
+#[frb(sync)]
+pub fn check_index_compatibility(path: String) -> IndexCompatibility {
+    check_index_compatibility_path(Path::new(&path))
+}
+
+fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
+    let metadata_path = index_metadata_path(index_path);
+
+    if !index_path.exists() {
+        return compatibility(
+            false,
+            "missing_index",
+            None,
+            metadata_path,
+            Some("index directory does not exist".to_string()),
+        );
+    }
+
+    if !index_path.is_dir() {
+        return compatibility(
+            false,
+            "invalid_index_path",
+            None,
+            metadata_path,
+            Some("index path is not a directory".to_string()),
+        );
+    }
+
+    if metadata_path.exists() {
+        return check_sidecar_metadata(metadata_path);
+    }
+
+    check_legacy_tantivy_metadata(index_path, metadata_path)
+}
+
+fn check_sidecar_metadata(metadata_path: PathBuf) -> IndexCompatibility {
+    let raw = match fs::read_to_string(&metadata_path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return compatibility(
+                false,
+                "invalid_metadata",
+                None,
+                metadata_path,
+                Some(format!("failed to read metadata: {err}")),
+            )
+        }
+    };
+
+    let metadata: IndexMetadata = match serde_json::from_str(&raw) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            return compatibility(
+                false,
+                "invalid_metadata",
+                None,
+                metadata_path,
+                Some(format!("failed to parse metadata: {err}")),
+            )
+        }
+    };
+
+    if metadata.format != INDEX_FORMAT {
+        return compatibility(
+            false,
+            "invalid_format",
+            Some(metadata.schema_version),
+            metadata_path,
+            Some(format!("expected format {INDEX_FORMAT}")),
+        );
+    }
+
+    if metadata.schema_version < INDEX_SCHEMA_VERSION {
+        return compatibility(
+            false,
+            "rebuild_required",
+            Some(metadata.schema_version),
+            metadata_path,
+            Some("index schema is older than the engine requires".to_string()),
+        );
+    }
+
+    if metadata.schema_version > INDEX_SCHEMA_VERSION {
+        return compatibility(
+            false,
+            "engine_too_old",
+            Some(metadata.schema_version),
+            metadata_path,
+            Some("index schema is newer than this engine supports".to_string()),
+        );
+    }
+
+    compatibility(
+        true,
+        "compatible",
+        Some(metadata.schema_version),
+        metadata_path,
+        None,
+    )
+}
+
+fn check_legacy_tantivy_metadata(
+    index_path: &Path,
+    metadata_path: PathBuf,
+) -> IndexCompatibility {
+    let tantivy_metadata_path = index_path.join("meta.json");
+    if !tantivy_metadata_path.exists() {
+        return compatibility(
+            false,
+            "missing_metadata",
+            None,
+            metadata_path,
+            Some("otzaria metadata and Tantivy meta.json are missing".to_string()),
+        );
+    }
+
+    let raw = match fs::read_to_string(&tantivy_metadata_path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return compatibility(
+                false,
+                "invalid_tantivy_metadata",
+                None,
+                metadata_path,
+                Some(format!("failed to read Tantivy metadata: {err}")),
+            )
+        }
+    };
+
+    let tantivy_metadata: JsonValue = match serde_json::from_str(&raw) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            return compatibility(
+                false,
+                "invalid_tantivy_metadata",
+                None,
+                metadata_path,
+                Some(format!("failed to parse Tantivy metadata: {err}")),
+            )
+        }
+    };
+
+    if tantivy_schema_matches_current_version(&tantivy_metadata) {
+        return compatibility(
+            true,
+            "legacy_compatible",
+            Some(INDEX_SCHEMA_VERSION),
+            metadata_path,
+            Some(
+                "otzaria metadata is missing, but Tantivy schema matches the current engine"
+                    .to_string(),
+            ),
+        );
+    }
+
+    compatibility(
+        false,
+        "rebuild_required",
+        inferred_legacy_schema_version(&tantivy_metadata),
+        metadata_path,
+        Some("otzaria metadata is missing and Tantivy schema is not compatible".to_string()),
+    )
+}
+
+fn tantivy_schema_matches_current_version(metadata: &JsonValue) -> bool {
+    metadata
+        .get("schema")
+        .and_then(JsonValue::as_array)
+        .map(|schema| schema.iter().any(id_field_is_current))
+        .unwrap_or(false)
+}
+
+fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
+    let schema = metadata.get("schema")?.as_array()?;
+    let id_field = schema.iter().find(|field| {
+        field.get("name").and_then(JsonValue::as_str) == Some("id")
+            && field.get("type").and_then(JsonValue::as_str) == Some("u64")
+    })?;
+    if id_field
+        .pointer("/options/indexed")
+        .and_then(JsonValue::as_bool)
+        == Some(false)
+    {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn id_field_is_current(field: &JsonValue) -> bool {
+    field.get("name").and_then(JsonValue::as_str) == Some("id")
+        && field.get("type").and_then(JsonValue::as_str) == Some("u64")
+        && field
+            .pointer("/options/indexed")
+            .and_then(JsonValue::as_bool)
+            == Some(true)
+        && field.pointer("/options/fast").and_then(JsonValue::as_bool) == Some(true)
+        && field.pointer("/options/stored").and_then(JsonValue::as_bool) == Some(true)
+}
+
+fn ensure_current_index_metadata(index_path: &Path) -> Result<()> {
+    let compatibility = check_index_compatibility_path(index_path);
+    if compatibility.compatible && compatibility.status != "compatible" {
+        write_current_index_metadata(index_path)?;
+    }
+    Ok(())
+}
+
+fn write_current_index_metadata(index_path: &Path) -> Result<()> {
+    let metadata_path = index_metadata_path(index_path);
+    let serialized = serde_json::to_string_pretty(&current_index_metadata())?;
+    fs::write(&metadata_path, format!("{serialized}\n")).with_context(|| {
+        format!(
+            "failed to write index metadata to {}",
+            metadata_path.display()
+        )
+    })
+}
+
+fn current_index_metadata() -> IndexMetadata {
+    IndexMetadata {
+        format: INDEX_FORMAT.to_string(),
+        schema_version: INDEX_SCHEMA_VERSION,
+        engine_version: env!("CARGO_PKG_VERSION").to_string(),
+        tantivy_version: TANTIVY_INDEX_VERSION.to_string(),
+        created_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    }
+}
+
+fn index_metadata_path(index_path: &Path) -> PathBuf {
+    index_path.join(INDEX_METADATA_FILE_NAME)
+}
+
+fn compatibility(
+    compatible: bool,
+    status: &str,
+    found_schema_version: Option<u32>,
+    metadata_path: PathBuf,
+    reason: Option<String>,
+) -> IndexCompatibility {
+    IndexCompatibility {
+        compatible,
+        status: status.to_string(),
+        found_schema_version,
+        required_schema_version: INDEX_SCHEMA_VERSION,
+        engine_version: env!("CARGO_PKG_VERSION").to_string(),
+        metadata_path: metadata_path.display().to_string(),
+        reason,
+    }
+}
 
 pub struct SearchEngine {
     schema: Schema,
@@ -122,6 +405,10 @@ impl SearchEngine {
         let index_writer = index
             .writer(DEFAULT_WRITER_HEAP_SIZE)
             .expect("Failed to create index writer");
+
+        if let Err(err) = ensure_current_index_metadata(Path::new(path)) {
+            debug!("failed to ensure index metadata: {err:#}");
+        }
 
         SearchEngine {
             schema,
@@ -1356,12 +1643,104 @@ impl SegmentCollector for BookCountSegmentCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn make_engine() -> (SearchEngine, TempDir) {
         let dir = TempDir::new().unwrap();
         let engine = SearchEngine::new(dir.path().to_str().unwrap());
         (engine, dir)
+    }
+
+    fn dir_path_string(dir: &TempDir) -> String {
+        dir.path().to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn new_writes_index_metadata_sidecar() {
+        let (_engine, dir) = make_engine();
+        let metadata_path = index_metadata_path(dir.path());
+        assert!(metadata_path.exists());
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible);
+        assert_eq!(compatibility.status, "compatible");
+        assert_eq!(
+            compatibility.found_schema_version,
+            Some(INDEX_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn missing_sidecar_uses_tantivy_schema_fallback() {
+        let (_engine, dir) = make_engine();
+        fs::remove_file(index_metadata_path(dir.path())).unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible);
+        assert_eq!(compatibility.status, "legacy_compatible");
+        assert_eq!(
+            compatibility.found_schema_version,
+            Some(INDEX_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn old_sidecar_schema_requires_rebuild() {
+        let dir = TempDir::new().unwrap();
+        let mut metadata = current_index_metadata();
+        metadata.schema_version = INDEX_SCHEMA_VERSION - 1;
+        fs::write(
+            index_metadata_path(dir.path()),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
+        assert_eq!(compatibility.found_schema_version, Some(1));
+    }
+
+    #[test]
+    fn future_sidecar_schema_marks_engine_too_old() {
+        let dir = TempDir::new().unwrap();
+        let mut metadata = current_index_metadata();
+        metadata.schema_version = INDEX_SCHEMA_VERSION + 1;
+        fs::write(
+            index_metadata_path(dir.path()),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "engine_too_old");
+        assert_eq!(compatibility.found_schema_version, Some(3));
+    }
+
+    #[test]
+    fn legacy_tantivy_schema_without_indexed_id_requires_rebuild() {
+        let dir = TempDir::new().unwrap();
+        let tantivy_metadata = json!({
+            "schema": [
+                {
+                    "name": "id",
+                    "type": "u64",
+                    "options": {
+                        "indexed": false,
+                        "fast": true,
+                        "stored": true
+                    }
+                }
+            ]
+        });
+        fs::write(dir.path().join("meta.json"), tantivy_metadata.to_string()).unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
+        assert_eq!(compatibility.found_schema_version, Some(1));
     }
 
     fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {

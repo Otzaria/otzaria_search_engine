@@ -6,9 +6,14 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_advanced_query`, `build_exact_query`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_query`, `build_results`, `collect_addresses`, `default_token_texts`, `default`, `ensure_writer`, `facet_filter_query`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `take_writer`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `collect`, `for_segment`, `harvest`, `merge_fruits`, `requires_scoring`
+// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_advanced_query`, `build_exact_query`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `default_token_texts`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `facet_filter_query`, `id_field_is_current`, `index_metadata_path`, `inferred_legacy_schema_version`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `take_writer`, `tantivy_schema_matches_current_version`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `IndexMetadata`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `collect`, `for_segment`, `harvest`, `merge_fruits`, `requires_scoring`
+
+IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineCheckIndexCompatibility(path: path);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
@@ -398,6 +403,49 @@ class HighlightConfig {
           highlightPrefix == other.highlightPrefix &&
           highlightPostfix == other.highlightPostfix &&
           maxChars == other.maxChars;
+}
+
+class IndexCompatibility {
+  final bool compatible;
+  final String status;
+  final int? foundSchemaVersion;
+  final int requiredSchemaVersion;
+  final String engineVersion;
+  final String metadataPath;
+  final String? reason;
+
+  const IndexCompatibility({
+    required this.compatible,
+    required this.status,
+    this.foundSchemaVersion,
+    required this.requiredSchemaVersion,
+    required this.engineVersion,
+    required this.metadataPath,
+    this.reason,
+  });
+
+  @override
+  int get hashCode =>
+      compatible.hashCode ^
+      status.hashCode ^
+      foundSchemaVersion.hashCode ^
+      requiredSchemaVersion.hashCode ^
+      engineVersion.hashCode ^
+      metadataPath.hashCode ^
+      reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is IndexCompatibility &&
+          runtimeType == other.runtimeType &&
+          compatible == other.compatible &&
+          status == other.status &&
+          foundSchemaVersion == other.foundSchemaVersion &&
+          requiredSchemaVersion == other.requiredSchemaVersion &&
+          engineVersion == other.engineVersion &&
+          metadataPath == other.metadataPath &&
+          reason == other.reason;
 }
 
 enum ResultsOrder { catalogue, relevance }

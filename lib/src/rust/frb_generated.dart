@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1773173041;
+  int get rustContentHash => -2011510744;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -487,6 +487,10 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiSearchEngineSearchEngineUpsertDocumentsBatch({
     required SearchEngine that,
     required List<DocumentInput> docs,
+  });
+
+  IndexCompatibility crateApiSearchEngineCheckIndexCompatibility({
+    required String path,
   });
 
   Future<void> crateApiDiagnosticTestRunDiagnosticTest();
@@ -3231,6 +3235,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  IndexCompatibility crateApiSearchEngineCheckIndexCompatibility({
+    required String path,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(path, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_index_compatibility,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineCheckIndexCompatibilityConstMeta,
+        argValues: [path],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineCheckIndexCompatibilityConstMeta =>
+      const TaskConstMeta(
+        debugName: "check_index_compatibility",
+        argNames: ["path"],
+      );
+
+  @override
   Future<void> crateApiDiagnosticTestRunDiagnosticTest() {
     return handler.executeNormal(
       NormalTask(
@@ -3239,7 +3271,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 55,
             port: port_,
           );
         },
@@ -3266,7 +3298,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 56,
             port: port_,
           );
         },
@@ -3532,6 +3564,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int dco_decode_box_autoadd_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
   DocumentInput dco_decode_document_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -3584,6 +3622,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int dco_decode_i_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
+  }
+
+  @protected
+  IndexCompatibility dco_decode_index_compatibility(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return IndexCompatibility(
+      compatible: dco_decode_bool(arr[0]),
+      status: dco_decode_String(arr[1]),
+      foundSchemaVersion: dco_decode_opt_box_autoadd_u_32(arr[2]),
+      requiredSchemaVersion: dco_decode_u_32(arr[3]),
+      engineVersion: dco_decode_String(arr[4]),
+      metadataPath: dco_decode_String(arr[5]),
+      reason: dco_decode_opt_String(arr[6]),
+    );
   }
 
   @protected
@@ -3686,6 +3741,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  String? dco_decode_opt_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
   BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_benchmark_result(raw);
@@ -3701,6 +3762,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_search_result(raw);
+  }
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_32(raw);
   }
 
   @protected
@@ -4147,6 +4214,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_32(deserializer));
+  }
+
+  @protected
   DocumentInput sse_decode_document_input(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_u_64(deserializer);
@@ -4200,6 +4273,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int sse_decode_i_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getInt32();
+  }
+
+  @protected
+  IndexCompatibility sse_decode_index_compatibility(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_compatible = sse_decode_bool(deserializer);
+    var var_status = sse_decode_String(deserializer);
+    var var_foundSchemaVersion = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_requiredSchemaVersion = sse_decode_u_32(deserializer);
+    var var_engineVersion = sse_decode_String(deserializer);
+    var var_metadataPath = sse_decode_String(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    return IndexCompatibility(
+      compatible: var_compatible,
+      status: var_status,
+      foundSchemaVersion: var_foundSchemaVersion,
+      requiredSchemaVersion: var_requiredSchemaVersion,
+      engineVersion: var_engineVersion,
+      metadataPath: var_metadataPath,
+      reason: var_reason,
+    );
   }
 
   @protected
@@ -4387,6 +4483,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BenchmarkResult? sse_decode_opt_box_autoadd_benchmark_result(
     SseDeserializer deserializer,
   ) {
@@ -4420,6 +4527,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_search_result(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_32(deserializer));
     } else {
       return null;
     }
@@ -4898,6 +5016,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self, serializer);
+  }
+
+  @protected
   void sse_encode_document_input(DocumentInput self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self.id, serializer);
@@ -4938,6 +5062,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_i_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
+  }
+
+  @protected
+  void sse_encode_index_compatibility(
+    IndexCompatibility self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.compatible, serializer);
+    sse_encode_String(self.status, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.foundSchemaVersion, serializer);
+    sse_encode_u_32(self.requiredSchemaVersion, serializer);
+    sse_encode_String(self.engineVersion, serializer);
+    sse_encode_String(self.metadataPath, serializer);
+    sse_encode_opt_String(self.reason, serializer);
   }
 
   @protected
@@ -5104,6 +5243,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_benchmark_result(
     BenchmarkResult? self,
     SseSerializer serializer,
@@ -5139,6 +5288,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_search_result(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_32(self, serializer);
     }
   }
 
