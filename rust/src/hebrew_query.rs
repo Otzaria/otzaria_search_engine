@@ -55,8 +55,8 @@ pub struct AdvancedQuery {
 /// whitespace runs to a single space, then trims.
 pub fn sanitize_query(query: &str) -> String {
     const REMOVE: &[char] = &[
-        ',', ';', '!', '?', ':', '*', '(', ')', '[', ']', '{', '}', '^', '$', '|', '\\', '+',
-        '.', '~', '`',
+        ',', ';', '!', '?', ':', '*', '(', ')', '[', ']', '{', '}', '^', '$', '|', '\\', '+', '.',
+        '~', '`',
     ];
     let mut buf = String::with_capacity(query.len());
     for ch in query.chars() {
@@ -273,7 +273,12 @@ fn prioritized_insertion_positions(length: usize) -> Vec<usize> {
 /// Adds `value` if new and non-empty. Returns `true` if the caller should keep
 /// generating, `false` once `max` distinct variations have been collected.
 /// Mirrors the Dart `addVariation` stop semantics exactly.
-fn add_capped(out: &mut Vec<String>, seen: &mut HashSet<String>, value: String, max: usize) -> bool {
+fn add_capped(
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    value: String,
+    max: usize,
+) -> bool {
     if value.is_empty() || seen.contains(&value) {
         return true;
     }
@@ -339,7 +344,12 @@ fn create_full_morphological_pattern(word: &str) -> String {
     if word.is_empty() {
         return String::new();
     }
-    format!("{}{}{}", PREFIX_GROUP, escape_regex(word), FULL_SUFFIX_PATTERN)
+    format!(
+        "{}{}{}",
+        PREFIX_GROUP,
+        escape_regex(word),
+        FULL_SUFFIX_PATTERN
+    )
 }
 
 fn create_prefix_search_pattern(word: &str) -> String {
@@ -658,25 +668,24 @@ pub fn prepare_advanced_query(
     let has_alternative_words = !alternative_words.is_empty();
     let has_search_options = has_enabled_search_options(search_options);
 
-    let (regex_terms, slop): (Vec<String>, u32) =
-        if has_alternative_words || has_search_options {
-            let terms = build_advanced_regex_terms(&words, alternative_words, search_options);
-            let slop = if words.len() <= 1 {
-                0
-            } else if has_custom_spacing {
-                get_max_custom_spacing(custom_spacing, words.len())
-            } else {
-                distance
-            };
-            (terms, slop)
-        } else if words.len() == 1 {
-            (words.clone(), 0)
+    let (regex_terms, slop): (Vec<String>, u32) = if has_alternative_words || has_search_options {
+        let terms = build_advanced_regex_terms(&words, alternative_words, search_options);
+        let slop = if words.len() <= 1 {
+            0
         } else if has_custom_spacing {
-            let slop = get_max_custom_spacing(custom_spacing, words.len());
-            (words.clone(), slop)
+            get_max_custom_spacing(custom_spacing, words.len())
         } else {
-            (words.clone(), distance)
+            distance
         };
+        (terms, slop)
+    } else if words.len() == 1 {
+        (words.clone(), 0)
+    } else if has_custom_spacing {
+        let slop = get_max_custom_spacing(custom_spacing, words.len());
+        (words.clone(), slop)
+    } else {
+        (words.clone(), distance)
+    };
 
     let max_expansions = calculate_max_expansions(regex_terms.len(), search_options, &words);
     AdvancedQuery {
@@ -724,9 +733,15 @@ mod tests {
     #[test]
     fn spelling_variations_order_and_content() {
         // "בוא": optional ו at index 1 -> omit first (mask 0), then include.
-        assert_eq!(generate_full_partial_spelling_variations("בוא"), vec!["בא", "בוא"]);
+        assert_eq!(
+            generate_full_partial_spelling_variations("בוא"),
+            vec!["בא", "בוא"]
+        );
         // No optional chars -> just the word.
-        assert_eq!(generate_full_partial_spelling_variations("גמל"), vec!["גמל"]);
+        assert_eq!(
+            generate_full_partial_spelling_variations("גמל"),
+            vec!["גמל"]
+        );
     }
 
     #[test]
@@ -803,7 +818,10 @@ mod tests {
     #[test]
     fn max_expansions_matches_dart_rules() {
         let empty = HashMap::new();
-        assert_eq!(calculate_max_expansions(1, &empty, &["שלום".to_string()]), 10);
+        assert_eq!(
+            calculate_max_expansions(1, &empty, &["שלום".to_string()]),
+            10
+        );
         assert_eq!(
             calculate_max_expansions(2, &empty, &["שלום".to_string(), "עולם".to_string()]),
             100
@@ -818,7 +836,13 @@ mod tests {
     #[test]
     fn prepare_advanced_slop_and_terms() {
         // Two words, no options, default distance carries to slop.
-        let q = prepare_advanced_query("שלום עולם", 3, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        let q = prepare_advanced_query(
+            "שלום עולם",
+            3,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(q.regex_terms, vec!["שלום", "עולם"]);
         assert_eq!(q.slop, 3);
         assert_eq!(q.max_expansions, 100);

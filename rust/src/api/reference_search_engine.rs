@@ -1,17 +1,14 @@
-
-use flutter_rust_bridge::frb;
 use crate::api::search_engine::ResultsOrder;
 use anyhow::Result;
+use flutter_rust_bridge::frb;
 use log::debug;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::index::Index;
-use tantivy::query::{QueryParser, Query};
+use tantivy::query::{Query, QueryParser};
 use tantivy::schema::Value as TantivyValue;
-use tantivy::{
-    doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Term,
-};
 use tantivy::schema::*;
+use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Term};
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -61,16 +58,23 @@ impl ReferenceSearchEngine {
 
         let schema = schema_builder.build();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = Index::open_or_create(mmap_directory, schema.clone())
-            .expect("Failed to create index");
+        let index =
+            Index::open_or_create(mmap_directory, schema.clone()).expect("Failed to create index");
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .expect("Failed to create index reader");
-        let index_writer = index.writer(50_000_000).expect("Failed to create index writer");
+        let index_writer = index
+            .writer(50_000_000)
+            .expect("Failed to create index writer");
 
-        ReferenceSearchEngine { schema, index, index_writer, index_reader }
+        ReferenceSearchEngine {
+            schema,
+            index,
+            index_writer,
+            index_reader,
+        }
     }
 
     // ── Write API ──────────────────────────────────────────────────────────────
@@ -130,7 +134,9 @@ impl ReferenceSearchEngine {
         _file_path: &str,
     ) -> Result<()> {
         self.delete_document_by_id(_id)?;
-        self.add_document(_id, _title, _reference, _short_ref, _segment, _is_pdf, _file_path)
+        self.add_document(
+            _id, _title, _reference, _short_ref, _segment, _is_pdf, _file_path,
+        )
     }
 
     /// Upsert many documents in a single FFI call. Does not commit.
@@ -138,7 +144,8 @@ impl ReferenceSearchEngine {
         let (title_f, reference_f, short_ref_f, id_f, segment_f, is_pdf_f, file_path_f) =
             self.all_fields()?;
         for doc in docs {
-            self.index_writer.delete_term(Term::from_field_u64(id_f, doc.id));
+            self.index_writer
+                .delete_term(Term::from_field_u64(id_f, doc.id));
             self.index_writer.add_document(doc!(
                 title_f     => doc.title,
                 reference_f => doc.reference,
@@ -155,7 +162,8 @@ impl ReferenceSearchEngine {
     /// Delete a document by its numeric id. Does not commit.
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
         let id_f = self.schema.get_field("id").unwrap();
-        self.index_writer.delete_term(Term::from_field_u64(id_f, id));
+        self.index_writer
+            .delete_term(Term::from_field_u64(id_f, id));
         Ok(())
     }
 
@@ -225,15 +233,48 @@ impl ReferenceSearchEngine {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-            let title = retrieved_doc.get_first(title_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let reference = retrieved_doc.get_first(reference_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let short_ref = retrieved_doc.get_first(short_ref_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let id = retrieved_doc.get_first(id_field).and_then(|v| v.as_u64()).unwrap_or_default();
-            let segment = retrieved_doc.get_first(segment_field).and_then(|v| v.as_u64()).unwrap_or_default();
-            let is_pdf = retrieved_doc.get_first(is_pdf_field).and_then(|v| v.as_bool()).unwrap_or_default();
-            let file_path = retrieved_doc.get_first(file_path_field).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let title = retrieved_doc
+                .get_first(title_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let reference = retrieved_doc
+                .get_first(reference_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let short_ref = retrieved_doc
+                .get_first(short_ref_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let id = retrieved_doc
+                .get_first(id_field)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            let segment = retrieved_doc
+                .get_first(segment_field)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            let is_pdf = retrieved_doc
+                .get_first(is_pdf_field)
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default();
+            let file_path = retrieved_doc
+                .get_first(file_path_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
 
-            results.push(ReferenceSearchResult { title, reference, short_ref, id, segment, is_pdf, file_path });
+            results.push(ReferenceSearchResult {
+                title,
+                reference,
+                short_ref,
+                id,
+                segment,
+                is_pdf,
+                file_path,
+            });
         }
         Ok(results)
     }
@@ -289,19 +330,55 @@ mod tests {
         let temp_path = temp_dir.path().to_str().unwrap();
         let mut engine = ReferenceSearchEngine::new(temp_path);
 
-        engine.add_document(1, "Document 1", "Reference 1", "R 1", 1, false, "/path/to/doc1").unwrap();
-        engine.add_document(2, "Document 2", "Reference 2", "R 2", 2, false, "/path/to/doc2").unwrap();
-        engine.add_document(3, "Document 3", "Another Reference", "A R", 3, false, "/path/to/doc3").unwrap();
+        engine
+            .add_document(
+                1,
+                "Document 1",
+                "Reference 1",
+                "R 1",
+                1,
+                false,
+                "/path/to/doc1",
+            )
+            .unwrap();
+        engine
+            .add_document(
+                2,
+                "Document 2",
+                "Reference 2",
+                "R 2",
+                2,
+                false,
+                "/path/to/doc2",
+            )
+            .unwrap();
+        engine
+            .add_document(
+                3,
+                "Document 3",
+                "Another Reference",
+                "A R",
+                3,
+                false,
+                "/path/to/doc3",
+            )
+            .unwrap();
         engine.commit().unwrap();
 
-        let results = engine.search("Reference", 10, false, ResultsOrder::Catalogue).unwrap();
+        let results = engine
+            .search("Reference", 10, false, ResultsOrder::Catalogue)
+            .unwrap();
         assert_eq!(results.len(), 3);
 
-        let results = engine.search("Reference 1", 10, false, ResultsOrder::Catalogue).unwrap();
+        let results = engine
+            .search("Reference 1", 10, false, ResultsOrder::Catalogue)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].reference, "Reference 1");
 
-        let results = engine.search("Referenc", 10, true, ResultsOrder::Catalogue).unwrap();
+        let results = engine
+            .search("Referenc", 10, true, ResultsOrder::Catalogue)
+            .unwrap();
         assert!(!results.is_empty());
 
         let count = engine.count("Reference", false).unwrap();
@@ -318,8 +395,12 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let mut engine = ReferenceSearchEngine::new(temp_dir.path().to_str().unwrap());
 
-        engine.add_document(1, "Doc 1", "Ref 1", "R1", 1, false, "/a").unwrap();
-        engine.add_document(2, "Doc 2", "Ref 2", "R2", 2, false, "/b").unwrap();
+        engine
+            .add_document(1, "Doc 1", "Ref 1", "R1", 1, false, "/a")
+            .unwrap();
+        engine
+            .add_document(2, "Doc 2", "Ref 2", "R2", 2, false, "/b")
+            .unwrap();
         engine.commit().unwrap();
 
         assert_eq!(engine.count("Ref", false).unwrap(), 2);
@@ -336,10 +417,14 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let mut engine = ReferenceSearchEngine::new(temp_dir.path().to_str().unwrap());
 
-        engine.add_document(1, "Doc 1", "Old Reference", "OR", 1, false, "/a").unwrap();
+        engine
+            .add_document(1, "Doc 1", "Old Reference", "OR", 1, false, "/a")
+            .unwrap();
         engine.commit().unwrap();
 
-        engine.upsert_document(1, "Doc 1", "New Reference", "NR", 1, false, "/a").unwrap();
+        engine
+            .upsert_document(1, "Doc 1", "New Reference", "NR", 1, false, "/a")
+            .unwrap();
         engine.commit().unwrap();
 
         assert_eq!(engine.count("Old", false).unwrap(), 0);

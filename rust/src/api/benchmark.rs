@@ -1,6 +1,6 @@
-use std::time::{Duration, Instant};
+use crate::api::search_engine::{ResultsOrder, SearchEngine};
 use anyhow::Result;
-use crate::api::search_engine::{SearchEngine, ResultsOrder};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct BenchmarkResult {
@@ -46,8 +46,13 @@ impl RegexBenchmarker {
         println!("{}", "=".repeat(80));
 
         for (i, test_case) in test_cases.iter().enumerate() {
-            println!("Running test {}/{}: {}", i + 1, test_cases.len(), test_case.query_name);
-            
+            println!(
+                "Running test {}/{}: {}",
+                i + 1,
+                test_cases.len(),
+                test_case.query_name
+            );
+
             let result = self.benchmark_single_query(
                 &test_case.query_name,
                 &test_case.regex_terms,
@@ -55,9 +60,12 @@ impl RegexBenchmarker {
                 test_case.slop,
                 test_case.max_expansions,
             )?;
-            
+
             total_time += Duration::from_millis(result.execution_time_ms);
-            println!("  Time: {}ms, Results: {}", result.execution_time_ms, result.result_count);
+            println!(
+                "  Time: {}ms, Results: {}",
+                result.execution_time_ms, result.result_count
+            );
             results.push(result);
         }
 
@@ -84,7 +92,6 @@ impl RegexBenchmarker {
                 slop: 0,
                 max_expansions: 50,
             },
-            
             // Complex single regex patterns
             TestCase {
                 query_name: "Complex Hebrew Pattern".to_string(),
@@ -100,7 +107,6 @@ impl RegexBenchmarker {
                 slop: 0,
                 max_expansions: 50,
             },
-            
             // Two-term phrase queries
             TestCase {
                 query_name: "Two Hebrew Words Exact".to_string(),
@@ -123,7 +129,6 @@ impl RegexBenchmarker {
                 slop: 1,
                 max_expansions: 100,
             },
-            
             // Three-term phrase queries
             TestCase {
                 query_name: "Three Hebrew Words".to_string(),
@@ -141,28 +146,40 @@ impl RegexBenchmarker {
             },
             TestCase {
                 query_name: "Three Complex Patterns".to_string(),
-                regex_terms: vec!["רב.*".to_string(), "[י-י][ה-ה].*".to_string(), ".*שיא".to_string()],
+                regex_terms: vec![
+                    "רב.*".to_string(),
+                    "[י-י][ה-ה].*".to_string(),
+                    ".*שיא".to_string(),
+                ],
                 facets: vec![],
                 slop: 2,
                 max_expansions: 200,
             },
-            
             // Four-term phrase queries
             TestCase {
                 query_name: "Four Hebrew Words".to_string(),
-                regex_terms: vec!["אמר".to_string(), "רבי".to_string(), "יהושע".to_string(), "בן".to_string()],
+                regex_terms: vec![
+                    "אמר".to_string(),
+                    "רבי".to_string(),
+                    "יהושע".to_string(),
+                    "בן".to_string(),
+                ],
                 facets: vec![],
                 slop: 0,
                 max_expansions: 50,
             },
             TestCase {
                 query_name: "Four Words with Medium Slop".to_string(),
-                regex_terms: vec!["אמר".to_string(), "רבי".to_string(), "יהושע".to_string(), "בן".to_string()],
+                regex_terms: vec![
+                    "אמר".to_string(),
+                    "רבי".to_string(),
+                    "יהושע".to_string(),
+                    "בן".to_string(),
+                ],
                 facets: vec![],
                 slop: 3,
                 max_expansions: 100,
             },
-            
             // High expansion queries
             TestCase {
                 query_name: "High Expansion Single Pattern".to_string(),
@@ -178,7 +195,6 @@ impl RegexBenchmarker {
                 slop: 1,
                 max_expansions: 500,
             },
-            
             // Complex character class patterns
             TestCase {
                 query_name: "Complex Character Classes".to_string(),
@@ -189,12 +205,15 @@ impl RegexBenchmarker {
             },
             TestCase {
                 query_name: "Multiple Complex Classes".to_string(),
-                regex_terms: vec!["[אבגד].*".to_string(), "[הוזח].*".to_string(), "[טיכל].*".to_string()],
+                regex_terms: vec![
+                    "[אבגד].*".to_string(),
+                    "[הוזח].*".to_string(),
+                    "[טיכל].*".to_string(),
+                ],
                 facets: vec![],
                 slop: 2,
                 max_expansions: 300,
             },
-            
             // Alternation patterns
             TestCase {
                 query_name: "Simple Alternation".to_string(),
@@ -210,7 +229,6 @@ impl RegexBenchmarker {
                 slop: 1,
                 max_expansions: 100,
             },
-            
             // Quantifier patterns
             TestCase {
                 query_name: "Quantifier Patterns".to_string(),
@@ -219,7 +237,6 @@ impl RegexBenchmarker {
                 slop: 1,
                 max_expansions: 150,
             },
-            
             // Very complex patterns
             TestCase {
                 query_name: "Very Complex Single Pattern".to_string(),
@@ -233,7 +250,7 @@ impl RegexBenchmarker {
                 regex_terms: vec![
                     "([רב]{1,2}[יא]?)".to_string(),
                     "([א-ת]{3,6})".to_string(),
-                    "(בן|בר|אבי)".to_string()
+                    "(בן|בר|אבי)".to_string(),
                 ],
                 facets: vec![],
                 slop: 2,
@@ -285,7 +302,7 @@ impl RegexBenchmarker {
                 None,
             )?;
             let duration = start.elapsed();
-            
+
             times.push(duration.as_millis() as u64);
             result_count = results.len() as u32;
         }
@@ -311,24 +328,39 @@ impl RegexBenchmarker {
     /// Estimate memory usage based on query complexity
     fn estimate_memory_usage(&self, regex_terms: &[String], max_expansions: u32) -> f64 {
         let base_memory = 1.0; // Base memory in MB
-        let term_complexity: f64 = regex_terms.iter()
+        let term_complexity: f64 = regex_terms
+            .iter()
             .map(|term| {
                 let mut complexity = 1.0;
-                if term.contains(".*") { complexity += 0.5; }
-                if term.contains("[") { complexity += 1.0; }
-                if term.contains("(") { complexity += 1.5; }
-                if term.contains("{") { complexity += 0.8; }
-                if term.contains("+") || term.contains("*") { complexity += 0.3; }
+                if term.contains(".*") {
+                    complexity += 0.5;
+                }
+                if term.contains("[") {
+                    complexity += 1.0;
+                }
+                if term.contains("(") {
+                    complexity += 1.5;
+                }
+                if term.contains("{") {
+                    complexity += 0.8;
+                }
+                if term.contains("+") || term.contains("*") {
+                    complexity += 0.3;
+                }
                 complexity
             })
             .sum();
-        
+
         let expansion_factor = (max_expansions as f64) / 100.0;
         base_memory + (term_complexity * expansion_factor * 0.1)
     }
 
     /// Analyze benchmark results and create summary
-    fn analyze_results(&self, results: Vec<BenchmarkResult>, total_time: Duration) -> BenchmarkSuite {
+    fn analyze_results(
+        &self,
+        results: Vec<BenchmarkResult>,
+        total_time: Duration,
+    ) -> BenchmarkSuite {
         let total_queries = results.len();
         let total_time_ms = total_time.as_millis() as u64;
         let average_time_ms = if total_queries > 0 {
@@ -337,13 +369,9 @@ impl RegexBenchmarker {
             0.0
         };
 
-        let fastest_query = results.iter()
-            .min_by_key(|r| r.execution_time_ms)
-            .cloned();
+        let fastest_query = results.iter().min_by_key(|r| r.execution_time_ms).cloned();
 
-        let slowest_query = results.iter()
-            .max_by_key(|r| r.execution_time_ms)
-            .cloned();
+        let slowest_query = results.iter().max_by_key(|r| r.execution_time_ms).cloned();
 
         BenchmarkSuite {
             total_queries,
@@ -360,33 +388,46 @@ impl RegexBenchmarker {
         println!("\n{}", "=".repeat(80));
         println!("REGEX PHRASE QUERY BENCHMARK RESULTS");
         println!("{}", "=".repeat(80));
-        
+
         println!("Total Queries: {}", suite.total_queries);
-        println!("Total Time: {}ms ({:.2}s)", suite.total_time_ms, suite.total_time_ms as f64 / 1000.0);
+        println!(
+            "Total Time: {}ms ({:.2}s)",
+            suite.total_time_ms,
+            suite.total_time_ms as f64 / 1000.0
+        );
         println!("Average Time: {:.2}ms", suite.average_time_ms);
-        
+
         if let Some(fastest) = &suite.fastest_query {
-            println!("Fastest Query: {} ({}ms)", fastest.query_name, fastest.execution_time_ms);
+            println!(
+                "Fastest Query: {} ({}ms)",
+                fastest.query_name, fastest.execution_time_ms
+            );
         }
-        
+
         if let Some(slowest) = &suite.slowest_query {
-            println!("Slowest Query: {} ({}ms)", slowest.query_name, slowest.execution_time_ms);
+            println!(
+                "Slowest Query: {} ({}ms)",
+                slowest.query_name, slowest.execution_time_ms
+            );
         }
 
         println!("\n{}", "-".repeat(80));
         println!("DETAILED RESULTS:");
         println!("{}", "-".repeat(80));
-        
+
         // Sort results by execution time for better analysis
         let mut sorted_results = suite.results.clone();
         sorted_results.sort_by_key(|r| r.execution_time_ms);
-        
+
         for result in &sorted_results {
             println!("Query: {}", result.query_name);
             println!("  Terms: {:?}", result.regex_terms);
             println!("  Time: {}ms", result.execution_time_ms);
             println!("  Results: {}", result.result_count);
-            println!("  Slop: {}, Max Expansions: {}", result.slop, result.max_expansions);
+            println!(
+                "  Slop: {}, Max Expansions: {}",
+                result.slop, result.max_expansions
+            );
             println!("  Est. Memory: {:.2}MB", result.memory_usage_mb);
             println!();
         }
@@ -395,14 +436,17 @@ impl RegexBenchmarker {
         println!("{}", "-".repeat(80));
         println!("PERFORMANCE ANALYSIS:");
         println!("{}", "-".repeat(80));
-        
-        let fast_queries: Vec<_> = sorted_results.iter()
+
+        let fast_queries: Vec<_> = sorted_results
+            .iter()
             .filter(|r| r.execution_time_ms < 50)
             .collect();
-        let medium_queries: Vec<_> = sorted_results.iter()
+        let medium_queries: Vec<_> = sorted_results
+            .iter()
             .filter(|r| r.execution_time_ms >= 50 && r.execution_time_ms < 200)
             .collect();
-        let slow_queries: Vec<_> = sorted_results.iter()
+        let slow_queries: Vec<_> = sorted_results
+            .iter()
             .filter(|r| r.execution_time_ms >= 200)
             .collect();
 
@@ -419,15 +463,26 @@ impl RegexBenchmarker {
     }
 
     /// Run a custom benchmark with user-defined queries
-    pub fn benchmark_custom_queries(&mut self, custom_queries: Vec<TestCase>) -> Result<BenchmarkSuite> {
+    pub fn benchmark_custom_queries(
+        &mut self,
+        custom_queries: Vec<TestCase>,
+    ) -> Result<BenchmarkSuite> {
         let mut results = Vec::new();
         let mut total_time = Duration::new(0, 0);
 
-        println!("Running custom benchmark with {} queries...", custom_queries.len());
+        println!(
+            "Running custom benchmark with {} queries...",
+            custom_queries.len()
+        );
 
         for (i, test_case) in custom_queries.iter().enumerate() {
-            println!("Running custom test {}/{}: {}", i + 1, custom_queries.len(), test_case.query_name);
-            
+            println!(
+                "Running custom test {}/{}: {}",
+                i + 1,
+                custom_queries.len(),
+                test_case.query_name
+            );
+
             let result = self.benchmark_single_query(
                 &test_case.query_name,
                 &test_case.regex_terms,
@@ -435,7 +490,7 @@ impl RegexBenchmarker {
                 test_case.slop,
                 test_case.max_expansions,
             )?;
-            
+
             total_time += Duration::from_millis(result.execution_time_ms);
             results.push(result);
         }
@@ -470,13 +525,13 @@ mod tests {
     fn test_run_benchmark_on_real_index() {
         // This test runs the actual benchmark on the real index
         let index_path = r"C:\אוצריא\index";
-        
+
         // Check if the index exists before running the test
         if std::path::Path::new(index_path).exists() {
             println!("Running benchmark on index: {}", index_path);
-            
+
             let mut benchmarker = RegexBenchmarker::new(index_path);
-            
+
             // Run a smaller subset of tests for the test environment
             let test_queries = vec![
                 TestCase {
@@ -501,26 +556,32 @@ mod tests {
                     max_expansions: 100,
                 },
             ];
-            
+
             match benchmarker.benchmark_custom_queries(test_queries) {
                 Ok(suite) => {
                     println!("Benchmark completed successfully!");
                     println!("Total queries: {}", suite.total_queries);
                     println!("Total time: {}ms", suite.total_time_ms);
                     println!("Average time: {:.2}ms", suite.average_time_ms);
-                    
+
                     if let Some(fastest) = &suite.fastest_query {
-                        println!("Fastest: {} ({}ms)", fastest.query_name, fastest.execution_time_ms);
+                        println!(
+                            "Fastest: {} ({}ms)",
+                            fastest.query_name, fastest.execution_time_ms
+                        );
                     }
-                    
+
                     if let Some(slowest) = &suite.slowest_query {
-                        println!("Slowest: {} ({}ms)", slowest.query_name, slowest.execution_time_ms);
+                        println!(
+                            "Slowest: {} ({}ms)",
+                            slowest.query_name, slowest.execution_time_ms
+                        );
                     }
-                    
+
                     // Assert that we got some results
                     assert!(suite.total_queries > 0);
                     assert!(suite.total_time_ms > 0);
-                },
+                }
                 Err(e) => {
                     println!("Benchmark failed with error: {}", e);
                     // Don't fail the test if there's an issue with the index
@@ -535,38 +596,54 @@ mod tests {
     #[test]
     fn test_comprehensive_benchmark() {
         let index_path = r"C:\אוצריא\index";
-        
+
         if std::path::Path::new(index_path).exists() {
             println!("Running comprehensive benchmark...");
-            
+
             let mut benchmarker = RegexBenchmarker::new(index_path);
-            
+
             match benchmarker.run_comprehensive_benchmark() {
                 Ok(suite) => {
                     println!("Comprehensive benchmark completed!");
                     println!("Results summary:");
                     println!("- Total queries: {}", suite.total_queries);
-                    println!("- Total time: {}ms ({:.2}s)", suite.total_time_ms, suite.total_time_ms as f64 / 1000.0);
+                    println!(
+                        "- Total time: {}ms ({:.2}s)",
+                        suite.total_time_ms,
+                        suite.total_time_ms as f64 / 1000.0
+                    );
                     println!("- Average time: {:.2}ms", suite.average_time_ms);
-                    
+
                     // Performance analysis
-                    let fast_queries = suite.results.iter().filter(|r| r.execution_time_ms < 50).count();
-                    let medium_queries = suite.results.iter().filter(|r| r.execution_time_ms >= 50 && r.execution_time_ms < 200).count();
-                    let slow_queries = suite.results.iter().filter(|r| r.execution_time_ms >= 200).count();
-                    
+                    let fast_queries = suite
+                        .results
+                        .iter()
+                        .filter(|r| r.execution_time_ms < 50)
+                        .count();
+                    let medium_queries = suite
+                        .results
+                        .iter()
+                        .filter(|r| r.execution_time_ms >= 50 && r.execution_time_ms < 200)
+                        .count();
+                    let slow_queries = suite
+                        .results
+                        .iter()
+                        .filter(|r| r.execution_time_ms >= 200)
+                        .count();
+
                     println!("- Fast queries (<50ms): {}", fast_queries);
                     println!("- Medium queries (50-200ms): {}", medium_queries);
                     println!("- Slow queries (>200ms): {}", slow_queries);
-                    
+
                     if slow_queries > 0 {
                         println!("Slow queries:");
                         for result in suite.results.iter().filter(|r| r.execution_time_ms >= 200) {
                             println!("  - {}: {}ms", result.query_name, result.execution_time_ms);
                         }
                     }
-                    
+
                     assert!(suite.total_queries > 0);
-                },
+                }
                 Err(e) => {
                     println!("Comprehensive benchmark failed: {}", e);
                 }

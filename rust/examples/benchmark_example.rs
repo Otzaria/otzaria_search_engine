@@ -1,13 +1,13 @@
 use anyhow::Result;
-use std::env;
 use search_engine::api::benchmark::{RegexBenchmarker, TestCase};
+use std::env;
 
 fn main() -> Result<()> {
     // Initialize logging
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
-    
+
     // Default index path
     let index_path = if args.len() > 1 {
         &args[1]
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     };
 
     println!("Initializing benchmark with index: {}", index_path);
-    
+
     let mut benchmarker = RegexBenchmarker::new(index_path);
 
     // Check if custom benchmark mode is requested
@@ -34,18 +34,22 @@ fn run_comprehensive_benchmark(benchmarker: &mut RegexBenchmarker) -> Result<()>
     println!("This will test various complexity levels of regex patterns.\n");
 
     let _suite = benchmarker.run_comprehensive_benchmark()?;
-    
+
     Ok(())
 }
 
 fn run_custom_benchmark(benchmarker: &mut RegexBenchmarker) -> Result<()> {
     println!("Running custom benchmark with Hebrew text patterns...");
-    
+
     let custom_queries = vec![
         // Talmudic patterns
         TestCase {
             query_name: "Talmudic Citation Pattern".to_string(),
-            regex_terms: vec!["תלמוד".to_string(), "בבלי".to_string(), "[א-ת]+".to_string()],
+            regex_terms: vec![
+                "תלמוד".to_string(),
+                "בבלי".to_string(),
+                "[א-ת]+".to_string(),
+            ],
             facets: vec![],
             slop: 2,
             max_expansions: 100,
@@ -73,7 +77,11 @@ fn run_custom_benchmark(benchmarker: &mut RegexBenchmarker) -> Result<()> {
         },
         TestCase {
             query_name: "Complex Aramaic Pattern".to_string(),
-            regex_terms: vec!["[א-ת]*א".to_string(), "[א-ת]*ן".to_string(), "[א-ת]*ה".to_string()],
+            regex_terms: vec![
+                "[א-ת]*א".to_string(),
+                "[א-ת]*ן".to_string(),
+                "[א-ת]*ה".to_string(),
+            ],
             facets: vec![],
             slop: 5,
             max_expansions: 300,
@@ -81,6 +89,6 @@ fn run_custom_benchmark(benchmarker: &mut RegexBenchmarker) -> Result<()> {
     ];
 
     let _suite = benchmarker.benchmark_custom_queries(custom_queries)?;
-    
+
     Ok(())
 }
