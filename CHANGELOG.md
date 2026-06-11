@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.6.0 – Mode-Specific Search & Hardening – 2026-06-11
+
+---
+
+### Breaking Changes
+
+#### `ReferenceSearchEngine` הוסר
+
+המנוע הייעודי לחיפוש הפניות (`ReferenceSearchEngine`, `ReferenceSearchResult`,
+`ReferenceDocumentInput`) הוסר מה-API הציבורי. אפליקציות שהשתמשו בו צריכות
+להסיר את הקריאות לפני עדכון התלות.
+
+#### חבילה שונתה ל-`otzaria_search_engine`
+
+החבילה, ה-export הראשי וה-podspecs של iOS/macOS שונו מ-`tantivy_search_engine`
+ל-`otzaria_search_engine` (שם ה-crate הפנימי `search_engine` נשאר).
+
+#### `search()` – חריגה מ-`maxExpansions` במונח בודד מחזירה שגיאה
+
+עד כה התקרה נאכפה רק בשאילתות מרובות מונחים; מונח regex בודד רץ ללא הגבלה.
+כעת חריגה מחזירה שגיאה בכל המקרים, בדומה להתנהגות של `RegexPhraseQuery`.
+
+---
+
+### New APIs
+
+- **חיפוש לפי מצב** – `searchExact` / `searchFuzzy` / `searchAdvanced` (+
+  `countExact/Fuzzy/Advanced`, `searchAndCountExact/Fuzzy/Advanced`,
+  `searchExactStream` / `searchFuzzyStream` / `searchAdvancedStream`).
+  המצב המתקדם מקבל `searchOptions` / `alternativeWords` / `customSpacing`
+  ומריץ את כל לוגיקת השאילתות העברית (קידומות, סיומות, כתיב מלא/חסר,
+  סובלנות לשגיאות) ב-Rust (מודול `hebrew_query`).
+- **הדגשות בתוצאות regex/advanced** – מונחי ההדגשה ממומשים ממילון האינדקס
+  דרך אותו אוטומט שהחיפוש משתמש בו, כך שכל וריאציה מורפולוגית שתאמה מודגשת.
+- **`checkIndexCompatibility(path)`** – בדיקת תאימות אינדקס (sidecar
+  `otzaria_index_meta.json` + נפילה חזרה להשוואת הסכמה המלאה של Tantivy).
+- **קריאת תוכן האינדקס** – `countDocumentsByFilePath()` ו-`getIndexedFilePaths()`
+  לשחזור מצב האינדוקס ישירות מהאינדקס.
+- **`searchAndCount` / `searchStream`** – ספירה ותוצאות במעבר יחיד, והזרמת
+  תוצאות בנתחים; `search` קיבל `offset` (חובה) ו-`highlight` (אופציונלי).
+
+---
+
+### Fixes & Hardening
+
+- שאילתה ריקה (או סימני פיסוק בלבד) מחזירה אפס תוצאות בכל המצבים —
+  ולא panic במצב advanced או *כל* המסמכים במצב fuzzy.
+- רשימת facets ריקה כבר לא מאפסת תוצאות בנתיבי ה-regex/advanced;
+  facet לא תקין מחזיר שגיאה במקום panic.
+- שאילתות advanced מנורמלות כמו האינדקס (הסרת ניקוד + lowercase),
+  כך שטקסט מנוקד שהודבק כבר לא מחזיר אפס תוצאות בשקט.
+- `SearchEngine.new` לא קורס כשנעילת ה-writer תפוסה — נפתח לקריאה
+  והכתיבה הראשונה מנסה שוב; הודעות שגיאה ברורות לסכמה לא תואמת.
+- `optimize()` שומר (commit) שינויים ממתינים במקום לזרוק אותם.
+- בדיקת התאימות לאינדקסים ישנים משווה את הסכמה המלאה ולא רק את שדה `id`.
+
+### Performance
+
+- מתודות החיפוש הישנות עברו ל-`&self` — חיפושים מקבילים לא מסתנכרנים
+  יותר מאחורי נעילת כתיבה.
+- `SnippetGenerator` נוצר פעם אחת לכל stream (ולא לכל chunk);
+  תקציב מונחי ההדגשה מתחלק שווה בין מילות השאילתה.
+
+### Packaging / CI
+
+- `url_prefix` של הבינארים המקומפלים מצביע על הריפו הקנוני
+  (`otzaria/otzaria_search_engine`); סודות ה-CI מוגבלים ל-steps החותמים.
+
+---
+
 ## 0.5.0 – Bridge Expansion (Tantivy 0.26 / FRB 2.12) – 2026-05-02
 
 ---

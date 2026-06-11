@@ -84,52 +84,82 @@ Commits all pending document additions to the index. Must be called after adding
 ##### search
 
 ```dart
-Future<List<SearchResult>> search(
-  List<String> regexTerms,
-  List<String> facets,
-  int limit,
-  int slop,
-  int maxExpansions,
-  ResultsOrder order
-)
+Future<List<SearchResult>> search({
+  required List<String> regexTerms,
+  required List<String> facets,
+  required int limit,
+  required int offset,
+  required int slop,
+  required int maxExpansions,
+  required ResultsOrder order,
+  HighlightConfig? highlight,
+})
 ```
 
 Performs a search query on the index using regex patterns.
 
 **Parameters:**
 - `regexTerms` (List<String>): List of regex patterns to search for
-  - Single term: uses RegexQuery
+  - Single term: matching index terms are materialized (capped at `maxExpansions`)
   - Multiple terms: uses RegexPhraseQuery with specified slop
-- `facets` (List<String>): List of topic facets to filter by (must match document topics)
+- `facets` (List<String>): List of topic facets to filter by (empty list = no facet filter)
 - `limit` (int/u32): Maximum number of results to return
+- `offset` (int/u32): Number of leading results to skip (pagination)
 - `slop` (int/u32): Maximum distance between terms in phrase queries (for multi-term searches)
-- `maxExpansions` (int/u32): Maximum number of regex expansions allowed
+- `maxExpansions` (int/u32): Maximum number of regex expansions allowed; exceeding it returns an error
 - `order` (ResultsOrder): Sort order for results (Catalogue or Relevance)
+- `highlight` (HighlightConfig?, optional): Snippet/highlight configuration; defaults to `<font color=red>` tags and 800 chars
 
 **Returns:** Future<List<SearchResult>>
 
+**Variants:**
+- `searchAndCount(...)` → `SearchPageResult` — same arguments, returns the total hit count alongside the page in a single index pass
+- `searchStream(..., chunkSize)` → `Stream<List<SearchResult>>` — emits results in chunks as snippets are built
+- `count(regexTerms, facets, slop, maxExpansions)` → `int` — count only
+
 ---
 
-##### count
+##### Mode-specific search (exact / fuzzy / advanced)
+
+Higher-level APIs that take a raw query string and build the query in Rust:
 
 ```dart
-Future<int> count(
-  List<String> regexTerms,
-  List<String> facets,
-  int slop,
-  int maxExpansions
-)
+// Exact: term/phrase match after nikud-stripping + tokenization. Fastest.
+Future<List<SearchResult>> searchExact({query, facets, limit, offset, order})
+
+// Fuzzy: Levenshtein matching per token (maxDistance edits, 0–2).
+Future<List<SearchResult>> searchFuzzy({query, facets, limit, offset, maxDistance, order})
+
+// Advanced: Hebrew morphological query builder (prefixes, suffixes,
+// full/deficient spelling, typo tolerance, alternative words, custom spacing).
+Future<List<SearchResult>> searchAdvanced({
+  query, facets, limit, offset, distance,
+  customSpacing, alternativeWords, searchOptions, order,
+})
 ```
 
-Counts the number of documents matching the search criteria without retrieving them.
+Each mode also provides `count*`, `searchAndCount*` and `search*Stream`
+variants (`countExact`, `searchAndCountFuzzy`, `searchAdvancedStream`, …).
+Queries are normalized like the index (nikud stripped, lowercased); empty
+queries return no results. Advanced-mode highlighting wraps every
+morphological variant that actually matched, not just the literal words.
 
-**Parameters:**
-- `regexTerms` (List<String>): List of regex patterns to search for
-- `facets` (List<String>): List of topic facets to filter by
-- `slop` (int/u32): Maximum distance between terms in phrase queries
-- `maxExpansions` (int/u32): Maximum number of regex expansions allowed
+---
 
-**Returns:** Future<int> - Number of matching documents
+##### Write & maintenance API
+
+```dart
+Future<void> addDocumentsBatch({required List<DocumentInput> docs}) // bulk add, no commit
+Future<void> upsertDocument({...})                // delete-by-id + re-insert, no commit
+Future<void> upsertDocumentsBatch({required List<DocumentInput> docs})
+Future<void> deleteDocumentById({required BigInt id})
+Future<void> rollback()                           // discard writes since last commit
+Future<void> optimize()                           // commit pending + merge all segments
+Future<BigInt> getDocumentCount()
+Future<int> getSegmentCount()
+Future<List<FacetCount>> getFacetCounts({...})    // per-child facet counts for a prefix
+Future<Map<String, int>> countByBook({...})       // per-filePath hit counts for a query
+```
 
 ---
 
@@ -205,10 +235,11 @@ The engine writes an `otzaria_index_meta.json` sidecar file next to compatible i
 
 Common `status` values:
 - `compatible`: Otzaria metadata exists and matches the current schema version
-- `legacy_compatible`: Otzaria metadata is missing, but Tantivy schema matches the current engine
+- `legacy_compatible`: Otzaria metadata is missing, but the full Tantivy schema matches the current engine
 - `rebuild_required`: The index schema is older or incompatible and should be rebuilt
 - `engine_too_old`: The index schema is newer than this engine supports
 - `missing_index`: The index directory does not exist
+- `invalid_index_path`: The given path is not a valid directory path
 
 ---
 
@@ -231,7 +262,36 @@ class SearchResult {
 }
 ```
 
-**Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags. If no snippet is generated, it contains the full document text.
+**Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags by default (configurable via `HighlightConfig`). If no snippet is generated, it contains the full document text.
+
+---
+
+### SearchPageResult
+
+Result returned from the `searchAndCount*` family.
+
+**Fields:**
+```dart
+class SearchPageResult {
+  List<SearchResult> results;  // The requested page
+  int totalCount;              // Total hits for the query
+}
+```
+
+---
+
+### HighlightConfig
+
+Optional snippet/highlight configuration accepted by `search`, `searchAndCount`, `searchStream` and `searchFuzzyTerms`.
+
+**Fields:**
+```dart
+class HighlightConfig {
+  String highlightPrefix;   // default: "<font color=red>"
+  String highlightPostfix;  // default: "</font>"
+  int maxChars;             // snippet length budget, default: 800
+}
+```
 
 ---
 
