@@ -1,7 +1,7 @@
 use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
-use log::debug;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -395,16 +395,28 @@ impl SearchEngine {
 
         let schema = schema_builder.build();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index =
-            Index::open_or_create(mmap_directory, schema.clone()).expect("Failed to create index");
+        let index = match Index::open_or_create(mmap_directory, schema.clone()) {
+            Ok(index) => index,
+            Err(tantivy::TantivyError::SchemaError(err)) => panic!(
+                "index at {path} was built with an incompatible schema ({err}); \
+                 call check_index_compatibility before opening and rebuild the index"
+            ),
+            Err(err) => panic!("Failed to open index at {path}: {err}"),
+        };
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .expect("Failed to create index reader");
-        let index_writer = index
-            .writer(DEFAULT_WRITER_HEAP_SIZE)
-            .expect("Failed to create index writer");
+        // Best-effort: if another instance/process holds the writer lock right
+        // now, start without a writer; ensure_writer() retries on first write.
+        let index_writer = match index.writer(DEFAULT_WRITER_HEAP_SIZE) {
+            Ok(writer) => Some(writer),
+            Err(err) => {
+                warn!("writer unavailable at startup ({err}); will retry lazily");
+                None
+            }
+        };
 
         if let Err(err) = ensure_current_index_metadata(Path::new(path)) {
             debug!("failed to ensure index metadata: {err:#}");
@@ -413,7 +425,7 @@ impl SearchEngine {
         SearchEngine {
             schema,
             index,
-            index_writer: Some(index_writer),
+            index_writer,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             index_reader,
         }
@@ -2137,6 +2149,24 @@ mod tests {
             !fuzzy_texts.contains(&"ביי"),
             "unrelated term must not appear"
         );
+    }
+
+    #[test]
+    fn test_new_tolerates_held_writer_lock() {
+        let (mut first, dir) = make_engine();
+        add(&mut first, 1, "ספר", "/books/a.txt");
+        first.commit().unwrap();
+
+        // While `first` holds the writer lock, a second engine must still open
+        // (no panic) and serve reads.
+        let mut second = SearchEngine::new(dir.path().to_str().unwrap());
+        assert_eq!(search_ids(&mut second, "ספר"), vec![1]);
+
+        // Once the lock is released, writes recover lazily via ensure_writer.
+        drop(first);
+        add(&mut second, 2, "תורה", "/books/b.txt");
+        second.commit().unwrap();
+        assert_eq!(search_ids(&mut second, "תורה"), vec![2]);
     }
 
     #[test]
