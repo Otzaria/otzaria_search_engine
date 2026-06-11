@@ -6,7 +6,6 @@
 import 'api/benchmark.dart';
 import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
-import 'api/reference_search_engine.dart';
 import 'api/search_engine.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -23,10 +22,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ReferenceSearchEnginePtr => wire
-      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr;
-
-  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_RegexBenchmarkerPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarkerPtr;
 
@@ -36,12 +31,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
-
-  @protected
-  ReferenceSearchEngine
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  );
 
   @protected
   RegexBenchmarker
@@ -56,12 +45,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  ReferenceSearchEngine
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  );
-
-  @protected
   RegexBenchmarker
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -70,12 +53,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    dynamic raw,
-  );
-
-  @protected
-  ReferenceSearchEngine
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
     dynamic raw,
   );
 
@@ -100,12 +77,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw);
-
-  @protected
-  ReferenceSearchEngine
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  );
 
   @protected
   RegexBenchmarker
@@ -199,16 +170,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<ReferenceDocumentInput> dco_decode_list_reference_document_input(
-    dynamic raw,
-  );
-
-  @protected
-  List<ReferenceSearchResult> dco_decode_list_reference_search_result(
-    dynamic raw,
-  );
-
-  @protected
   List<SearchResult> dco_decode_list_search_result(dynamic raw);
 
   @protected
@@ -247,12 +208,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   (int, List<String>) dco_decode_record_u_32_list_string(dynamic raw);
 
   @protected
-  ReferenceDocumentInput dco_decode_reference_document_input(dynamic raw);
-
-  @protected
-  ReferenceSearchResult dco_decode_reference_search_result(dynamic raw);
-
-  @protected
   ResultsOrder dco_decode_results_order(dynamic raw);
 
   @protected
@@ -283,12 +238,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
-  ReferenceSearchEngine
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   RegexBenchmarker
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -301,12 +250,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  ReferenceSearchEngine
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   RegexBenchmarker
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -315,12 +258,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ReferenceSearchEngine
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
     SseDeserializer deserializer,
   );
 
@@ -351,12 +288,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Map<int, List<String>> sse_decode_Map_u_32_list_String_None(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ReferenceSearchEngine
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
     SseDeserializer deserializer,
   );
 
@@ -472,16 +403,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<ReferenceDocumentInput> sse_decode_list_reference_document_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<ReferenceSearchResult> sse_decode_list_reference_search_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   List<SearchResult> sse_decode_list_search_result(
     SseDeserializer deserializer,
   );
@@ -532,16 +453,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  ReferenceDocumentInput sse_decode_reference_document_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ReferenceSearchResult sse_decode_reference_search_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   ResultsOrder sse_decode_results_order(SseDeserializer deserializer);
 
   @protected
@@ -576,13 +487,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -597,13 +501,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -613,13 +510,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SearchEngine self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
     SseSerializer serializer,
   );
 
@@ -657,13 +547,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_Map_u_32_list_String_None(
     Map<int, List<String>> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
     SseSerializer serializer,
   );
 
@@ -808,18 +691,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_reference_document_input(
-    List<ReferenceDocumentInput> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_reference_search_result(
-    List<ReferenceSearchResult> self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_list_search_result(
     List<SearchResult> self,
     SseSerializer serializer,
@@ -883,18 +754,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_reference_document_input(
-    ReferenceDocumentInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_reference_search_result(
-    ReferenceSearchResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_results_order(ResultsOrder self, SseSerializer serializer);
 
   @protected
@@ -938,40 +797,6 @@ class RustLibWire implements BaseWire {
   /// The symbols are looked up in [dynamicLibrary].
   RustLibWire(ffi.DynamicLibrary dynamicLibrary)
     : _lookup = dynamicLibrary.lookup;
-
-  void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ffi.Pointer<ffi.Void> ptr,
-  ) {
-    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-      ptr,
-    );
-  }
-
-  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine',
-      );
-  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine =
-      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr
-          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
-
-  void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ffi.Pointer<ffi.Void> ptr,
-  ) {
-    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-      ptr,
-    );
-  }
-
-  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_otzaria_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine',
-      );
-  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine =
-      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEnginePtr
-          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
