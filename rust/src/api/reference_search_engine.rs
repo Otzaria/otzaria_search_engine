@@ -1,7 +1,7 @@
 use crate::api::search_engine::ResultsOrder;
 use anyhow::Result;
 use flutter_rust_bridge::frb;
-use log::debug;
+use log::{debug, warn};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::index::Index;
@@ -57,9 +57,7 @@ impl ReferenceSearchEngine {
         schema_builder.add_text_field("filePath", TEXT | STORED);
 
         let schema = schema_builder.build();
-        let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index =
-            Index::open_or_create(mmap_directory, schema.clone()).expect("Failed to create index");
+        let index = Self::open_or_recreate_index(path, &schema);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -74,6 +72,29 @@ impl ReferenceSearchEngine {
             index,
             index_writer,
             index_reader,
+        }
+    }
+
+    /// Opens the index at `path`, or — when the on-disk schema predates the
+    /// current one (e.g. `id` was not INDEXED before delete/upsert-by-id were
+    /// added) — wipes and recreates it. The reference index is a derived cache
+    /// that the app repopulates when it finds it empty, so recreating beats
+    /// panicking on every startup with an old index.
+    fn open_or_recreate_index(path: &str, schema: &Schema) -> Index {
+        let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
+        match Index::open_or_create(mmap_directory, schema.clone()) {
+            Ok(index) => index,
+            Err(tantivy::TantivyError::SchemaError(err)) => {
+                warn!("reference index schema mismatch ({err}); recreating the index");
+                std::fs::remove_dir_all(path).expect("unable to clear reference index directory");
+                std::fs::create_dir_all(path)
+                    .expect("unable to recreate reference index directory");
+                let mmap_directory =
+                    MmapDirectory::open(path).expect("unable to open mmap directory");
+                Index::open_or_create(mmap_directory, schema.clone())
+                    .expect("Failed to create index")
+            }
+            Err(err) => panic!("Failed to open reference index: {err}"),
         }
     }
 
@@ -387,6 +408,38 @@ mod tests {
         let count = engine.count("Reference 1", false).unwrap();
         assert_eq!(count, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_recreates_index_with_old_schema() -> Result<()> {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().to_str().unwrap();
+
+        // Build an index with the pre-upsert schema (`id` without INDEXED).
+        {
+            let mut schema_builder = Schema::builder();
+            schema_builder.add_text_field("reference", TEXT | STORED);
+            schema_builder.add_text_field("shortRef", TEXT);
+            schema_builder.add_text_field("title", TEXT | STORED);
+            schema_builder.add_u64_field("id", STORED | FAST);
+            schema_builder.add_u64_field("segment", STORED);
+            schema_builder.add_bool_field("isPdf", STORED);
+            schema_builder.add_text_field("filePath", TEXT | STORED);
+            let old_schema = schema_builder.build();
+            let dir = MmapDirectory::open(path).unwrap();
+            Index::open_or_create(dir, old_schema).unwrap();
+        }
+
+        // Must not panic: the incompatible index is recreated empty and usable.
+        let mut engine = ReferenceSearchEngine::new(path);
+        assert_eq!(engine.count("Ref", false).unwrap(), 0);
+
+        engine
+            .add_document(1, "Doc 1", "Ref 1", "R1", 1, false, "/a")
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(engine.count("Ref", false).unwrap(), 1);
         Ok(())
     }
 
