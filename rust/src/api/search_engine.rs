@@ -1304,6 +1304,12 @@ impl SearchEngine {
         facets: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
+        // Mirror exact mode: an empty query matches nothing. Without this
+        // guard the clause list degenerates to just the facet filter and the
+        // query returns every document in the selected facets.
+        if term_texts.is_empty() {
+            return Ok(Box::new(EmptyQuery));
+        }
         let text_f = self.schema.get_field("text")?;
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = term_texts
             .iter()
@@ -2731,6 +2737,29 @@ mod tests {
         assert!(texts.contains(&"שלום".to_string()));
         assert!(texts.contains(&"שלם".to_string()));
         assert!(!texts.contains(&"ביי".to_string()));
+    }
+
+    #[test]
+    fn test_search_fuzzy_empty_query_returns_no_results() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/a.txt");
+        engine.commit().unwrap();
+
+        // Mirror exact mode: empty/punctuation-only fuzzy queries match
+        // nothing instead of returning every document in the facets.
+        for query in ["", "?!"] {
+            let results = engine
+                .search_fuzzy(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    1,
+                    ResultsOrder::Relevance,
+                )
+                .unwrap();
+            assert!(results.is_empty(), "query {query:?} should match nothing");
+        }
     }
 
     #[test]
