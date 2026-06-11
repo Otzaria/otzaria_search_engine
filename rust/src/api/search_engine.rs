@@ -1226,9 +1226,13 @@ impl SearchEngine {
             let mut stream = inverted.terms().search(&regex).into_stream()?;
             while stream.advance() {
                 if let Ok(term) = std::str::from_utf8(stream.key()) {
-                    matched.insert(term.to_string());
-                    if matched.len() > max_expansions as usize {
-                        anyhow::bail!("query exceeded max expansions {max_expansions}");
+                    // contains-before-insert avoids re-allocating the term
+                    // string when it was already seen in an earlier segment.
+                    if !matched.contains(term) {
+                        matched.insert(term.to_string());
+                        if matched.len() > max_expansions as usize {
+                            anyhow::bail!("query exceeded max expansions {max_expansions}");
+                        }
                     }
                 }
             }
@@ -1545,7 +1549,8 @@ impl SearchEngine {
                 let mut stream = inverted.terms().search(&regex).into_stream()?;
                 while stream.advance() {
                     if let Ok(term) = std::str::from_utf8(stream.key()) {
-                        if matched.insert(term.to_string()) {
+                        if !matched.contains(term) {
+                            matched.insert(term.to_string());
                             pattern_terms += 1;
                             if pattern_terms >= per_pattern_cap {
                                 break 'segments;
