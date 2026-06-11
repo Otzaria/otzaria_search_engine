@@ -1171,22 +1171,27 @@ impl SearchEngine {
         max_expansions: u32,
     ) -> Result<Box<dyn Query>> {
         let schema = index.schema();
-        let text_field = schema.get_field("text").unwrap();
-        let topics_field = schema.get_field("topics").unwrap();
+        let text_field = schema.get_field("text")?;
+        let topics_field = schema.get_field("topics")?;
 
-        let main_query: Box<dyn Query> = if regex_terms.len() == 1 {
-            Box::new(RegexQuery::from_pattern(&regex_terms[0], text_field)?)
-        } else {
-            let mut phrase_query = RegexPhraseQuery::new(text_field, regex_terms);
-            phrase_query.set_slop(slop);
-            phrase_query.set_max_expansions(max_expansions);
-            Box::new(phrase_query)
+        let main_query: Box<dyn Query> = match regex_terms.len() {
+            0 => Box::new(EmptyQuery),
+            1 => Box::new(RegexQuery::from_pattern(&regex_terms[0], text_field)?),
+            _ => {
+                let mut phrase_query = RegexPhraseQuery::new(text_field, regex_terms);
+                phrase_query.set_slop(slop);
+                phrase_query.set_max_expansions(max_expansions);
+                Box::new(phrase_query)
+            }
         };
 
+        if facets.is_empty() {
+            return Ok(main_query);
+        }
         let facet_terms: Vec<Term> = facets
             .iter()
-            .map(|f| Term::from_facet(topics_field, &Facet::from_text(f).unwrap()))
-            .collect();
+            .map(|f| Ok(Term::from_facet(topics_field, &Facet::from_text(f)?)))
+            .collect::<Result<Vec<_>>>()?;
         let facets_query = TermSetQuery::new(facet_terms);
 
         Ok(Box::new(BooleanQuery::new(vec![
@@ -2454,6 +2459,72 @@ mod tests {
             vec![1, 2],
             "grammatical prefix should match ספר and הספר"
         );
+    }
+
+    #[test]
+    fn test_search_advanced_empty_query_returns_no_results() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        engine.commit().unwrap();
+
+        // Empty and punctuation-only queries produce zero regex terms; they must
+        // return no results instead of panicking inside RegexPhraseQuery.
+        for query in ["", "?!"] {
+            let results = engine
+                .search_advanced(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    0,
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    ResultsOrder::Catalogue,
+                )
+                .unwrap();
+            assert!(results.is_empty(), "query {query:?} should match nothing");
+        }
+    }
+
+    #[test]
+    fn test_search_skips_empty_facets() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let got = ids(engine
+            .search(
+                vec!["ספר".to_string()],
+                vec![],
+                100,
+                0,
+                0,
+                100,
+                ResultsOrder::Catalogue,
+                None,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1], "empty facet list should not filter anything");
+    }
+
+    #[test]
+    fn test_search_rejects_invalid_facet() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let result = engine.search(
+            vec!["ספר".to_string()],
+            vec!["not-a-facet".to_string()],
+            100,
+            0,
+            0,
+            100,
+            ResultsOrder::Catalogue,
+            None,
+        );
+        assert!(result.is_err(), "malformed facet should error, not panic");
     }
 
     #[test]
