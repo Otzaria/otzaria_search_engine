@@ -39,6 +39,8 @@ const INSERTION_LETTERS: &[&str] = &[
 ];
 
 const MAX_TYPO_TOLERANCE_VARIATIONS: usize = 48;
+/// Cap on pattern variations per word when typo tolerance is off.
+const MAX_PATTERN_VARIATIONS: usize = 20;
 
 // ── Result of preparing an advanced query ───────────────────────────────────────
 
@@ -552,11 +554,15 @@ pub fn build_advanced_regex_terms(
             .collect();
 
         if valid_options.is_empty() {
-            regex_terms.push(word.clone());
+            regex_terms.push(escape_regex(word));
             continue;
         }
 
-        let max_variations = if has_typo { 48 } else { 20 };
+        let max_variations = if has_typo {
+            MAX_TYPO_TOLERANCE_VARIATIONS
+        } else {
+            MAX_PATTERN_VARIATIONS
+        };
         let mut variations: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for option in &valid_options {
@@ -606,7 +612,9 @@ fn get_max_custom_spacing(custom_spacing: &HashMap<String, String>, word_count: 
             if !value.is_empty() {
                 let parsed = value.trim().parse::<i64>().unwrap_or(0);
                 if parsed > 0 {
-                    max_spacing = max_spacing.max(parsed as u32);
+                    // Saturate instead of `as`-casting, which would wrap
+                    // values above u32::MAX around to tiny slops.
+                    max_spacing = max_spacing.max(u32::try_from(parsed).unwrap_or(u32::MAX));
                 }
             }
         }
@@ -681,6 +689,9 @@ pub fn prepare_advanced_query(
     let has_alternative_words = !alternative_words.is_empty();
     let has_search_options = has_enabled_search_options(search_options);
 
+    // Plain-path words become regex patterns as-is; escape defensively even
+    // though sanitised tokens cannot contain regex metacharacters today.
+    let escaped = || words.iter().map(|w| escape_regex(w)).collect::<Vec<_>>();
     let (regex_terms, slop): (Vec<String>, u32) = if has_alternative_words || has_search_options {
         let terms = build_advanced_regex_terms(&words, alternative_words, search_options);
         let slop = if words.len() <= 1 {
@@ -692,12 +703,12 @@ pub fn prepare_advanced_query(
         };
         (terms, slop)
     } else if words.len() == 1 {
-        (words.clone(), 0)
+        (escaped(), 0)
     } else if has_custom_spacing {
         let slop = get_max_custom_spacing(custom_spacing, words.len());
-        (words.clone(), slop)
+        (escaped(), slop)
     } else {
-        (words.clone(), distance)
+        (escaped(), distance)
     };
 
     let max_expansions = calculate_max_expansions(regex_terms.len(), search_options, &words);
