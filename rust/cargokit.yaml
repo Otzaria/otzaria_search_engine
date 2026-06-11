@@ -1,5 +1,5 @@
-# If this branch is merged into a different canonical repository, update the
-# owner/name below to point at the repository that publishes the release assets.
+# Must point at the repository whose Precompiled Binaries workflow publishes
+# the release assets (the workflow publishes to its own github.repository).
 precompiled_binaries:
-  url_prefix: https://github.com/gwngdwl/otzaria_search_engine/releases/download/precompiled_
+  url_prefix: https://github.com/otzaria/otzaria_search_engine/releases/download/precompiled_
   public_key: 6b55b683af6991173786933963ec36125a8d14659954ca87b362ee26820fc136

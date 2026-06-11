@@ -23,8 +23,6 @@ jobs:
     name: Publish Apple + Android
     runs-on: macos-15
     env:
-      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Pin the iOS deployment target so cc-rs (C deps like zstd-sys) and rustc
       # agree on it. Left unset, cc compiles C at the SDK default (e.g. iOS 18.x)
       # while rustc links iOS at its default 10.0, where __chkstk_darwin is not
@@ -50,6 +48,11 @@ jobs:
       - name: Publish Apple and Android artifacts
         working-directory: cargokit/build_tool
         shell: bash
+        # Secrets are scoped to this step only so earlier steps (and any
+        # third-party actions) never see them in their environment.
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -101,9 +104,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runs_on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-    env:
-      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -117,6 +117,9 @@ jobs:
 
       - name: Publish Linux artifacts
         working-directory: cargokit/build_tool
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           dart run bin/build_tool.dart precompile-binaries \
             --repository "${{ github.repository }}" \
@@ -126,9 +129,6 @@ jobs:
   publish-windows:
     name: Publish Windows
     runs-on: windows-2022
-    env:
-      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -143,6 +143,9 @@ jobs:
       - name: Publish Windows artifacts
         working-directory: cargokit/build_tool
         shell: pwsh
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
           dart run bin/build_tool.dart precompile-binaries
           --repository "${{ github.repository }}"
