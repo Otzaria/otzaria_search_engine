@@ -12,7 +12,7 @@ use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, Top
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
 use tantivy::query::{
-    BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, RegexQuery, TermQuery,
+    AllQuery, BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, RegexQuery, TermQuery,
     TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
@@ -667,6 +667,25 @@ impl SearchEngine {
 
     pub fn get_segment_count(&self) -> Result<u32> {
         Ok(self.index.searchable_segment_ids()?.len() as u32)
+    }
+
+    /// Number of live (committed, non-deleted) documents per distinct
+    /// `filePath` across the whole index.
+    ///
+    /// This is read from the index itself rather than from any external state,
+    /// so callers can reconstruct indexing progress directly from an index —
+    /// e.g. after pointing the engine at a directory that already contains an
+    /// index built elsewhere — and compare it against the current library.
+    pub fn count_documents_by_file_path(&self) -> Result<HashMap<String, u32>> {
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(&AllQuery, &BookCountCollector)?)
+    }
+
+    /// Distinct `filePath` values present in the index — i.e. which books have
+    /// at least one live document. Convenience wrapper over
+    /// [`Self::count_documents_by_file_path`].
+    pub fn get_indexed_file_paths(&self) -> Result<Vec<String>> {
+        Ok(self.count_documents_by_file_path()?.into_keys().collect())
     }
 
     /// Fetch a single document by its numeric id. Returns None if not found.
@@ -1836,6 +1855,105 @@ mod tests {
             .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
             .unwrap();
 
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
+        assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn test_count_documents_by_file_path_empty_index() {
+        let (engine, _dir) = make_engine();
+        assert!(engine.count_documents_by_file_path().unwrap().is_empty());
+        assert!(engine.get_indexed_file_paths().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_count_documents_by_file_path_basic() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        add(&mut engine, 2, "שלום רב", "/books/a.txt");
+        add(&mut engine, 3, "שלום חבר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let counts = engine.count_documents_by_file_path().unwrap();
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
+        assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+
+        let mut paths = engine.get_indexed_file_paths().unwrap();
+        paths.sort();
+        assert_eq!(paths, vec!["/books/a.txt", "/books/b.txt"]);
+    }
+
+    #[test]
+    fn test_count_documents_by_file_path_respects_deletes() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        add(&mut engine, 2, "שלום רב", "/books/a.txt");
+        add(&mut engine, 3, "שלום חבר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        engine.delete_document_by_id(1).unwrap();
+        engine.delete_document_by_id(3).unwrap();
+        engine.commit().unwrap();
+
+        let counts = engine.count_documents_by_file_path().unwrap();
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(1));
+        assert_eq!(
+            counts.get("/books/b.txt"),
+            None,
+            "a book whose documents were all deleted must not be reported"
+        );
+
+        let paths = engine.get_indexed_file_paths().unwrap();
+        assert_eq!(paths, vec!["/books/a.txt"]);
+    }
+
+    #[test]
+    fn test_count_documents_by_file_path_multi_segment() {
+        let (mut engine, _dir) = make_engine();
+        disable_auto_merge(&engine);
+
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+        add(&mut engine, 2, "שלום רב", "/books/a.txt");
+        add(&mut engine, 3, "שלום חבר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let counts = engine.count_documents_by_file_path().unwrap();
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
+        assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn test_count_documents_by_file_path_excludes_uncommitted() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+        add(&mut engine, 2, "שלום רב", "/books/b.txt"); // not committed
+
+        let counts = engine.count_documents_by_file_path().unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get("/books/a.txt").copied(), Some(1));
+    }
+
+    #[test]
+    fn test_count_documents_by_file_path_from_reopened_index() {
+        // The motivating scenario: a fresh engine instance opens a directory
+        // that already contains an index, and reconstructs which books are
+        // indexed from the index itself (no external state).
+        let dir = TempDir::new().unwrap();
+        {
+            let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+            add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+            add(&mut engine, 2, "שלום רב", "/books/a.txt");
+            add(&mut engine, 3, "שלום חבר", "/books/b.txt");
+            engine.commit().unwrap();
+        }
+
+        let reopened = SearchEngine::new(dir.path().to_str().unwrap());
+        let counts = reopened.count_documents_by_file_path().unwrap();
         assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
         assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
         assert_eq!(counts.len(), 2);

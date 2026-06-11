@@ -162,6 +162,32 @@ Removes all documents with the specified title from the index.
 
 ---
 
+##### countDocumentsByFilePath
+
+```dart
+Future<Map<String, int>> countDocumentsByFilePath()
+```
+
+Returns the number of live (committed, non-deleted) documents per distinct `filePath` across the whole index.
+
+The result is read from the index itself rather than from any external state, so callers can reconstruct indexing progress directly from an index — e.g. after pointing the engine at a directory that already contains an index built elsewhere — and compare it against the current library to decide whether re-indexing is needed.
+
+**Returns:** Future<Map<String, int>> - Map from `filePath` to its live document count
+
+---
+
+##### getIndexedFilePaths
+
+```dart
+Future<List<String>> getIndexedFilePaths()
+```
+
+Returns the distinct `filePath` values present in the index — i.e. which books have at least one live document. Convenience wrapper over `countDocumentsByFilePath()`.
+
+**Returns:** Future<List<String>> - List of indexed file paths (unordered)
+
+---
+
 ### ReferenceSearchEngine
 
 Specialized search engine for searching document references/citations.

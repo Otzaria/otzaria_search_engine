@@ -82,6 +82,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
   });
 
+  /// Number of live (committed, non-deleted) documents per distinct
+  /// `filePath` across the whole index.
+  ///
+  /// This is read from the index itself rather than from any external state,
+  /// so callers can reconstruct indexing progress directly from an index —
+  /// e.g. after pointing the engine at a directory that already contains an
+  /// index built elsewhere — and compare it against the current library.
+  Future<Map<String, int>> countDocumentsByFilePath();
+
   Future<int> countExact({required String query, required List<String> facets});
 
   Future<int> countFuzzy({
@@ -130,6 +139,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String facetPrefix,
     required int maxDistance,
   });
+
+  /// Distinct `filePath` values present in the index — i.e. which books have
+  /// at least one live document. Convenience wrapper over
+  /// [`Self::count_documents_by_file_path`].
+  Future<List<String>> getIndexedFilePaths();
 
   Future<int> getSegmentCount();
 
