@@ -14,7 +14,7 @@ pub fn run_diagnostic_test() -> Result<()> {
     println!("Index: {}", index_path);
     println!("{}", "=".repeat(60));
 
-    let mut search_engine = SearchEngine::new(index_path);
+    let search_engine = SearchEngine::new(index_path);
 
     // Test with very simple patterns first
     let simple_tests = vec![
