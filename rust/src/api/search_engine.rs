@@ -12,7 +12,7 @@ use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, Top
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
 use tantivy::query::{
-    AllQuery, BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, RegexQuery, TermQuery,
+    AllQuery, BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, TermQuery,
     TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
@@ -572,7 +572,7 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
-        let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
+        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search(query, None, limit, offset, &order, &hl)
     }
@@ -590,7 +590,7 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<SearchPageResult> {
-        let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
+        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search_and_count(query, None, limit, offset, &order, &hl)
     }
@@ -602,13 +602,7 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<u32> {
-        let query = Self::build_query(
-            &self.index,
-            regex_terms,
-            facets.to_vec(),
-            slop,
-            max_expansions,
-        )?;
+        let query = self.build_query(regex_terms, facets.to_vec(), slop, max_expansions)?;
         self.run_count(query)
     }
 
@@ -619,7 +613,7 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<HashMap<String, u32>> {
-        let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
+        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         self.run_count_by_book(query)
     }
 
@@ -632,7 +626,7 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<Vec<FacetCount>> {
-        let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
+        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         self.run_facet_counts(query, facet_prefix)
     }
 
@@ -796,7 +790,7 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let query = Self::build_query(&self.index, regex_terms, facets, slop, max_expansions)?;
+        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search_stream(query, None, limit, offset, &order, &hl, chunk_size, sink)
     }
@@ -1176,19 +1170,19 @@ impl SearchEngine {
     }
 
     fn build_query(
-        index: &Index,
+        &self,
         regex_terms: Vec<String>,
         facets: Vec<String>,
         slop: u32,
         max_expansions: u32,
     ) -> Result<Box<dyn Query>> {
-        let schema = index.schema();
+        let schema = self.index.schema();
         let text_field = schema.get_field("text")?;
         let topics_field = schema.get_field("topics")?;
 
         let main_query: Box<dyn Query> = match regex_terms.len() {
             0 => Box::new(EmptyQuery),
-            1 => Box::new(RegexQuery::from_pattern(&regex_terms[0], text_field)?),
+            1 => self.single_regex_term_query(&regex_terms[0], text_field, max_expansions)?,
             _ => {
                 let mut phrase_query = RegexPhraseQuery::new(text_field, regex_terms);
                 phrase_query.set_slop(slop);
@@ -1210,6 +1204,41 @@ impl SearchEngine {
             (Occur::Must, main_query),
             (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
         ])))
+    }
+
+    /// Single regex term: materialize the matching index terms into a
+    /// `TermSetQuery`, enforcing `max_expansions` the same way
+    /// `RegexPhraseQuery` does for multi-term queries (error on overflow).
+    /// A bare `RegexQuery` would enumerate the term dictionary without any
+    /// bound, so a broad pattern (e.g. a 1-char word with prefix+suffix
+    /// options) could scan a huge slice of the index unchecked.
+    fn single_regex_term_query(
+        &self,
+        pattern: &str,
+        text_field: Field,
+        max_expansions: u32,
+    ) -> Result<Box<dyn Query>> {
+        let regex = tantivy_fst::Regex::new(pattern)
+            .map_err(|e| anyhow::anyhow!("invalid regex {pattern:?}: {e}"))?;
+        let searcher = self.index_reader.searcher();
+        let mut matched: HashSet<String> = HashSet::new();
+        for reader in searcher.segment_readers() {
+            let inverted = reader.inverted_index(text_field)?;
+            let mut stream = inverted.terms().search(&regex).into_stream()?;
+            while stream.advance() {
+                if let Ok(term) = std::str::from_utf8(stream.key()) {
+                    matched.insert(term.to_string());
+                    if matched.len() > max_expansions as usize {
+                        anyhow::bail!("query exceeded max expansions {max_expansions}");
+                    }
+                }
+            }
+        }
+        let terms: Vec<Term> = matched
+            .into_iter()
+            .map(|t| Term::from_field_text(text_field, &t))
+            .collect();
+        Ok(Box::new(TermSetQuery::new(terms)))
     }
 
     /// Tokenizes `text` with the same `"default"` analyzer the `text` field is
@@ -1323,8 +1352,7 @@ impl SearchEngine {
             search_options,
         );
         let regex_terms = prepared.regex_terms.clone();
-        let query = Self::build_query(
-            &self.index,
+        let query = self.build_query(
             prepared.regex_terms,
             facets,
             prepared.slop,
@@ -2489,6 +2517,41 @@ mod tests {
             vec![1, 2],
             "grammatical prefix should match ספר and הספר"
         );
+    }
+
+    #[test]
+    fn test_single_term_respects_max_expansions() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        // Two index terms match; a cap of 1 must error like RegexPhraseQuery.
+        let too_narrow = engine.search(
+            vec![".*ספר".to_string()],
+            vec![],
+            100,
+            0,
+            0,
+            1,
+            ResultsOrder::Catalogue,
+            None,
+        );
+        assert!(too_narrow.is_err(), "exceeding max_expansions should error");
+
+        let ok = ids(engine
+            .search(
+                vec![".*ספר".to_string()],
+                vec![],
+                100,
+                0,
+                0,
+                10,
+                ResultsOrder::Catalogue,
+                None,
+            )
+            .unwrap());
+        assert_eq!(ok, vec![1, 2]);
     }
 
     #[test]
