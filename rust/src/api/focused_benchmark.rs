@@ -14,7 +14,7 @@ pub fn run_focused_benchmark() -> Result<()> {
     println!("Index: {}", index_path);
     println!("{}", "=".repeat(60));
 
-    let mut search_engine = SearchEngine::new(index_path);
+    let search_engine = SearchEngine::new(index_path);
 
     // Test cases with different complexity levels
     let test_cases = vec![

@@ -461,18 +461,18 @@ fn wire__crate__api__search_engine__SearchEngine_count_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok = crate::api::search_engine::SearchEngine::count(
-                            &mut *api_that_guard,
+                            &*api_that_guard,
                             api_regex_terms,
                             &api_facets,
                             api_slop,
@@ -592,18 +592,18 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok = crate::api::search_engine::SearchEngine::count_by_book(
-                            &mut *api_that_guard,
+                            &*api_that_guard,
                             api_regex_terms,
                             api_facets,
                             api_slop,
@@ -1178,18 +1178,18 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok = crate::api::search_engine::SearchEngine::get_facet_counts(
-                            &mut *api_that_guard,
+                            &*api_that_guard,
                             api_regex_terms,
                             api_facets,
                             api_facet_prefix,
@@ -1741,18 +1741,18 @@ fn wire__crate__api__search_engine__SearchEngine_search_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok = crate::api::search_engine::SearchEngine::search(
-                            &mut *api_that_guard,
+                            &*api_that_guard,
                             api_regex_terms,
                             api_facets,
                             api_limit,
@@ -1974,18 +1974,18 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok = crate::api::search_engine::SearchEngine::search_and_count(
-                            &mut *api_that_guard,
+                            &*api_that_guard,
                             api_regex_terms,
                             api_facets,
                             api_limit,
@@ -2530,19 +2530,19 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok =
                             crate::api::search_engine::SearchEngine::search_fuzzy_terms(
-                                &mut *api_that_guard,
+                                &*api_that_guard,
                                 api_terms,
                                 api_facets,
                                 api_limit,

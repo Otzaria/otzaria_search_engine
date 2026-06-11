@@ -558,7 +558,7 @@ impl SearchEngine {
     // ── Search API ─────────────────────────────────────────────────────────────
 
     pub fn search(
-        &mut self,
+        &self,
         regex_terms: Vec<String>,
         facets: Vec<String>,
         limit: u32,
@@ -576,7 +576,7 @@ impl SearchEngine {
     /// Search and return total hit count alongside paged results in one call.
     /// Uses a tuple collector so Tantivy executes a single index pass.
     pub fn search_and_count(
-        &mut self,
+        &self,
         regex_terms: Vec<String>,
         facets: Vec<String>,
         limit: u32,
@@ -592,7 +592,7 @@ impl SearchEngine {
     }
 
     pub fn count(
-        &mut self,
+        &self,
         regex_terms: Vec<String>,
         facets: &[String],
         slop: u32,
@@ -603,7 +603,7 @@ impl SearchEngine {
     }
 
     pub fn count_by_book(
-        &mut self,
+        &self,
         regex_terms: Vec<String>,
         facets: Vec<String>,
         slop: u32,
@@ -615,7 +615,7 @@ impl SearchEngine {
 
     /// Return per-child facet counts for a given prefix (e.g. "/").
     pub fn get_facet_counts(
-        &mut self,
+        &self,
         regex_terms: Vec<String>,
         facets: Vec<String>,
         facet_prefix: String,
@@ -753,7 +753,7 @@ impl SearchEngine {
     /// Multiple terms are ANDed together; each is matched within `max_distance`
     /// edits (0 = exact, 1–2 = fuzzy).
     pub fn search_fuzzy_terms(
-        &mut self,
+        &self,
         terms: Vec<String>,
         facets: Vec<String>,
         limit: u32,
