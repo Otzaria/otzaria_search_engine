@@ -230,8 +230,12 @@ class CargokitCrateOptions {
 }
 
 class CargokitUserOptions {
-  // Prefer precompiled binaries by default and fall back to local build when
-  // a signed artifact is not available for the current crate hash/target.
+  // NOTE: deliberate deviation from upstream cargokit, which defaults to
+  // precompiled binaries only when rustup is missing. This fork always
+  // prefers the signed artifacts published by this repository's Precompiled
+  // Binaries workflow (verified against cargokit.yaml's public_key) and
+  // falls back to a local build when none is available. Opt out with
+  // `use_precompiled_binaries: false` in ~/.cargokit/config.yaml.
   static bool defaultUsePrecompiledBinaries() {
     return true;
   }
