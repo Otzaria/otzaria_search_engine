@@ -268,12 +268,17 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
     )
 }
 
+/// Compares the full on-disk schema against the engine's current one — the
+/// same equality `Index::open_or_create` enforces — so a legacy index can't
+/// pass the check (e.g. on the `id` field alone) and then fail to open.
 fn tantivy_schema_matches_current_version(metadata: &JsonValue) -> bool {
-    metadata
-        .get("schema")
-        .and_then(JsonValue::as_array)
-        .map(|schema| schema.iter().any(id_field_is_current))
-        .unwrap_or(false)
+    let Some(schema_json) = metadata.get("schema") else {
+        return false;
+    };
+    match serde_json::from_value::<Schema>(schema_json.clone()) {
+        Ok(found_schema) => found_schema == current_schema(),
+        Err(_) => false,
+    }
 }
 
 fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
@@ -291,20 +296,6 @@ fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
     } else {
         None
     }
-}
-
-fn id_field_is_current(field: &JsonValue) -> bool {
-    field.get("name").and_then(JsonValue::as_str) == Some("id")
-        && field.get("type").and_then(JsonValue::as_str) == Some("u64")
-        && field
-            .pointer("/options/indexed")
-            .and_then(JsonValue::as_bool)
-            == Some(true)
-        && field.pointer("/options/fast").and_then(JsonValue::as_bool) == Some(true)
-        && field
-            .pointer("/options/stored")
-            .and_then(JsonValue::as_bool)
-            == Some(true)
 }
 
 fn ensure_current_index_metadata(index_path: &Path) -> Result<()> {
@@ -361,6 +352,31 @@ fn compatibility(
     }
 }
 
+/// The schema this engine version requires. Kept in one place so `new()` and
+/// the legacy compatibility check can never drift apart.
+fn current_schema() -> Schema {
+    let mut schema_builder = Schema::builder();
+    schema_builder.add_text_field("text", TEXT | STORED | FAST);
+    schema_builder.add_text_field("reference", STORED);
+    schema_builder.add_text_field(
+        "title",
+        TextOptions::default()
+            .set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer("raw")
+                    .set_fieldnorms(false),
+            )
+            .set_stored(),
+    );
+    // INDEXED is required for delete_term / upsert by id to work.
+    schema_builder.add_u64_field("id", STORED | FAST | INDEXED);
+    schema_builder.add_u64_field("segment", STORED);
+    schema_builder.add_bool_field("isPdf", STORED);
+    schema_builder.add_text_field("filePath", STRING | FAST | STORED);
+    schema_builder.add_facet_field("topics", FacetOptions::default());
+    schema_builder.build()
+}
+
 pub struct SearchEngine {
     schema: Schema,
     index: Index,
@@ -373,27 +389,7 @@ impl SearchEngine {
     #[frb(sync)]
     pub fn new(path: &str) -> Self {
         debug!("new path={}", path);
-        let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field("text", TEXT | STORED | FAST);
-        schema_builder.add_text_field("reference", STORED);
-        schema_builder.add_text_field(
-            "title",
-            TextOptions::default()
-                .set_indexing_options(
-                    TextFieldIndexing::default()
-                        .set_tokenizer("raw")
-                        .set_fieldnorms(false),
-                )
-                .set_stored(),
-        );
-        // INDEXED is required for delete_term / upsert by id to work.
-        schema_builder.add_u64_field("id", STORED | FAST | INDEXED);
-        schema_builder.add_u64_field("segment", STORED);
-        schema_builder.add_bool_field("isPdf", STORED);
-        schema_builder.add_text_field("filePath", STRING | FAST | STORED);
-        schema_builder.add_facet_field("topics", FacetOptions::default());
-
-        let schema = schema_builder.build();
+        let schema = current_schema();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
         let index = match Index::open_or_create(mmap_directory, schema.clone()) {
             Ok(index) => index,
@@ -1816,6 +1812,41 @@ mod tests {
         assert!(!compatibility.compatible);
         assert_eq!(compatibility.status, "rebuild_required");
         assert_eq!(compatibility.found_schema_version, Some(1));
+    }
+
+    #[test]
+    fn legacy_schema_with_current_id_but_old_file_path_requires_rebuild() {
+        let dir = TempDir::new().unwrap();
+        {
+            // `id` matches the current shape, but `filePath` lacks FAST (and
+            // is tokenized) — the engine could not open this index, so the
+            // full-schema check must fail it instead of passing on `id` alone.
+            let mut b = Schema::builder();
+            b.add_text_field("text", TEXT | STORED | FAST);
+            b.add_text_field("reference", STORED);
+            b.add_text_field(
+                "title",
+                TextOptions::default()
+                    .set_indexing_options(
+                        TextFieldIndexing::default()
+                            .set_tokenizer("raw")
+                            .set_fieldnorms(false),
+                    )
+                    .set_stored(),
+            );
+            b.add_u64_field("id", STORED | FAST | INDEXED);
+            b.add_u64_field("segment", STORED);
+            b.add_bool_field("isPdf", STORED);
+            b.add_text_field("filePath", TEXT | STORED);
+            b.add_facet_field("topics", FacetOptions::default());
+            let old_schema = b.build();
+            let mmap = MmapDirectory::open(dir.path()).unwrap();
+            Index::open_or_create(mmap, old_schema).unwrap();
+        }
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
     }
 
     fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {
