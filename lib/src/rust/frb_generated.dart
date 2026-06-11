@@ -6,7 +6,6 @@
 import 'api/benchmark.dart';
 import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
-import 'api/reference_search_engine.dart';
 import 'api/search_engine.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -68,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 709647259;
+  int get rustContentHash => -46777581;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -80,78 +79,6 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineAddDocument({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  });
-
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineAddDocumentsBatch({
-    required ReferenceSearchEngine that,
-    required List<ReferenceDocumentInput> docs,
-  });
-
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineClear({
-    required ReferenceSearchEngine that,
-  });
-
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineCommit({
-    required ReferenceSearchEngine that,
-  });
-
-  Future<int> crateApiReferenceSearchEngineReferenceSearchEngineCount({
-    required ReferenceSearchEngine that,
-    required String query,
-    required bool fuzzy,
-  });
-
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineDeleteDocumentById({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-  });
-
-  ReferenceSearchEngine crateApiReferenceSearchEngineReferenceSearchEngineNew({
-    required String path,
-  });
-
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineRollback({
-    required ReferenceSearchEngine that,
-  });
-
-  Future<List<ReferenceSearchResult>>
-  crateApiReferenceSearchEngineReferenceSearchEngineSearch({
-    required ReferenceSearchEngine that,
-    required String query,
-    required int limit,
-    required bool fuzzy,
-    required ResultsOrder order,
-  });
-
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineUpsertDocument({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  });
-
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentsBatch({
-    required ReferenceSearchEngine that,
-    required List<ReferenceDocumentInput> docs,
-  });
-
   Future<BenchmarkSuite>
   crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries({
     required RegexBenchmarker that,
@@ -507,15 +434,6 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark();
 
   RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ReferenceSearchEngine;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ReferenceSearchEngine;
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ReferenceSearchEnginePtr;
-
-  RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_RegexBenchmarker;
 
   RustArcDecrementStrongCountFnType
@@ -542,504 +460,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineAddDocument({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_u_64(id, serializer);
-          sse_encode_String(title, serializer);
-          sse_encode_String(reference, serializer);
-          sse_encode_String(shortRef, serializer);
-          sse_encode_u_64(segment, serializer);
-          sse_encode_bool(isPdf, serializer);
-          sse_encode_String(filePath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 1,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta,
-        argValues: [
-          that,
-          id,
-          title,
-          reference,
-          shortRef,
-          segment,
-          isPdf,
-          filePath,
-        ],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_add_document",
-        argNames: [
-          "that",
-          "id",
-          "title",
-          "reference",
-          "shortRef",
-          "segment",
-          "isPdf",
-          "filePath",
-        ],
-      );
-
-  @override
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineAddDocumentsBatch({
-    required ReferenceSearchEngine that,
-    required List<ReferenceDocumentInput> docs,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_list_reference_document_input(docs, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 2,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentsBatchConstMeta,
-        argValues: [that, docs],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineAddDocumentsBatchConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_add_documents_batch",
-        argNames: ["that", "docs"],
-      );
-
-  @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineClear({
-    required ReferenceSearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 3,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineClearConstMeta,
-        argValues: [that],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineClearConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_clear",
-        argNames: ["that"],
-      );
-
-  @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineCommit({
-    required ReferenceSearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 4,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineCommitConstMeta,
-        argValues: [that],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineCommitConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_commit",
-        argNames: ["that"],
-      );
-
-  @override
-  Future<int> crateApiReferenceSearchEngineReferenceSearchEngineCount({
-    required ReferenceSearchEngine that,
-    required String query,
-    required bool fuzzy,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_String(query, serializer);
-          sse_encode_bool(fuzzy, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 5,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_u_32,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineCountConstMeta,
-        argValues: [that, query, fuzzy],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineCountConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_count",
-        argNames: ["that", "query", "fuzzy"],
-      );
-
-  @override
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineDeleteDocumentById({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_u_64(id, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 6,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineDeleteDocumentByIdConstMeta,
-        argValues: [that, id],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineDeleteDocumentByIdConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_delete_document_by_id",
-        argNames: ["that", "id"],
-      );
-
-  @override
-  ReferenceSearchEngine crateApiReferenceSearchEngineReferenceSearchEngineNew({
-    required String path,
-  }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine,
-          decodeErrorData: null,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineNewConstMeta,
-        argValues: [path],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineNewConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_new",
-        argNames: ["path"],
-      );
-
-  @override
-  Future<void> crateApiReferenceSearchEngineReferenceSearchEngineRollback({
-    required ReferenceSearchEngine that,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 8,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineRollbackConstMeta,
-        argValues: [that],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineRollbackConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_rollback",
-        argNames: ["that"],
-      );
-
-  @override
-  Future<List<ReferenceSearchResult>>
-  crateApiReferenceSearchEngineReferenceSearchEngineSearch({
-    required ReferenceSearchEngine that,
-    required String query,
-    required int limit,
-    required bool fuzzy,
-    required ResultsOrder order,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_String(query, serializer);
-          sse_encode_u_32(limit, serializer);
-          sse_encode_bool(fuzzy, serializer);
-          sse_encode_results_order(order, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 9,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_list_reference_search_result,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineSearchConstMeta,
-        argValues: [that, query, limit, fuzzy, order],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineSearchConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_search",
-        argNames: ["that", "query", "limit", "fuzzy", "order"],
-      );
-
-  @override
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineUpsertDocument({
-    required ReferenceSearchEngine that,
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_u_64(id, serializer);
-          sse_encode_String(title, serializer);
-          sse_encode_String(reference, serializer);
-          sse_encode_String(shortRef, serializer);
-          sse_encode_u_64(segment, serializer);
-          sse_encode_bool(isPdf, serializer);
-          sse_encode_String(filePath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 10,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentConstMeta,
-        argValues: [
-          that,
-          id,
-          title,
-          reference,
-          shortRef,
-          segment,
-          isPdf,
-          filePath,
-        ],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_upsert_document",
-        argNames: [
-          "that",
-          "id",
-          "title",
-          "reference",
-          "shortRef",
-          "segment",
-          "isPdf",
-          "filePath",
-        ],
-      );
-
-  @override
-  Future<void>
-  crateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentsBatch({
-    required ReferenceSearchEngine that,
-    required List<ReferenceDocumentInput> docs,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-            that,
-            serializer,
-          );
-          sse_encode_list_reference_document_input(docs, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 11,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta:
-            kCrateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentsBatchConstMeta,
-        argValues: [that, docs],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentsBatchConstMeta =>
-      const TaskConstMeta(
-        debugName: "ReferenceSearchEngine_upsert_documents_batch",
-        argNames: ["that", "docs"],
-      );
-
-  @override
   Future<BenchmarkSuite>
   crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries({
     required RegexBenchmarker that,
@@ -1057,7 +477,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 1,
             port: port_,
           );
         },
@@ -1092,7 +512,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 2,
             port: port_,
           );
         },
@@ -1130,7 +550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 3,
             port: port_,
           );
         },
@@ -1184,7 +604,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 4,
             port: port_,
           );
         },
@@ -1242,7 +662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 5,
             port: port_,
           );
         },
@@ -1279,7 +699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 6,
             port: port_,
           );
         },
@@ -1312,7 +732,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 7,
             port: port_,
           );
         },
@@ -1353,7 +773,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 8,
             port: port_,
           );
         },
@@ -1404,7 +824,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 9,
             port: port_,
           );
         },
@@ -1464,7 +884,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 10,
             port: port_,
           );
         },
@@ -1515,7 +935,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 11,
             port: port_,
           );
         },
@@ -1573,7 +993,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 12,
             port: port_,
           );
         },
@@ -1616,7 +1036,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 13,
             port: port_,
           );
         },
@@ -1654,7 +1074,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 14,
             port: port_,
           );
         },
@@ -1696,7 +1116,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 15,
             port: port_,
           );
         },
@@ -1738,7 +1158,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 16,
             port: port_,
           );
         },
@@ -1776,7 +1196,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 17,
             port: port_,
           );
         },
@@ -1815,7 +1235,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 18,
             port: port_,
           );
         },
@@ -1851,7 +1271,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 19,
             port: port_,
           );
         },
@@ -1898,7 +1318,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 20,
             port: port_,
           );
         },
@@ -1959,7 +1379,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 21,
             port: port_,
           );
         },
@@ -2021,7 +1441,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 22,
             port: port_,
           );
         },
@@ -2067,7 +1487,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 23,
             port: port_,
           );
         },
@@ -2105,7 +1525,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 24,
             port: port_,
           );
         },
@@ -2143,7 +1563,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 25,
             port: port_,
           );
         },
@@ -2171,7 +1591,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -2203,7 +1623,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 27,
             port: port_,
           );
         },
@@ -2241,7 +1661,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 28,
             port: port_,
           );
         },
@@ -2279,7 +1699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 29,
             port: port_,
           );
         },
@@ -2331,7 +1751,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 30,
             port: port_,
           );
         },
@@ -2408,7 +1828,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 31,
             port: port_,
           );
         },
@@ -2493,7 +1913,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 43,
+              funcId: 32,
               port: port_,
             );
           },
@@ -2575,7 +1995,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 33,
             port: port_,
           );
         },
@@ -2653,7 +2073,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 34,
             port: port_,
           );
         },
@@ -2723,7 +2143,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 35,
             port: port_,
           );
         },
@@ -2773,7 +2193,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2829,7 +2249,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 37,
             port: port_,
           );
         },
@@ -2880,7 +2300,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 49,
+              funcId: 38,
               port: port_,
             );
           },
@@ -2950,7 +2370,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 39,
             port: port_,
           );
         },
@@ -3011,7 +2431,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 51,
+              funcId: 40,
               port: port_,
             );
           },
@@ -3085,7 +2505,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 41,
             port: port_,
           );
         },
@@ -3161,7 +2581,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 53,
+              funcId: 42,
               port: port_,
             );
           },
@@ -3239,7 +2659,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 43,
             port: port_,
           );
         },
@@ -3297,7 +2717,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 44,
             port: port_,
           );
         },
@@ -3329,7 +2749,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 56)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 45)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_index_compatibility,
@@ -3357,7 +2777,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 46,
             port: port_,
           );
         },
@@ -3384,7 +2804,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 47,
             port: port_,
           );
         },
@@ -3401,14 +2821,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta =>
       const TaskConstMeta(debugName: "run_focused_benchmark", argNames: []);
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ReferenceSearchEngine => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ReferenceSearchEngine => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine;
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_RegexBenchmarker => wire
@@ -3433,15 +2845,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  ReferenceSearchEngine
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
   RegexBenchmarker
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -3460,15 +2863,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  ReferenceSearchEngine
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
   RegexBenchmarker
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -3484,15 +2878,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ReferenceSearchEngine
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -3549,15 +2934,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         raw,
       ).map((e) => MapEntry(e.$1, e.$2)),
     );
-  }
-
-  @protected
-  ReferenceSearchEngine
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -3795,26 +3171,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<ReferenceDocumentInput> dco_decode_list_reference_document_input(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_reference_document_input)
-        .toList();
-  }
-
-  @protected
-  List<ReferenceSearchResult> dco_decode_list_reference_search_result(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_reference_search_result)
-        .toList();
-  }
-
-  @protected
   List<SearchResult> dco_decode_list_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_search_result).toList();
@@ -3909,40 +3265,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  ReferenceDocumentInput dco_decode_reference_document_input(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return ReferenceDocumentInput(
-      id: dco_decode_u_64(arr[0]),
-      title: dco_decode_String(arr[1]),
-      reference: dco_decode_String(arr[2]),
-      shortRef: dco_decode_String(arr[3]),
-      segment: dco_decode_u_64(arr[4]),
-      isPdf: dco_decode_bool(arr[5]),
-      filePath: dco_decode_String(arr[6]),
-    );
-  }
-
-  @protected
-  ReferenceSearchResult dco_decode_reference_search_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return ReferenceSearchResult(
-      title: dco_decode_String(arr[0]),
-      reference: dco_decode_String(arr[1]),
-      shortRef: dco_decode_String(arr[2]),
-      id: dco_decode_u_64(arr[3]),
-      segment: dco_decode_u_64(arr[4]),
-      isPdf: dco_decode_bool(arr[5]),
-      filePath: dco_decode_String(arr[6]),
-    );
-  }
-
-  @protected
   ResultsOrder dco_decode_results_order(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ResultsOrder.values[raw as int];
@@ -4030,18 +3352,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  ReferenceSearchEngine
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
   RegexBenchmarker
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -4066,18 +3376,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  ReferenceSearchEngine
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
   RegexBenchmarker
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -4096,18 +3394,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ReferenceSearchEngine
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -4171,18 +3457,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_record_u_32_list_string(deserializer);
     return Map.fromEntries(inner.map((e) => MapEntry(e.$1, e.$2)));
-  }
-
-  @protected
-  ReferenceSearchEngine
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ReferenceSearchEngineImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
   }
 
   @protected
@@ -4515,34 +3789,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<ReferenceDocumentInput> sse_decode_list_reference_document_input(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <ReferenceDocumentInput>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_reference_document_input(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<ReferenceSearchResult> sse_decode_list_reference_search_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <ReferenceSearchResult>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_reference_search_result(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
   List<SearchResult> sse_decode_list_search_result(
     SseDeserializer deserializer,
   ) {
@@ -4676,52 +3922,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  ReferenceDocumentInput sse_decode_reference_document_input(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_u_64(deserializer);
-    var var_title = sse_decode_String(deserializer);
-    var var_reference = sse_decode_String(deserializer);
-    var var_shortRef = sse_decode_String(deserializer);
-    var var_segment = sse_decode_u_64(deserializer);
-    var var_isPdf = sse_decode_bool(deserializer);
-    var var_filePath = sse_decode_String(deserializer);
-    return ReferenceDocumentInput(
-      id: var_id,
-      title: var_title,
-      reference: var_reference,
-      shortRef: var_shortRef,
-      segment: var_segment,
-      isPdf: var_isPdf,
-      filePath: var_filePath,
-    );
-  }
-
-  @protected
-  ReferenceSearchResult sse_decode_reference_search_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_title = sse_decode_String(deserializer);
-    var var_reference = sse_decode_String(deserializer);
-    var var_shortRef = sse_decode_String(deserializer);
-    var var_id = sse_decode_u_64(deserializer);
-    var var_segment = sse_decode_u_64(deserializer);
-    var var_isPdf = sse_decode_bool(deserializer);
-    var var_filePath = sse_decode_String(deserializer);
-    return ReferenceSearchResult(
-      title: var_title,
-      reference: var_reference,
-      shortRef: var_shortRef,
-      id: var_id,
-      segment: var_segment,
-      isPdf: var_isPdf,
-      filePath: var_filePath,
-    );
-  }
-
-  @protected
   ResultsOrder sse_decode_results_order(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -4814,19 +4014,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
-  }
-
-  @protected
-  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -4853,19 +4040,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
-  }
-
-  @protected
-  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -4886,19 +4060,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as SearchEngineImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: false),
       serializer,
     );
   }
@@ -4972,19 +4133,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_record_u_32_list_string(
       self.entries.map((e) => (e.key, e.value)).toList(),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReferenceSearchEngine(
-    ReferenceSearchEngine self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ReferenceSearchEngineImpl).frbInternalSseEncode(move: null),
       serializer,
     );
   }
@@ -5281,30 +4429,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_list_reference_document_input(
-    List<ReferenceDocumentInput> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_reference_document_input(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_reference_search_result(
-    List<ReferenceSearchResult> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_reference_search_result(item, serializer);
-    }
-  }
-
-  @protected
   void sse_encode_list_search_result(
     List<SearchResult> self,
     SseSerializer serializer,
@@ -5438,36 +4562,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_reference_document_input(
-    ReferenceDocumentInput self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_64(self.id, serializer);
-    sse_encode_String(self.title, serializer);
-    sse_encode_String(self.reference, serializer);
-    sse_encode_String(self.shortRef, serializer);
-    sse_encode_u_64(self.segment, serializer);
-    sse_encode_bool(self.isPdf, serializer);
-    sse_encode_String(self.filePath, serializer);
-  }
-
-  @protected
-  void sse_encode_reference_search_result(
-    ReferenceSearchResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.title, serializer);
-    sse_encode_String(self.reference, serializer);
-    sse_encode_String(self.shortRef, serializer);
-    sse_encode_u_64(self.id, serializer);
-    sse_encode_u_64(self.segment, serializer);
-    sse_encode_bool(self.isPdf, serializer);
-    sse_encode_String(self.filePath, serializer);
-  }
-
-  @protected
   void sse_encode_results_order(ResultsOrder self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -5533,137 +4627,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
   }
-}
-
-@sealed
-class ReferenceSearchEngineImpl extends RustOpaque
-    implements ReferenceSearchEngine {
-  // Not to be used by end users
-  ReferenceSearchEngineImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
-
-  // Not to be used by end users
-  ReferenceSearchEngineImpl.frbInternalSseDecode(
-    BigInt ptr,
-    int externalSizeOnNative,
-  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
-
-  static final _kStaticData = RustArcStaticData(
-    rustArcIncrementStrongCount: RustLib
-        .instance
-        .api
-        .rust_arc_increment_strong_count_ReferenceSearchEngine,
-    rustArcDecrementStrongCount: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_ReferenceSearchEngine,
-    rustArcDecrementStrongCountPtr: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_ReferenceSearchEnginePtr,
-  );
-
-  /// Add a single document. Does not commit.
-  Future<void> addDocument({
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineAddDocument(
-        that: this,
-        id: id,
-        title: title,
-        reference: reference,
-        shortRef: shortRef,
-        segment: segment,
-        isPdf: isPdf,
-        filePath: filePath,
-      );
-
-  /// Add many documents in a single FFI call. Does not commit.
-  Future<void> addDocumentsBatch({
-    required List<ReferenceDocumentInput> docs,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineAddDocumentsBatch(
-        that: this,
-        docs: docs,
-      );
-
-  /// Delete all documents. Does not commit.
-  Future<void> clear() => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineClear(that: this);
-
-  /// Flush pending writes to disk and refresh the reader.
-  Future<void> commit() => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineCommit(that: this);
-
-  Future<int> count({required String query, required bool fuzzy}) => RustLib
-      .instance
-      .api
-      .crateApiReferenceSearchEngineReferenceSearchEngineCount(
-        that: this,
-        query: query,
-        fuzzy: fuzzy,
-      );
-
-  /// Delete a document by its numeric id. Does not commit.
-  Future<void> deleteDocumentById({required BigInt id}) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineDeleteDocumentById(
-        that: this,
-        id: id,
-      );
-
-  /// Discard all pending writes since the last commit.
-  Future<void> rollback() => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineRollback(that: this);
-
-  Future<List<ReferenceSearchResult>> search({
-    required String query,
-    required int limit,
-    required bool fuzzy,
-    required ResultsOrder order,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineSearch(
-        that: this,
-        query: query,
-        limit: limit,
-        fuzzy: fuzzy,
-        order: order,
-      );
-
-  /// Delete then re-insert a single document by id. Does not commit.
-  Future<void> upsertDocument({
-    required BigInt id,
-    required String title,
-    required String reference,
-    required String shortRef,
-    required BigInt segment,
-    required bool isPdf,
-    required String filePath,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineUpsertDocument(
-        that: this,
-        id: id,
-        title: title,
-        reference: reference,
-        shortRef: shortRef,
-        segment: segment,
-        isPdf: isPdf,
-        filePath: filePath,
-      );
-
-  /// Upsert many documents in a single FFI call. Does not commit.
-  Future<void> upsertDocumentsBatch({
-    required List<ReferenceDocumentInput> docs,
-  }) => RustLib.instance.api
-      .crateApiReferenceSearchEngineReferenceSearchEngineUpsertDocumentsBatch(
-        that: this,
-        docs: docs,
-      );
 }
 
 @sealed

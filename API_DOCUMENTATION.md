@@ -6,12 +6,10 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
 
 1. [Classes](#classes)
    - [SearchEngine](#searchengine)
-   - [ReferenceSearchEngine](#referencesearchengine)
 2. [Top-Level Functions](#top-level-functions)
   - [checkIndexCompatibility](#checkindexcompatibility)
 3. [Data Models](#data-models)
    - [SearchResult](#searchresult)
-   - [ReferenceSearchResult](#referencesearchresult)
   - [IndexCompatibility](#indexcompatibility)
    - [ResultsOrder](#resultsorder)
 
@@ -188,122 +186,6 @@ Returns the distinct `filePath` values present in the index — i.e. which books
 
 ---
 
-### ReferenceSearchEngine
-
-Specialized search engine for searching document references/citations.
-
-#### Constructor
-
-```dart
-ReferenceSearchEngine.new(String path)
-```
-
-**Synchronous** constructor that creates a new reference search engine instance.
-
-**Parameters:**
-- `path` (String): File system path where the reference index will be stored
-
-**Returns:** ReferenceSearchEngine instance
-
----
-
-#### Methods
-
-##### addDocument
-
-```dart
-Future<void> addDocument(
-  int id,
-  String title,
-  String reference,
-  String shortRef,
-  int segment,
-  bool isPdf,
-  String filePath
-)
-```
-
-Adds a document reference to the index.
-
-**Parameters:**
-- `id` (int/u64): Unique document identifier
-- `title` (String): Document title
-- `reference` (String): Full reference/citation text
-- `shortRef` (String): Short/abbreviated reference (used for searching)
-- `segment` (int/u64): Segment number within the document
-- `isPdf` (bool): Whether the document is a PDF
-- `filePath` (String): File path to the document
-
-**Returns:** Future<void>
-
----
-
-##### commit
-
-```dart
-Future<void> commit()
-```
-
-Commits all pending document additions to the index. Must be called after adding documents to make them searchable.
-
-**Returns:** Future<void>
-
----
-
-##### search
-
-```dart
-Future<List<ReferenceSearchResult>> search(
-  String query,
-  int limit,
-  bool fuzzy,
-  ResultsOrder order
-)
-```
-
-Searches for references matching the query.
-
-**Parameters:**
-- `query` (String): Search query string
-- `limit` (int/u32): Maximum number of results to return
-- `fuzzy` (bool): Enable fuzzy matching (allows 1 character difference)
-- `order` (ResultsOrder): Sort order for results (Catalogue or Relevance)
-
-**Returns:** Future<List<ReferenceSearchResult>>
-
----
-
-##### count
-
-```dart
-Future<int> count(
-  String query,
-  bool fuzzy
-)
-```
-
-Counts the number of references matching the query without retrieving them.
-
-**Parameters:**
-- `query` (String): Search query string
-- `fuzzy` (bool): Enable fuzzy matching
-
-**Returns:** Future<int> - Number of matching references
-
----
-
-##### clear
-
-```dart
-Future<void> clear()
-```
-
-Removes all references from the index.
-
-**Returns:** Future<void>
-
----
-
 ## Top-Level Functions
 
 ### checkIndexCompatibility
@@ -350,25 +232,6 @@ class SearchResult {
 ```
 
 **Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags. If no snippet is generated, it contains the full document text.
-
----
-
-### ReferenceSearchResult
-
-Result returned from ReferenceSearchEngine.search()
-
-**Fields:**
-```dart
-class ReferenceSearchResult {
-  String title;        // Document title
-  String reference;    // Full reference text
-  String shortRef;     // Short reference
-  int id;              // Document ID (u64)
-  int segment;         // Segment number (u64)
-  bool isPdf;          // Whether document is PDF
-  String filePath;     // Path to document file
-}
-```
 
 ---
 
@@ -448,44 +311,6 @@ final count = await searchEngine.count(
 );
 ```
 
-### Reference Search Example
-
-```dart
-// Initialize reference search engine
-final refEngine = ReferenceSearchEngine.new('/path/to/ref_index');
-
-// Add reference
-await refEngine.addDocument(
-  1,
-  'Torah',
-  'Genesis 1:1',
-  'Gen 1:1',
-  1,
-  false,
-  '/path/to/genesis.txt'
-);
-
-await refEngine.commit();
-
-// Search references
-final results = await refEngine.search(
-  'Genesis 1',
-  10,
-  false,  // Exact matching
-  ResultsOrder.Catalogue
-);
-
-// Search with fuzzy matching
-final fuzzyResults = await refEngine.search(
-  'Genesi',  // Will match 'Genesis'
-  10,
-  true,   // Enable fuzzy matching
-  ResultsOrder.Catalogue
-);
-```
-
----
-
 ## Implementation Notes
 
 ### Regex Patterns
@@ -508,15 +333,15 @@ Documents match a facet query if their topic starts with any of the specified fa
 
 ### Index Persistence
 
-Both search engines store their indices on disk at the specified path. The indices persist between application runs and can be reused without rebuilding.
+The search engine stores its index on disk at the specified path. The index persists between application runs and can be reused without rebuilding.
 
 ### Thread Safety
 
-Both SearchEngine and ReferenceSearchEngine are designed to be used from a single thread. If you need concurrent access, create separate instances or implement your own locking mechanism.
+SearchEngine is designed to be used from a single thread. If you need concurrent access, create separate instances or implement your own locking mechanism.
 
 ### Memory Considerations
 
-The search engines use memory-mapped files (MmapDirectory) for efficient index access. The index writer is initialized with a 50MB buffer (`50_000_000` bytes).
+The search engine uses memory-mapped files (MmapDirectory) for efficient index access. The index writer is initialized with a 50MB buffer (`50_000_000` bytes).
 
 ---
 
