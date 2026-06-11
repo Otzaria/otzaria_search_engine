@@ -140,6 +140,13 @@ pub fn strip_nikud(text: &str) -> String {
         .collect()
 }
 
+/// Normalises text to the index term dictionary's shape: strips nikud and
+/// lowercases (the `"default"` analyzer lowercases at index time; Hebrew is
+/// unaffected, Latin tokens would otherwise silently never match).
+pub fn normalize_for_index(text: &str) -> String {
+    strip_nikud(text).to_lowercase()
+}
+
 // ── Regex escaping ──────────────────────────────────────────────────────────────
 
 /// Escapes the regex metacharacters that tantivy-fst recognises. Sanitised
@@ -535,7 +542,9 @@ pub fn build_advanced_regex_terms(
 
         let mut all_options: Vec<String> = vec![word.clone()];
         if let Some(alts) = alternative_words.get(&(i as u32)) {
-            all_options.extend(alts.iter().cloned());
+            // User-supplied alternatives go straight into regex patterns;
+            // normalise them like the query words so they can match the index.
+            all_options.extend(alts.iter().map(|a| normalize_for_index(a)));
         }
         let valid_options: Vec<String> = all_options
             .into_iter()
@@ -663,7 +672,11 @@ pub fn prepare_advanced_query(
     alternative_words: &HashMap<u32, Vec<String>>,
     search_options: &HashMap<String, HashMap<String, bool>>,
 ) -> AdvancedQuery {
-    let words = split_query_words(query);
+    // The index's "default" analyzer lowercases, and indexed text is
+    // nikud-stripped; normalise the query the same way or the produced regex
+    // terms can never match an index term (silent zero results).
+    let normalized = normalize_for_index(query);
+    let words = split_query_words(&normalized);
     let has_custom_spacing = !custom_spacing.is_empty();
     let has_alternative_words = !alternative_words.is_empty();
     let has_search_options = has_enabled_search_options(search_options);
@@ -852,5 +865,34 @@ mod tests {
         spacing.insert("0-1".to_string(), "5".to_string());
         let q2 = prepare_advanced_query("שלום עולם", 3, &spacing, &HashMap::new(), &HashMap::new());
         assert_eq!(q2.slop, 5);
+    }
+
+    #[test]
+    fn prepare_advanced_normalizes_nikud_and_case() {
+        // Vocalized query: regex terms must be nikud-free like the index.
+        let q = prepare_advanced_query(
+            "סֵפֶר",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(q.regex_terms, vec!["ספר"]);
+
+        // Latin tokens are lowercased like the "default" analyzer does.
+        let q2 = prepare_advanced_query(
+            "Torah",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(q2.regex_terms, vec!["torah"]);
+
+        // User-supplied alternative words are normalized too.
+        let mut alts = HashMap::new();
+        alts.insert(0u32, vec!["תּוֹרָה".to_string()]);
+        let q3 = prepare_advanced_query("ספר", 0, &HashMap::new(), &alts, &HashMap::new());
+        assert_eq!(q3.regex_terms, vec!["(ספר|תורה)"]);
     }
 }

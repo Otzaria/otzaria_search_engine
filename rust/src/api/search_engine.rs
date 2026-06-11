@@ -2492,6 +2492,29 @@ mod tests {
     }
 
     #[test]
+    fn test_search_advanced_strips_query_nikud() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר תורה", "/books/a.txt");
+        engine.commit().unwrap();
+
+        // Pasted vocalized text must still match the nikud-free index terms.
+        let got = ids(engine
+            .search_advanced(
+                "סֵפֶר".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1], "vocalized advanced query should match");
+    }
+
+    #[test]
     fn test_search_advanced_empty_query_returns_no_results() {
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "ספר", "/books/a.txt");
