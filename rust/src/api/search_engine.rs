@@ -1465,8 +1465,17 @@ impl SearchEngine {
         let chunk_size = (chunk_size.max(1)) as usize;
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
         let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        // One generator for the whole stream: creating it resolves term
+        // doc-frequencies, which is too expensive to repeat per chunk.
+        let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
         for chunk in addresses.chunks(chunk_size) {
-            let results = Self::build_results(&self.schema, &searcher, hl_q, chunk.to_vec(), hl)?;
+            let results = Self::build_results_with_generator(
+                &self.schema,
+                &searcher,
+                &snippet_generator,
+                chunk.to_vec(),
+                hl,
+            )?;
             // If the Dart side cancelled the stream, stop early.
             if sink.add(results).is_err() {
                 break;
@@ -1523,17 +1532,24 @@ impl SearchEngine {
         let text_f = self.schema.get_field("text")?;
         let searcher = self.index_reader.searcher();
         let mut matched: HashSet<String> = HashSet::new();
-        'patterns: for pattern in regex_terms {
+        // Split the term budget evenly between patterns: a global cap would
+        // let one broad first word exhaust it and leave the remaining query
+        // words with no highlighting at all.
+        let per_pattern_cap = (MAX_HIGHLIGHT_TERMS / regex_terms.len().max(1)).max(1);
+        for pattern in regex_terms {
             let regex = tantivy_fst::Regex::new(pattern)
                 .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
-            for reader in searcher.segment_readers() {
+            let mut pattern_terms = 0usize;
+            'segments: for reader in searcher.segment_readers() {
                 let inverted = reader.inverted_index(text_f)?;
                 let mut stream = inverted.terms().search(&regex).into_stream()?;
                 while stream.advance() {
                     if let Ok(term) = std::str::from_utf8(stream.key()) {
-                        matched.insert(term.to_string());
-                        if matched.len() >= MAX_HIGHLIGHT_TERMS {
-                            break 'patterns;
+                        if matched.insert(term.to_string()) {
+                            pattern_terms += 1;
+                            if pattern_terms >= per_pattern_cap {
+                                break 'segments;
+                            }
                         }
                     }
                 }
@@ -1546,10 +1562,36 @@ impl SearchEngine {
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
+    /// Creates a `SnippetGenerator` for the `text` field, configured from `hl`.
+    /// Creation resolves the doc-frequencies of every query term, so reuse one
+    /// generator across chunks instead of recreating it per call.
+    fn make_snippet_generator(
+        schema: &Schema,
+        searcher: &Searcher,
+        query: &dyn Query,
+        hl: &HighlightConfig,
+    ) -> Result<SnippetGenerator> {
+        let text_field = schema.get_field("text")?;
+        let mut snippet_generator = SnippetGenerator::create(searcher, query, text_field)?;
+        snippet_generator.set_max_num_chars(hl.max_chars as usize);
+        Ok(snippet_generator)
+    }
+
     fn build_results(
         schema: &Schema,
         searcher: &Searcher,
         query: &dyn Query,
+        addresses: Vec<DocAddress>,
+        hl: &HighlightConfig,
+    ) -> Result<Vec<SearchResult>> {
+        let snippet_generator = Self::make_snippet_generator(schema, searcher, query, hl)?;
+        Self::build_results_with_generator(schema, searcher, &snippet_generator, addresses, hl)
+    }
+
+    fn build_results_with_generator(
+        schema: &Schema,
+        searcher: &Searcher,
+        snippet_generator: &SnippetGenerator,
         addresses: Vec<DocAddress>,
         hl: &HighlightConfig,
     ) -> Result<Vec<SearchResult>> {
@@ -1560,9 +1602,6 @@ impl SearchEngine {
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
         let file_path_field = schema.get_field("filePath")?;
-
-        let mut snippet_generator = SnippetGenerator::create(searcher, query, text_field)?;
-        snippet_generator.set_max_num_chars(hl.max_chars as usize);
 
         let mut results = Vec::with_capacity(addresses.len());
         for doc_address in addresses {
