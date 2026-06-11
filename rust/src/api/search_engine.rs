@@ -634,8 +634,8 @@ impl SearchEngine {
 
     /// Merge all segments into one. Run occasionally in the background after
     /// many upserts/deletes to reclaim disk space and improve read performance.
-    /// Run only after `commit()`, because only committed segments participate in
-    /// manual merge maintenance.
+    /// Pending (uncommitted) changes are committed first, since only committed
+    /// segments participate in manual merge maintenance.
     pub fn optimize(&mut self) -> Result<()> {
         let before_count = self.index.searchable_segment_ids()?.len();
         debug!("optimize: before={before_count}");
@@ -644,8 +644,11 @@ impl SearchEngine {
             return Ok(());
         }
 
-        let writer = self.take_writer()?;
+        let mut writer = self.take_writer()?;
         let maintenance_result = (|| -> Result<()> {
+            // Dropping the writer discards its RAM buffer; flush pending
+            // changes first so optimize never silently loses documents.
+            writer.commit()?;
             writer.wait_merging_threads()?;
             self.optimize_committed_segments()
         })();
@@ -2304,6 +2307,24 @@ mod tests {
             "after optimize there should be exactly one segment"
         );
         assert_eq!(engine.get_document_count(), 12);
+    }
+
+    #[test]
+    fn test_optimize_commits_pending_documents() {
+        let (mut engine, _dir) = make_engine();
+        disable_auto_merge(&engine);
+        // Two committed segments so optimize doesn't take the early-skip path.
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        engine.commit().unwrap();
+        add(&mut engine, 2, "ספר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        // A pending document must survive optimize, not vanish with the
+        // discarded writer buffer.
+        add(&mut engine, 3, "ספר", "/books/c.txt");
+        engine.optimize().unwrap();
+
+        assert_eq!(search_ids(&mut engine, "ספר"), vec![1, 2, 3]);
     }
 
     #[test]
