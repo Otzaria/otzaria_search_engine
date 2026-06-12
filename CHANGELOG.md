@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4 – Fix macos – 2026-06-12
+
+### Fixes
+
+- MACOS
+
 ## 0.6.3 – Line Endings Fix (Republish) – 2026-06-12
 
 ### Fixes
