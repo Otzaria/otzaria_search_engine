@@ -1321,6 +1321,13 @@ impl SearchEngine {
         facets: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
+        // Tantivy only rejects distances above 2 when the query executes
+        // (InvalidArgument from FuzzyTermQuery's weight); validate upfront so
+        // every fuzzy path fails fast with a clear error instead.
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy distance is limited to 2, got {max_distance}"
+        );
         // Mirror exact mode: an empty query matches nothing. Without this
         // guard the clause list degenerates to just the facet filter and the
         // query returns every document in the selected facets.
@@ -2920,6 +2927,28 @@ mod tests {
         assert!(texts.contains(&"<font color=red>שלום</font>".to_string()));
         assert!(texts.contains(&"<font color=red>שלם</font>".to_string()));
         assert!(!texts.iter().any(|t| t.contains("ביי")));
+    }
+
+    #[test]
+    fn test_search_fuzzy_invalid_distance_errors() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/a.txt");
+        engine.commit().unwrap();
+
+        // Tantivy supports edit distances 0–2; anything above must surface as
+        // an error from every fuzzy entry point, never a panic.
+        let result = engine.search_fuzzy(
+            "שלום".to_string(),
+            vec!["/root".to_string()],
+            10,
+            0,
+            3,
+            ResultsOrder::Relevance,
+        );
+        assert!(result.is_err(), "distance > 2 should error, not panic");
+
+        let count = engine.count_fuzzy("שלום".to_string(), vec!["/root".to_string()], 3);
+        assert!(count.is_err(), "distance > 2 should error, not panic");
     }
 
     #[test]
