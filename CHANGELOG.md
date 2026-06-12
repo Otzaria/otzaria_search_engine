@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.5 – Fix Apple linking – 2026-06-12
+
+### Fixes
+
+- **תיקון קישור (linking) ב-macOS/iOS** – הוספת `module_name = 'search_engine'`
+  בגרסה 0.6.4 שינתה את `PRODUCT_NAME` של ה-pod, כך ש-cargokit כתב את
+  `libsearch_engine.a` ל-`$PODS_CONFIGURATION_BUILD_DIR/$PRODUCT_NAME` בעוד
+  ש-`-force_load` עדיין חיפש ב-`${BUILT_PRODUCTS_DIR}` — שתי תיקיות שונות,
+  והבנייה נפלה עם `library 'libsearch_engine.a' not found`. תוקן ביישור
+  `output_files` ו-`OTHER_LDFLAGS` ל-`${PODS_CONFIGURATION_BUILD_DIR}/${PRODUCT_NAME}`.
+
 ## 0.6.4 – Fix macos – 2026-06-12
 
 ### Fixes

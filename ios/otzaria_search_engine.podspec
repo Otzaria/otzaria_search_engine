@@ -37,12 +37,14 @@ A new Flutter FFI plugin project.
     :input_files => ['${BUILT_PRODUCTS_DIR}/cargokit_phony'],
     # Let XCode know that the static library referenced in -force_load below is
     # created by this build step.
-    :output_files => ["${BUILT_PRODUCTS_DIR}/libsearch_engine.a"],
+    # cargokit כותב ל-$PODS_CONFIGURATION_BUILD_DIR/$PRODUCT_NAME, ו-module_name
+    # שינה את PRODUCT_NAME ל-search_engine - לכן הנתיב הזה ולא ${BUILT_PRODUCTS_DIR}.
+    :output_files => ["${PODS_CONFIGURATION_BUILD_DIR}/${PRODUCT_NAME}/libsearch_engine.a"],
   }
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     # Flutter.framework does not contain a i386 slice.
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
-    'OTHER_LDFLAGS' => '-force_load ${BUILT_PRODUCTS_DIR}/libsearch_engine.a',
+    'OTHER_LDFLAGS' => '-force_load ${PODS_CONFIGURATION_BUILD_DIR}/${PRODUCT_NAME}/libsearch_engine.a',
   }
 end
