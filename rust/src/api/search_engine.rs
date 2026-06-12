@@ -1,6 +1,7 @@
 use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
+use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -12,8 +13,7 @@ use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, Top
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
 use tantivy::query::{
-    AllQuery, BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, TermQuery,
-    TermSetQuery,
+    AllQuery, BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, TermQuery, TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
@@ -22,6 +22,7 @@ use tantivy::tokenizer::TokenStream;
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
+use tantivy_fst::Automaton;
 
 use crate::hebrew_query;
 
@@ -763,8 +764,9 @@ impl SearchEngine {
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
         let query = self.build_fuzzy_query_from_terms(&terms, &facets, max_distance)?;
+        let hq = self.build_fuzzy_highlight_query(&terms, max_distance).ok();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, None, limit, offset, &order, &hl)
+        self.run_search(query, hq, limit, offset, &order, &hl)
     }
 
     /// Stream search results in chunks of `chunk_size` documents.
@@ -1032,8 +1034,12 @@ impl SearchEngine {
         max_distance: u8,
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
-        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
-        self.run_search(q, None, limit, offset, &order, &HighlightConfig::default())
+        let token_texts = self.default_token_texts(&query)?;
+        let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
+        let hq = self
+            .build_fuzzy_highlight_query(&token_texts, max_distance)
+            .ok();
+        self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
     }
 
     pub fn search_and_count_fuzzy(
@@ -1045,8 +1051,12 @@ impl SearchEngine {
         max_distance: u8,
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
-        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
-        self.run_search_and_count(q, None, limit, offset, &order, &HighlightConfig::default())
+        let token_texts = self.default_token_texts(&query)?;
+        let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
+        let hq = self
+            .build_fuzzy_highlight_query(&token_texts, max_distance)
+            .ok();
+        self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
     }
 
     pub fn search_fuzzy_stream(
@@ -1060,10 +1070,14 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        let token_texts = self.default_token_texts(&query)?;
+        let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
+        let hq = self
+            .build_fuzzy_highlight_query(&token_texts, max_distance)
+            .ok();
         self.run_search_stream(
             q,
-            None,
+            hq,
             limit,
             offset,
             &order,
@@ -1533,26 +1547,65 @@ impl SearchEngine {
     /// variant that genuinely matched (prefixes, suffixes, alternatives), not just
     /// the literal words the user typed.
     fn build_regex_highlight_query(&self, regex_terms: &[String]) -> Result<Box<dyn Query>> {
+        let automatons: Vec<tantivy_fst::Regex> = regex_terms
+            .iter()
+            .map(|pattern| {
+                tantivy_fst::Regex::new(pattern)
+                    .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.build_automaton_highlight_query(&automatons)
+    }
+
+    /// Fuzzy-mode counterpart of [`Self::build_regex_highlight_query`]:
+    /// materializes the `text` terms each query term matches within
+    /// `max_distance` edits. `FuzzyTermQuery` is automaton-based like the regex
+    /// queries and exposes no static terms to `SnippetGenerator`, so without
+    /// this fuzzy results would render with no highlighting.
+    fn build_fuzzy_highlight_query(
+        &self,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<Box<dyn Query>> {
+        // FuzzyTermQuery itself rejects distances above 2.
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy highlight distance is limited to 2, got {max_distance}"
+        );
+        // Same builder configuration as the search's FuzzyTermQuery
+        // (transposition counts as one edit), so the highlighted terms are
+        // exactly the terms the query can match.
+        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+        let automatons: Vec<DfaWrapper> = term_texts
+            .iter()
+            .map(|t| DfaWrapper(builder.build_dfa(t)))
+            .collect();
+        self.build_automaton_highlight_query(&automatons)
+    }
+
+    fn build_automaton_highlight_query<A>(&self, automatons: &[A]) -> Result<Box<dyn Query>>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let text_f = self.schema.get_field("text")?;
         let searcher = self.index_reader.searcher();
         let mut matched: HashSet<String> = HashSet::new();
-        // Split the term budget evenly between patterns: a global cap would
+        // Split the term budget evenly between automatons: a global cap would
         // let one broad first word exhaust it and leave the remaining query
         // words with no highlighting at all.
-        let per_pattern_cap = (MAX_HIGHLIGHT_TERMS / regex_terms.len().max(1)).max(1);
-        for pattern in regex_terms {
-            let regex = tantivy_fst::Regex::new(pattern)
-                .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
-            let mut pattern_terms = 0usize;
+        let per_automaton_cap = (MAX_HIGHLIGHT_TERMS / automatons.len().max(1)).max(1);
+        for automaton in automatons {
+            let mut automaton_terms = 0usize;
             'segments: for reader in searcher.segment_readers() {
                 let inverted = reader.inverted_index(text_f)?;
-                let mut stream = inverted.terms().search(&regex).into_stream()?;
+                let mut stream = inverted.terms().search(automaton).into_stream()?;
                 while stream.advance() {
                     if let Ok(term) = std::str::from_utf8(stream.key()) {
                         if !matched.contains(term) {
                             matched.insert(term.to_string());
-                            pattern_terms += 1;
-                            if pattern_terms >= per_pattern_cap {
+                            automaton_terms += 1;
+                            if automaton_terms >= per_automaton_cap {
                                 break 'segments;
                             }
                         }
@@ -1678,6 +1731,37 @@ impl HighlightConfig {
             highlight_postfix: "</font>".to_string(),
             max_chars: 800,
         }
+    }
+}
+
+// ── DfaWrapper ─────────────────────────────────────────────────────────────────
+
+/// Adapts a Levenshtein [`DFA`] to the [`tantivy_fst::Automaton`] trait so the
+/// term dictionary can be streamed with the same automaton `FuzzyTermQuery`
+/// matches with (mirrors tantivy's internal fuzzy-query wrapper, which is
+/// private).
+struct DfaWrapper(DFA);
+
+impl Automaton for DfaWrapper {
+    type State = u32;
+
+    fn start(&self) -> Self::State {
+        self.0.initial_state()
+    }
+
+    fn is_match(&self, state: &Self::State) -> bool {
+        match self.0.distance(*state) {
+            Distance::Exact(_) => true,
+            Distance::AtLeast(_) => false,
+        }
+    }
+
+    fn can_match(&self, state: &Self::State) -> bool {
+        *state != SINK_STATE
+    }
+
+    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
+        self.0.transition(*state, byte)
     }
 }
 
@@ -2228,11 +2312,11 @@ mod tests {
             .unwrap();
         let exact_texts: Vec<&str> = exact.iter().map(|r| r.text.as_str()).collect();
         assert!(
-            exact_texts.contains(&"שלום"),
-            "distance=0 must return exact match"
+            exact_texts.contains(&"<font color=red>שלום</font>"),
+            "distance=0 must return the exact match, highlighted"
         );
         assert!(
-            !exact_texts.contains(&"שלם"),
+            !exact_texts.iter().any(|t| t.contains("שלם")),
             "distance=0 must not return near-match"
         );
 
@@ -2250,15 +2334,15 @@ mod tests {
             .unwrap();
         let fuzzy_texts: Vec<&str> = fuzzy.iter().map(|r| r.text.as_str()).collect();
         assert!(
-            fuzzy_texts.contains(&"שלום"),
-            "distance=1 must return exact match"
+            fuzzy_texts.contains(&"<font color=red>שלום</font>"),
+            "distance=1 must return exact match, highlighted"
         );
         assert!(
-            fuzzy_texts.contains(&"שלם"),
-            "distance=1 must return near-match one edit away"
+            fuzzy_texts.contains(&"<font color=red>שלם</font>"),
+            "distance=1 must return near-match one edit away, highlighted"
         );
         assert!(
-            !fuzzy_texts.contains(&"ביי"),
+            !fuzzy_texts.iter().any(|t| t.contains("ביי")),
             "unrelated term must not appear"
         );
     }
@@ -2830,9 +2914,35 @@ mod tests {
             .into_iter()
             .map(|r| r.text)
             .collect();
-        assert!(texts.contains(&"שלום".to_string()));
-        assert!(texts.contains(&"שלם".to_string()));
-        assert!(!texts.contains(&"ביי".to_string()));
+        // Fuzzy matching is automaton-based, so highlighting must come from the
+        // materialized highlight query: both the exact match and the variant one
+        // edit away are wrapped, not just the literal word the user typed.
+        assert!(texts.contains(&"<font color=red>שלום</font>".to_string()));
+        assert!(texts.contains(&"<font color=red>שלם</font>".to_string()));
+        assert!(!texts.iter().any(|t| t.contains("ביי")));
+    }
+
+    #[test]
+    fn test_search_fuzzy_highlights_near_match_in_context() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "אמר שלם לחברו", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_fuzzy(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                1,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].text, "אמר <font color=red>שלם</font> לחברו",
+            "the fuzzy-matched variant must be highlighted inside the snippet"
+        );
     }
 
     #[test]
