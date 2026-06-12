@@ -142,7 +142,9 @@ Each mode also provides `count*`, `searchAndCount*` and `search*Stream`
 variants (`countExact`, `searchAndCountFuzzy`, `searchAdvancedStream`, …).
 Queries are normalized like the index (nikud stripped, lowercased); empty
 queries return no results. Advanced-mode highlighting wraps every
-morphological variant that actually matched, not just the literal words.
+morphological variant that actually matched, not just the literal words;
+fuzzy-mode highlighting likewise wraps every term within the requested edit
+distance, not just exact occurrences of the query words.
 
 ---
 

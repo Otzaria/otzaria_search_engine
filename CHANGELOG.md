@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **הדגשות בחיפוש מקורב (fuzzy)** – תוצאות `searchFuzzy` / `searchAndCountFuzzy` /
+  `searchFuzzyStream` / `searchFuzzyTerms` חזרו עד כה ללא הדגשה כלל, כי
+  `FuzzyTermQuery` מבוסס-אוטומט ואינו חושף מונחים למחולל ה-snippets. כעת מונחי
+  ההדגשה ממומשים ממילון האינדקס דרך אותו אוטומט לוינשטיין שהחיפוש משתמש בו
+  (כמו במצב advanced), כך שגם וריאנטים במרחק עריכה — ולא רק המילה שהוקלדה —
+  מודגשים בתוצאות.
+
 ## 0.6.0 – Mode-Specific Search & Hardening – 2026-06-11
 
 ---
