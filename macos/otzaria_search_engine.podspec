@@ -4,6 +4,9 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'otzaria_search_engine'
+  # flutter_rust_bridge מחפש את הספרייה לפי שם ה-Rust crate (search_engine).
+  # בלי זה ה-framework נבנה בשם ה-pod (otzaria_search_engine) ו-RustLib.init נתקע.
+  s.module_name      = 'search_engine'
   s.version          = '0.0.1'
   s.summary          = 'A new Flutter FFI plugin project.'
   s.description      = <<-DESC
