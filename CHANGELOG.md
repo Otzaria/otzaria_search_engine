@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3 – Line Endings Fix (Republish) – 2026-06-12
+
+### Fixes
+
+- **תיקון סופי של סיומות השורה (CRLF) בארכיון שפורסם** – למרות שגרסה 0.6.2 נועדה
+  לתקן את הבעיה, הארכיון שפורסם בפועל ל-pub.dev עדיין הכיל CRLF בסקריפטי
+  cargokit (`build_pod.sh`, `run_build_tool.sh`), כי לא ניתן לפרסם מחדש גרסה
+  קיימת ב-pub.dev. כתוצאה מכך הבנייה ב-macOS המשיכה ליפול עם
+  `set: - invalid option`. גרסה זו נארזת מחדש ממכונת macOS עם LF בלבד. אין שינוי
+  קוד.
+
 ## 0.6.2 – Line Endings Fix – 2026-06-12
 
 ### Fixes
