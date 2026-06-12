@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - use-regex
+      - refactor
     paths:
       - ".github/workflows/precompiled-binaries.yml"
       - "cargokit/**"
