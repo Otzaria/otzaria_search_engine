@@ -1,6 +1,6 @@
 name: otzaria_search_engine
 description: "Tantivy search engine for Otzaria"
-version: 0.6.1
+version: 0.6.2
 homepage: https://github.com/otzaria/otzaria_search_engine
 
 environment:

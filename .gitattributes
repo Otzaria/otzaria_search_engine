@@ -1,0 +1,9 @@
+# כופה LF בקבצי סקריפט גם בצ'קאאוט על Windows (autocrlf) —
+# פרסום ל-pub.dev עם CRLF שובר את בניית macOS/Linux/Android (cargokit).
+* text=auto
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.rs text eol=lf
+*.png binary
+*.jar binary

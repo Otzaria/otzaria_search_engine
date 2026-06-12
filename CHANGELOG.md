@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2 – Line Endings Fix – 2026-06-12
+
+### Fixes
+
+- **תיקון סיומות שורה (CRLF) בארכיון שפורסם** – גרסה 0.6.1 פורסמה מ-Windows עם
+  `core.autocrlf=true`, וסקריפטי ה-shell של cargokit (`build_pod.sh`,
+  `run_build_tool.sh`) נארזו עם CRLF — מה ששבר את הבנייה ב-macOS
+  (`set: - invalid option`), Android ו-Linux (exit 127 בגלל shebang פגום).
+  אין שינוי קוד; פרסום מחדש עם LF בלבד. נוסף `.gitattributes` שמונע הישנות.
+
 ## 0.6.1 – Fuzzy Highlight Fix – 2026-06-12
 
 ### Fixes
