@@ -571,7 +571,7 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, None, limit, offset, &order, &hl)
+        self.run_search(query, |_| Ok(None), limit, offset, &order, &hl)
     }
 
     /// Search and return total hit count alongside paged results in one call.
@@ -589,7 +589,7 @@ impl SearchEngine {
     ) -> Result<SearchPageResult> {
         let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_and_count(query, None, limit, offset, &order, &hl)
+        self.run_search_and_count(query, |_| Ok(None), limit, offset, &order, &hl)
     }
 
     pub fn count(
@@ -764,9 +764,18 @@ impl SearchEngine {
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
         let query = self.build_fuzzy_query_from_terms(&terms, &facets, max_distance)?;
-        let hq = self.build_fuzzy_highlight_query(&terms, max_distance).ok();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, hq, limit, offset, &order, &hl)
+        self.run_search(
+            query,
+            |s| {
+                self.build_fuzzy_highlight_query(s, &terms, max_distance)
+                    .map(Some)
+            },
+            limit,
+            offset,
+            &order,
+            &hl,
+        )
     }
 
     /// Stream search results in chunks of `chunk_size` documents.
@@ -793,7 +802,16 @@ impl SearchEngine {
     ) -> Result<()> {
         let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_stream(query, None, limit, offset, &order, &hl, chunk_size, sink)
+        self.run_search_stream(
+            query,
+            |_| Ok(None),
+            limit,
+            offset,
+            &order,
+            &hl,
+            chunk_size,
+            sink,
+        )
     }
 
     // ── High-level mode-specific search API ──────────────────────────────────────
@@ -815,7 +833,14 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let q = self.build_exact_query(&query, &facets)?;
-        self.run_search(q, None, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(
+            q,
+            |_| Ok(None),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_and_count_exact(
@@ -827,7 +852,14 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
         let q = self.build_exact_query(&query, &facets)?;
-        self.run_search_and_count(q, None, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(
+            q,
+            |_| Ok(None),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_exact_stream(
@@ -843,7 +875,7 @@ impl SearchEngine {
         let q = self.build_exact_query(&query, &facets)?;
         self.run_search_stream(
             q,
-            None,
+            |_| Ok(None),
             limit,
             offset,
             &order,
@@ -899,8 +931,14 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        let hq = self.build_regex_highlight_query(&regex_terms).ok();
-        self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(
+            q,
+            |s| self.advanced_highlight_query(s, &regex_terms),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_and_count_advanced(
@@ -923,8 +961,14 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        let hq = self.build_regex_highlight_query(&regex_terms).ok();
-        self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(
+            q,
+            |s| self.advanced_highlight_query(s, &regex_terms),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_advanced_stream(
@@ -949,10 +993,9 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        let hq = self.build_regex_highlight_query(&regex_terms).ok();
         self.run_search_stream(
             q,
-            hq,
+            |s| self.advanced_highlight_query(s, &regex_terms),
             limit,
             offset,
             &order,
@@ -1036,10 +1079,17 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let token_texts = self.default_token_texts(&query)?;
         let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
-        let hq = self
-            .build_fuzzy_highlight_query(&token_texts, max_distance)
-            .ok();
-        self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(
+            q,
+            |s| {
+                self.build_fuzzy_highlight_query(s, &token_texts, max_distance)
+                    .map(Some)
+            },
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_and_count_fuzzy(
@@ -1053,10 +1103,17 @@ impl SearchEngine {
     ) -> Result<SearchPageResult> {
         let token_texts = self.default_token_texts(&query)?;
         let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
-        let hq = self
-            .build_fuzzy_highlight_query(&token_texts, max_distance)
-            .ok();
-        self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(
+            q,
+            |s| {
+                self.build_fuzzy_highlight_query(s, &token_texts, max_distance)
+                    .map(Some)
+            },
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_fuzzy_stream(
@@ -1072,12 +1129,12 @@ impl SearchEngine {
     ) -> Result<()> {
         let token_texts = self.default_token_texts(&query)?;
         let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
-        let hq = self
-            .build_fuzzy_highlight_query(&token_texts, max_distance)
-            .ok();
         self.run_search_stream(
             q,
-            hq,
+            |s| {
+                self.build_fuzzy_highlight_query(s, &token_texts, max_distance)
+                    .map(Some)
+            },
             limit,
             offset,
             &order,
@@ -1393,30 +1450,40 @@ impl SearchEngine {
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
 
-    fn run_search(
+    fn run_search<F>(
         &self,
         query: Box<dyn Query>,
-        highlight_query: Option<Box<dyn Query>>,
+        make_highlight: F,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
         let searcher = self.index_reader.searcher();
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
-        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
         Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)
     }
 
-    fn run_search_and_count(
+    fn run_search_and_count<F>(
         &self,
         query: Box<dyn Query>,
-        highlight_query: Option<Box<dyn Query>>,
+        make_highlight: F,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
-    ) -> Result<SearchPageResult> {
+    ) -> Result<SearchPageResult>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
         let searcher = self.index_reader.searcher();
         // Tuple collector: single index pass for both count and top-docs.
         let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
@@ -1437,7 +1504,17 @@ impl SearchEngine {
                 (addrs, count as u32)
             }
         };
-        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        // total_count is the full hit count regardless of this page; only the
+        // snippet highlighting (and its dictionary scan) is page-dependent, so
+        // skip it when this page is empty (e.g. offset past the last hit).
+        if addresses.is_empty() {
+            return Ok(SearchPageResult {
+                total_count,
+                results: Vec::new(),
+            });
+        }
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
         let results = Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)?;
         Ok(SearchPageResult {
             total_count,
@@ -1475,21 +1552,28 @@ impl SearchEngine {
         Ok(results)
     }
 
-    fn run_search_stream(
+    fn run_search_stream<F>(
         &self,
         query: Box<dyn Query>,
-        highlight_query: Option<Box<dyn Query>>,
+        make_highlight: F,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
-        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
         let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
@@ -1507,6 +1591,17 @@ impl SearchEngine {
             }
         }
         Ok(())
+    }
+
+    /// Invokes a highlight-query builder against the search's `searcher`,
+    /// degrading a build failure to `None` (no highlight) instead of failing the
+    /// whole search. `None` makes the caller fall back to the main query, which
+    /// already exposes its terms when it is a Term/Phrase/TermSet query.
+    fn resolve_highlight<F>(searcher: &Searcher, make_highlight: F) -> Option<Box<dyn Query>>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
+        make_highlight(searcher).ok().flatten()
     }
 
     fn collect_addresses(
@@ -1553,7 +1648,11 @@ impl SearchEngine {
     /// same FST automaton the search itself uses, we highlight every morphological
     /// variant that genuinely matched (prefixes, suffixes, alternatives), not just
     /// the literal words the user typed.
-    fn build_regex_highlight_query(&self, regex_terms: &[String]) -> Result<Box<dyn Query>> {
+    fn build_regex_highlight_query(
+        &self,
+        searcher: &Searcher,
+        regex_terms: &[String],
+    ) -> Result<Box<dyn Query>> {
         let automatons: Vec<tantivy_fst::Regex> = regex_terms
             .iter()
             .map(|pattern| {
@@ -1561,7 +1660,30 @@ impl SearchEngine {
                     .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.build_automaton_highlight_query(&automatons)
+        self.build_automaton_highlight_query(searcher, &automatons)
+    }
+
+    /// Highlight query for an advanced (regex) search, or `None` when the main
+    /// query already highlights itself.
+    ///
+    /// A single regex term is executed as a `TermSetQuery` (see
+    /// [`Self::single_regex_term_query`]) whose materialized terms ARE the terms
+    /// that matched — so the main query exposes them to `SnippetGenerator`
+    /// directly and no second term-dictionary scan is needed. Only the
+    /// multi-term `RegexPhraseQuery`, which exposes no static terms, requires a
+    /// separately-materialized highlight query.
+    fn advanced_highlight_query(
+        &self,
+        searcher: &Searcher,
+        regex_terms: &[String],
+    ) -> Result<Option<Box<dyn Query>>> {
+        if regex_terms.len() >= 2 {
+            Ok(Some(
+                self.build_regex_highlight_query(searcher, regex_terms)?,
+            ))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Fuzzy-mode counterpart of [`Self::build_regex_highlight_query`]:
@@ -1571,6 +1693,7 @@ impl SearchEngine {
     /// this fuzzy results would render with no highlighting.
     fn build_fuzzy_highlight_query(
         &self,
+        searcher: &Searcher,
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
@@ -1587,16 +1710,19 @@ impl SearchEngine {
             .iter()
             .map(|t| DfaWrapper(builder.build_dfa(t)))
             .collect();
-        self.build_automaton_highlight_query(&automatons)
+        self.build_automaton_highlight_query(searcher, &automatons)
     }
 
-    fn build_automaton_highlight_query<A>(&self, automatons: &[A]) -> Result<Box<dyn Query>>
+    fn build_automaton_highlight_query<A>(
+        &self,
+        searcher: &Searcher,
+        automatons: &[A],
+    ) -> Result<Box<dyn Query>>
     where
         A: Automaton,
         A::State: Clone,
     {
         let text_f = self.schema.get_field("text")?;
-        let searcher = self.index_reader.searcher();
         let mut matched: HashSet<String> = HashSet::new();
         // Split the term budget evenly between automatons: a global cap would
         // let one broad first word exhaust it and leave the remaining query
