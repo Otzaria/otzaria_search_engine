@@ -881,13 +881,7 @@ mod tests {
     #[test]
     fn prepare_advanced_normalizes_nikud_and_case() {
         // Vocalized query: regex terms must be nikud-free like the index.
-        let q = prepare_advanced_query(
-            "סֵפֶר",
-            0,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let q = prepare_advanced_query("סֵפֶר", 0, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert_eq!(q.regex_terms, vec!["ספר"]);
 
         // Latin tokens are lowercased like the "default" analyzer does.
