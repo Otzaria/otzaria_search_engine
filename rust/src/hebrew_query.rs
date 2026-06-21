@@ -1,17 +1,22 @@
-//! Hebrew search-query logic, ported 1:1 from the otzaria app's Dart layer
-//! (`lib/search/search_query_builder.dart` + `lib/search/utils/regex_patterns.dart`).
+//! Hebrew search-query logic. Originally ported from the otzaria app's Dart
+//! layer (`lib/search/search_query_builder.dart` +
+//! `lib/search/utils/regex_patterns.dart`); this Rust engine is now the
+//! authoritative implementation and intentionally diverges where the Dart
+//! patterns were wrong or wasteful for this index.
 //!
 //! This module turns a high-level query string + per-word options into the
 //! Tantivy-regex term strings, slop and `max_expansions` that the advanced
-//! search mode feeds to `RegexQuery` / `RegexPhraseQuery`. Keeping it identical
-//! to the Dart implementation is what keeps search results and the app's
-//! snippet highlighting consistent.
+//! search mode feeds to `RegexQuery` / `RegexPhraseQuery`.
 //!
-//! Pure string logic only — no Tantivy dependency. The one intentional
-//! deviation from Dart: the full/partial-spelling builder does NOT wrap its
-//! alternation in `^…$`. tantivy-fst's regex rejects anchors (`NoEmpty`) and is
-//! already implicitly whole-term anchored, so the bare `(?:…)` preserves the
-//! Dart intent while staying valid for Tantivy.
+//! Pure string logic only — no Tantivy dependency. Deliberate divergences from
+//! the original Dart, all tuned to tantivy-fst + the nikud-free index:
+//! - Patterns are nikud-free: the index strips nikud, so vocalized alternatives
+//!   could never match and only bloat the automaton.
+//! - Groups are non-capturing `(?:…)` and never anchored (`^…$`): tantivy-fst
+//!   matches whole-term on acceptance, rejects anchors, and ignores captures.
+//! - Prefix/suffix windows are bounded (`.{0,n}`, never `.*`), and the combined
+//!   per-word term is length-capped, to keep the compiled DFA under tantivy-fst's
+//!   1000-state limit (a term that exceeds it fails to compile).
 
 use std::collections::{HashMap, HashSet};
 
@@ -29,10 +34,18 @@ const OPT_GRAM_SUFFIX: &str = "סיומות דקדוקיות";
 const OPT_SPELLING: &str = "כתיב מלא/חסר";
 const OPT_PARTIAL: &str = "חלק ממילה";
 
-// Suffix alternation groups (verbatim from regex_patterns.dart).
-const SUFFIX_PATTERN: &str = r"(ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יי|יך|יו|יה|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
-const PREFIX_GROUP: &str = r"(ו|מ|כ|ב|ש|ל|ה|ד)?(כ|ב|ש|ל|ה|ד)?(ה)?";
-const FULL_SUFFIX_PATTERN: &str = r"(ותי|ותַי|ותיך|ותֶיךָ|ותַיִךְ|ותיו|ותָיו|ותיה|ותֶיהָ|ותינו|ותֵינוּ|ותיכם|ותֵיכם|ותיכן|ותֵיכן|ותיהם|ותֵיהם|ותיהן|ותֵיהן|יות|יי|יַי|יך|יךָ|יִךְ|יו|יה|יא|תא|יהָ|ינו|יכם|יכן|יהם|יהן|י|ך|ךָ|ךְ|ו|ה|הּ|נו|כם|כן|ם|ן|ים|ות)?";
+// Morphological affix groups. The index term dictionary is nikud-free (the app
+// strips nikud before indexing and the query is normalized the same way), so
+// these patterns are intentionally nikud-free: any vocalized alternative would
+// never match a real term and would only enlarge the compiled automaton. They
+// also use non-capturing groups `(?:…)` — tantivy-fst matches on acceptance and
+// ignores captures, so capturing groups only add states for nothing.
+//
+// `FULL_SUFFIX_PATTERN` is the richer set (used for full prefix+suffix
+// morphology); it is `SUFFIX_PATTERN` plus a few extra endings (יות, יא, תא).
+const SUFFIX_PATTERN: &str = r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יי|יך|יו|יה|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
+const PREFIX_GROUP: &str = r"(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
+const FULL_SUFFIX_PATTERN: &str = r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יות|יי|יך|יו|יה|יא|תא|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
 
 const INSERTION_LETTERS: &[&str] = &[
     "ו", "י", "א", "ה", "פ", "ל", "מ", "נ", "ב", "כ", "ש", "ת", "ר",
@@ -41,6 +54,21 @@ const INSERTION_LETTERS: &[&str] = &[
 const MAX_TYPO_TOLERANCE_VARIATIONS: usize = 48;
 /// Cap on pattern variations per word when typo tolerance is off.
 const MAX_PATTERN_VARIATIONS: usize = 20;
+
+/// Upper bound on the total length (in characters) of a single word's combined
+/// regex term. tantivy-fst compiles each term to a DFA capped at 1000 states
+/// (`STATE_LIMIT`); a term that exceeds it fails to compile and would error the
+/// whole search. The state count grows roughly with the pattern length, so
+/// bounding length keeps the DFA safely under the limit even when many large
+/// (morphological) branches are combined (e.g. typo tolerance + grammatical
+/// affixes). Branches beyond the budget are dropped, trading recall for a query
+/// that runs instead of failing.
+const MAX_PATTERN_TOTAL_LEN: usize = 1000;
+
+/// Cap on the number of כתיב מלא/חסר spelling variations folded into a single
+/// pattern. The generator is exponential (2^n in the count of optional י/ו),
+/// so an unbounded fold could blow past the DFA limit on its own.
+const MAX_SPELLING_VARIATIONS: usize = 16;
 
 // ── Result of preparing an advanced query ───────────────────────────────────────
 
@@ -230,10 +258,12 @@ fn typo_substitutions(grapheme: &str) -> &'static [&'static str] {
         "ק" => &["כ"],
         "ט" => &["ת"],
         "ת" => &["ט"],
-        "ס" => &["ש", "שׁ", "שׂ"],
-        "ש" => &["ס", "שׁ", "שׂ"],
-        "שׁ" => &["ס", "ש", "שׂ"],
-        "שׂ" => &["ס", "ש", "שׁ"],
+        // The dotted shin/sin forms (שׁ/שׂ) carry nikud-range marks that never
+        // appear in the nikud-free index, and the normalized query never feeds
+        // them in as input — so they are omitted as substitution targets and
+        // have no match arms of their own.
+        "ס" => &["ש"],
+        "ש" => &["ס"],
         "צ" => &["ז"],
         "ז" => &["צ"],
         _ => &[],
@@ -337,7 +367,7 @@ fn create_prefix_pattern(word: &str) -> String {
         return String::new();
     }
     format!(
-        r"(ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(כ|ב|ש|ל|ה|ד)?(ה)?{}",
+        r"(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?{}",
         escape_regex(word)
     )
 }
@@ -365,16 +395,17 @@ fn create_prefix_search_pattern(word: &str) -> String {
     if word.is_empty() {
         return String::new();
     }
+    // Bounded leading window instead of `.*`: a `.*`-prefixed regex forces the
+    // term-dictionary scan to consider every key (tantivy-fst warns about this
+    // explicitly), while a Hebrew prefix stack is at most a few letters.
     let len = word.chars().count();
     let e = escape_regex(word);
     if len <= 1 {
         format!(".{{0,5}}{}", e)
     } else if len <= 2 {
         format!(".{{0,4}}{}", e)
-    } else if len <= 3 {
-        format!(".{{0,3}}{}", e)
     } else {
-        format!(".*{}", e)
+        format!(".{{0,3}}{}", e)
     }
 }
 
@@ -382,16 +413,16 @@ fn create_suffix_search_pattern(word: &str) -> String {
     if word.is_empty() {
         return String::new();
     }
+    // Bounded trailing window instead of `.*` (see create_prefix_search_pattern);
+    // a window of 5 still covers the longest real Hebrew suffixes (e.g. ותיהם).
     let len = word.chars().count();
     let e = escape_regex(word);
     if len <= 1 {
         format!("{}.{{0,7}}", e)
     } else if len <= 2 {
         format!("{}.{{0,6}}", e)
-    } else if len <= 3 {
-        format!("{}.{{0,5}}", e)
     } else {
-        format!("{}.*", e)
+        format!("{}.{{0,5}}", e)
     }
 }
 
@@ -415,6 +446,7 @@ fn create_full_partial_spelling_pattern(word: &str) -> String {
     }
     let escaped: Vec<String> = generate_full_partial_spelling_variations(word)
         .iter()
+        .take(MAX_SPELLING_VARIATIONS)
         .map(|v| escape_regex(v))
         .collect();
     format!("(?:{})", escaped.join("|"))
@@ -425,11 +457,15 @@ fn create_spelling_with_prefix_pattern(word: &str) -> String {
 }
 
 fn create_spelling_with_suffix_pattern(word: &str) -> String {
-    spelling_combine(word, 10, create_suffix_pattern)
+    // Each branch here carries the full suffix alternation, so fewer branches
+    // than the prefix variant to keep the compiled DFA bounded.
+    spelling_combine(word, 6, create_suffix_pattern)
 }
 
 fn create_spelling_with_full_morphology_pattern(word: &str) -> String {
-    spelling_combine(word, 8, create_full_morphological_pattern)
+    // The largest per-branch builder (prefix groups + full suffix set), so the
+    // tightest branch cap.
+    spelling_combine(word, 4, create_full_morphological_pattern)
 }
 
 fn spelling_combine(word: &str, limit: usize, builder: fn(&str) -> String) -> String {
@@ -438,7 +474,7 @@ fn spelling_combine(word: &str, limit: usize, builder: fn(&str) -> String) -> St
     }
     let variations = generate_full_partial_spelling_variations(word);
     let patterns: Vec<String> = variations.iter().take(limit).map(|v| builder(v)).collect();
-    format!("({})", patterns.join("|"))
+    format!("(?:{})", patterns.join("|"))
 }
 
 /// The `createSearchPattern` decision tree, priority order preserved verbatim.
@@ -456,7 +492,12 @@ pub fn create_search_pattern(
     }
 
     if has_spelling {
-        let variations = generate_full_partial_spelling_variations(word);
+        // Cap the (exponential) spelling set before fanning each variation out
+        // through a per-variation builder, so the joined pattern stays bounded.
+        let variations: Vec<String> = generate_full_partial_spelling_variations(word)
+            .into_iter()
+            .take(MAX_SPELLING_VARIATIONS)
+            .collect();
         let has_morph_or_partial =
             has_gram_prefix || has_gram_suffix || has_prefix || has_suffix || has_partial;
 
@@ -501,7 +542,7 @@ pub fn create_search_pattern(
 
 fn join_variations(variations: &[String], builder: fn(&str) -> String) -> String {
     let patterns: Vec<String> = variations.iter().map(|v| builder(v)).collect();
-    format!("({})", patterns.join("|"))
+    format!("(?:{})", patterns.join("|"))
 }
 
 // ── Option helpers ───────────────────────────────────────────────────────────────
@@ -585,18 +626,42 @@ pub fn build_advanced_regex_terms(
             }
         }
 
-        let limited: Vec<String> = variations
-            .into_iter()
-            .take(max_variations)
-            .filter(|v| !v.trim().is_empty())
-            .collect();
+        // Keep variations until we hit the count cap OR the combined-length
+        // budget — whichever comes first. The length budget is what keeps the
+        // compiled DFA under tantivy-fst's state limit when individual branches
+        // are large (morphology) and numerous (typo tolerance); at least one
+        // branch is always kept so the term is never empty.
+        let mut limited: Vec<String> = Vec::new();
+        let mut total_len = 0usize;
+        for v in variations {
+            if v.trim().is_empty() {
+                continue;
+            }
+            if limited.len() >= max_variations {
+                break;
+            }
+            let len = v.chars().count();
+            if !limited.is_empty() && total_len + len > MAX_PATTERN_TOTAL_LEN {
+                break;
+            }
+            total_len += len;
+            limited.push(v);
+        }
         if limited.is_empty() {
             continue;
         }
         let final_pattern = if limited.len() == 1 {
             limited.into_iter().next().unwrap()
         } else {
-            format!("({})", limited.join("|"))
+            format!("(?:{})", limited.join("|"))
+        };
+        // Defensive fallback: if a single oversized branch still pushed the term
+        // past the budget, match the literal word (always small and compilable)
+        // instead of risking a term that exceeds the DFA limit and errors.
+        let final_pattern = if final_pattern.chars().count() > MAX_PATTERN_TOTAL_LEN {
+            escape_regex(word)
+        } else {
+            final_pattern
         };
         regex_terms.push(final_pattern);
     }
@@ -786,10 +851,61 @@ mod tests {
     }
 
     #[test]
-    fn prefix_pattern_matches_dart() {
+    fn prefix_pattern_groups_are_noncapturing() {
         assert_eq!(
             create_prefix_pattern("ספר"),
-            "(ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(כ|ב|ש|ל|ה|ד)?(ה)?ספר"
+            "(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"
+        );
+    }
+
+    #[test]
+    fn typo_substitutions_are_nikud_free() {
+        // ס/ש confuse with each other but never with the dotted (vocalized)
+        // shin/sin forms, which can't exist in the nikud-free index.
+        let v = generate_common_hebrew_typo_variations("ס");
+        assert_eq!(v, vec!["ס", "ש"]);
+        // No produced variation may carry a nikud-range mark (U+0591–U+05C7).
+        let v2 = generate_common_hebrew_typo_variations("שבת");
+        for variant in v2 {
+            assert!(
+                !variant
+                    .chars()
+                    .any(|c| ('\u{0591}'..='\u{05C7}').contains(&c)),
+                "variant {variant:?} contains nikud"
+            );
+        }
+    }
+
+    #[test]
+    fn search_patterns_avoid_unbounded_star() {
+        // Prefix/suffix windows must be bounded (no `.*`) so the dictionary scan
+        // can't be forced to visit every term.
+        let p = create_search_pattern("ארוכה", true, false, false, false, false, false);
+        assert!(!p.contains(".*"), "prefix pattern still uses .*: {p}");
+        let s = create_search_pattern("ארוכה", false, true, false, false, false, false);
+        assert!(!s.contains(".*"), "suffix pattern still uses .*: {s}");
+    }
+
+    #[test]
+    fn heavy_option_combo_stays_within_budget() {
+        // typo + grammatical prefix + grammatical suffix is the worst case for
+        // automaton size; the produced term must stay under the length budget so
+        // it compiles instead of blowing past tantivy-fst's DFA state limit.
+        let so = opts(&[(
+            "ספר_0",
+            &[
+                (OPT_TYPO, true),
+                (OPT_GRAM_PREFIX, true),
+                (OPT_GRAM_SUFFIX, true),
+            ],
+        )]);
+        let terms = build_advanced_regex_terms(&["ספר".to_string()], &HashMap::new(), &so);
+        assert_eq!(terms.len(), 1);
+        assert!(!terms[0].is_empty());
+        assert!(
+            terms[0].chars().count() <= MAX_PATTERN_TOTAL_LEN,
+            "term length {} exceeds budget",
+            terms[0].chars().count()
         );
     }
 
@@ -826,7 +942,7 @@ mod tests {
         let terms = build_advanced_regex_terms(&["ספר".to_string()], &HashMap::new(), &so);
         assert_eq!(terms.len(), 1);
         assert!(terms[0].ends_with("ספר"));
-        assert!(terms[0].starts_with("(ו|מ|דא"));
+        assert!(terms[0].starts_with("(?:ו|מ|דא"));
     }
 
     #[test]
@@ -836,7 +952,7 @@ mod tests {
         // Need enabled options OR alternatives to trigger advanced path; alternatives suffice.
         let terms = build_advanced_regex_terms(&["שר".to_string()], &alts, &HashMap::new());
         assert_eq!(terms.len(), 1);
-        assert_eq!(terms[0], "(שר|מלך)");
+        assert_eq!(terms[0], "(?:שר|מלך)");
     }
 
     #[test]
@@ -898,6 +1014,6 @@ mod tests {
         let mut alts = HashMap::new();
         alts.insert(0u32, vec!["תּוֹרָה".to_string()]);
         let q3 = prepare_advanced_query("ספר", 0, &HashMap::new(), &alts, &HashMap::new());
-        assert_eq!(q3.regex_terms, vec!["(ספר|תורה)"]);
+        assert_eq!(q3.regex_terms, vec!["(?:ספר|תורה)"]);
     }
 }

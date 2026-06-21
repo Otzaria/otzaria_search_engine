@@ -2839,6 +2839,41 @@ mod tests {
     }
 
     #[test]
+    fn test_search_advanced_heavy_option_combo_compiles_and_runs() {
+        // typo + grammatical prefix + grammatical suffix produces the largest
+        // morphological regex. The length budget must keep it under tantivy-fst's
+        // DFA state limit so the search compiles and returns instead of erroring.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספרים", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let mut word_opts = HashMap::new();
+        word_opts.insert(hebrew_query::OPT_TYPO.to_string(), true);
+        word_opts.insert("קידומות דקדוקיות".to_string(), true);
+        word_opts.insert("סיומות דקדוקיות".to_string(), true);
+        let mut options = HashMap::new();
+        options.insert("ספר_0".to_string(), word_opts);
+
+        let result = engine.search_advanced(
+            "ספר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+        );
+        let got = ids(result.expect("heavy option combo must compile and run"));
+        assert!(
+            got.contains(&1),
+            "the base word ספר should still match, got {got:?}"
+        );
+    }
+
+    #[test]
     fn test_single_term_respects_max_expansions() {
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "ספר", "/books/a.txt");
