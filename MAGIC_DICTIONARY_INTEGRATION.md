@@ -1,9 +1,19 @@
 # MagicDictionary → otzaria_search_engine — מסמך מיגרציה
 
 מסמך זה מתאר איך לשלב את מנגנון ההרחבה המורפולוגית **MagicDictionary** של
-[kdroidFilter/SeforimLibraryLM](https://github.com/kdroidFilter/SeforimLibraryLM)
+[kdroidFilter/SeforimLibrary](https://github.com/kdroidFilter/SeforimLibrary)
 ו-[kdroidFilter/SeforimMagicIndexer](https://github.com/kdroidFilter/SeforimMagicIndexer)
 לתוך **otzaria_search_engine** (Rust/Tantivy עם Flutter UI).
+
+---
+
+> ### ⚠️ עדכון אימות (2026-06-23)
+> המסמך אומת מול הקוד בפועל (מקומי + מקורות חיצוניים). שינויים שחלו מאז הכתיבה המקורית:
+> - **הריפו `SeforimLibraryLM` שונה שמו ל-`SeforimLibrary`**, וענף ברירת המחדל הוא `master` (לא `main`). כל הקישורים במסמך עודכנו בהתאם. גם ל-`SeforimMagicIndexer` ענף ברירת המחדל הוא `master`.
+> - **ה-cap `MAX_SYNONYM_BOOST_TERMS` הוא כעת `256`** (לא 8), ונוסף קבוע `MAX_SYNONYM_TERMS_PER_TOKEN = 32`. ראה חלקים 3, 4.5, 5.
+> - **חלק 4.5 נכתב מחדש** כדי לתאום את הארכיטקטורה בפועל: `build_query` היא מתודה (`&self`), הקלט הוא `regex_terms` (דפוסי regex, לא טוקנים גולמיים), והמנוע **כבר** מבצע הרחבה מורפולוגית דרך [hebrew_query.rs](rust/src/hebrew_query.rs). זו נקודת השילוב הטבעית למילון.
+> - גרסת Tantivy בפועל: `=0.26.1`. ה-release האחרון של ה-DB: `v0.3.0` (2026-04-26), `lexical.db` ~54.5MB.
+> - **אומת כנכון:** סכמת ה-DB, `LOOKUP_SQL`, ערכי ה-boost (2.0/1.5/1.0), הבלאקליסט (25 entries, highlight-only), `buildLookupCandidates`, ו-`normalizeHebrew`.
 
 ---
 
@@ -12,7 +22,7 @@
 - **המטרה:** חיפוש בעברית שמוצא צורות הטיה (למה→ההטיות) — "הלך" יחזיר גם "הלכתי", "הולך", "תלך"…
 - **הנכס:** קובץ SQLite בשם `lexical.db` שנבנה offline ע"י Gemini AI על קורפוס Sefaria+Otzaria.
 - **גודל בפועל:** 54 MB. מכיל 24,559 למות, 137,631 צורות שטח, 190,151 וריאנטים, 594,428 קישורים.
-- **המיגרציה אפשרית.** ~250 שורות Rust + שינוי מינ' ב-`build_query`.
+- **המיגרציה אפשרית.** ~250 שורות Rust. נקודת השילוב היא [hebrew_query.rs](rust/src/hebrew_query.rs) (בניית `regex_terms`), לא `build_query` ישירות — ראה חלק 4.5.
 - **צד Flutter/Dart לא צריך להשתנות** אם משלבים פנימית.
 - **רישיון:** AGPL-3.0 בשני המקורות — תאים לפרויקט יעד GPL/AGPL.
 
@@ -33,7 +43,7 @@
 ```
 SeforimMagicIndexer + Gemini
     ↓ (offline, slow, expensive)
-lexical.db (SQLite, ~XX MB)
+lexical.db (SQLite, ~54.5 MB)
     ↓ (downloaded once)
 otzaria_search_engine קורא בזמן חיפוש
 ```
@@ -42,7 +52,7 @@ otzaria_search_engine קורא בזמן חיפוש
 
 ## חלק 2 — סכמת `lexical.db`
 
-ארבע טבלאות עיקריות. הסכמה המלאה ב-[Database.sq](https://github.com/kdroidFilter/SeforimMagicIndexer/blob/main/core/src/commonMain/sqldelight/io/github/kdroidfilter/seforim/magicindexer/db/Database.sq):
+ארבע טבלאות עיקריות. הסכמה המלאה ב-[Database.sq](https://github.com/kdroidFilter/SeforimMagicIndexer/blob/master/core/src/commonMain/sqldelight/io/github/kdroidfilter/seforim/magicindexer/db/Database.sq):
 
 ```sql
 -- למה (root form) - "הלך"
@@ -103,7 +113,7 @@ LEFT JOIN variant v  ON sv.variant_id = v.id;
 
 ## חלק 3 — איך זה משולב במנוע המקורי (Lucene/Kotlin)
 
-ב-[LuceneSearchEngine.kt](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt) בכל שאילתה:
+ב-[LuceneSearchEngine.kt](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt) בכל שאילתה:
 
 1. **נירמול עברית** עם `HebrewTextUtils.normalizeHebrew` (ניקוד, טעמים, גרשיים, סופיות).
 2. **טוקניזציה** עם StandardAnalyzer של Lucene.
@@ -120,8 +130,8 @@ LEFT JOIN variant v  ON sv.variant_id = v.id;
 
 ### מגבלות וזהירויות בקוד המקורי
 
-- **Cap על מספר ההרחבות:** `MAX_SYNONYM_BOOST_TERMS = 8` (משתנה גלובלי, [שורה 42](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L42)).
-- **Hallucination blacklist:** AI לפעמים יוצר מיפויים שגויים. ראה [שורות 50-95](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L50-L95) — בלאקליסט ידני שמסונן רק להיילייטינג (לא לחיפוש עצמו, כדי לשמור recall).
+- **Cap על מספר ההרחבות:** `MAX_SYNONYM_BOOST_TERMS = 256` ו-`MAX_SYNONYM_TERMS_PER_TOKEN = 32` (משתנים גלובליים, [שורות 42-44](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L42-L44)). (בגרסה המקורית של מסמך זה צוין 8 — הערך עלה מאז.)
+- **Hallucination blacklist:** AI לפעמים יוצר מיפויים שגויים. ראה [שורות 50-95](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L50-L95) — בלאקליסט ידני שמסונן רק להיילייטינג (לא לחיפוש עצמו, כדי לשמור recall).
 - **סטופ-וורדס:** אותיות בודדות מסוננות *לפני* ההרחבה, פרט ל-"ה" אם השאילתה כללה "ה׳" (Hashem).
 - **קאשים:** LRU של 1024 tokens + 512 bases בזמן ריצה.
 
@@ -162,7 +172,10 @@ use once_cell::sync::Lazy;
 
 // טעמים U+0591–U+05AF
 static TEAMIM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[\u{0591}-\u{05AF}]").unwrap());
-// ניקוד + meteg + qamatz qatan
+// ניקוד + meteg + qamatz qatan.
+// הערה: ה-`normalizeHebrew` המקורי ב-Kotlin מסיר את הטווח 05B0–05BD + 05C1,05C2,05C7
+// אבל **לא** את 05BF (rafe). השארנו 05BF כאן כי הוא נדיר בקורפוס; אם רוצים התאמה
+// מדויקת 1:1 ל-DB — להסיר את \u{05BF} מהטווח.
 static NIKUD:  Lazy<Regex> = Lazy::new(|| Regex::new(
     r"[\u{05B0}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C7}]"
 ).unwrap());
@@ -263,52 +276,65 @@ impl MagicDictionary {
 }
 ```
 
-### 4.5 שילוב ב-`build_query`
+### 4.5 שילוב במנוע — נקודת השילוב הנכונה היא `hebrew_query.rs`
 
-ב-[search_engine.rs](rust/src/api/search_engine.rs#L634-L664), שינוי `build_query`:
+> **חשוב — תיקון אדריכלי מהגרסה המקורית.** הגרסה המקורית של חלק זה הניחה ש-`build_query`
+> היא פונקציה חופשית שמקבלת טוקנים גולמיים, ושמסלול הטוקן-היחיד הוא
+> `RegexQuery::from_pattern`. **שני הדברים שגויים בקוד בפועל.** ראה למטה את המצב האמיתי.
+
+#### מה קורה בפועל היום
+
+1. **`build_query` היא מתודה** (`&self`) ב-[search_engine.rs:1185](rust/src/api/search_engine.rs#L1185) — לא פונקציה חופשית, ויש לה גישה ל-`self.index_reader`.
+2. **הקלט שלה הוא `regex_terms: Vec<String>` — דפוסי regex, לא מילים גולמיות.** מסלול הטוקן-היחיד הוא [single_regex_term_query](rust/src/api/search_engine.rs#L1228), שמהדר את ה-regex עם `tantivy_fst::Regex`, מזרים את כל מונחי האינדקס התואמים, ובונה מהם `TermSetQuery` (עם אכיפת `max_expansions`). מסלול רב-טוקני בונה `RegexPhraseQuery`.
+3. **המנוע כבר מבצע הרחבה מורפולוגית** — ה-`regex_terms` נבנים ב-[hebrew_query.rs](rust/src/hebrew_query.rs) ע"י `create_search_pattern`, שמרכיב לכל מילה דפוס regex לפי האפשרויות: קידומות/סיומות (דקדוקיות וכלליות), כתיב מלא/חסר, חלק-ממילה, ושגיאות-כתיב. נקודת הכניסה: [build_advanced_query → hebrew_query::prepare_advanced_query](rust/src/api/search_engine.rs#L1377).
+
+המשמעות: ה"הרחבה" כאן היא **מבוססת-כללים** (regex של אותיות שימוש), בעוד MagicDictionary היא **מבוססת-לקסיקון** (צורות שטח אמיתיות שנלמדו). אלו שני מנגנונים משלימים, והמילון נכנס בדיוק באותו שלב שבו נבנים ה-`regex_terms`.
+
+#### הגישה המומלצת: הזרקת צורות לקסיקליות לתוך ה-regex term
+
+במקום לגעת ב-`build_query`, להוסיף ל-[hebrew_query.rs](rust/src/hebrew_query.rs) מסלול שמרחיב מילה
+לרשימת צורות מהמילון, ואז משלב אותן כ-alternation בתוך אותו דפוס regex שכבר נבנה:
 
 ```rust
-fn build_query(
-    index: &Index,
-    regex_terms: Vec<String>,
-    facets: Vec<String>,
-    slop: u32,
-    max_expansions: u32,
-    magic_dict: Option<&MagicDictionary>,  // ← פרמטר חדש (פנימי)
-) -> Result<Box<dyn Query>> {
-    let schema = index.schema();
-    let text_field = schema.get_field("text").unwrap();
-    
-    let main_query: Box<dyn Query> = match (regex_terms.len(), magic_dict) {
-        // יחיד + מילון: BooleanQuery עם boosts
-        (1, Some(dict)) if is_plain_hebrew_word(&regex_terms[0]) => {
-            build_magic_expanded_query(text_field, &regex_terms[0], dict)?
-        }
-        // יחיד: כמו היום
-        (1, _) => Box::new(RegexQuery::from_pattern(&regex_terms[0], text_field)?),
-        // רב-טוקני: RegexPhraseQuery (כמו היום) — בעתיד אפשר להוסיף Cartesian
-        _ => {
-            let mut p = RegexPhraseQuery::new(text_field, regex_terms);
-            p.set_slop(slop);
-            p.set_max_expansions(max_expansions);
-            Box::new(p)
-        }
-    };
-    // ... המשך כמו היום (facets etc.)
+// בתוך hebrew_query.rs, כאשר magic_dict זמין ומופעל עבור המילה:
+fn create_lexical_pattern(word: &str, dict: &MagicDictionary) -> Option<String> {
+    let exp = dict.expansion_for(word)?;            // surface[] + variants[] + base[]
+    // איחוד הצורות (כולל המילה עצמה), נירמול, escape, וקיבוע ל-anchored alternation
+    let mut forms: Vec<String> = std::iter::once(word.to_string())
+        .chain(exp.surface)
+        .chain(exp.variants)
+        .chain(exp.base)
+        .map(|f| escape_regex(&normalize_for_index(&f)))
+        .collect();
+    forms.sort();
+    forms.dedup();
+    forms.truncate(MAX_LEXICAL_FORMS);              // cap — ראה הערה למטה
+    Some(format!("(?:{})", forms.join("|")))
 }
 ```
 
-`build_magic_expanded_query` בונה:
-```
-BooleanQuery {
-    SHOULD: BoostQuery(2.0, TermQuery(token))           ← הטוקן המקורי
-    SHOULD: BoostQuery(2.0, TermQuery(surface_i)) for i ← הטיות
-    SHOULD: BoostQuery(1.5, TermQuery(variant_j)) for j ← וריאנטים
-    SHOULD: BoostQuery(1.0, TermQuery(base))            ← למה
+- הדפוס הזה מתמזג עם הדפוסים הקיימים (קידומת/סיומת/כתיב) בדיוק כמו כל וריאנט אחר ב-`create_search_pattern`.
+- מכיוון שהמנוע ממילא מהדר regex→`TermSetQuery`/`RegexPhraseQuery` ואוכף `max_expansions`, **אין צורך לבנות `BooleanQuery` ידני עם boosts** — וגם אין דירוג boost מובנה במסלול ה-regex של Tantivy. אם רוצים את הדירוג surface=2.0/variant=1.5/base=1.0 כמו ב-Lucene, צריך מסלול נפרד (ראה חלק 5, אופציה A/C) — לא חלק מהשלב הראשון.
+
+#### היכן מזריקים את `magic_dict`
+
+`MagicDictionary` הוא נכס קריאה-בלבד לכל אורך חיי המנוע. נכון לאחסן אותו על `SearchEngine`
+עצמו (כמו `index_reader`), ולהעביר reference דרך `prepare_advanced_query`:
+
+```rust
+// search_engine.rs — שדה חדש על המבנה:
+struct SearchEngine {
+    // ... index, index_reader, schema ...
+    magic_dict: Option<MagicDictionary>,   // נטען ב-open() אם lexical.db קיים
 }
 ```
 
-עם cap של 8 לכל קטגוריה (כמו בקוד המקורי).
+כך **חתימות ה-API החיצוניות (`search`/`count`/...) לא משתנות כלל**, וצד ה-Dart לא מושפע (ראה חלק 8).
+
+> **הערה על cap:** הערכים בקוד ה-Lucene המקורי (`MAX_SYNONYM_BOOST_TERMS = 256`,
+> `MAX_SYNONYM_TERMS_PER_TOKEN = 32`) נוגעים ל-boost-queries של Lucene ולא רלוונטיים ישירות
+> כאן. במסלול ה-regex, ה-cap האפקטיבי הוא `max_expansions` של המנוע (שכבר נאכף ב-`single_regex_term_query`).
+> מומלץ `MAX_LEXICAL_FORMS` נמוך משלו (למשל 32) כדי לא לנפח את ה-alternation.
 
 ---
 
@@ -317,12 +343,20 @@ BooleanQuery {
 ב-Lucene, `MultiPhraseQuery` מאפשרת **בכל מיקום בפראזה לבחור מבין n חלופות**.
 ב-Tantivy זה לא קיים כפיצ'ר ישיר.
 
+> **הערה חשובה (אומת בקוד):** המנוע **כבר משתמש ב-`RegexPhraseQuery`** למסלול הרב-טוקני
+> ([build_query](rust/src/api/search_engine.rs#L1200)). `RegexPhraseQuery` מאפשרת בכל מיקום בפראזה
+> דפוס regex — כלומר *alternation לכל מיקום* — וזה **בדיוק** מה ש-`MultiPhraseQuery` נותן ב-Lucene.
+> לכן עם הגישה של חלק 4.5 (הזרקת צורות לקסיקליות כ-alternation לתוך ה-regex של כל מילה) מקבלים
+> את היכולת הרב-מיקומית "בחינם" — אין צורך ב-Cartesian product ידני. האפשרויות למטה רלוונטיות
+> בעיקר אם רוצים **דירוג boost** (שאין לו תמיכה ישירה במסלול ה-regex).
+
 ### האפשרויות:
 
-**אופציה A — Cartesian Product (מומלץ לשלב 1):**
-לבנות `BooleanQuery { SHOULD: PhraseQuery_i }` לכל קומבינציה אפשרית.
-עם cap של 8 חלופות לכל טוקן ו-3 טוקנים, זה עד 8³=512 — לא נורא.
-מעל זה ה-explosion מאיים — להגביל ל-2-3 טוקנים בלבד.
+**אופציה A — Cartesian Product (לדירוג boost בלבד):**
+לבנות `BooleanQuery { SHOULD: PhraseQuery_i }` לכל קומבינציה אפשרית, כדי להחיל boost שונה לכל צורה.
+שים לב: ה-cap בקוד ה-Lucene הוא כיום **256** (`MAX_SYNONYM_BOOST_TERMS`) ולא 8 — לכן Cartesian מלא
+על ערכים כאלה הוא explosion בלתי-אפשרי. אם הולכים בכיוון זה, חובה cap נמוך מאוד (≤4 לכל טוקן)
+ולהגביל ל-2-3 טוקנים. במרבית המקרים מיותר — `RegexPhraseQuery` כבר נותן את ה-recall.
 
 **אופציה B — Synonym injection בזמן indexing:**
 לכתוב `MagicSynonymFilter` שפולט `position_inc=0` לכל variant.
@@ -331,10 +365,12 @@ BooleanQuery {
 - כל עדכון של lexical.db דורש reindex מלא של הקורפוס
 - קושי לנהל cap דינמי
 
-**אופציה C — חזרה ל-disjunction-only (פשטני):**
-לוותר על phrase search גמיש, להחזיר רק `BooleanQuery { SHOULD: TermQuery }` כפי שמתואר ב-4.5. מתאים אם רוב השאילתות הן single-token או short queries.
+**אופציה C — הזרקת alternation ל-regex (מומלץ — תואם 4.5):**
+להזריק את הצורות הלקסיקליות כ-alternation לתוך ה-`regex_terms` (חלק 4.5). מסלול טוקן-יחיד → `TermSetQuery`,
+מסלול רב-טוקני → `RegexPhraseQuery` עם alternation לכל מיקום. אין דירוג boost, אבל ה-recall מלא ומשתלב
+חלק עם ההרחבה המורפולוגית הקיימת.
 
-המלצה: התחל ב-**C**, עבור ל-**A** אם המשתמשים מתלוננים על phrase recall.
+המלצה: התחל ב-**C** (זרימה טבעית מ-4.5). עבור ל-**A** רק אם נדרש דירוג עדין לפי סוג הצורה.
 
 ---
 
@@ -343,8 +379,8 @@ BooleanQuery {
 ה-AI הפיק לפעמים מיפויים שגויים. הקוד המקורי מנהל בלאקליסט ב-TSV נפרד.
 
 ### הקובץ
-- **מיקום במקור:** [search/src/jvmMain/resources/hallucination_blacklist.tsv](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/resources/hallucination_blacklist.tsv)
-- **URL ישיר:** `https://raw.githubusercontent.com/kdroidFilter/SeforimLibraryLM/main/search/src/jvmMain/resources/hallucination_blacklist.tsv`
+- **מיקום במקור:** [search/src/jvmMain/resources/hallucination_blacklist.tsv](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/resources/hallucination_blacklist.tsv)
+- **URL ישיר:** `https://raw.githubusercontent.com/kdroidFilter/SeforimLibrary/master/search/src/jvmMain/resources/hallucination_blacklist.tsv`
 - **גודל:** 29 שורות (25 entries + 4 שורות הערה/הסבר)
 
 ### פורמט
@@ -358,7 +394,7 @@ BooleanQuery {
 ...
 ```
 טוקן (col 1) ובסיס שגוי (col 2). שניהם **מנורמלים עם `normalizeHebrew`** לפני אחסון ב-map.
-הטעינה: [loadHallucinationBlacklist](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L62-L87).
+הטעינה: [loadHallucinationBlacklist](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L62-L87).
 
 ### חשוב: סינון רק להיילייטינג
 הבלאקליסט בקוד המקורי משמש **רק לסינון היילייטינג**, לא לחיפוש עצמו.
@@ -405,7 +441,7 @@ pub fn is_hallucinated(token: &str, expansion: &Expansion) -> bool {
 ```bash
 # scripts/sync_blacklist.sh
 curl -fsSL \
-  https://raw.githubusercontent.com/kdroidFilter/SeforimLibraryLM/main/search/src/jvmMain/resources/hallucination_blacklist.tsv \
+  https://raw.githubusercontent.com/kdroidFilter/SeforimLibrary/master/search/src/jvmMain/resources/hallucination_blacklist.tsv \
   -o rust/resources/hallucination_blacklist.tsv
 ```
 תריץ ידנית כל כמה חודשים. **אל תכניס לבנייה אוטומטית** — זה יוסיף תלות רשת ל-CI וישבור בילדי mobile cross-compilation דרך CargoKit ללא תועלת אמיתית.
@@ -489,14 +525,14 @@ pub fn ensure_lexical_db(dest: &Path) -> anyhow::Result<PathBuf> {
 
 ### סטופ-וורדס לפני הרחבה
 ב-Lucene: אותיות עבריות בודדות מסוננות *לפני* קריאה ל-MagicDict (חיסכון ענק בזמן+תוצאות מיותרות). ראה
-[שורות 399-409](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L399-L409).
+[שורות 399-409](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt#L399-L409).
 חריגים:
 - שמירת "ה" אם השאילתה המקורית כללה "ה׳" (שם השם)
 - שמירת טוקנים מספריים
 
 ### candidates של final form
 לפני lookup, ה-Kotlin בונה רשימה של 4 נוסחים: raw, normalized, raw עם סופית, normalized עם סופית. ראה
-[buildLookupCandidates](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/MagicDictionaryIndex.kt#L270-L292).
+[buildLookupCandidates](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/MagicDictionaryIndex.kt#L270-L292).
 חשוב לפורט.
 
 ### Thread-safety
@@ -515,21 +551,21 @@ pub fn ensure_lexical_db(dest: &Path) -> anyhow::Result<PathBuf> {
 
 ### קוד מקור
 - **SeforimMagicIndexer (offline AI builder):** https://github.com/kdroidFilter/SeforimMagicIndexer
-- **SeforimLibraryLM (consumer + integration):** https://github.com/kdroidFilter/SeforimLibraryLM
-- **קובץ ה-Lucene integration:** [LuceneSearchEngine.kt](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt)
-- **קובץ ה-Dictionary index:** [MagicDictionaryIndex.kt](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/MagicDictionaryIndex.kt)
-- **קובץ Hebrew utils:** [HebrewTextUtils.kt](https://github.com/kdroidFilter/SeforimLibraryLM/blob/main/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/HebrewTextUtils.kt)
-- **סכמת ה-DB:** [Database.sq](https://github.com/kdroidFilter/SeforimMagicIndexer/blob/main/core/src/commonMain/sqldelight/io/github/kdroidfilter/seforim/magicindexer/db/Database.sq)
+- **SeforimLibrary (consumer + integration):** https://github.com/kdroidFilter/SeforimLibrary
+- **קובץ ה-Lucene integration:** [LuceneSearchEngine.kt](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/LuceneSearchEngine.kt)
+- **קובץ ה-Dictionary index:** [MagicDictionaryIndex.kt](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/MagicDictionaryIndex.kt)
+- **קובץ Hebrew utils:** [HebrewTextUtils.kt](https://github.com/kdroidFilter/SeforimLibrary/blob/master/search/src/jvmMain/kotlin/io/github/kdroidfilter/seforimlibrary/search/HebrewTextUtils.kt)
+- **סכמת ה-DB:** [Database.sq](https://github.com/kdroidFilter/SeforimMagicIndexer/blob/master/core/src/commonMain/sqldelight/io/github/kdroidfilter/seforim/magicindexer/db/Database.sq)
 
 ### API
 - **Latest release (lexical.db):** https://api.github.com/repos/kdroidFilter/SeforimMagicIndexer/releases/latest
 - **Releases page:** https://github.com/kdroidFilter/SeforimMagicIndexer/releases
 
 ### Tantivy resources
-- **Tantivy docs:** https://docs.rs/tantivy/0.26.0/tantivy/
-- **BoostQuery:** https://docs.rs/tantivy/0.26.0/tantivy/query/struct.BoostQuery.html
-- **PhraseQuery:** https://docs.rs/tantivy/0.26.0/tantivy/query/struct.PhraseQuery.html
-- **Tantivy custom tokenizers:** https://docs.rs/tantivy/0.26.0/tantivy/tokenizer/index.html
+- **Tantivy docs:** https://docs.rs/tantivy/0.26.1/tantivy/
+- **BoostQuery:** https://docs.rs/tantivy/0.26.1/tantivy/query/struct.BoostQuery.html
+- **PhraseQuery:** https://docs.rs/tantivy/0.26.1/tantivy/query/struct.PhraseQuery.html
+- **Tantivy custom tokenizers:** https://docs.rs/tantivy/0.26.1/tantivy/tokenizer/index.html
 
 ### Rust crates
 - **rusqlite:** https://docs.rs/rusqlite/
@@ -539,11 +575,13 @@ pub fn ensure_lexical_db(dest: &Path) -> anyhow::Result<PathBuf> {
 
 ## נספח A — נתונים שאומתו על lexical.db בפועל
 
-מבוסס על קובץ אמיתי (`/Users/david/Downloads/SeforimLibrary/build/lexical.db`, גרסה מ-2026-05-03):
+מבוסס על קובץ אמיתי (גרסה מ-2026-05-03). **עדכון:** ה-release הרשמי האחרון הוא `v0.3.0`
+(2026-04-26), `lexical.db` במשקל 57,122,816 בייט (~54.5MB). המספרים למטה (מספרי שורות בטבלאות)
+לא נבדקו מחדש מול v0.3.0 ועשויים לסטות קלות, אך סדרי הגודל תקפים:
 
 | מדד | ערך | משמעות לפיתוח |
 |---|---|---|
-| גודל ה-DB | **54 MB** | OK ל-Desktop. לאנדרואיד שווה לבדוק האם להוריד אחרי first-run ולא לארוז |
+| גודל ה-DB | **~54.5 MB** (57,122,816 B) | OK ל-Desktop. לאנדרואיד שווה לבדוק האם להוריד אחרי first-run ולא לארוז |
 | מספר למות (`base`) | 24,559 | קצת מעבר ל-WordNet העברי הפתוח |
 | צורות שטח (`surface`) | 137,631 | היחס ~5.6 surfaces/lemma — סביר מבחינה מורפולוגית |
 | וריאנטים (`variant`) | 190,151 | יותר וריאנטים מ-surfaces — הרבה כתיב חלופי |
@@ -556,9 +594,10 @@ pub fn ensure_lexical_db(dest: &Path) -> anyhow::Result<PathBuf> {
 
 ### בלאקליסט הזיות
 - **25 entries** בלבד נכון להיום
-- מתעדכן ב-git history של [hallucination_blacklist.tsv](https://github.com/kdroidFilter/SeforimLibraryLM/commits/main/search/src/jvmMain/resources/hallucination_blacklist.tsv)
+- מתעדכן ב-git history של [hallucination_blacklist.tsv](https://github.com/kdroidFilter/SeforimLibrary/commits/master/search/src/jvmMain/resources/hallucination_blacklist.tsv)
 - ראה חלק 6 — embed עם `include_str!`, רענן ידנית.
 
 ---
 
 *מסמך זה נוצר ב-2026-05-17 כתוצאה מסשן מחקר של Claude Opus 4.7 על שלושת הריפו הרלוונטיים.*
+*אומת ועודכן ב-2026-06-23 (Claude Opus 4.8) מול הקוד בפועל — ראה באנר האימות בראש המסמך.*
