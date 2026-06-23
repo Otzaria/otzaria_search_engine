@@ -95,6 +95,8 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
 /// expands very widely; far more matches than a snippet could ever show.
 const MAX_HIGHLIGHT_TERMS: usize = 512;
+const MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN: usize = 256;
+const LEXICAL_FUZZY_PHRASE_SLOP: u32 = 1;
 
 /// The eight schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics)`.
@@ -1432,6 +1434,23 @@ impl SearchEngine {
             .context("lexical fuzzy query requires a loaded magic dictionary")?;
         let text_f = self.schema.get_field("text")?;
 
+        if term_texts.len() > 1 {
+            let patterns = self.lexical_fuzzy_phrase_patterns(dict, term_texts, max_distance)?;
+            let mut phrase_query = RegexPhraseQuery::new(text_f, patterns);
+            phrase_query.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
+            phrase_query
+                .set_max_expansions((MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN * term_texts.len()) as u32);
+            let main_query: Box<dyn Query> = Box::new(phrase_query);
+            return if facets.is_empty() {
+                Ok(main_query)
+            } else {
+                Ok(Box::new(BooleanQuery::new(vec![
+                    (Occur::Must, main_query),
+                    (Occur::Must, self.facet_filter_query(facets)?),
+                ])))
+            };
+        }
+
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(term_texts.len() + 1);
         for token in term_texts {
             let fuzzy: Box<dyn Query> = Box::new(FuzzyTermQuery::new(
@@ -1462,6 +1481,88 @@ impl SearchEngine {
             clauses.push((Occur::Must, self.facet_filter_query(facets)?));
         }
         Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
+    fn lexical_fuzzy_phrase_patterns(
+        &self,
+        dict: &MagicDictionary,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<Vec<String>> {
+        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+        term_texts
+            .iter()
+            .map(|token| {
+                let mut terms = Vec::new();
+                let mut seen = HashSet::new();
+
+                Self::push_limited_unique(
+                    &mut terms,
+                    &mut seen,
+                    token.clone(),
+                    MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                );
+                for form in dict.recall_forms(token, MAX_LEXICAL_FORMS) {
+                    Self::push_limited_unique(
+                        &mut terms,
+                        &mut seen,
+                        form,
+                        MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                    );
+                }
+
+                let remaining = MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN.saturating_sub(terms.len());
+                if remaining > 0 {
+                    let automaton = DfaWrapper(builder.build_dfa(token));
+                    for fuzzy_term in self.automaton_terms(&automaton, remaining)? {
+                        Self::push_limited_unique(
+                            &mut terms,
+                            &mut seen,
+                            fuzzy_term,
+                            MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                        );
+                    }
+                }
+
+                Ok(Self::terms_regex_union(&terms))
+            })
+            .collect()
+    }
+
+    fn push_limited_unique(
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+        value: String,
+        cap: usize,
+    ) {
+        if out.len() < cap && seen.insert(value.clone()) {
+            out.push(value);
+        }
+    }
+
+    fn terms_regex_union(terms: &[String]) -> String {
+        if terms.len() == 1 {
+            return Self::escape_regex_term(&terms[0]);
+        }
+        let escaped = terms
+            .iter()
+            .map(|term| Self::escape_regex_term(term))
+            .collect::<Vec<_>>();
+        format!("(?:{})", escaped.join("|"))
+    }
+
+    fn escape_regex_term(term: &str) -> String {
+        let mut out = String::with_capacity(term.len());
+        for ch in term.chars() {
+            if matches!(
+                ch,
+                '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+            ) {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out
     }
 
     /// Advanced mode: ports the Dart morphological query builder to produce regex
@@ -1734,8 +1835,11 @@ impl SearchEngine {
             .collect();
         let mut matched = self.automaton_highlight_terms(&automatons)?;
 
-        // ...then add the (blacklist-filtered) lexical forms per token.
+        // ...then add the literal tokens and the (blacklist-filtered) lexical
+        // forms per token. The exact token can otherwise be omitted when a broad
+        // fuzzy automaton exhausts its highlight-term budget first.
         for token in term_texts {
+            matched.insert(token.clone());
             for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
                 matched.insert(form);
             }
@@ -1770,26 +1874,37 @@ impl SearchEngine {
         A: Automaton,
         A::State: Clone,
     {
-        let text_f = self.schema.get_field("text")?;
-        let searcher = self.index_reader.searcher();
         let mut matched: HashSet<String> = HashSet::new();
         // Split the term budget evenly between automatons: a global cap would
         // let one broad first word exhaust it and leave the remaining query
         // words with no highlighting at all.
         let per_automaton_cap = (MAX_HIGHLIGHT_TERMS / automatons.len().max(1)).max(1);
         for automaton in automatons {
-            let mut automaton_terms = 0usize;
-            'segments: for reader in searcher.segment_readers() {
-                let inverted = reader.inverted_index(text_f)?;
-                let mut stream = inverted.terms().search(automaton).into_stream()?;
-                while stream.advance() {
-                    if let Ok(term) = std::str::from_utf8(stream.key()) {
-                        if !matched.contains(term) {
-                            matched.insert(term.to_string());
-                            automaton_terms += 1;
-                            if automaton_terms >= per_automaton_cap {
-                                break 'segments;
-                            }
+            for term in self.automaton_terms(automaton, per_automaton_cap)? {
+                matched.insert(term);
+            }
+        }
+        Ok(matched)
+    }
+
+    fn automaton_terms<A>(&self, automaton: &A, cap: usize) -> Result<Vec<String>>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
+        let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
+        let mut matched = Vec::new();
+        let mut seen = HashSet::new();
+        'segments: for reader in searcher.segment_readers() {
+            let inverted = reader.inverted_index(text_f)?;
+            let mut stream = inverted.terms().search(automaton).into_stream()?;
+            while stream.advance() {
+                if let Ok(term) = std::str::from_utf8(stream.key()) {
+                    if seen.insert(term.to_string()) {
+                        matched.push(term.to_string());
+                        if matched.len() >= cap {
+                            break 'segments;
                         }
                     }
                 }
@@ -2044,8 +2159,15 @@ mod tests {
             CREATE TABLE surface (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE, base_id INTEGER NOT NULL REFERENCES base(id), notes TEXT);
             CREATE TABLE variant (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE);
             CREATE TABLE surface_variant (surface_id INTEGER NOT NULL REFERENCES surface(id), variant_id INTEGER NOT NULL REFERENCES variant(id), PRIMARY KEY (surface_id, variant_id));
-            INSERT INTO base (id, value) VALUES (1, 'הלכ');
-            INSERT INTO surface (id, value, base_id) VALUES (1, 'הלכתי', 1), (2, 'הולכ', 1);
+            INSERT INTO base (id, value) VALUES (1, 'הלכ'), (2, 'ישנ');
+            INSERT INTO surface (id, value, base_id) VALUES
+                (1, 'הלכתי', 1),
+                (2, 'הולכ', 1),
+                (3, 'לכו', 1),
+                (4, 'הולכימ', 1),
+                (5, 'לישונ', 2),
+                (6, 'ישנ', 2),
+                (7, 'בלשונ', 2);
             "#,
         )
         .unwrap();
@@ -2650,6 +2772,128 @@ mod tests {
             .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 0)
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_requires_phrase() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי לישון", "/books/a.txt");
+        add(
+            &mut engine,
+            2,
+            "הלכתי ואז דיברתי הרבה לפני לישון",
+            "/books/b.txt",
+        );
+        add(&mut engine, 3, "לישון הלכתי", "/books/c.txt");
+        add(&mut engine, 4, "הלכתי", "/books/d.txt");
+        add(&mut engine, 5, "לכו ונכהו בלשון", "/books/e.txt");
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let got = ids(engine
+            .search_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                2,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(
+            got,
+            vec![1, 5],
+            "multi-token lexical fuzzy search should preserve order while allowing one intervening token"
+        );
+
+        let count = engine
+            .count_fuzzy("הלכתי לישון".to_string(), vec!["/root".to_string()], 2)
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_highlights_literal_second_token() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הולכים לישון", "/books/a.txt");
+        for (idx, term) in one_edit_insertions("לישון").into_iter().enumerate() {
+            add(
+                &mut engine,
+                idx as u64 + 2,
+                &format!("רעש {term}"),
+                "/books/noise.txt",
+            );
+        }
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let results = engine
+            .search_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                2,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        let hit = results.iter().find(|result| result.id == 1).unwrap();
+        assert!(
+            hit.text.contains("<font color=red>לישון</font>"),
+            "the literal second query token must remain highlighted, got: {}",
+            hit.text
+        );
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_allows_expansions_per_token() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי לישון", "/books/a.txt");
+
+        let mut next_id = 2u64;
+        for term in one_edit_insertions("הלכתי")
+            .into_iter()
+            .chain(one_edit_insertions("לישון"))
+        {
+            add(&mut engine, next_id, &term, "/books/noise.txt");
+            next_id += 1;
+        }
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let got = ids(engine
+            .search_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                1,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1]);
+    }
+
+    fn one_edit_insertions(token: &str) -> Vec<String> {
+        const LETTERS: &[char] = &[
+            'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ',
+            'צ', 'ק', 'ר', 'ש', 'ת',
+        ];
+
+        let chars: Vec<char> = token.chars().collect();
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for position in 0..=chars.len() {
+            for letter in LETTERS {
+                let mut variant = chars.clone();
+                variant.insert(position, *letter);
+                let variant: String = variant.into_iter().collect();
+                if variant != token && seen.insert(variant.clone()) {
+                    out.push(variant);
+                }
+            }
+        }
+        out
     }
 
     #[test]
