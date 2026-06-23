@@ -1401,7 +1401,7 @@ impl SearchEngine {
         facets: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
-        if self.magic_dict.is_some() {
+        if self.magic_dict.is_some() && max_distance > 0 {
             self.build_lexical_fuzzy_query(term_texts, facets, max_distance)
         } else {
             self.build_fuzzy_query_from_terms(term_texts, facets, max_distance)
@@ -1439,7 +1439,8 @@ impl SearchEngine {
                 max_distance,
                 true,
             ));
-            let forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
+            let mut forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
+            forms.retain(|f| f != token);
             let token_query: Box<dyn Query> = if forms.is_empty() {
                 fuzzy
             } else {
@@ -1449,7 +1450,10 @@ impl SearchEngine {
                     .collect();
                 Box::new(BooleanQuery::new(vec![
                     (Occur::Should, fuzzy),
-                    (Occur::Should, Box::new(TermSetQuery::new(set_terms)) as Box<dyn Query>),
+                    (
+                        Occur::Should,
+                        Box::new(TermSetQuery::new(set_terms)) as Box<dyn Query>,
+                    ),
                 ]))
             };
             clauses.push((Occur::Must, token_query));
@@ -1696,7 +1700,7 @@ impl SearchEngine {
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
-        if self.magic_dict.is_some() {
+        if self.magic_dict.is_some() && max_distance > 0 {
             self.build_lexical_fuzzy_highlight_query(term_texts, max_distance)
         } else {
             self.build_fuzzy_highlight_query(term_texts, max_distance)
@@ -2545,9 +2549,8 @@ mod tests {
         let (mut engine, dir) = make_engine();
         assert!(!engine.has_magic_dictionary());
         // Missing file → false, no error, no dictionary loaded.
-        assert!(!engine.set_magic_dictionary_path(
-            dir.path().join("nope.db").to_str().unwrap().to_string()
-        ));
+        assert!(!engine
+            .set_magic_dictionary_path(dir.path().join("nope.db").to_str().unwrap().to_string()));
         assert!(!engine.has_magic_dictionary());
         // Valid lexical.db → true.
         let db = make_lexical_db(&dir);
@@ -2593,7 +2596,10 @@ mod tests {
         assert!(
             fuzzy_plain.is_empty(),
             "plain fuzzy cannot reach the inflection at distance 2, got: {:?}",
-            fuzzy_plain.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+            fuzzy_plain
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
         );
 
         // Fuzzy WITH dictionary: the lexical expansion injects "הלכתי" → match.
@@ -2616,6 +2622,34 @@ mod tests {
             .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 2)
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_distance_zero_stays_exact() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי", "/books/a.txt");
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let fuzzy_zero = engine
+            .search_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                0,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert!(
+            fuzzy_zero.is_empty(),
+            "max_distance=0 must not inject lexical expansions"
+        );
+
+        let count = engine
+            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 0)
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

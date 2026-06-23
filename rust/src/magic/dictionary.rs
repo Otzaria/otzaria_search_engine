@@ -98,7 +98,11 @@ impl MagicDictionary {
         conn.prepare(LOOKUP_SQL)
             .context("lexical.db is missing the expected morphology schema")?;
 
-        let cache_size = if cfg!(target_os = "android") { 128 } else { 512 };
+        let cache_size = if cfg!(any(target_os = "android", target_os = "ios")) {
+            128
+        } else {
+            512
+        };
         Ok(Self {
             conn: Mutex::new(conn),
             cache: Mutex::new(LruCache::new(NonZeroUsize::new(cache_size).unwrap())),
