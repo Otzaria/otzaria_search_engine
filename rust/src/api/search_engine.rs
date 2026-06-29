@@ -13,7 +13,8 @@ use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, Top
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
 use tantivy::query::{
-    AllQuery, BooleanQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, TermQuery, TermSetQuery,
+    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, FuzzyTermQuery, Occur,
+    PhraseQuery, TermQuery, TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
@@ -25,6 +26,7 @@ use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
 use crate::hebrew_query;
+use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -94,6 +96,33 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
 /// expands very widely; far more matches than a snippet could ever show.
 const MAX_HIGHLIGHT_TERMS: usize = 512;
+const MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN: usize = 256;
+const LEXICAL_FUZZY_PHRASE_SLOP: u32 = 1;
+
+// Relevance weights for the approximate (`fuzzy`) path. `FuzzyTermQuery` and
+// `TermSetQuery` are automaton queries that score a flat 1.0 (`ConstScorer`),
+// so without boosting every approximate hit ties and `order_by_score` produces
+// no visible ordering. These tiers make `ResultsOrder::Relevance` meaningful:
+// an exact-token hit outranks a dictionary-morphology relative, which outranks
+// a bare edit-distance match.
+//
+// The exact tier is built from TWO clauses that sum (`BooleanQuery` sums
+// `Should` scores): a `ConstScoreQuery` floor (`FUZZY_BOOST_EXACT`) plus a small
+// BM25 `TermQuery` (`FUZZY_BOOST_EXACT_REL`) for intra-exact ordering. A plain
+// boosted `TermQuery` would NOT suffice: BM25 `idf` collapses to ~0 for a term
+// present in almost every document (`ln(1 + 0.5/(doc_freq+0.5))`), so a purely
+// multiplicative boost could sink an exact hit below the flat lexical tier. The
+// constant floor guarantees exact > lexical regardless of `doc_freq`, while the
+// BM25 add-on still ranks rarer exact matches first within the top tier.
+//
+// These layers are added ONLY for `ResultsOrder::Relevance` (the `rank` flag).
+// Count/catalogue paths build the bare recall query so they pay nothing for
+// ranking they never use. Recall is unchanged either way (the exact term is a
+// subset of the fuzzy automaton match), and exact/advanced never use these.
+const FUZZY_BOOST_EXACT: Score = 1000.0;
+const FUZZY_BOOST_EXACT_REL: Score = 1.0;
+const FUZZY_BOOST_LEXICAL: Score = 30.0;
+const FUZZY_BOOST_FUZZY: Score = 1.0;
 
 /// The eight schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics)`.
@@ -384,6 +413,10 @@ pub struct SearchEngine {
     index_writer: Option<IndexWriter>,
     writer_heap_size: usize,
     index_reader: IndexReader,
+    /// Optional lexical morphology lexicon for the approximate (`fuzzy`) path.
+    /// `None` until [`SearchEngine::set_magic_dictionary_path`] loads a valid
+    /// `lexical.db`; while `None`, fuzzy search behaves exactly as before.
+    magic_dict: Option<MagicDictionary>,
 }
 
 impl SearchEngine {
@@ -425,7 +458,37 @@ impl SearchEngine {
             index_writer,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             index_reader,
+            magic_dict: None,
         }
+    }
+
+    /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
+    /// search path. Returns `true` if the file opened and has the expected
+    /// schema, `false` if it is missing or unusable — in which case the engine
+    /// keeps its existing fuzzy behaviour (no error is surfaced, so the app can
+    /// call this unconditionally at startup). Does **not** affect exact or
+    /// advanced search.
+    #[frb(sync)]
+    pub fn set_magic_dictionary_path(&mut self, path: String) -> bool {
+        match MagicDictionary::open(Path::new(&path)) {
+            Ok(dict) => {
+                debug!("magic dictionary loaded from {path}");
+                self.magic_dict = Some(dict);
+                true
+            }
+            Err(err) => {
+                warn!("magic dictionary unavailable at {path}: {err:#}");
+                self.magic_dict = None;
+                false
+            }
+        }
+    }
+
+    /// Whether a lexical dictionary is currently loaded (i.e. approximate search
+    /// will use morphological expansion).
+    #[frb(sync)]
+    pub fn has_magic_dictionary(&self) -> bool {
+        self.magic_dict.is_some()
     }
 
     // ── Write API ──────────────────────────────────────────────────────────────
@@ -763,8 +826,9 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
-        let query = self.build_fuzzy_query_from_terms(&terms, &facets, max_distance)?;
-        let hq = self.build_fuzzy_highlight_query(&terms, max_distance).ok();
+        let rank = matches!(order, ResultsOrder::Relevance);
+        let query = self.build_fuzzy_search_query(&terms, &facets, max_distance, rank)?;
+        let hq = self.build_fuzzy_highlight(&terms, max_distance).ok();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search(query, hq, limit, offset, &order, &hl)
     }
@@ -1035,10 +1099,9 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let token_texts = self.default_token_texts(&query)?;
-        let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
-        let hq = self
-            .build_fuzzy_highlight_query(&token_texts, max_distance)
-            .ok();
+        let rank = matches!(order, ResultsOrder::Relevance);
+        let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+        let hq = self.build_fuzzy_highlight(&token_texts, max_distance).ok();
         self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
     }
 
@@ -1052,10 +1115,9 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
         let token_texts = self.default_token_texts(&query)?;
-        let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
-        let hq = self
-            .build_fuzzy_highlight_query(&token_texts, max_distance)
-            .ok();
+        let rank = matches!(order, ResultsOrder::Relevance);
+        let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+        let hq = self.build_fuzzy_highlight(&token_texts, max_distance).ok();
         self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
     }
 
@@ -1071,10 +1133,9 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let token_texts = self.default_token_texts(&query)?;
-        let q = self.build_fuzzy_query_from_terms(&token_texts, &facets, max_distance)?;
-        let hq = self
-            .build_fuzzy_highlight_query(&token_texts, max_distance)
-            .ok();
+        let rank = matches!(order, ResultsOrder::Relevance);
+        let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+        let hq = self.build_fuzzy_highlight(&token_texts, max_distance).ok();
         self.run_search_stream(
             q,
             hq,
@@ -1313,13 +1374,39 @@ impl SearchEngine {
         }
     }
 
+    /// The two summed `Should` clauses that lift an exact-token hit to the top
+    /// relevance tier: a `ConstScoreQuery` floor (immune to BM25 `idf` collapse
+    /// on near-ubiquitous terms) plus a small BM25 `TermQuery` add-on for
+    /// intra-exact ordering. Only used on the ranked (`Relevance`) fuzzy path.
+    fn exact_rank_clauses(text_f: Field, token: &str) -> Vec<(Occur, Box<dyn Query>)> {
+        let term = Term::from_field_text(text_f, token);
+        vec![
+            (
+                Occur::Should,
+                Box::new(ConstScoreQuery::new(
+                    Box::new(TermQuery::new(term.clone(), IndexRecordOption::Basic)),
+                    FUZZY_BOOST_EXACT,
+                )) as Box<dyn Query>,
+            ),
+            (
+                Occur::Should,
+                Box::new(BoostQuery::new(
+                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)),
+                    FUZZY_BOOST_EXACT_REL,
+                )),
+            ),
+        ]
+    }
+
     /// Fuzzy mode from pre-tokenized terms: one `FuzzyTermQuery` per term, ANDed,
-    /// filtered by facets.
+    /// filtered by facets. `rank` adds the exact relevance tier (see
+    /// [`Self::exact_rank_clauses`]); count/catalogue paths pass `false`.
     fn build_fuzzy_query_from_terms(
         &self,
         term_texts: &[String],
         facets: &[String],
         max_distance: u8,
+        rank: bool,
     ) -> Result<Box<dyn Query>> {
         // Tantivy only rejects distances above 2 when the query executes
         // (InvalidArgument from FuzzyTermQuery's weight); validate upfront so
@@ -1339,10 +1426,24 @@ impl SearchEngine {
             .iter()
             .map(|t| {
                 let term = Term::from_field_text(text_f, t);
-                (
-                    Occur::Must,
-                    Box::new(FuzzyTermQuery::new(term, max_distance, true)) as Box<dyn Query>,
-                )
+                let fuzzy = FuzzyTermQuery::new(term, max_distance, true);
+                // Bare recall is one fuzzy automaton per token. distance 0 is
+                // exact already, and unranked paths (count/catalogue) need no
+                // scoring, so both stay byte-identical to the bare query. On the
+                // ranked path above distance 0 we add the exact tier so an exact
+                // hit outranks a bare edit-distance neighbour; the exact term is
+                // a subset of the fuzzy match, so recall is unchanged.
+                let token_query: Box<dyn Query> = if !rank || max_distance == 0 {
+                    Box::new(fuzzy)
+                } else {
+                    let mut should = Self::exact_rank_clauses(text_f, t);
+                    should.push((
+                        Occur::Should,
+                        Box::new(BoostQuery::new(Box::new(fuzzy), FUZZY_BOOST_FUZZY)),
+                    ));
+                    Box::new(BooleanQuery::new(should))
+                };
+                (Occur::Must, token_query)
             })
             .collect();
         if !facets.is_empty() {
@@ -1351,7 +1452,8 @@ impl SearchEngine {
         Ok(Box::new(BooleanQuery::new(clauses)))
     }
 
-    /// Fuzzy mode from a raw query string (tokenized like the index).
+    /// Fuzzy mode from a raw query string (tokenized like the index). Used only
+    /// by the count/facet paths, which never rank — hence `rank: false`.
     fn build_fuzzy_query(
         &self,
         query: &str,
@@ -1359,7 +1461,209 @@ impl SearchEngine {
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
         let token_texts = self.default_token_texts(query)?;
-        self.build_fuzzy_query_from_terms(&token_texts, facets, max_distance)
+        self.build_fuzzy_search_query(&token_texts, facets, max_distance, false)
+    }
+
+    /// Approximate (`fuzzy`) recall query. Routes through the lexical builder
+    /// when a `MagicDictionary` is loaded, otherwise the plain fuzzy builder.
+    /// This is the single decision point so every fuzzy entry point
+    /// (`search_*`/`count_*`) shares identical matching logic. `rank` toggles
+    /// the relevance-scoring layer: `true` only for `ResultsOrder::Relevance`
+    /// searches, `false` for counts and catalogue ordering (which ignore score)
+    /// so they build the bare recall query and pay nothing for unused ranking.
+    fn build_fuzzy_search_query(
+        &self,
+        term_texts: &[String],
+        facets: &[String],
+        max_distance: u8,
+        rank: bool,
+    ) -> Result<Box<dyn Query>> {
+        if self.magic_dict.is_some() && max_distance > 0 {
+            self.build_lexical_fuzzy_query(term_texts, facets, max_distance, rank)
+        } else {
+            self.build_fuzzy_query_from_terms(term_texts, facets, max_distance, rank)
+        }
+    }
+
+    /// Lexical fuzzy mode: per token, `(FuzzyTermQuery OR TermSetQuery[lexical
+    /// forms])` is required (`MUST`); the inner `SHOULD` group keeps both
+    /// edit-distance matches and morphological relatives. Falls back to the
+    /// bare fuzzy clause for tokens the dictionary doesn't know. Facets filter
+    /// as usual. Independent of exact/advanced — only the fuzzy path calls it.
+    fn build_lexical_fuzzy_query(
+        &self,
+        term_texts: &[String],
+        facets: &[String],
+        max_distance: u8,
+        rank: bool,
+    ) -> Result<Box<dyn Query>> {
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy distance is limited to 2, got {max_distance}"
+        );
+        if term_texts.is_empty() {
+            return Ok(Box::new(EmptyQuery));
+        }
+        let dict = self
+            .magic_dict
+            .as_ref()
+            .context("lexical fuzzy query requires a loaded magic dictionary")?;
+        let text_f = self.schema.get_field("text")?;
+
+        if term_texts.len() > 1 {
+            let patterns = self.lexical_fuzzy_phrase_patterns(dict, term_texts, max_distance)?;
+            let mut phrase_query = RegexPhraseQuery::new(text_f, patterns);
+            phrase_query.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
+            phrase_query
+                .set_max_expansions((MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN * term_texts.len()) as u32);
+            let main_query: Box<dyn Query> = Box::new(phrase_query);
+            return if facets.is_empty() {
+                Ok(main_query)
+            } else {
+                Ok(Box::new(BooleanQuery::new(vec![
+                    (Occur::Must, main_query),
+                    (Occur::Must, self.facet_filter_query(facets)?),
+                ])))
+            };
+        }
+
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(term_texts.len() + 1);
+        for token in term_texts {
+            let exact_term = Term::from_field_text(text_f, token);
+            // Wrap the fuzzy automaton in the fuzzy-tier boost only when ranking;
+            // an unranked recall query (count/catalogue) carries no boost so it
+            // stays the bare `FuzzyTermQuery` it always was.
+            let fuzzy_q = FuzzyTermQuery::new(exact_term, max_distance, true);
+            let fuzzy: Box<dyn Query> = if rank {
+                Box::new(BoostQuery::new(Box::new(fuzzy_q), FUZZY_BOOST_FUZZY))
+            } else {
+                Box::new(fuzzy_q)
+            };
+            let mut forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
+            forms.retain(|f| f != token);
+
+            // Unranked: the original recall shape — `fuzzy OR termset`, or just
+            // `fuzzy` when the dictionary has no extra forms. Ranked: prepend the
+            // exact tier (the exact term is a subset of the fuzzy match, so this
+            // never changes recall) and boost the lexical tier. `BooleanQuery`
+            // sums `Should` scores, so exact-floor + BM25 > lexical > fuzzy.
+            let mut should: Vec<(Occur, Box<dyn Query>)> = if rank {
+                Self::exact_rank_clauses(text_f, token)
+            } else {
+                Vec::with_capacity(2)
+            };
+            should.push((Occur::Should, fuzzy));
+            if !forms.is_empty() {
+                let set_terms: Vec<Term> = forms
+                    .iter()
+                    .map(|f| Term::from_field_text(text_f, f))
+                    .collect();
+                let termset: Box<dyn Query> = if rank {
+                    Box::new(BoostQuery::new(
+                        Box::new(TermSetQuery::new(set_terms)),
+                        FUZZY_BOOST_LEXICAL,
+                    ))
+                } else {
+                    Box::new(TermSetQuery::new(set_terms))
+                };
+                should.push((Occur::Should, termset));
+            }
+
+            // A single bare `FuzzyTermQuery` (no forms, unranked) needs no
+            // wrapping `BooleanQuery` — keep it byte-identical to the original.
+            let token_query: Box<dyn Query> = if should.len() == 1 {
+                should.pop().unwrap().1
+            } else {
+                Box::new(BooleanQuery::new(should))
+            };
+            clauses.push((Occur::Must, token_query));
+        }
+        if !facets.is_empty() {
+            clauses.push((Occur::Must, self.facet_filter_query(facets)?));
+        }
+        Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
+    fn lexical_fuzzy_phrase_patterns(
+        &self,
+        dict: &MagicDictionary,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<Vec<String>> {
+        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+        term_texts
+            .iter()
+            .map(|token| {
+                let mut terms = Vec::new();
+                let mut seen = HashSet::new();
+
+                Self::push_limited_unique(
+                    &mut terms,
+                    &mut seen,
+                    token.clone(),
+                    MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                );
+                for form in dict.recall_forms(token, MAX_LEXICAL_FORMS) {
+                    Self::push_limited_unique(
+                        &mut terms,
+                        &mut seen,
+                        form,
+                        MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                    );
+                }
+
+                let remaining = MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN.saturating_sub(terms.len());
+                if remaining > 0 {
+                    let automaton = DfaWrapper(builder.build_dfa(token));
+                    for fuzzy_term in self.automaton_terms(&automaton, remaining)? {
+                        Self::push_limited_unique(
+                            &mut terms,
+                            &mut seen,
+                            fuzzy_term,
+                            MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                        );
+                    }
+                }
+
+                Ok(Self::terms_regex_union(&terms))
+            })
+            .collect()
+    }
+
+    fn push_limited_unique(
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+        value: String,
+        cap: usize,
+    ) {
+        if out.len() < cap && seen.insert(value.clone()) {
+            out.push(value);
+        }
+    }
+
+    fn terms_regex_union(terms: &[String]) -> String {
+        if terms.len() == 1 {
+            return Self::escape_regex_term(&terms[0]);
+        }
+        let escaped = terms
+            .iter()
+            .map(|term| Self::escape_regex_term(term))
+            .collect::<Vec<_>>();
+        format!("(?:{})", escaped.join("|"))
+    }
+
+    fn escape_regex_term(term: &str) -> String {
+        let mut out = String::with_capacity(term.len());
+        for ch in term.chars() {
+            if matches!(
+                ch,
+                '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+            ) {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out
     }
 
     /// Advanced mode: ports the Dart morphological query builder to produce regex
@@ -1590,41 +1894,124 @@ impl SearchEngine {
         self.build_automaton_highlight_query(&automatons)
     }
 
+    /// Highlight query for the approximate (`fuzzy`) path, branching on whether
+    /// a `MagicDictionary` is loaded — the highlight terms must mirror whatever
+    /// [`Self::build_fuzzy_search_query`] matched.
+    fn build_fuzzy_highlight(
+        &self,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<Box<dyn Query>> {
+        if self.magic_dict.is_some() && max_distance > 0 {
+            self.build_lexical_fuzzy_highlight_query(term_texts, max_distance)
+        } else {
+            self.build_fuzzy_highlight_query(term_texts, max_distance)
+        }
+    }
+
+    /// Like [`Self::build_fuzzy_highlight_query`] but also paints the lexical
+    /// forms injected by [`Self::build_lexical_fuzzy_query`]. The blacklist is
+    /// applied here (highlight only): hallucinated lemmas still expanded recall
+    /// but are not highlighted.
+    fn build_lexical_fuzzy_highlight_query(
+        &self,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<Box<dyn Query>> {
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy highlight distance is limited to 2, got {max_distance}"
+        );
+        let dict = self
+            .magic_dict
+            .as_ref()
+            .context("lexical fuzzy highlight requires a loaded magic dictionary")?;
+        let text_f = self.schema.get_field("text")?;
+
+        // Start from the edit-distance terms (same automatons as search)...
+        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+        let automatons: Vec<DfaWrapper> = term_texts
+            .iter()
+            .map(|t| DfaWrapper(builder.build_dfa(t)))
+            .collect();
+        let mut matched = self.automaton_highlight_terms(&automatons)?;
+
+        // ...then add the literal tokens and the (blacklist-filtered) lexical
+        // forms per token. The exact token can otherwise be omitted when a broad
+        // fuzzy automaton exhausts its highlight-term budget first.
+        for token in term_texts {
+            matched.insert(token.clone());
+            for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
+                matched.insert(form);
+            }
+        }
+
+        let terms: Vec<Term> = matched
+            .into_iter()
+            .map(|t| Term::from_field_text(text_f, &t))
+            .collect();
+        Ok(Box::new(TermSetQuery::new(terms)))
+    }
+
     fn build_automaton_highlight_query<A>(&self, automatons: &[A]) -> Result<Box<dyn Query>>
     where
         A: Automaton,
         A::State: Clone,
     {
         let text_f = self.schema.get_field("text")?;
-        let searcher = self.index_reader.searcher();
+        let matched = self.automaton_highlight_terms(automatons)?;
+        let terms: Vec<Term> = matched
+            .into_iter()
+            .map(|t| Term::from_field_text(text_f, &t))
+            .collect();
+        Ok(Box::new(TermSetQuery::new(terms)))
+    }
+
+    /// Collects the distinct `text`-index terms the given automatons match,
+    /// bounded by [`MAX_HIGHLIGHT_TERMS`] split evenly across automatons.
+    /// Shared by the regex, fuzzy, and lexical-fuzzy highlight builders.
+    fn automaton_highlight_terms<A>(&self, automatons: &[A]) -> Result<HashSet<String>>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let mut matched: HashSet<String> = HashSet::new();
         // Split the term budget evenly between automatons: a global cap would
         // let one broad first word exhaust it and leave the remaining query
         // words with no highlighting at all.
         let per_automaton_cap = (MAX_HIGHLIGHT_TERMS / automatons.len().max(1)).max(1);
         for automaton in automatons {
-            let mut automaton_terms = 0usize;
-            'segments: for reader in searcher.segment_readers() {
-                let inverted = reader.inverted_index(text_f)?;
-                let mut stream = inverted.terms().search(automaton).into_stream()?;
-                while stream.advance() {
-                    if let Ok(term) = std::str::from_utf8(stream.key()) {
-                        if !matched.contains(term) {
-                            matched.insert(term.to_string());
-                            automaton_terms += 1;
-                            if automaton_terms >= per_automaton_cap {
-                                break 'segments;
-                            }
+            for term in self.automaton_terms(automaton, per_automaton_cap)? {
+                matched.insert(term);
+            }
+        }
+        Ok(matched)
+    }
+
+    fn automaton_terms<A>(&self, automaton: &A, cap: usize) -> Result<Vec<String>>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
+        let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
+        let mut matched = Vec::new();
+        let mut seen = HashSet::new();
+        'segments: for reader in searcher.segment_readers() {
+            let inverted = reader.inverted_index(text_f)?;
+            let mut stream = inverted.terms().search(automaton).into_stream()?;
+            while stream.advance() {
+                if let Ok(term) = std::str::from_utf8(stream.key()) {
+                    if seen.insert(term.to_string()) {
+                        matched.push(term.to_string());
+                        if matched.len() >= cap {
+                            break 'segments;
                         }
                     }
                 }
             }
         }
-        let terms: Vec<Term> = matched
-            .into_iter()
-            .map(|t| Term::from_field_text(text_f, &t))
-            .collect();
-        Ok(Box::new(TermSetQuery::new(terms)))
+        Ok(matched)
     }
 
     /// Creates a `SnippetGenerator` for the `text` field, configured from `hl`.
@@ -1860,6 +2247,32 @@ mod tests {
 
     fn dir_path_string(dir: &TempDir) -> String {
         dir.path().to_str().unwrap().to_string()
+    }
+
+    /// Writes a tiny `lexical.db` into `dir`: lemma "הלכ" with surfaces
+    /// "הלכתי"/"הולכ" (folded, as the real DB stores them) and returns its path.
+    fn make_lexical_db(dir: &TempDir) -> String {
+        let path = dir.path().join("lexical.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE base (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE);
+            CREATE TABLE surface (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE, base_id INTEGER NOT NULL REFERENCES base(id), notes TEXT);
+            CREATE TABLE variant (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE);
+            CREATE TABLE surface_variant (surface_id INTEGER NOT NULL REFERENCES surface(id), variant_id INTEGER NOT NULL REFERENCES variant(id), PRIMARY KEY (surface_id, variant_id));
+            INSERT INTO base (id, value) VALUES (1, 'הלכ'), (2, 'ישנ');
+            INSERT INTO surface (id, value, base_id) VALUES
+                (1, 'הלכתי', 1),
+                (2, 'הולכ', 1),
+                (3, 'לכו', 1),
+                (4, 'הולכימ', 1),
+                (5, 'לישונ', 2),
+                (6, 'ישנ', 2),
+                (7, 'בלשונ', 2);
+            "#,
+        )
+        .unwrap();
+        path.to_str().unwrap().to_string()
     }
 
     #[test]
@@ -2352,6 +2765,365 @@ mod tests {
             !fuzzy_texts.iter().any(|t| t.contains("ביי")),
             "unrelated term must not appear"
         );
+    }
+
+    #[test]
+    fn test_set_magic_dictionary_path_reports_validity() {
+        let (mut engine, dir) = make_engine();
+        assert!(!engine.has_magic_dictionary());
+        // Missing file → false, no error, no dictionary loaded.
+        assert!(!engine
+            .set_magic_dictionary_path(dir.path().join("nope.db").to_str().unwrap().to_string()));
+        assert!(!engine.has_magic_dictionary());
+        // Valid lexical.db → true.
+        let db = make_lexical_db(&dir);
+        assert!(engine.set_magic_dictionary_path(db));
+        assert!(engine.has_magic_dictionary());
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_finds_inflection_exact_does_not() {
+        let (mut engine, dir) = make_engine();
+        // Only the inflected form is indexed; the lemma "הלך" is 3 edits away,
+        // and no other token is within fuzzy distance 2 of it.
+        add(&mut engine, 1, "הלכתי", "/books/a.txt");
+        add(&mut engine, 2, "מזרח", "/books/b.txt");
+        engine.commit().unwrap();
+
+        // Exact "הלך" must NOT leak into the inflected doc.
+        let exact = engine
+            .search_exact(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert!(
+            exact.is_empty(),
+            "exact search must not match the inflection"
+        );
+
+        // Fuzzy WITHOUT dictionary: "הלך"→"הלכתי" is >2 edits, still no match.
+        let fuzzy_plain = engine
+            .search_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                2,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert!(
+            fuzzy_plain.is_empty(),
+            "plain fuzzy cannot reach the inflection at distance 2, got: {:?}",
+            fuzzy_plain
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        // Fuzzy WITH dictionary: the lexical expansion injects "הלכתי" → match.
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+        let fuzzy_lex = engine
+            .search_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                2,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert_eq!(fuzzy_lex.len(), 1, "lexical fuzzy must find the inflection");
+        assert!(fuzzy_lex[0].text.contains("הלכתי"));
+
+        // count_fuzzy must agree with search_fuzzy (same matching logic).
+        let count = engine
+            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 2)
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_distance_zero_stays_exact() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי", "/books/a.txt");
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let fuzzy_zero = engine
+            .search_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                0,
+                ResultsOrder::Relevance,
+            )
+            .unwrap();
+        assert!(
+            fuzzy_zero.is_empty(),
+            "max_distance=0 must not inject lexical expansions"
+        );
+
+        let count = engine
+            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 0)
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    fn fuzzy_ids(
+        engine: &mut SearchEngine,
+        query: &str,
+        max_distance: u8,
+        order: ResultsOrder,
+    ) -> Vec<u64> {
+        engine
+            .search_fuzzy(
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                max_distance,
+                order,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_relevance_tiers_exact_morphology_fuzzy() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 10, "הלך", "/books/a.txt"); // exact query token
+        add(&mut engine, 5, "הלכתי", "/books/b.txt"); // dictionary surface form (distance 3)
+        add(&mut engine, 1, "הלכה", "/books/c.txt"); // bare edit-distance neighbour (distance 1)
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        // Boosting must not change recall: all three are still matched.
+        let count = engine
+            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 2)
+            .unwrap();
+        assert_eq!(count, 3, "ranking boosts must not change the recall set");
+
+        // Relevance now tiers them: exact > morphology > edit-distance.
+        let by_relevance = fuzzy_ids(&mut engine, "הלך", 2, ResultsOrder::Relevance);
+        assert_eq!(
+            by_relevance,
+            vec![10, 5, 1],
+            "relevance must rank exact, then dictionary form, then fuzzy"
+        );
+
+        // Catalogue ignores score and stays ordered by the catalogue id.
+        let by_catalogue = fuzzy_ids(&mut engine, "הלך", 2, ResultsOrder::Catalogue);
+        assert_eq!(
+            by_catalogue,
+            vec![1, 5, 10],
+            "catalogue order must be unaffected by ranking"
+        );
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_relevance_differs_from_catalogue() {
+        // The multi-word path is a `RegexPhraseQuery`, which (unlike the flat
+        // single-token automaton) already scores by phrase frequency — so
+        // relevance ordering is meaningful there without extra boosting.
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלך מזרח", "/books/a.txt"); // phrase once
+        add(&mut engine, 2, "הלך מזרח הלך מזרח", "/books/b.txt"); // phrase twice
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let by_catalogue = fuzzy_ids(&mut engine, "הלך מזרח", 2, ResultsOrder::Catalogue);
+        assert_eq!(by_catalogue, vec![1, 2], "catalogue follows id order");
+
+        let by_relevance = fuzzy_ids(&mut engine, "הלך מזרח", 2, ResultsOrder::Relevance);
+        assert_eq!(
+            by_relevance,
+            vec![2, 1],
+            "relevance must place the higher-frequency phrase first"
+        );
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_exact_floor_survives_common_term() {
+        // A near-ubiquitous exact term has BM25 idf ≈ 0, so a purely
+        // multiplicative boost would sink it below the flat lexical tier. The
+        // constant floor must keep exact hits on top regardless of doc frequency.
+        let (mut engine, dir) = make_engine();
+        for id in 1..=100u64 {
+            add(&mut engine, id, "הלך", "/books/a.txt"); // exact in ~99% of docs
+        }
+        add(&mut engine, 1000, "הלכתי", "/books/b.txt"); // lone dictionary form
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let by_relevance: Vec<u64> = engine
+            .search_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                200,
+                0,
+                2,
+                ResultsOrder::Relevance,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(by_relevance.len(), 101, "all docs must be recalled");
+        assert_eq!(
+            by_relevance.last(),
+            Some(&1000),
+            "the lone lexical form must rank below every exact hit despite idf≈0"
+        );
+    }
+
+    #[test]
+    fn test_plain_fuzzy_relevance_ranks_exact_first() {
+        // No dictionary loaded — exercises the plain fuzzy builder.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 9, "כתבה", "/books/a.txt"); // edit-distance neighbour (distance 1)
+        add(&mut engine, 2, "כתב", "/books/b.txt"); // exact query token
+        engine.commit().unwrap();
+
+        let by_relevance = fuzzy_ids(&mut engine, "כתב", 2, ResultsOrder::Relevance);
+        assert_eq!(
+            by_relevance,
+            vec![2, 9],
+            "exact match must outrank a bare fuzzy neighbour"
+        );
+
+        // distance 0 stays a pure exact match — recall is byte-identical.
+        let zero = fuzzy_ids(&mut engine, "כתב", 0, ResultsOrder::Relevance);
+        assert_eq!(zero, vec![2], "distance 0 must match only the exact token");
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_requires_phrase() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי לישון", "/books/a.txt");
+        add(
+            &mut engine,
+            2,
+            "הלכתי ואז דיברתי הרבה לפני לישון",
+            "/books/b.txt",
+        );
+        add(&mut engine, 3, "לישון הלכתי", "/books/c.txt");
+        add(&mut engine, 4, "הלכתי", "/books/d.txt");
+        add(&mut engine, 5, "לכו ונכהו בלשון", "/books/e.txt");
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let got = ids(engine
+            .search_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                2,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(
+            got,
+            vec![1, 5],
+            "multi-token lexical fuzzy search should preserve order while allowing one intervening token"
+        );
+
+        let count = engine
+            .count_fuzzy("הלכתי לישון".to_string(), vec!["/root".to_string()], 2)
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_highlights_literal_second_token() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הולכים לישון", "/books/a.txt");
+        for (idx, term) in one_edit_insertions("לישון").into_iter().enumerate() {
+            add(
+                &mut engine,
+                idx as u64 + 2,
+                &format!("רעש {term}"),
+                "/books/noise.txt",
+            );
+        }
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let results = engine
+            .search_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                2,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        let hit = results.iter().find(|result| result.id == 1).unwrap();
+        assert!(
+            hit.text.contains("<font color=red>לישון</font>"),
+            "the literal second query token must remain highlighted, got: {}",
+            hit.text
+        );
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_allows_expansions_per_token() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי לישון", "/books/a.txt");
+
+        let mut next_id = 2u64;
+        for term in one_edit_insertions("הלכתי")
+            .into_iter()
+            .chain(one_edit_insertions("לישון"))
+        {
+            add(&mut engine, next_id, &term, "/books/noise.txt");
+            next_id += 1;
+        }
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        let got = ids(engine
+            .search_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                1,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap());
+        assert_eq!(got, vec![1]);
+    }
+
+    fn one_edit_insertions(token: &str) -> Vec<String> {
+        const LETTERS: &[char] = &[
+            'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ',
+            'צ', 'ק', 'ר', 'ש', 'ת',
+        ];
+
+        let chars: Vec<char> = token.chars().collect();
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for position in 0..=chars.len() {
+            for letter in LETTERS {
+                let mut variant = chars.clone();
+                variant.insert(position, *letter);
+                let variant: String = variant.into_iter().collect();
+                if variant != token && seen.insert(variant.clone()) {
+                    out.push(variant);
+                }
+            }
+        }
+        out
     }
 
     #[test]

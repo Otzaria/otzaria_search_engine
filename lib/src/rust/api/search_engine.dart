@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_fields`, `build_advanced_query`, `build_exact_query`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default_token_texts`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `facet_filter_query`, `index_metadata_path`, `inferred_legacy_schema_version`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `take_writer`, `tantivy_schema_matches_current_version`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `IndexMetadata`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `collect`, `for_segment`, `harvest`, `merge_fruits`, `requires_scoring`
+// These functions are ignored because they are not marked as `pub`: `all_fields`, `automaton_highlight_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default_token_texts`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `facet_filter_query`, `index_metadata_path`, `inferred_legacy_schema_version`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `take_writer`, `tantivy_schema_matches_current_version`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `DfaWrapper`, `IndexMetadata`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `for_segment`, `harvest`, `is_match`, `merge_fruits`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -146,6 +146,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   Future<List<String>> getIndexedFilePaths();
 
   Future<int> getSegmentCount();
+
+  /// Whether a lexical dictionary is currently loaded (i.e. approximate search
+  /// will use morphological expansion).
+  bool hasMagicDictionary();
 
   factory SearchEngine({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
@@ -312,6 +316,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
     required int chunkSize,
   });
+
+  /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
+  /// search path. Returns `true` if the file opened and has the expected
+  /// schema, `false` if it is missing or unusable — in which case the engine
+  /// keeps its existing fuzzy behaviour (no error is surfaced, so the app can
+  /// call this unconditionally at startup). Does **not** affect exact or
+  /// advanced search.
+  bool setMagicDictionaryPath({required String path});
 
   /// Delete then re-insert a single document by id. Does not commit.
   Future<void> upsertDocument({

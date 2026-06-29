@@ -40,3 +40,7 @@ log = "0.4.32"
 futures = "0.3.32"
 async-stream = "0.3.6"
 unicode-segmentation = "1.13.3"
+# Lexical (MagicDictionary) approximate-search path. `bundled` compiles SQLite
+# from source so there is no system libsqlite dependency on Android/iOS.
+rusqlite = { version = "0.32", features = ["bundled"] }
+lru = "0.12"
