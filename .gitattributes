@@ -2,6 +2,7 @@
 # פרסום ל-pub.dev עם CRLF שובר את בניית macOS/Linux/Android (cargokit).
 * text=auto
 *.sh text eol=lf
+.githooks/* text eol=lf
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.rs text eol=lf
