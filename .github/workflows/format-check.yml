@@ -50,9 +50,6 @@ jobs:
   rust-format:
     name: Rust format (rustfmt)
     runs-on: ubuntu-24.04
-    # לא חוסם בינתיים: קוד ה-Rust הקיים משתמש בפריסה ידנית ש-rustfmt משנה.
-    # מציג את ה-diff לעיון בלבד. ראו הערה ב-README / שיחה עם המתחזק.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

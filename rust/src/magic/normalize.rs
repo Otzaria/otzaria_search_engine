@@ -18,13 +18,7 @@
 //!   nothing) — it silently drops recall, which is exactly what we must avoid.
 
 /// Final ↔ base letter mapping (Hebrew sofit forms).
-const FINALS: [(char, char); 5] = [
-    ('ך', 'כ'),
-    ('ם', 'מ'),
-    ('ן', 'נ'),
-    ('ף', 'פ'),
-    ('ץ', 'צ'),
-];
+const FINALS: [(char, char); 5] = [('ך', 'כ'), ('ם', 'מ'), ('ן', 'נ'), ('ף', 'פ'), ('ץ', 'צ')];
 
 /// True for nikud/teamim/punctuation removed by `SeforimMagicIndexer`'s
 /// `normalizeHebrew`. Mirrors that tool exactly: teamim `U+0591–U+05AF`,
@@ -73,9 +67,9 @@ pub fn normalize_hebrew(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.trim().chars() {
         match c {
-            _ if is_removed_point(c) => {}        // nikud / teamim
-            '\u{05F4}' | '\u{05F3}' => {}         // gershayim / geresh
-            '\u{05BE}' => out.push(' '),          // maqaf → space
+            _ if is_removed_point(c) => {} // nikud / teamim
+            '\u{05F4}' | '\u{05F3}' => {}  // gershayim / geresh
+            '\u{05BE}' => out.push(' '),   // maqaf → space
             _ => out.push(fold_final(c)),
         }
     }

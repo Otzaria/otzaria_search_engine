@@ -144,9 +144,9 @@ impl MagicDictionary {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
-            let rows = match stmt
-                .query_map(params![key], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-            {
+            let rows = match stmt.query_map(params![key], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            }) {
                 Ok(r) => r,
                 Err(_) => return Vec::new(),
             };
