@@ -20,7 +20,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dart-lang/setup-dart@v1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      # pub get חיוני: סגנון ה-formatter (short/tall) נקבע לפי גרסת השפה
+      # שנפתרת מ-pubspec/.dart_tool. בלי resolution ה-formatter נופל לברירת
+      # מחדל אחרת מהמקומי, ובדיקת הפורמט נכשלת על קבצים תקינים (למשל example,
+      # שמוגדר sdk >=3.4 ולכן בסגנון short).
+      - name: flutter pub get (root)
+        run: flutter pub get
+
+      - name: flutter pub get (example)
+        working-directory: example
+        run: flutter pub get
 
       # בודק רק את קוד החבילה (לא cargokit ה-vendored).
       - name: dart format --set-exit-if-changed
