@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.7 – 2026-06-30
+
+### Fixed
+
+- **פרסום מחדש עם סופי-שורה LF** – הגרסה שפורסמה ב-0.6.6 הכילה את סקריפטי
+  cargokit (`run_build_tool.sh`, `build_pod.sh`) עם CRLF, מה ששבר את בניית
+  Linux/Android/macOS אצל הצרכן (`/usr/bin/env: 'bash\r'`). אין שינוי קוד.
+
 ## 0.6.6 – MagicDictionary fuzzy search – 2026-06-29
 
 ### New
