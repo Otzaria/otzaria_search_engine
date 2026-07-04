@@ -19,13 +19,15 @@ use tantivy::query::{
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
 use tantivy::snippet::SnippetGenerator;
-use tantivy::tokenizer::TokenStream;
+use tantivy::tokenizer::{LowerCaser, TextAnalyzer, TokenStream};
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
+use crate::display_highlight;
 use crate::hebrew_query;
+use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 
 // ── Public data types ──────────────────────────────────────────────────────────
@@ -84,12 +86,29 @@ pub enum ResultsOrder {
     Relevance,
 }
 
+/// Regex patterns for highlighting query matches in *displayed* book text
+/// (which, unlike index terms, still carries nikud and HTML). All patterns
+/// are ECMAScript-dialect strings; the Dart layer compiles them with
+/// `RegExp(pattern, caseSensitive: false)` and performs no pattern
+/// construction of its own.
+pub struct HighlightPattern {
+    /// One regex matching the full query phrase (words + separators).
+    pub combined_pattern: String,
+    /// Per-word regex, used to locate each word inside a combined match.
+    pub word_patterns: Vec<String>,
+    /// Per-word: `true` when the word has no morphological expansion option,
+    /// so the UI may require token boundaries around its match.
+    pub word_boundary_eligible: Vec<bool>,
+}
+
 // ── SearchEngine ───────────────────────────────────────────────────────────────
 
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
-const INDEX_SCHEMA_VERSION: u32 = 2;
+// גרסה 3: המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים בטוקנים) משנה את
+// מילון הטרמים — אינדקסים ישנים חייבים בנייה מחדש.
+const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
@@ -140,6 +159,39 @@ struct IndexMetadata {
 #[frb(sync)]
 pub fn check_index_compatibility(path: String) -> IndexCompatibility {
     check_index_compatibility_path(Path::new(&path))
+}
+
+/// Builds display-highlight regex patterns for a search query, so the app can
+/// mark matches inside an opened book exactly the way the engine matched them.
+///
+/// Pure string computation (no index access) — safe to call synchronously.
+/// Parameters mirror [`SearchEngine::search_advanced`]: `distance` is the
+/// default intermediate-word allowance, `custom_spacing` is keyed
+/// `"i-(i+1)"`, `alternative_words` is keyed by word position, and
+/// `search_options` is keyed `"{word}_{index}"` using the same tokenization
+/// as engine queries.
+///
+/// Returns `None` when the query contains no highlightable words.
+#[frb(sync)]
+pub fn generate_highlight_pattern(
+    query: String,
+    distance: u32,
+    custom_spacing: HashMap<String, String>,
+    alternative_words: HashMap<u32, Vec<String>>,
+    search_options: HashMap<String, HashMap<String, bool>>,
+) -> Option<HighlightPattern> {
+    display_highlight::build_display_highlight(
+        &query,
+        distance,
+        &custom_spacing,
+        &alternative_words,
+        &search_options,
+    )
+    .map(|hl| HighlightPattern {
+        combined_pattern: hl.combined_pattern,
+        word_patterns: hl.word_patterns,
+        word_boundary_eligible: hl.word_boundary_eligible,
+    })
 }
 
 fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
@@ -386,7 +438,17 @@ fn compatibility(
 /// the legacy compatibility check can never drift apart.
 fn current_schema() -> Schema {
     let mut schema_builder = Schema::builder();
-    schema_builder.add_text_field("text", TEXT | STORED | FAST);
+    schema_builder.add_text_field(
+        "text",
+        TextOptions::default()
+            .set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer("hebrew")
+                    .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+            )
+            .set_stored()
+            .set_fast(None),
+    );
     schema_builder.add_text_field("reference", STORED);
     schema_builder.add_text_field(
         "title",
@@ -433,6 +495,12 @@ impl SearchEngine {
             ),
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
+        index.tokenizers().register(
+            "hebrew",
+            TextAnalyzer::builder(HebrewTokenizer)
+                .filter(LowerCaser)
+                .build(),
+        );
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -634,7 +702,7 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, None, limit, offset, &order, &hl)
+        self.run_search(query, |_| Ok(None), limit, offset, &order, &hl)
     }
 
     /// Search and return total hit count alongside paged results in one call.
@@ -652,7 +720,7 @@ impl SearchEngine {
     ) -> Result<SearchPageResult> {
         let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_and_count(query, None, limit, offset, &order, &hl)
+        self.run_search_and_count(query, |_| Ok(None), limit, offset, &order, &hl)
     }
 
     pub fn count(
@@ -828,9 +896,15 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let rank = matches!(order, ResultsOrder::Relevance);
         let query = self.build_fuzzy_search_query(&terms, &facets, max_distance, rank)?;
-        let hq = self.build_fuzzy_highlight(&terms, max_distance).ok();
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, hq, limit, offset, &order, &hl)
+        self.run_search(
+            query,
+            |s| Ok(self.build_fuzzy_highlight(s, &terms, max_distance).ok()),
+            limit,
+            offset,
+            &order,
+            &hl,
+        )
     }
 
     /// Stream search results in chunks of `chunk_size` documents.
@@ -857,7 +931,16 @@ impl SearchEngine {
     ) -> Result<()> {
         let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_stream(query, None, limit, offset, &order, &hl, chunk_size, sink)
+        self.run_search_stream(
+            query,
+            |_| Ok(None),
+            limit,
+            offset,
+            &order,
+            &hl,
+            chunk_size,
+            sink,
+        )
     }
 
     // ── High-level mode-specific search API ──────────────────────────────────────
@@ -879,7 +962,14 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
         let q = self.build_exact_query(&query, &facets)?;
-        self.run_search(q, None, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(
+            q,
+            |_| Ok(None),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_and_count_exact(
@@ -891,7 +981,14 @@ impl SearchEngine {
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
         let q = self.build_exact_query(&query, &facets)?;
-        self.run_search_and_count(q, None, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(
+            q,
+            |_| Ok(None),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_exact_stream(
@@ -907,7 +1004,7 @@ impl SearchEngine {
         let q = self.build_exact_query(&query, &facets)?;
         self.run_search_stream(
             q,
-            None,
+            |_| Ok(None),
             limit,
             offset,
             &order,
@@ -963,8 +1060,14 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        let hq = self.build_regex_highlight_query(&regex_terms).ok();
-        self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(
+            q,
+            |s| self.advanced_highlight_query(s, &regex_terms),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_and_count_advanced(
@@ -987,8 +1090,14 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        let hq = self.build_regex_highlight_query(&regex_terms).ok();
-        self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(
+            q,
+            |s| self.advanced_highlight_query(s, &regex_terms),
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_advanced_stream(
@@ -1013,10 +1122,9 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        let hq = self.build_regex_highlight_query(&regex_terms).ok();
         self.run_search_stream(
             q,
-            hq,
+            |s| self.advanced_highlight_query(s, &regex_terms),
             limit,
             offset,
             &order,
@@ -1098,11 +1206,21 @@ impl SearchEngine {
         max_distance: u8,
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
-        let token_texts = self.default_token_texts(&query)?;
+        let token_texts = self.index_token_texts(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
-        let hq = self.build_fuzzy_highlight(&token_texts, max_distance).ok();
-        self.run_search(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search(
+            q,
+            |s| {
+                Ok(self
+                    .build_fuzzy_highlight(s, &token_texts, max_distance)
+                    .ok())
+            },
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_and_count_fuzzy(
@@ -1114,11 +1232,21 @@ impl SearchEngine {
         max_distance: u8,
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
-        let token_texts = self.default_token_texts(&query)?;
+        let token_texts = self.index_token_texts(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
-        let hq = self.build_fuzzy_highlight(&token_texts, max_distance).ok();
-        self.run_search_and_count(q, hq, limit, offset, &order, &HighlightConfig::default())
+        self.run_search_and_count(
+            q,
+            |s| {
+                Ok(self
+                    .build_fuzzy_highlight(s, &token_texts, max_distance)
+                    .ok())
+            },
+            limit,
+            offset,
+            &order,
+            &HighlightConfig::default(),
+        )
     }
 
     pub fn search_fuzzy_stream(
@@ -1132,13 +1260,16 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let token_texts = self.default_token_texts(&query)?;
+        let token_texts = self.index_token_texts(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
-        let hq = self.build_fuzzy_highlight(&token_texts, max_distance).ok();
         self.run_search_stream(
             q,
-            hq,
+            |s| {
+                Ok(self
+                    .build_fuzzy_highlight(s, &token_texts, max_distance)
+                    .ok())
+            },
             limit,
             offset,
             &order,
@@ -1319,16 +1450,17 @@ impl SearchEngine {
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
-    /// Tokenizes `text` with the same `"default"` analyzer the `text` field is
+    /// Tokenizes `text` with the same `"hebrew"` analyzer the `text` field is
     /// indexed with, after stripping nikud — so exact/fuzzy terms line up with
-    /// the (normalized) index term dictionary.
-    fn default_token_texts(&self, text: &str) -> Result<Vec<String>> {
+    /// the (normalized) index term dictionary, including geresh/gershayim kept
+    /// inside tokens (ז"ל, תוס').
+    fn index_token_texts(&self, text: &str) -> Result<Vec<String>> {
         let normalized = hebrew_query::strip_nikud(text);
         let mut analyzer = self
             .index
             .tokenizers()
-            .get("default")
-            .context("default tokenizer not registered")?;
+            .get("hebrew")
+            .context("hebrew tokenizer not registered")?;
         let mut stream = analyzer.token_stream(&normalized);
         let mut out = Vec::new();
         while let Some(token) = stream.next() {
@@ -1351,7 +1483,7 @@ impl SearchEngine {
     /// by facets. No regex — fastest path.
     fn build_exact_query(&self, query_str: &str, facets: &[String]) -> Result<Box<dyn Query>> {
         let text_f = self.schema.get_field("text")?;
-        let token_texts = self.default_token_texts(query_str)?;
+        let token_texts = self.index_token_texts(query_str)?;
         let mut terms: Vec<Term> = token_texts
             .iter()
             .map(|t| Term::from_field_text(text_f, t))
@@ -1460,7 +1592,7 @@ impl SearchEngine {
         facets: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
-        let token_texts = self.default_token_texts(query)?;
+        let token_texts = self.index_token_texts(query)?;
         self.build_fuzzy_search_query(&token_texts, facets, max_distance, false)
     }
 
@@ -1591,6 +1723,9 @@ impl SearchEngine {
         max_distance: u8,
     ) -> Result<Vec<String>> {
         let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+        // Query-time enumeration (not highlight) — no search-scoped searcher
+        // exists yet, so take a fresh one like the other query builders do.
+        let searcher = self.index_reader.searcher();
         term_texts
             .iter()
             .map(|token| {
@@ -1615,7 +1750,7 @@ impl SearchEngine {
                 let remaining = MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN.saturating_sub(terms.len());
                 if remaining > 0 {
                     let automaton = DfaWrapper(builder.build_dfa(token));
-                    for fuzzy_term in self.automaton_terms(&automaton, remaining)? {
+                    for fuzzy_term in self.automaton_terms(&searcher, &automaton, remaining)? {
                         Self::push_limited_unique(
                             &mut terms,
                             &mut seen,
@@ -1697,30 +1832,40 @@ impl SearchEngine {
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
 
-    fn run_search(
+    fn run_search<F>(
         &self,
         query: Box<dyn Query>,
-        highlight_query: Option<Box<dyn Query>>,
+        make_highlight: F,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
         let searcher = self.index_reader.searcher();
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
-        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
         Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)
     }
 
-    fn run_search_and_count(
+    fn run_search_and_count<F>(
         &self,
         query: Box<dyn Query>,
-        highlight_query: Option<Box<dyn Query>>,
+        make_highlight: F,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
-    ) -> Result<SearchPageResult> {
+    ) -> Result<SearchPageResult>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
         let searcher = self.index_reader.searcher();
         // Tuple collector: single index pass for both count and top-docs.
         let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
@@ -1741,7 +1886,17 @@ impl SearchEngine {
                 (addrs, count as u32)
             }
         };
-        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        // total_count is the full hit count regardless of this page; only the
+        // snippet highlighting (and its dictionary scan) is page-dependent, so
+        // skip it when this page is empty (e.g. offset past the last hit).
+        if addresses.is_empty() {
+            return Ok(SearchPageResult {
+                total_count,
+                results: Vec::new(),
+            });
+        }
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
         let results = Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)?;
         Ok(SearchPageResult {
             total_count,
@@ -1779,21 +1934,28 @@ impl SearchEngine {
         Ok(results)
     }
 
-    fn run_search_stream(
+    fn run_search_stream<F>(
         &self,
         query: Box<dyn Query>,
-        highlight_query: Option<Box<dyn Query>>,
+        make_highlight: F,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
-        let hl_q: &dyn Query = highlight_query.as_deref().unwrap_or(query.as_ref());
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
         let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
@@ -1811,6 +1973,17 @@ impl SearchEngine {
             }
         }
         Ok(())
+    }
+
+    /// Invokes a highlight-query builder against the search's `searcher`,
+    /// degrading a build failure to `None` (no highlight) instead of failing the
+    /// whole search. `None` makes the caller fall back to the main query, which
+    /// already exposes its terms when it is a Term/Phrase/TermSet query.
+    fn resolve_highlight<F>(searcher: &Searcher, make_highlight: F) -> Option<Box<dyn Query>>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
+        make_highlight(searcher).ok().flatten()
     }
 
     fn collect_addresses(
@@ -1857,7 +2030,11 @@ impl SearchEngine {
     /// same FST automaton the search itself uses, we highlight every morphological
     /// variant that genuinely matched (prefixes, suffixes, alternatives), not just
     /// the literal words the user typed.
-    fn build_regex_highlight_query(&self, regex_terms: &[String]) -> Result<Box<dyn Query>> {
+    fn build_regex_highlight_query(
+        &self,
+        searcher: &Searcher,
+        regex_terms: &[String],
+    ) -> Result<Box<dyn Query>> {
         let automatons: Vec<tantivy_fst::Regex> = regex_terms
             .iter()
             .map(|pattern| {
@@ -1865,7 +2042,30 @@ impl SearchEngine {
                     .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.build_automaton_highlight_query(&automatons)
+        self.build_automaton_highlight_query(searcher, &automatons)
+    }
+
+    /// Highlight query for an advanced (regex) search, or `None` when the main
+    /// query already highlights itself.
+    ///
+    /// A single regex term is executed as a `TermSetQuery` (see
+    /// [`Self::single_regex_term_query`]) whose materialized terms ARE the terms
+    /// that matched — so the main query exposes them to `SnippetGenerator`
+    /// directly and no second term-dictionary scan is needed. Only the
+    /// multi-term `RegexPhraseQuery`, which exposes no static terms, requires a
+    /// separately-materialized highlight query.
+    fn advanced_highlight_query(
+        &self,
+        searcher: &Searcher,
+        regex_terms: &[String],
+    ) -> Result<Option<Box<dyn Query>>> {
+        if regex_terms.len() >= 2 {
+            Ok(Some(
+                self.build_regex_highlight_query(searcher, regex_terms)?,
+            ))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Fuzzy-mode counterpart of [`Self::build_regex_highlight_query`]:
@@ -1875,6 +2075,7 @@ impl SearchEngine {
     /// this fuzzy results would render with no highlighting.
     fn build_fuzzy_highlight_query(
         &self,
+        searcher: &Searcher,
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
@@ -1891,21 +2092,23 @@ impl SearchEngine {
             .iter()
             .map(|t| DfaWrapper(builder.build_dfa(t)))
             .collect();
-        self.build_automaton_highlight_query(&automatons)
+        self.build_automaton_highlight_query(searcher, &automatons)
     }
 
     /// Highlight query for the approximate (`fuzzy`) path, branching on whether
     /// a `MagicDictionary` is loaded — the highlight terms must mirror whatever
-    /// [`Self::build_fuzzy_search_query`] matched.
+    /// [`Self::build_fuzzy_search_query`] matched. Takes the search's own
+    /// `searcher` so highlight terms come from the same index snapshot.
     fn build_fuzzy_highlight(
         &self,
+        searcher: &Searcher,
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
         if self.magic_dict.is_some() && max_distance > 0 {
-            self.build_lexical_fuzzy_highlight_query(term_texts, max_distance)
+            self.build_lexical_fuzzy_highlight_query(searcher, term_texts, max_distance)
         } else {
-            self.build_fuzzy_highlight_query(term_texts, max_distance)
+            self.build_fuzzy_highlight_query(searcher, term_texts, max_distance)
         }
     }
 
@@ -1915,6 +2118,7 @@ impl SearchEngine {
     /// but are not highlighted.
     fn build_lexical_fuzzy_highlight_query(
         &self,
+        searcher: &Searcher,
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
@@ -1934,7 +2138,7 @@ impl SearchEngine {
             .iter()
             .map(|t| DfaWrapper(builder.build_dfa(t)))
             .collect();
-        let mut matched = self.automaton_highlight_terms(&automatons)?;
+        let mut matched = self.automaton_highlight_terms(searcher, &automatons)?;
 
         // ...then add the literal tokens and the (blacklist-filtered) lexical
         // forms per token. The exact token can otherwise be omitted when a broad
@@ -1953,13 +2157,17 @@ impl SearchEngine {
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
-    fn build_automaton_highlight_query<A>(&self, automatons: &[A]) -> Result<Box<dyn Query>>
+    fn build_automaton_highlight_query<A>(
+        &self,
+        searcher: &Searcher,
+        automatons: &[A],
+    ) -> Result<Box<dyn Query>>
     where
         A: Automaton,
         A::State: Clone,
     {
         let text_f = self.schema.get_field("text")?;
-        let matched = self.automaton_highlight_terms(automatons)?;
+        let matched = self.automaton_highlight_terms(searcher, automatons)?;
         let terms: Vec<Term> = matched
             .into_iter()
             .map(|t| Term::from_field_text(text_f, &t))
@@ -1970,7 +2178,11 @@ impl SearchEngine {
     /// Collects the distinct `text`-index terms the given automatons match,
     /// bounded by [`MAX_HIGHLIGHT_TERMS`] split evenly across automatons.
     /// Shared by the regex, fuzzy, and lexical-fuzzy highlight builders.
-    fn automaton_highlight_terms<A>(&self, automatons: &[A]) -> Result<HashSet<String>>
+    fn automaton_highlight_terms<A>(
+        &self,
+        searcher: &Searcher,
+        automatons: &[A],
+    ) -> Result<HashSet<String>>
     where
         A: Automaton,
         A::State: Clone,
@@ -1981,20 +2193,24 @@ impl SearchEngine {
         // words with no highlighting at all.
         let per_automaton_cap = (MAX_HIGHLIGHT_TERMS / automatons.len().max(1)).max(1);
         for automaton in automatons {
-            for term in self.automaton_terms(automaton, per_automaton_cap)? {
+            for term in self.automaton_terms(searcher, automaton, per_automaton_cap)? {
                 matched.insert(term);
             }
         }
         Ok(matched)
     }
 
-    fn automaton_terms<A>(&self, automaton: &A, cap: usize) -> Result<Vec<String>>
+    fn automaton_terms<A>(
+        &self,
+        searcher: &Searcher,
+        automaton: &A,
+        cap: usize,
+    ) -> Result<Vec<String>>
     where
         A: Automaton,
         A::State: Clone,
     {
         let text_f = self.schema.get_field("text")?;
-        let searcher = self.index_reader.searcher();
         let mut matched = Vec::new();
         let mut seen = HashSet::new();
         'segments: for reader in searcher.segment_readers() {
@@ -2318,7 +2534,10 @@ mod tests {
         let compatibility = check_index_compatibility(dir_path_string(&dir));
         assert!(!compatibility.compatible);
         assert_eq!(compatibility.status, "rebuild_required");
-        assert_eq!(compatibility.found_schema_version, Some(1));
+        assert_eq!(
+            compatibility.found_schema_version,
+            Some(INDEX_SCHEMA_VERSION - 1)
+        );
     }
 
     #[test]
@@ -2335,7 +2554,10 @@ mod tests {
         let compatibility = check_index_compatibility(dir_path_string(&dir));
         assert!(!compatibility.compatible);
         assert_eq!(compatibility.status, "engine_too_old");
-        assert_eq!(compatibility.found_schema_version, Some(3));
+        assert_eq!(
+            compatibility.found_schema_version,
+            Some(INDEX_SCHEMA_VERSION + 1)
+        );
     }
 
     #[test]
@@ -3485,6 +3707,41 @@ mod tests {
     }
 
     #[test]
+    fn test_search_advanced_heavy_option_combo_compiles_and_runs() {
+        // typo + grammatical prefix + grammatical suffix produces the largest
+        // morphological regex. The length budget must keep it under tantivy-fst's
+        // DFA state limit so the search compiles and returns instead of erroring.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספרים", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let mut word_opts = HashMap::new();
+        word_opts.insert(hebrew_query::OPT_TYPO.to_string(), true);
+        word_opts.insert("קידומות דקדוקיות".to_string(), true);
+        word_opts.insert("סיומות דקדוקיות".to_string(), true);
+        let mut options = HashMap::new();
+        options.insert("ספר_0".to_string(), word_opts);
+
+        let result = engine.search_advanced(
+            "ספר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+        );
+        let got = ids(result.expect("heavy option combo must compile and run"));
+        assert!(
+            got.contains(&1),
+            "the base word ספר should still match, got {got:?}"
+        );
+    }
+
+    #[test]
     fn test_single_term_respects_max_expansions() {
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "ספר", "/books/a.txt");
@@ -3670,6 +3927,47 @@ mod tests {
             )
             .unwrap());
         assert_eq!(got, vec![1, 2], "alternatives should OR שר with מלך");
+    }
+
+    #[test]
+    fn advanced_search_matches_gershayim_tokens_end_to_end() {
+        // HebrewTokenizer מפצל על גרשיים (ז"ל → ז, ל) ושומר רק גרש סופי
+        // (תוס'); split_query_words חייב לפצל את השאילתה באותה צורה — אחרת
+        // ז"ל לעולם לא יימצא. כולל נורמליזציה של ״ עברי בשאילתה.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "הרב פלוני ז\"ל אמר", "/books/a.txt");
+        add(&mut engine, 2, "כתב הרמב\u{05F4}ם בהלכות", "/books/b.txt");
+        add(&mut engine, 3, "דברי תוס' שם", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let advanced_ids = |engine: &mut SearchEngine, query: &str| {
+            ids(engine
+                .search_advanced(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    0,
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    ResultsOrder::Catalogue,
+                )
+                .unwrap())
+        };
+
+        assert_eq!(advanced_ids(&mut engine, "ז\"ל"), vec![1]);
+        assert_eq!(
+            advanced_ids(&mut engine, "ז\u{05F4}ל"),
+            vec![1],
+            "גרשיים עבריים בשאילתה"
+        );
+        assert_eq!(
+            advanced_ids(&mut engine, "הרמב\"ם"),
+            vec![2],
+            "״ עברי באינדקס, \" בשאילתה"
+        );
+        assert_eq!(advanced_ids(&mut engine, "תוס'"), vec![3], "גרש סופי");
     }
 
     #[test]

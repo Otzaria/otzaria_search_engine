@@ -113,6 +113,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig dco_decode_box_autoadd_highlight_config(dynamic raw);
 
   @protected
+  HighlightPattern dco_decode_box_autoadd_highlight_pattern(dynamic raw);
+
+  @protected
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw);
 
   @protected
@@ -131,6 +134,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig dco_decode_highlight_config(dynamic raw);
 
   @protected
+  HighlightPattern dco_decode_highlight_pattern(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -141,6 +147,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BenchmarkResult> dco_decode_list_benchmark_result(dynamic raw);
+
+  @protected
+  List<bool> dco_decode_list_bool(dynamic raw);
 
   @protected
   List<DocumentInput> dco_decode_list_document_input(dynamic raw);
@@ -183,6 +192,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw);
+
+  @protected
+  HighlightPattern? dco_decode_opt_box_autoadd_highlight_pattern(dynamic raw);
 
   @protected
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
@@ -330,6 +342,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  HighlightPattern sse_decode_box_autoadd_highlight_pattern(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SearchResult sse_decode_box_autoadd_search_result(
     SseDeserializer deserializer,
   );
@@ -350,6 +367,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig sse_decode_highlight_config(SseDeserializer deserializer);
 
   @protected
+  HighlightPattern sse_decode_highlight_pattern(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -364,6 +384,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BenchmarkResult> sse_decode_list_benchmark_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<bool> sse_decode_list_bool(SseDeserializer deserializer);
 
   @protected
   List<DocumentInput> sse_decode_list_document_input(
@@ -420,6 +443,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   HighlightConfig? sse_decode_opt_box_autoadd_highlight_config(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  HighlightPattern? sse_decode_opt_box_autoadd_highlight_pattern(
     SseDeserializer deserializer,
   );
 
@@ -601,6 +629,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_highlight_pattern(
+    HighlightPattern self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_search_result(
     SearchResult self,
     SseSerializer serializer,
@@ -625,6 +659,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_highlight_pattern(
+    HighlightPattern self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -641,6 +681,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<BenchmarkResult> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_list_bool(List<bool> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_document_input(
@@ -711,6 +754,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_highlight_config(
     HighlightConfig? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_highlight_pattern(
+    HighlightPattern? self,
     SseSerializer serializer,
   );
 

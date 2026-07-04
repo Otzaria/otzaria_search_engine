@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1408220680;
+  int get rustContentHash => 1146007788;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -436,6 +436,14 @@ abstract class RustLibApi extends BaseApi {
 
   IndexCompatibility crateApiSearchEngineCheckIndexCompatibility({
     required String path,
+  });
+
+  HighlightPattern? crateApiSearchEngineGenerateHighlightPattern({
+    required String query,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
   });
 
   Future<void> crateApiDiagnosticTestRunDiagnosticTest();
@@ -2845,6 +2853,57 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  HighlightPattern? crateApiSearchEngineGenerateHighlightPattern({
+    required String query,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(query, serializer);
+          sse_encode_u_32(distance, serializer);
+          sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_String_Map_String_bool_None_None(
+            searchOptions,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 48)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_highlight_pattern,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineGenerateHighlightPatternConstMeta,
+        argValues: [
+          query,
+          distance,
+          customSpacing,
+          alternativeWords,
+          searchOptions,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineGenerateHighlightPatternConstMeta =>
+      const TaskConstMeta(
+        debugName: "generate_highlight_pattern",
+        argNames: [
+          "query",
+          "distance",
+          "customSpacing",
+          "alternativeWords",
+          "searchOptions",
+        ],
+      );
+
+  @override
   Future<void> crateApiDiagnosticTestRunDiagnosticTest() {
     return handler.executeNormal(
       NormalTask(
@@ -2853,7 +2912,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2880,7 +2939,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 50,
             port: port_,
           );
         },
@@ -3096,6 +3155,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  HighlightPattern dco_decode_box_autoadd_highlight_pattern(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_highlight_pattern(raw);
+  }
+
+  @protected
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_search_result(raw);
@@ -3157,6 +3222,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  HighlightPattern dco_decode_highlight_pattern(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return HighlightPattern(
+      combinedPattern: dco_decode_String(arr[0]),
+      wordPatterns: dco_decode_list_String(arr[1]),
+      wordBoundaryEligible: dco_decode_list_bool(arr[2]),
+    );
+  }
+
+  @protected
   int dco_decode_i_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -3189,6 +3267,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<BenchmarkResult> dco_decode_list_benchmark_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_benchmark_result).toList();
+  }
+
+  @protected
+  List<bool> dco_decode_list_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_bool).toList();
   }
 
   @protected
@@ -3274,6 +3358,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_highlight_config(raw);
+  }
+
+  @protected
+  HighlightPattern? dco_decode_opt_box_autoadd_highlight_pattern(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_highlight_pattern(raw);
   }
 
   @protected
@@ -3642,6 +3732,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  HighlightPattern sse_decode_box_autoadd_highlight_pattern(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_highlight_pattern(deserializer));
+  }
+
+  @protected
   SearchResult sse_decode_box_autoadd_search_result(
     SseDeserializer deserializer,
   ) {
@@ -3706,6 +3804,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  HighlightPattern sse_decode_highlight_pattern(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_combinedPattern = sse_decode_String(deserializer);
+    var var_wordPatterns = sse_decode_list_String(deserializer);
+    var var_wordBoundaryEligible = sse_decode_list_bool(deserializer);
+    return HighlightPattern(
+      combinedPattern: var_combinedPattern,
+      wordPatterns: var_wordPatterns,
+      wordBoundaryEligible: var_wordBoundaryEligible,
+    );
+  }
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getInt32();
@@ -3756,6 +3867,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <BenchmarkResult>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_benchmark_result(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<bool> sse_decode_list_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <bool>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_bool(deserializer));
     }
     return ans_;
   }
@@ -3922,6 +4045,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_highlight_config(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  HighlightPattern? sse_decode_opt_box_autoadd_highlight_pattern(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_highlight_pattern(deserializer));
     } else {
       return null;
     }
@@ -4317,6 +4453,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_highlight_pattern(
+    HighlightPattern self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_highlight_pattern(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_search_result(
     SearchResult self,
     SseSerializer serializer,
@@ -4369,6 +4514,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_highlight_pattern(
+    HighlightPattern self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.combinedPattern, serializer);
+    sse_encode_list_String(self.wordPatterns, serializer);
+    sse_encode_list_bool(self.wordBoundaryEligible, serializer);
+  }
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
@@ -4407,6 +4563,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_benchmark_result(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_bool(List<bool> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_bool(item, serializer);
     }
   }
 
@@ -4561,6 +4726,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_highlight_config(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_highlight_pattern(
+    HighlightPattern? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_highlight_pattern(self, serializer);
     }
   }
 

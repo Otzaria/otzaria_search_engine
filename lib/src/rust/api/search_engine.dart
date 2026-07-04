@@ -6,14 +6,40 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_fields`, `automaton_highlight_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default_token_texts`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `facet_filter_query`, `index_metadata_path`, `inferred_legacy_schema_version`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `take_writer`, `tantivy_schema_matches_current_version`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `DfaWrapper`, `IndexMetadata`
+// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `consume_inside`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `open`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `split_top_level_alternatives`, `strip_enclosing_group`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `CharClassScanner`, `DfaWrapper`, `IndexMetadata`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `for_segment`, `harvest`, `is_match`, `merge_fruits`, `requires_scoring`, `start`
+// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
     .api
     .crateApiSearchEngineCheckIndexCompatibility(path: path);
+
+/// Builds display-highlight regex patterns for a search query, so the app can
+/// mark matches inside an opened book exactly the way the engine matched them.
+///
+/// Pure string computation (no index access) — safe to call synchronously.
+/// Parameters mirror [`SearchEngine::search_advanced`]: `distance` is the
+/// default intermediate-word allowance, `custom_spacing` is keyed
+/// `"i-(i+1)"`, `alternative_words` is keyed by word position, and
+/// `search_options` is keyed `"{word}_{index}"` using the same tokenization
+/// as engine queries.
+///
+/// Returns `None` when the query contains no highlightable words.
+HighlightPattern? generateHighlightPattern({
+  required String query,
+  required int distance,
+  required Map<String, String> customSpacing,
+  required Map<int, List<String>> alternativeWords,
+  required Map<String, Map<String, bool>> searchOptions,
+}) => RustLib.instance.api.crateApiSearchEngineGenerateHighlightPattern(
+  query: query,
+  distance: distance,
+  customSpacing: customSpacing,
+  alternativeWords: alternativeWords,
+  searchOptions: searchOptions,
+);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
@@ -429,6 +455,44 @@ class HighlightConfig {
           highlightPrefix == other.highlightPrefix &&
           highlightPostfix == other.highlightPostfix &&
           maxChars == other.maxChars;
+}
+
+/// Regex patterns for highlighting query matches in *displayed* book text
+/// (which, unlike index terms, still carries nikud and HTML). All patterns
+/// are ECMAScript-dialect strings; the Dart layer compiles them with
+/// `RegExp(pattern, caseSensitive: false)` and performs no pattern
+/// construction of its own.
+class HighlightPattern {
+  /// One regex matching the full query phrase (words + separators).
+  final String combinedPattern;
+
+  /// Per-word regex, used to locate each word inside a combined match.
+  final List<String> wordPatterns;
+
+  /// Per-word: `true` when the word has no morphological expansion option,
+  /// so the UI may require token boundaries around its match.
+  final List<bool> wordBoundaryEligible;
+
+  const HighlightPattern({
+    required this.combinedPattern,
+    required this.wordPatterns,
+    required this.wordBoundaryEligible,
+  });
+
+  @override
+  int get hashCode =>
+      combinedPattern.hashCode ^
+      wordPatterns.hashCode ^
+      wordBoundaryEligible.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HighlightPattern &&
+          runtimeType == other.runtimeType &&
+          combinedPattern == other.combinedPattern &&
+          wordPatterns == other.wordPatterns &&
+          wordBoundaryEligible == other.wordBoundaryEligible;
 }
 
 class IndexCompatibility {

@@ -65,17 +65,13 @@ const OPT_PARTIAL: &str = "חלק ממילה";
 // `FULL_SUFFIX_PATTERN` extends `SUFFIX_PATTERN` with three rare endings
 // (יות, יא, תא) used only when the full prefix+suffix morphology is active.
 
-const GRAM_PREFIX_GROUP: &str =
-    r"(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
+const GRAM_PREFIX_GROUP: &str = r"(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
 
-const PREFIX_GROUP: &str =
-    r"(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
+const PREFIX_GROUP: &str = r"(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
 
-const SUFFIX_PATTERN: &str =
-    r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יי|יך|יו|יה|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
+const SUFFIX_PATTERN: &str = r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יי|יך|יו|יה|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
 
-const FULL_SUFFIX_PATTERN: &str =
-    r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יות|יי|יך|יו|יה|יא|תא|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
+const FULL_SUFFIX_PATTERN: &str = r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יות|יי|יך|יו|יה|יא|תא|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
 
 // Letters tried for single-insertion typo variants (ordered by frequency).
 const INSERTION_LETTERS: &[&str] = &[
@@ -99,7 +95,9 @@ const MAX_NORMAL_VARIATIONS: usize = 20;
 
 /// Cap on כתיב מלא/חסר branches folded into one pattern. The generator is
 /// 2^n in the count of optional ו/י letters; this keeps it polynomial.
-const MAX_SPELLING_BRANCHES: usize = 16;
+/// Shared with the display-highlight builder so search and highlighting fan
+/// out identically.
+pub(crate) const MAX_SPELLING_BRANCHES: usize = 16;
 
 // ── Public result type ─────────────────────────────────────────────────────
 
@@ -201,10 +199,14 @@ fn is_word_char(c: char) -> bool {
         || ('\u{0590}'..='\u{05C7}').contains(&c)
 }
 
-/// Splits a sanitised query into word tokens, mirroring the Dart
-/// `splitQueryWords` rules: a trailing `'` is kept only when it is not
-/// followed by another word character (`תוס'` stays whole; `ד'אש`→`ד`,`אש`);
-/// `"` always acts as a separator.
+/// Splits a sanitised query into word tokens, mirroring the `HebrewTokenizer`
+/// the `text` field is indexed with (see `crate::hebrew_tokenizer`):
+/// * `"` always separates (`ז"ל` → `ז`, `ל`), exactly like the tokenizer.
+/// * `'` between word characters separates too (`ד'אש` → `ד`, `אש`); only a
+///   trailing `'` is absorbed as the token's last character (`תוס'`).
+///
+/// `sanitize_query` has already normalised `״`→`"` and `׳`→`'`, so query
+/// tokens line up with the ASCII-geresh index terms.
 pub fn split_query_words(query: &str) -> Vec<String> {
     let cleaned = sanitize_query(query);
     let chars: Vec<char> = cleaned.trim().chars().collect();
@@ -216,20 +218,15 @@ pub fn split_query_words(query: &str) -> Vec<String> {
             while i < chars.len() && is_word_char(chars[i]) {
                 i += 1;
             }
-            // Optionally absorb a trailing geresh that is NOT mid-word.
-            let end = if i < chars.len()
+            // A geresh right after the word that is NOT followed by another
+            // word character is trailing — absorb it, like the tokenizer.
+            if i < chars.len()
                 && chars[i] == '\''
                 && !(i + 1 < chars.len() && is_word_char(chars[i + 1]))
             {
                 i += 1;
-                i
-            } else {
-                i
-            };
-            let word: String = chars[start..end].iter().collect();
-            if !word.is_empty() {
-                words.push(word);
             }
+            words.push(chars[start..i].iter().collect());
         } else {
             i += 1;
         }
@@ -254,7 +251,9 @@ pub(crate) fn normalize_for_index(text: &str) -> String {
 
 /// Escapes tantivy-fst regex metacharacters. Normalised Hebrew/Latin tokens
 /// contain none of these, so this is a no-op for realistic query input.
-fn escape_regex(s: &str) -> String {
+/// The escaped set is also valid for Dart's `RegExp` (ECMAScript), so the
+/// display-highlight builder reuses it.
+pub(crate) fn escape_regex(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         if matches!(
@@ -281,7 +280,7 @@ fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, value: String)
 /// Generates all כתיב מלא/חסר variants by toggling each optional `י ו ' "`.
 /// Insertion order matches the Dart implementation (bitmask 0..2^n, bit set
 /// means "keep the optional character").
-fn generate_spelling_variations(word: &str) -> Vec<String> {
+pub(crate) fn generate_spelling_variations(word: &str) -> Vec<String> {
     if word.is_empty() {
         return vec![String::new()];
     }
@@ -436,7 +435,12 @@ fn full_morphological_pattern(root: &str) -> String {
     if root.is_empty() {
         return String::new();
     }
-    format!("{}{}{}", PREFIX_GROUP, escape_regex(root), FULL_SUFFIX_PATTERN)
+    format!(
+        "{}{}{}",
+        PREFIX_GROUP,
+        escape_regex(root),
+        FULL_SUFFIX_PATTERN
+    )
 }
 
 /// Bounded prefix-search: `.{0,k}` before the root, where `k` shrinks as the
@@ -615,7 +619,7 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> S
 ///
 /// The outer key uses the format `"{word}_{index}"` (e.g. `"ספר_0"`). We
 /// look up by `"{word}_{index}"` for the word at position `index` in `words`.
-fn word_flags_at(
+pub(crate) fn word_flags_at(
     words: &[String],
     index: usize,
     search_options: &HashMap<String, HashMap<String, bool>>,
@@ -675,8 +679,8 @@ pub fn prepare_advanced_query(
     let normalized = normalize_for_index(query);
     let words = split_query_words(&normalized);
 
-    let has_options = !search_options.is_empty()
-        && search_options.values().any(|m| m.values().any(|&v| v));
+    let has_options =
+        !search_options.is_empty() && search_options.values().any(|m| m.values().any(|&v| v));
     let has_alternatives = !alternative_words.is_empty();
 
     // ── Plain path (no per-word options or alternatives) ──────────────────
@@ -691,7 +695,11 @@ pub fn prepare_advanced_query(
             distance
         };
         let max_expansions = if words.len() > 1 { 100 } else { 10 };
-        return AdvancedQuery { regex_terms: terms, slop, max_expansions };
+        return AdvancedQuery {
+            regex_terms: terms,
+            slop,
+            max_expansions,
+        };
     }
 
     // ── Advanced path ─────────────────────────────────────────────────────
@@ -719,7 +727,11 @@ pub fn prepare_advanced_query(
 
     let max_expansions = compute_max_expansions(&words, search_options);
 
-    AdvancedQuery { regex_terms, slop, max_expansions }
+    AdvancedQuery {
+        regex_terms,
+        slop,
+        max_expansions,
+    }
 }
 
 // ── max_expansions heuristic ───────────────────────────────────────────────
@@ -740,12 +752,21 @@ fn compute_max_expansions(
 
     // Check whether any word uses a morphological or partial option, and find
     // the shortest such word (wider expansion for shorter roots).
-    let morph_keys = [OPT_PREFIX, OPT_SUFFIX, OPT_GRAM_PREFIX, OPT_GRAM_SUFFIX, OPT_PARTIAL];
+    let morph_keys = [
+        OPT_PREFIX,
+        OPT_SUFFIX,
+        OPT_GRAM_PREFIX,
+        OPT_GRAM_SUFFIX,
+        OPT_PARTIAL,
+    ];
     let mut shortest_morph: Option<usize> = None;
     for (i, word) in words.iter().enumerate() {
         let key = format!("{}_{}", word, i);
         if let Some(opts) = search_options.get(&key) {
-            if morph_keys.iter().any(|k| opts.get(*k).copied().unwrap_or(false)) {
+            if morph_keys
+                .iter()
+                .any(|k| opts.get(*k).copied().unwrap_or(false))
+            {
                 let len = word.chars().count();
                 shortest_morph = Some(match shortest_morph {
                     None => len,
@@ -764,7 +785,11 @@ fn compute_max_expansions(
         };
     }
 
-    if words.len() > 1 { 100 } else { 10 }
+    if words.len() > 1 {
+        100
+    } else {
+        10
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -799,11 +824,23 @@ mod tests {
 
     #[test]
     fn split_handles_geresh_and_gershayim() {
+        // תואם את HebrewTokenizer: גרשיים וגרש פנימי מפרידים; רק גרש בסוף
+        // מילה נשמר; ״/׳ עבריים מנורמלים ללועזיים לפני הפיצול.
         assert_eq!(split_query_words("שלום עולם"), vec!["שלום", "עולם"]);
         assert_eq!(split_query_words("תוס'"), vec!["תוס'"]);
         assert_eq!(split_query_words("ז\"ל"), vec!["ז", "ל"]);
         assert_eq!(split_query_words("ד'אש"), vec!["ד", "אש"]);
+        assert_eq!(split_query_words("ג'ורג'"), vec!["ג", "ורג'"]);
         assert_eq!(split_query_words("רמב״ם"), vec!["רמב", "ם"]);
+        assert_eq!(
+            split_query_words("הרב פלוני ז\"ל"),
+            vec!["הרב", "פלוני", "ז", "ל"]
+        );
+        // גרשיים בסוף מילה או בתחילתה אינם חלק מהטוקן.
+        assert_eq!(split_query_words("רמב\""), vec!["רמב"]);
+        assert_eq!(split_query_words("\"רמב"), vec!["רמב"]);
+        // גרש כפול: הראשון נבלע כסופי, השני מפריד (כמו בטוקנייזר).
+        assert_eq!(split_query_words("רמב''ם"), vec!["רמב'", "ם"]);
     }
 
     // ── generate_spelling_variations ────────────────────────────────────
@@ -844,7 +881,9 @@ mod tests {
         let v = generate_common_typo_variations("שבת");
         for variant in v {
             assert!(
-                !variant.chars().any(|c| ('\u{0591}'..='\u{05C7}').contains(&c)),
+                !variant
+                    .chars()
+                    .any(|c| ('\u{0591}'..='\u{05C7}').contains(&c)),
                 "variant {variant:?} contains nikud"
             );
         }
@@ -863,28 +902,44 @@ mod tests {
         // The standalone grammatical-prefix option uses the RICHER group that
         // includes דא, א, כש — distinct from the leaner PREFIX_GROUP used by
         // full morphology. Pin the exact string so the member set cannot drift.
-        let flags = WordFlags { gram_prefix: true, ..Default::default() };
+        let flags = WordFlags {
+            gram_prefix: true,
+            ..Default::default()
+        };
         let p = word_to_pattern("ספר", &flags);
-        assert_eq!(
-            p,
-            "(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"
-        );
+        assert_eq!(p, "(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר");
     }
 
     #[test]
     fn full_morphology_uses_lean_prefix_group() {
         // Cross-check: the full prefix+suffix morphology path deliberately uses
         // the leaner PREFIX_GROUP (no דא/א/כש), as it always has.
-        let flags = WordFlags { gram_prefix: true, gram_suffix: true, ..Default::default() };
+        let flags = WordFlags {
+            gram_prefix: true,
+            gram_suffix: true,
+            ..Default::default()
+        };
         let p = word_to_pattern("ספר", &flags);
-        assert!(p.starts_with("(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"), "{p}");
-        assert!(!p.contains("דא"), "full morphology must use the lean group: {p}");
+        assert!(
+            p.starts_with("(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"),
+            "{p}"
+        );
+        assert!(
+            !p.contains("דא"),
+            "full morphology must use the lean group: {p}"
+        );
     }
 
     #[test]
     fn patterns_never_use_unbounded_star() {
-        let prefix_flags = WordFlags { prefix: true, ..Default::default() };
-        let suffix_flags = WordFlags { suffix: true, ..Default::default() };
+        let prefix_flags = WordFlags {
+            prefix: true,
+            ..Default::default()
+        };
+        let suffix_flags = WordFlags {
+            suffix: true,
+            ..Default::default()
+        };
         let p = word_to_pattern("ארוכה", &prefix_flags);
         assert!(!p.contains(".*"), "prefix pattern uses .*: {p}");
         let s = word_to_pattern("ארוכה", &suffix_flags);
@@ -897,18 +952,35 @@ mod tests {
         // empty variant. Under spelling+partial the empty variant must collapse
         // to an empty branch — NOT a `.{0,3}.{0,3}` wildcard that matches any
         // short term. (Regression guard for the dropped empty-root guards.)
-        let flags = WordFlags { spelling: true, partial: true, ..Default::default() };
+        let flags = WordFlags {
+            spelling: true,
+            partial: true,
+            ..Default::default()
+        };
         let p = word_to_pattern("וו", &flags);
         assert_eq!(p, "(?:|.{0,3}ו.{0,3}|.{0,3}וו.{0,3})");
-        assert!(!p.contains(".{0,3}.{0,3}"), "empty variant widened to wildcard: {p}");
+        assert!(
+            !p.contains(".{0,3}.{0,3}"),
+            "empty variant widened to wildcard: {p}"
+        );
     }
 
     #[test]
     fn patterns_have_no_anchors() {
         for flags in [
-            WordFlags { spelling: true, ..Default::default() },
-            WordFlags { gram_prefix: true, gram_suffix: true, ..Default::default() },
-            WordFlags { partial: true, ..Default::default() },
+            WordFlags {
+                spelling: true,
+                ..Default::default()
+            },
+            WordFlags {
+                gram_prefix: true,
+                gram_suffix: true,
+                ..Default::default()
+            },
+            WordFlags {
+                partial: true,
+                ..Default::default()
+            },
         ] {
             let p = word_to_pattern("בוא", &flags);
             assert!(!p.contains('^'), "anchor in: {p}");
@@ -974,7 +1046,13 @@ mod tests {
 
     #[test]
     fn plain_two_word_query_uses_distance_as_slop() {
-        let q = prepare_advanced_query("שלום עולם", 3, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        let q = prepare_advanced_query(
+            "שלום עולם",
+            3,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(q.regex_terms, vec!["שלום", "עולם"]);
         assert_eq!(q.slop, 3);
         assert_eq!(q.max_expansions, 100);
@@ -996,7 +1074,13 @@ mod tests {
 
     #[test]
     fn latin_query_is_lowercased() {
-        let q = prepare_advanced_query("Torah", 0, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        let q = prepare_advanced_query(
+            "Torah",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(q.regex_terms, vec!["torah"]);
     }
 
@@ -1023,7 +1107,11 @@ mod tests {
         // The spelling + grammatical-prefix combination must fan each spelling
         // variant through the RICH prefix group too (a second code path that
         // previously dropped דא/א/כש).
-        let flags = WordFlags { spelling: true, gram_prefix: true, ..Default::default() };
+        let flags = WordFlags {
+            spelling: true,
+            gram_prefix: true,
+            ..Default::default()
+        };
         let p = word_to_pattern("בוא", &flags);
         // Every branch carries the rich group; דא must be present.
         assert!(p.contains("(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?"), "{p}");
@@ -1033,7 +1121,10 @@ mod tests {
 
     #[test]
     fn max_expansions_defaults() {
-        assert_eq!(compute_max_expansions(&["שלום".to_string()], &HashMap::new()), 10);
+        assert_eq!(
+            compute_max_expansions(&["שלום".to_string()], &HashMap::new()),
+            10
+        );
         assert_eq!(
             compute_max_expansions(&["שלום".to_string(), "עולם".to_string()], &HashMap::new()),
             100
