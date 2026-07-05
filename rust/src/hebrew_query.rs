@@ -579,13 +579,22 @@ pub fn fold_presentation_forms(text: &str) -> String {
 /// through the next `>` (kept verbatim if unterminated); an `&` is dropped
 /// through the next `;` only if at least one non-`;` char precedes it.
 pub fn strip_html_for_indexing(text: &str) -> String {
+    // Fast path: this runs on every corpus line at indexing time, and a line
+    // with no markup at all needs none of the passes (or allocations) below.
+    if !text.contains(['<', '&']) {
+        return text.to_string();
+    }
     // Named whitespace entities → space, matching Dart's pre-pass order so
-    // they are not swallowed by the generic `&…;` rule below.
-    let spaced = text
-        .replace("&nbsp;", " ")
-        .replace("&thinsp;", " ")
-        .replace("&ensp;", " ")
-        .replace("&emsp;", " ");
+    // they are not swallowed by the generic `&…;` rule below. Each `replace`
+    // allocates, so skip the chain when the line has no entity at all.
+    let spaced = if text.contains('&') {
+        text.replace("&nbsp;", " ")
+            .replace("&thinsp;", " ")
+            .replace("&ensp;", " ")
+            .replace("&emsp;", " ")
+    } else {
+        text.to_string()
+    };
 
     let chars: Vec<char> = spaced.chars().collect();
     let mut out = String::with_capacity(chars.len());
@@ -621,13 +630,54 @@ pub fn strip_html_for_indexing(text: &str) -> String {
     out
 }
 
+/// Fused fold(presentation forms) → strip(attached marks) → collapse
+/// whitespace, in a single pass with one output allocation. Semantically
+/// identical to `collapse_whitespace(&strip_attached_marks(
+/// &fold_presentation_forms(s)))` (verified by the ingestion parity tests) —
+/// fusing matters because this runs on every line of the corpus. `drop`
+/// filters extra characters before folding (the PDF path drops invisibles).
+fn fold_strip_collapse(s: &str, drop: impl Fn(char) -> bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    // Collapse+trim in one go: a whitespace run becomes a single pending
+    // space, emitted only when more content follows (never leading/trailing).
+    let mut pending_space = false;
+    let mut emit = |out: &mut String, c: char| {
+        if is_attached_mark(c) {
+            return;
+        }
+        if c.is_whitespace() {
+            if !out.is_empty() {
+                pending_space = true;
+            }
+        } else {
+            if pending_space {
+                out.push(' ');
+                pending_space = false;
+            }
+            out.push(c);
+        }
+    };
+    for c in s.chars() {
+        if drop(c) {
+            continue;
+        }
+        match fold_presentation_form(c) {
+            Some(folded) => {
+                for fc in folded.chars() {
+                    emit(&mut out, fc);
+                }
+            }
+            None => emit(&mut out, c),
+        }
+    }
+    out
+}
+
 /// Full ingestion normalisation for text-book lines: strip HTML, decompose
 /// presentation forms, strip attached nikud/cantillation, collapse whitespace.
 /// Punctuation is intentionally preserved — it is shown in search results.
 pub fn normalize_text_for_indexing(input: &str) -> String {
-    collapse_whitespace(&strip_attached_marks(&fold_presentation_forms(
-        &strip_html_for_indexing(input),
-    )))
+    fold_strip_collapse(&strip_html_for_indexing(input), |_| false)
 }
 
 const PDF_INVISIBLE: &[char] = &[
@@ -639,14 +689,9 @@ const PDF_INVISIBLE: &[char] = &[
 /// Ingestion normalisation for PDF text: like [`normalize_text_for_indexing`]
 /// but also drops bidi/zero-width invisibles OCR tends to leave behind.
 pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
-    let stripped = strip_html_for_indexing(input);
-    let without_invisible: String = stripped
-        .chars()
-        .filter(|c| !PDF_INVISIBLE.contains(c))
-        .collect();
-    collapse_whitespace(&strip_attached_marks(&fold_presentation_forms(
-        &without_invisible,
-    )))
+    fold_strip_collapse(&strip_html_for_indexing(input), |c| {
+        PDF_INVISIBLE.contains(&c)
+    })
 }
 
 /// Heuristic mirroring the Dart `isProbablyGarbagePdfText`: after removing all

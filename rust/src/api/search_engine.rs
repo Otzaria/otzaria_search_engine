@@ -3,11 +3,14 @@ use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use log::{debug, error, warn};
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
@@ -71,6 +74,23 @@ pub struct SearchPageResult {
     pub results: Vec<SearchResult>,
 }
 
+/// One event of a combined stream search (`search_*_stream_with_counts`).
+///
+/// The first event carries the counts computed in the *same* index pass as
+/// the ranked results (`total_count` + `book_counts`, with empty `results`);
+/// every following event is a snippet-built results chunk (`None` counts).
+/// One user search previously cost three full query executions — stream,
+/// total count, and count-by-book — this collapses them into one.
+pub struct SearchStreamUpdate {
+    /// Full hit count of the query; `Some` only on the first event.
+    pub total_count: Option<u32>,
+    /// Live-document count per distinct `filePath`; `Some` only on the first
+    /// event. Sums to `total_count`.
+    pub book_counts: Option<HashMap<String, u32>>,
+    /// The results chunk (empty on the first, counts-bearing event).
+    pub results: Vec<SearchResult>,
+}
+
 pub struct FacetCount {
     pub path: String,
     pub count: u64,
@@ -109,11 +129,21 @@ pub struct HighlightPattern {
 
 // ── SearchEngine ───────────────────────────────────────────────────────────────
 
+// `Index::writer(budget)` splits the budget across indexing threads and
+// requires ≥15MB per thread, so the budget effectively picks the thread
+// count: 50MB caps tantivy at 3 threads (≈16MB arenas — frequent flushes,
+// many small segments), while 300MB lets it use all 8 (37.5MB arenas). The
+// budget is only consumed while indexing is active; mobile keeps the small
+// footprint.
+#[cfg(any(target_os = "android", target_os = "ios"))]
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const DEFAULT_WRITER_HEAP_SIZE: usize = 300_000_000;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
 // גרסה 3: המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים בטוקנים) משנה את
-// מילון הטרמים — אינדקסים ישנים חייבים בנייה מחדש.
+// מילון הטרמים, והוסר ה-fast field מ-`text` (עותק columnar של כל הקורפוס
+// שאיש לא קרא) — הסכימה בדיסק שונה, אינדקסים ישנים חייבים בנייה מחדש.
 const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 
@@ -269,6 +299,43 @@ pub fn normalize_pdf_text_for_indexing(input: String) -> String {
     hebrew_query::normalize_pdf_text_for_indexing(&input)
 }
 
+/// Batch form of [`normalize_text_for_indexing`]: one FFI round-trip per line
+/// *batch* instead of one per line. The per-call bridge overhead (string
+/// encode/decode + call dispatch) dominates the normalisation itself for
+/// short lines, and a full library is millions of lines — the indexing
+/// isolate should always prefer this over the single-line form.
+#[frb(sync)]
+pub fn normalize_texts_for_indexing(inputs: Vec<String>) -> Vec<String> {
+    inputs
+        .iter()
+        .map(|s| hebrew_query::normalize_text_for_indexing(s))
+        .collect()
+}
+
+/// A PDF line prepared for indexing: the normalised text together with its
+/// garbage verdict, so the batch API answers both questions the indexing
+/// isolate asks per line in one round-trip.
+pub struct PdfIndexLine {
+    pub text: String,
+    pub is_garbage: bool,
+}
+
+/// Batch form of [`normalize_pdf_text_for_indexing`] +
+/// [`is_probably_garbage_pdf_text`]: normalises each line and evaluates the
+/// garbage heuristic on the result — replacing the two-FFI-calls-per-line
+/// pattern with one call per batch.
+#[frb(sync)]
+pub fn normalize_pdf_texts_for_indexing(inputs: Vec<String>) -> Vec<PdfIndexLine> {
+    inputs
+        .iter()
+        .map(|s| {
+            let text = hebrew_query::normalize_pdf_text_for_indexing(s);
+            let is_garbage = hebrew_query::is_probably_garbage_pdf_text(&text);
+            PdfIndexLine { text, is_garbage }
+        })
+        .collect()
+}
+
 /// Whether a normalised PDF page looks like garbage (OCR noise) and should be
 /// skipped. Single source of truth for the Dart
 /// `IndexingDocumentBuilder.isProbablyGarbagePdfText`.
@@ -286,7 +353,17 @@ pub fn is_probably_garbage_pdf_text(normalized_text: String) -> bool {
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
 /// Deliberately hashes the *raw* text (before normalization/tokenization) so
 /// the fingerprint does not shift when text-processing internals change.
+///
+/// Pure string computation — safe to call synchronously (including from the
+/// indexing isolate).
+#[frb(sync)]
 pub fn compute_content_fingerprint(text: String) -> u64 {
+    content_fingerprint(&text)
+}
+
+/// Borrowing form of [`compute_content_fingerprint`] so in-engine callers
+/// ([`SearchEngine::add_text_book`]) never clone a whole book to hash it.
+fn content_fingerprint(text: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = FNV_OFFSET;
@@ -299,6 +376,24 @@ pub fn compute_content_fingerprint(text: String) -> u64 {
     } else {
         hash
     }
+}
+
+/// Mirrors the Dart `IndexingDocumentBuilder._updateReferenceTrail`: a new
+/// `<h…>` heading line replaces any earlier trail entry that shares its
+/// first four characters (same heading level) and everything after it, then
+/// appends itself. Char-based like the Dart UTF-16 indexing (identical for
+/// BMP text, which Hebrew books are).
+fn update_reference_trail<'a>(trail: &mut Vec<&'a str>, line: &'a str) {
+    if line.chars().count() >= 4 && !trail.is_empty() {
+        let prefix: Vec<char> = line.chars().take(4).collect();
+        if let Some(idx) = trail
+            .iter()
+            .position(|entry| entry.chars().take(4).eq(prefix.iter().copied()) && entry.chars().count() >= 4)
+        {
+            trail.truncate(idx);
+        }
+    }
+    trail.push(line);
 }
 
 fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
@@ -545,6 +640,9 @@ fn compatibility(
 /// the legacy compatibility check can never drift apart.
 fn current_schema() -> Schema {
     let mut schema_builder = Schema::builder();
+    // Deliberately NOT fast: a text fast field stores every raw line in a
+    // columnar dictionary — a second full copy of the corpus — and nothing
+    // reads it (collectors use only the filePath/contentHash/id columns).
     schema_builder.add_text_field(
         "text",
         TextOptions::default()
@@ -553,8 +651,7 @@ fn current_schema() -> Schema {
                     .set_tokenizer("hebrew")
                     .set_index_option(IndexRecordOption::WithFreqsAndPositions),
             )
-            .set_stored()
-            .set_fast(None),
+            .set_stored(),
     );
     schema_builder.add_text_field("reference", STORED);
     schema_builder.add_text_field(
@@ -580,6 +677,21 @@ fn current_schema() -> Schema {
     schema_builder.build()
 }
 
+/// Cache key for materialized single-word term sets. The searcher
+/// `generation_id` changes on every reader reload (i.e. after each commit),
+/// so entries from a stale index snapshot can never be served.
+#[derive(Hash, PartialEq, Eq)]
+struct TermCacheKey {
+    generation: u64,
+    branches: Vec<String>,
+    max_expansions: u32,
+}
+
+/// Entries kept in [`SearchEngine::term_cache`]. Each entry holds at most
+/// `max_expansions` terms (≤5 000 short Hebrew tokens ≈ ~100KB worst case),
+/// so the cache tops out at a few MB and typically far less.
+const TERM_CACHE_ENTRIES: usize = 32;
+
 pub struct SearchEngine {
     schema: Schema,
     index: Index,
@@ -590,6 +702,12 @@ pub struct SearchEngine {
     /// `None` until [`SearchEngine::set_magic_dictionary_path`] loads a valid
     /// `lexical.db`; while `None`, fuzzy search behaves exactly as before.
     magic_dict: Option<MagicDictionary>,
+    /// Materialized-terms cache for the single-word regex path. One user
+    /// search triggers several engine calls with identical parameters
+    /// (stream + count + count-by-book + facet counts + pagination), and the
+    /// FST dictionary scan behind `single_regex_term_query` is the expensive
+    /// part of each — this makes every call after the first near-free.
+    term_cache: Mutex<LruCache<TermCacheKey, Arc<Vec<Term>>>>,
 }
 
 impl SearchEngine {
@@ -638,6 +756,9 @@ impl SearchEngine {
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             index_reader,
             magic_dict: None,
+            term_cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
+            )),
         }
     }
 
@@ -744,6 +865,72 @@ impl SearchEngine {
         Ok(())
     }
 
+    /// Indexes a whole text book in ONE FFI call. Does not commit.
+    ///
+    /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
+    /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
+    /// book's raw-text content fingerprint on every document, and adds one
+    /// document per line. Returns the number of documents added (0 for empty
+    /// text — the caller writes its empty-book marker in that case).
+    ///
+    /// This is the whole-book replacement for the app's per-line pipeline
+    /// (Dart isolate → per-batch FFI normalize → SendPort copy → batch add):
+    /// the raw text crosses the bridge exactly once and only a count comes
+    /// back. Document ids encode catalogue order exactly like the Dart
+    /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+    pub fn add_text_book(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        text: String,
+    ) -> Result<u32> {
+        if text.is_empty() {
+            return Ok(0);
+        }
+        let (
+            title_f,
+            reference_f,
+            text_f,
+            id_f,
+            segment_f,
+            is_pdf_f,
+            file_path_f,
+            topics_f,
+            content_hash_f,
+        ) = self.all_fields()?;
+        let topics_facet = Facet::from_text(&topics)?;
+        let content_hash = content_fingerprint(&text);
+        let id_base = (u64::from(catalogue_order) + 1) << 32;
+        let writer = self.writer_mut()?;
+
+        let mut trail: Vec<&str> = Vec::new();
+        // The stripped trail is recomputed only when a heading changes it —
+        // the Dart pipeline re-joined and re-stripped it for every line.
+        let mut reference = String::new();
+        let mut ordinal: u64 = 0;
+        for (segment, raw_line) in text.split('\n').enumerate() {
+            if raw_line.starts_with("<h") {
+                update_reference_trail(&mut trail, raw_line);
+                reference = hebrew_query::strip_html_for_indexing(&trail.join(", "));
+            }
+            writer.add_document(doc!(
+                title_f        => title.as_str(),
+                reference_f    => reference.as_str(),
+                text_f         => hebrew_query::normalize_text_for_indexing(raw_line),
+                id_f           => id_base + ordinal + 1,
+                segment_f      => segment as u64,
+                is_pdf_f       => false,
+                file_path_f    => file_path.as_str(),
+                topics_f       => topics_facet.clone(),
+                content_hash_f => content_hash
+            ))?;
+            ordinal += 1;
+        }
+        Ok(ordinal as u32)
+    }
+
     /// Delete then re-insert a single document by id. Does not commit.
     pub fn upsert_document(
         &mut self,
@@ -799,6 +986,31 @@ impl SearchEngine {
         let id_f = self.schema.get_field("id").unwrap();
         self.writer_mut()?
             .delete_term(Term::from_field_u64(id_f, id));
+        Ok(())
+    }
+
+    /// Delete every document of one book, addressed by its `filePath` value —
+    /// the stable book key the app stamps on all of a book's documents at
+    /// indexing time. `filePath` is a raw STRING field, so this is a single
+    /// exact `delete_term` and cannot touch other books (unlike
+    /// [`Self::remove_documents_by_title`], which matches any book sharing the
+    /// title). Does not commit.
+    pub fn delete_documents_by_file_path(&mut self, file_path: &str) -> Result<()> {
+        let file_path_f = self.schema.get_field("filePath")?;
+        self.writer_mut()?
+            .delete_term(Term::from_field_text(file_path_f, file_path));
+        Ok(())
+    }
+
+    /// Batch form of [`Self::delete_documents_by_file_path`] — one FFI call
+    /// for e.g. removing a whole custom folder of personal books. Does not
+    /// commit.
+    pub fn delete_documents_by_file_paths(&mut self, file_paths: Vec<String>) -> Result<()> {
+        let file_path_f = self.schema.get_field("filePath")?;
+        let writer = self.writer_mut()?;
+        for path in file_paths {
+            writer.delete_term(Term::from_field_text(file_path_f, &path));
+        }
         Ok(())
     }
 
@@ -1175,6 +1387,36 @@ impl SearchEngine {
         Self::surface_stream_error(&sink, result)
     }
 
+    /// Like [`Self::search_exact_stream`] but the first event also carries
+    /// the total hit count and per-book counts from the same index pass —
+    /// replacing the separate `count_exact` + `count_by_book_exact` calls a
+    /// search screen would otherwise issue for the same query.
+    pub fn search_exact_stream_with_counts(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        order: ResultsOrder,
+        chunk_size: u32,
+        sink: StreamSink<SearchStreamUpdate>,
+    ) -> Result<()> {
+        let result = (|| {
+            let q = self.build_exact_query(&query, &facets)?;
+            self.run_search_stream_with_counts(
+                q,
+                |_| Ok(None),
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
+    }
+
     pub fn count_exact(&self, query: String, facets: Vec<String>) -> Result<u32> {
         let q = self.build_exact_query(&query, &facets)?;
         self.run_count(q)
@@ -1285,6 +1527,48 @@ impl SearchEngine {
                 facets,
             )?;
             self.run_search_stream(
+                q,
+                |s| self.advanced_highlight_query(s, &regex_terms),
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
+    }
+
+    /// Like [`Self::search_advanced_stream`] but the first event also carries
+    /// the total hit count and per-book counts from the same index pass —
+    /// replacing the separate `count_advanced` + `count_by_book_advanced`
+    /// calls a search screen would otherwise issue for the same query.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_advanced_stream_with_counts(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        order: ResultsOrder,
+        chunk_size: u32,
+        sink: StreamSink<SearchStreamUpdate>,
+    ) -> Result<()> {
+        let result = (|| {
+            let (q, regex_terms) = self.build_advanced_query(
+                &query,
+                distance,
+                &custom_spacing,
+                &alternative_words,
+                &search_options,
+                facets,
+            )?;
+            self.run_search_stream_with_counts(
                 q,
                 |s| self.advanced_highlight_query(s, &regex_terms),
                 limit,
@@ -1429,6 +1713,44 @@ impl SearchEngine {
             let rank = matches!(order, ResultsOrder::Relevance);
             let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
             self.run_search_stream(
+                q,
+                |s| {
+                    Ok(self
+                        .build_fuzzy_highlight(s, &token_texts, max_distance)
+                        .ok())
+                },
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
+    }
+
+    /// Like [`Self::search_fuzzy_stream`] but the first event also carries
+    /// the total hit count and per-book counts from the same index pass —
+    /// replacing the separate `count_fuzzy` + `count_by_book_fuzzy` calls a
+    /// search screen would otherwise issue for the same query.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_fuzzy_stream_with_counts(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        max_distance: u8,
+        order: ResultsOrder,
+        chunk_size: u32,
+        sink: StreamSink<SearchStreamUpdate>,
+    ) -> Result<()> {
+        let result = (|| {
+            let token_texts = self.index_token_texts(&query)?;
+            let rank = matches!(order, ResultsOrder::Relevance);
+            let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+            self.run_search_stream_with_counts(
                 q,
                 |s| {
                     Ok(self
@@ -1627,6 +1949,21 @@ impl SearchEngine {
         text_field: Field,
         max_expansions: u32,
     ) -> Result<Box<dyn Query>> {
+        let searcher = self.index_reader.searcher();
+        // The materialization below (per-branch DFA compile + one FST scan
+        // per branch per segment) is the expensive part of a search, and one
+        // user search repeats it verbatim across stream/count/count-by-book/
+        // facet/pagination calls — serve those from the cache. The searcher
+        // generation in the key invalidates entries on reader reload.
+        let cache_key = TermCacheKey {
+            generation: searcher.generation().generation_id(),
+            branches: branches.to_vec(),
+            max_expansions,
+        };
+        if let Some(terms) = self.term_cache.lock().unwrap().get(&cache_key) {
+            return Ok(Box::new(TermSetQuery::new(terms.iter().cloned())));
+        }
+
         let regexes: Vec<tantivy_fst::Regex> = branches
             .iter()
             .map(|branch| {
@@ -1646,7 +1983,6 @@ impl SearchEngine {
                 })
             })
             .collect::<Result<_>>()?;
-        let searcher = self.index_reader.searcher();
         let mut matched: HashSet<String> = HashSet::new();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
@@ -1667,11 +2003,17 @@ impl SearchEngine {
                 }
             }
         }
-        let terms: Vec<Term> = matched
-            .into_iter()
-            .map(|t| Term::from_field_text(text_field, &t))
-            .collect();
-        Ok(Box::new(TermSetQuery::new(terms)))
+        let terms: Arc<Vec<Term>> = Arc::new(
+            matched
+                .into_iter()
+                .map(|t| Term::from_field_text(text_field, &t))
+                .collect(),
+        );
+        self.term_cache
+            .lock()
+            .unwrap()
+            .put(cache_key, terms.clone());
+        Ok(Box::new(TermSetQuery::new(terms.iter().cloned())))
     }
 
     /// Tokenizes `text` with the same `"hebrew"` analyzer the `text` field is
@@ -2176,8 +2518,8 @@ impl SearchEngine {
     /// sees 0 results and no failure. This was the silent-failure half of the
     /// state-limit bug, and relaxing budgets makes `max_expansions` overflow
     /// (which must stay an error) more reachable, so it has to be visible.
-    fn surface_stream_error(
-        sink: &StreamSink<Vec<SearchResult>>,
+    fn surface_stream_error<T: crate::frb_generated::SseEncode>(
+        sink: &StreamSink<T>,
         result: Result<()>,
     ) -> Result<()> {
         if let Err(err) = result {
@@ -2222,6 +2564,95 @@ impl SearchEngine {
             )?;
             // If the Dart side cancelled the stream, stop early.
             if sink.add(results).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Combined-stream executor: ONE `searcher.search` pass evaluates the
+    /// query with a tuple collector — ranked page + total count + per-book
+    /// counts — then streams snippet chunks like [`Self::run_search_stream`].
+    /// The counts go out as the first event so the UI can show totals and the
+    /// facet tree before the first snippet chunk is even built.
+    #[allow(clippy::too_many_arguments)]
+    fn run_search_stream_with_counts<F>(
+        &self,
+        query: Box<dyn Query>,
+        make_highlight: F,
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+        hl: &HighlightConfig,
+        chunk_size: u32,
+        sink: &StreamSink<SearchStreamUpdate>,
+    ) -> Result<()>
+    where
+        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+    {
+        let searcher = self.index_reader.searcher();
+        let chunk_size = (chunk_size.max(1)) as usize;
+
+        let (addresses, total_count, book_counts): (Vec<DocAddress>, u32, HashMap<String, u32>) =
+            match order {
+                ResultsOrder::Catalogue => {
+                    let top_collector = TopDocs::with_limit(limit as usize)
+                        .and_offset(offset as usize)
+                        .order_by_fast_field::<u64>("id", Order::Asc);
+                    let (top_docs, count, by_book) =
+                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
+                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
+                    (addrs, count as u32, by_book)
+                }
+                ResultsOrder::Relevance => {
+                    let top_collector = TopDocs::with_limit(limit as usize)
+                        .and_offset(offset as usize)
+                        .order_by_score();
+                    let (top_docs, count, by_book) =
+                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
+                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
+                    (addrs, count as u32, by_book)
+                }
+            };
+
+        // Counts first — the page addresses may be empty (offset past the
+        // end) while the totals are still meaningful.
+        if sink
+            .add(SearchStreamUpdate {
+                total_count: Some(total_count),
+                book_counts: Some(book_counts),
+                results: Vec::new(),
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        if addresses.is_empty() {
+            return Ok(());
+        }
+
+        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
+        // One generator for the whole stream: creating it resolves term
+        // doc-frequencies, which is too expensive to repeat per chunk.
+        let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
+        for chunk in addresses.chunks(chunk_size) {
+            let results = Self::build_results_with_generator(
+                &self.schema,
+                &searcher,
+                &snippet_generator,
+                chunk.to_vec(),
+                hl,
+            )?;
+            // If the Dart side cancelled the stream, stop early.
+            if sink
+                .add(SearchStreamUpdate {
+                    total_count: None,
+                    book_counts: None,
+                    results,
+                })
+                .is_err()
+            {
                 break;
             }
         }
@@ -2614,7 +3045,10 @@ impl SearchEngine {
             let mut stream = inverted.terms().search(automaton).into_stream()?;
             while stream.advance() {
                 if let Ok(term) = std::str::from_utf8(stream.key()) {
-                    if seen.insert(term.to_string()) {
+                    // contains-before-insert: a term already seen in an
+                    // earlier segment costs no allocation at all.
+                    if !seen.contains(term) {
+                        seen.insert(term.to_string());
                         matched.push(term.to_string());
                         if matched.len() >= cap {
                             break 'segments;
@@ -3144,6 +3578,72 @@ mod tests {
             .into_iter()
             .map(|result| result.id)
             .collect()
+    }
+
+    #[test]
+    fn add_text_book_builds_reference_trail_ids_and_fingerprint() {
+        let (mut engine, _dir) = make_engine();
+        let text = "<h1>ספר בראשית</h1>\n<h2>פרק א</h2>\nבְּרֵאשִׁית ברא אלהים\n<h2>פרק ב</h2>\nויכלו השמים";
+        let added = engine
+            .add_text_book(
+                "בראשית".to_string(),
+                "/root".to_string(),
+                "/books/bereshit.txt".to_string(),
+                5,
+                text.to_string(),
+            )
+            .unwrap();
+        assert_eq!(added, 5);
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact(
+                "ויכלו".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        let hit = &results[0];
+        // הכותרת החדשה של פרק ב החליפה את פרק א ב-trail (אותו prefix "<h2>").
+        assert_eq!(hit.reference, "ספר בראשית, פרק ב");
+        assert_eq!(hit.segment, 4);
+        // id = ((catalogue_order+1) << 32) + ordinal+1, כמו ב-Dart.
+        assert_eq!(hit.id, ((5u64 + 1) << 32) + 5);
+        assert_eq!(hit.title, "בראשית");
+        assert!(!hit.is_pdf);
+
+        // הטקסט המאונדקס מנורמל (הניקוד הוסר) והחיפוש מוצא אותו.
+        let nikud_hit = engine
+            .search_exact("בראשית ברא".to_string(), vec![], 10, 0, ResultsOrder::Catalogue)
+            .unwrap();
+        assert_eq!(nikud_hit.len(), 1);
+
+        // טביעת האצבע נחתמה על הספר, זהה לחישוב הציבורי על הטקסט הגולמי.
+        let fingerprints = engine.get_book_fingerprints().unwrap();
+        assert_eq!(
+            fingerprints.get("/books/bereshit.txt"),
+            Some(&compute_content_fingerprint(text.to_string()))
+        );
+    }
+
+    #[test]
+    fn add_text_book_empty_text_adds_nothing() {
+        let (mut engine, _dir) = make_engine();
+        let added = engine
+            .add_text_book(
+                "ריק".to_string(),
+                "/root".to_string(),
+                "/books/empty.txt".to_string(),
+                1,
+                String::new(),
+            )
+            .unwrap();
+        assert_eq!(added, 0);
+        engine.commit().unwrap();
+        assert_eq!(engine.get_document_count(), 0);
     }
 
     #[test]
@@ -3842,6 +4342,34 @@ mod tests {
         engine.remove_documents_by_title("ספר").unwrap();
         engine.commit().unwrap();
         assert!(engine.get_book_fingerprints().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_documents_by_file_path_removes_only_that_book() {
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(1, "שורה ראשונה", "uid:1", Some(3)),
+                fingerprint_doc(2, "שורה שנייה", "uid:1", Some(3)),
+                fingerprint_doc(3, "טקסט אחר", "id:2", Some(5)),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+
+        engine.delete_documents_by_file_path("uid:1").unwrap();
+        engine.commit().unwrap();
+
+        // כל מסמכי uid:1 נמחקו — הספר האחר (בעל אותה כותרת) לא נפגע.
+        let counts = engine.count_documents_by_file_path().unwrap();
+        assert_eq!(counts.get("uid:1"), None);
+        assert_eq!(counts.get("id:2"), Some(&1));
+
+        // הצורה הקבוצתית מוחקת כמה ספרים בקריאה אחת.
+        engine
+            .delete_documents_by_file_paths(vec!["id:2".to_string(), "uid:404".to_string()])
+            .unwrap();
+        engine.commit().unwrap();
+        assert!(engine.count_documents_by_file_path().unwrap().is_empty());
     }
 
     #[test]

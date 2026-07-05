@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `DfaWrapper`, `IndexMetadata`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `collect`, `for_segment`, `for_segment`, `harvest`, `harvest`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `single_regex_term_query`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `update_reference_trail`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `DfaWrapper`, `IndexMetadata`, `TermCacheKey`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -93,6 +93,26 @@ String normalizePdfTextForIndexing({required String input}) => RustLib
     .api
     .crateApiSearchEngineNormalizePdfTextForIndexing(input: input);
 
+/// Batch form of [`normalize_text_for_indexing`]: one FFI round-trip per line
+/// *batch* instead of one per line. The per-call bridge overhead (string
+/// encode/decode + call dispatch) dominates the normalisation itself for
+/// short lines, and a full library is millions of lines — the indexing
+/// isolate should always prefer this over the single-line form.
+List<String> normalizeTextsForIndexing({required List<String> inputs}) =>
+    RustLib.instance.api.crateApiSearchEngineNormalizeTextsForIndexing(
+      inputs: inputs,
+    );
+
+/// Batch form of [`normalize_pdf_text_for_indexing`] +
+/// [`is_probably_garbage_pdf_text`]: normalises each line and evaluates the
+/// garbage heuristic on the result — replacing the two-FFI-calls-per-line
+/// pattern with one call per batch.
+List<PdfIndexLine> normalizePdfTextsForIndexing({
+  required List<String> inputs,
+}) => RustLib.instance.api.crateApiSearchEngineNormalizePdfTextsForIndexing(
+  inputs: inputs,
+);
+
 /// Whether a normalised PDF page looks like garbage (OCR noise) and should be
 /// skipped. Single source of truth for the Dart
 /// `IndexingDocumentBuilder.isProbablyGarbagePdfText`.
@@ -110,9 +130,10 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
 /// Deliberately hashes the *raw* text (before normalization/tokenization) so
 /// the fingerprint does not shift when text-processing internals change.
-Future<BigInt> computeContentFingerprint({required String text}) => RustLib
-    .instance
-    .api
+///
+/// Pure string computation — safe to call synchronously (including from the
+/// indexing isolate).
+BigInt computeContentFingerprint({required String text}) => RustLib.instance.api
     .crateApiSearchEngineComputeContentFingerprint(text: text);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
@@ -134,6 +155,27 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Add many documents in a single FFI call. Does not commit.
   /// For initial bulk loads – no duplicate checking.
   Future<void> addDocumentsBatch({required List<DocumentInput> docs});
+
+  /// Indexes a whole text book in ONE FFI call. Does not commit.
+  ///
+  /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
+  /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
+  /// book's raw-text content fingerprint on every document, and adds one
+  /// document per line. Returns the number of documents added (0 for empty
+  /// text — the caller writes its empty-book marker in that case).
+  ///
+  /// This is the whole-book replacement for the app's per-line pipeline
+  /// (Dart isolate → per-batch FFI normalize → SendPort copy → batch add):
+  /// the raw text crosses the bridge exactly once and only a count comes
+  /// back. Document ids encode catalogue order exactly like the Dart
+  /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+  Future<int> addTextBook({
+    required String title,
+    required String topics,
+    required String filePath,
+    required int catalogueOrder,
+    required String text,
+  });
 
   /// Delete all documents. Does not commit.
   Future<void> clear();
@@ -203,6 +245,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Delete a document by its numeric id. Does not commit.
   Future<void> deleteDocumentById({required BigInt id});
+
+  /// Delete every document of one book, addressed by its `filePath` value —
+  /// the stable book key the app stamps on all of a book's documents at
+  /// indexing time. `filePath` is a raw STRING field, so this is a single
+  /// exact `delete_term` and cannot touch other books (unlike
+  /// [`Self::remove_documents_by_title`], which matches any book sharing the
+  /// title). Does not commit.
+  Future<void> deleteDocumentsByFilePath({required String filePath});
+
+  /// Batch form of [`Self::delete_documents_by_file_path`] — one FFI call
+  /// for e.g. removing a whole custom folder of personal books. Does not
+  /// commit.
+  Future<void> deleteDocumentsByFilePaths({required List<String> filePaths});
 
   /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
   /// paints the index terms within `max_distance` edits of each query token,
@@ -346,6 +401,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int chunkSize,
   });
 
+  /// Like [`Self::search_advanced_stream`] but the first event also carries
+  /// the total hit count and per-book counts from the same index pass —
+  /// replacing the separate `count_advanced` + `count_by_book_advanced`
+  /// calls a search screen would otherwise issue for the same query.
+  Stream<SearchStreamUpdate> searchAdvancedStreamWithCounts({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required ResultsOrder order,
+    required int chunkSize,
+  });
+
   /// Search and return total hit count alongside paged results in one call.
   /// Uses a tuple collector so Tantivy executes a single index pass.
   Future<SearchPageResult> searchAndCount({
@@ -405,6 +477,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int chunkSize,
   });
 
+  /// Like [`Self::search_exact_stream`] but the first event also carries
+  /// the total hit count and per-book counts from the same index pass —
+  /// replacing the separate `count_exact` + `count_by_book_exact` calls a
+  /// search screen would otherwise issue for the same query.
+  Stream<SearchStreamUpdate> searchExactStreamWithCounts({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required int chunkSize,
+  });
+
   Future<List<SearchResult>> searchFuzzy({
     required String query,
     required List<String> facets,
@@ -415,6 +500,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
   });
 
   Stream<List<SearchResult>> searchFuzzyStream({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int maxDistance,
+    required ResultsOrder order,
+    required int chunkSize,
+  });
+
+  /// Like [`Self::search_fuzzy_stream`] but the first event also carries
+  /// the total hit count and per-book counts from the same index pass —
+  /// replacing the separate `count_fuzzy` + `count_by_book_fuzzy` calls a
+  /// search screen would otherwise issue for the same query.
+  Stream<SearchStreamUpdate> searchFuzzyStreamWithCounts({
     required String query,
     required List<String> facets,
     required int limit,
@@ -665,6 +764,27 @@ class IndexCompatibility {
           reason == other.reason;
 }
 
+/// A PDF line prepared for indexing: the normalised text together with its
+/// garbage verdict, so the batch API answers both questions the indexing
+/// isolate asks per line in one round-trip.
+class PdfIndexLine {
+  final String text;
+  final bool isGarbage;
+
+  const PdfIndexLine({required this.text, required this.isGarbage});
+
+  @override
+  int get hashCode => text.hashCode ^ isGarbage.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PdfIndexLine &&
+          runtimeType == other.runtimeType &&
+          text == other.text &&
+          isGarbage == other.isGarbage;
+}
+
 enum ResultsOrder { catalogue, relevance }
 
 class SearchPageResult {
@@ -726,4 +846,42 @@ class SearchResult {
           segment == other.segment &&
           isPdf == other.isPdf &&
           filePath == other.filePath;
+}
+
+/// One event of a combined stream search (`search_*_stream_with_counts`).
+///
+/// The first event carries the counts computed in the *same* index pass as
+/// the ranked results (`total_count` + `book_counts`, with empty `results`);
+/// every following event is a snippet-built results chunk (`None` counts).
+/// One user search previously cost three full query executions — stream,
+/// total count, and count-by-book — this collapses them into one.
+class SearchStreamUpdate {
+  /// Full hit count of the query; `Some` only on the first event.
+  final int? totalCount;
+
+  /// Live-document count per distinct `filePath`; `Some` only on the first
+  /// event. Sums to `total_count`.
+  final Map<String, int>? bookCounts;
+
+  /// The results chunk (empty on the first, counts-bearing event).
+  final List<SearchResult> results;
+
+  const SearchStreamUpdate({
+    this.totalCount,
+    this.bookCounts,
+    required this.results,
+  });
+
+  @override
+  int get hashCode =>
+      totalCount.hashCode ^ bookCounts.hashCode ^ results.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SearchStreamUpdate &&
+          runtimeType == other.runtimeType &&
+          totalCount == other.totalCount &&
+          bookCounts == other.bookCounts &&
+          results == other.results;
 }
