@@ -80,18 +80,51 @@ const INSERTION_LETTERS: &[&str] = &[
 
 // ── Budget constants ───────────────────────────────────────────────────────
 
-/// Maximum DFA-pattern length per word. The tantivy-fst state cap (~1 000)
-/// grows roughly with pattern length; staying under this keeps compilation
-/// safe even when many morphological branches are joined.
+/// Char budget for a *joined* per-word pattern on the phrase path, where
+/// `RegexPhraseQuery` compiles each word's whole pattern as one DFA. It is a
+/// crude proxy for the tantivy-fst 1 000-state cap (chars ≠ states — heavily
+/// overlapping wildcard branches can fail far below this), kept as a cheap
+/// guard for the path that has no per-branch alternative yet.
 const MAX_PATTERN_CHARS: usize = 1_000;
 
-/// Variation cap when typo tolerance is active (substitution + deletion +
-/// insertion can produce many candidates; we keep the most useful ones).
+/// Phrase-path variation cap when typo tolerance is active (substitution +
+/// deletion + insertion can produce many candidates; we keep the most useful
+/// ones).
 const MAX_TYPO_VARIATIONS: usize = 48;
 
-/// Variation cap without typo tolerance (spelling/morphological combos are
-/// naturally smaller, so a tighter budget still covers them fully).
+/// Phrase-path variation cap without typo tolerance (spelling/morphological
+/// combos are naturally smaller, so a tighter budget still covers them fully).
 const MAX_NORMAL_VARIATIONS: usize = 20;
+
+/// Per-word branch budgets, chosen by query shape.
+///
+/// The phrase path compiles each word's joined pattern as a single DFA, so it
+/// needs both the char budget and tight variation caps. The single-word path
+/// compiles per branch — no joined DFA exists to protect — so the char budget
+/// drops entirely and the variation caps relax. They stay finite: each branch
+/// costs one term-dictionary scan per segment at collection time (an
+/// unproductive branch never trips `max_expansions` but still pays its scan),
+/// so the count cap remains the collection-cost guard.
+struct VariationBudget {
+    /// Branch-count cap when typo tolerance is active.
+    typo_variations: usize,
+    /// Branch-count cap without typo tolerance.
+    normal_variations: usize,
+    /// Char budget for the joined pattern; `None` when compiled per branch.
+    max_pattern_chars: Option<usize>,
+}
+
+const PHRASE_BUDGET: VariationBudget = VariationBudget {
+    typo_variations: MAX_TYPO_VARIATIONS,
+    normal_variations: MAX_NORMAL_VARIATIONS,
+    max_pattern_chars: Some(MAX_PATTERN_CHARS),
+};
+
+const SINGLE_WORD_BUDGET: VariationBudget = VariationBudget {
+    typo_variations: 128,
+    normal_variations: 64,
+    max_pattern_chars: None,
+};
 
 /// Cap on כתיב מלא/חסר branches folded into one pattern. The generator is
 /// 2^n in the count of optional ו/י letters; this keeps it polynomial.
@@ -336,11 +369,11 @@ impl WordFlags {
         }
     }
 
-    fn max_variations(&self) -> usize {
+    fn max_variations(&self, budget: &VariationBudget) -> usize {
         if self.typo {
-            MAX_TYPO_VARIATIONS
+            budget.typo_variations
         } else {
-            MAX_NORMAL_VARIATIONS
+            budget.normal_variations
         }
     }
 }
@@ -952,10 +985,17 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
 ///
 /// The result is either a plain escaped word, a single-branch pattern
 /// ([`WordPattern::Literal`]), or a structured [`WordPattern::Alternation`]
-/// whose branches the engine compiles individually. Length and count budgets
-/// keep the *joined* form — the one the phrase path compiles as a single
-/// DFA — within the tantivy-fst state limit.
-fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> WordPattern {
+/// whose branches the engine compiles individually. `budget` selects the
+/// caps: the phrase budget keeps the *joined* form (compiled as one DFA by
+/// `RegexPhraseQuery`) within the tantivy-fst state limit; the single-word
+/// budget has no char cap and looser variation caps because each branch is
+/// compiled on its own.
+fn build_word_regex(
+    word: &str,
+    flags: &WordFlags,
+    alternatives: &[String],
+    budget: &VariationBudget,
+) -> WordPattern {
     // The canonical word plus the normalized alternatives, in one filtered
     // pass (alternatives may normalize to empty; the query word never does, but
     // filtering it too keeps the pass total).
@@ -967,7 +1007,7 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> W
         return WordPattern::Literal(escape_regex(word));
     }
 
-    let max = flags.max_variations();
+    let max = flags.max_variations(budget);
     let mut branches: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -975,7 +1015,7 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> W
         // Typo tolerance: expand the candidate to edit-distance-1 variants
         // before feeding each variant into the pattern builder.
         let roots: Vec<String> = if flags.typo {
-            generate_typo_variations(candidate, MAX_TYPO_VARIATIONS)
+            generate_typo_variations(candidate, budget.typo_variations)
         } else {
             vec![candidate.clone()]
         };
@@ -992,9 +1032,9 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> W
         }
     }
 
-    // Apply length budget: keep branches while the cumulative character count
-    // stays under MAX_PATTERN_CHARS (at least one branch is always kept so the
-    // term is never empty).
+    // Apply the length budget when one exists (phrase path): keep branches
+    // while the cumulative character count stays under it (at least one
+    // branch is always kept so the term is never empty).
     let mut kept: Vec<String> = Vec::new();
     let mut total = 0usize;
     for b in branches {
@@ -1002,8 +1042,10 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> W
             continue;
         }
         let len = b.chars().count();
-        if !kept.is_empty() && total + len > MAX_PATTERN_CHARS {
-            break;
+        if let Some(max_chars) = budget.max_pattern_chars {
+            if !kept.is_empty() && total + len > max_chars {
+                break;
+            }
         }
         total += len;
         kept.push(b);
@@ -1012,18 +1054,21 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> W
     if kept.is_empty() {
         return WordPattern::Literal(escape_regex(word));
     }
-    // Final safety net: if the joined form — the one the phrase path compiles
-    // as a single DFA — still exceeds the budget (a single oversized branch,
-    // or branch totals that pass but overflow once `(?:`/`)`/pipes are
-    // added), fall back to a plain literal (always compiles).
-    let joined_chars = kept.iter().map(|b| b.chars().count()).sum::<usize>()
-        + if kept.len() == 1 {
-            0
-        } else {
-            kept.len() - 1 + "(?:)".len()
-        };
-    if joined_chars > MAX_PATTERN_CHARS {
-        return WordPattern::Literal(escape_regex(word));
+    // Final safety net (phrase path only): if the joined form — the one
+    // `RegexPhraseQuery` compiles as a single DFA — still exceeds the budget
+    // (a single oversized branch, or branch totals that pass but overflow
+    // once `(?:`/`)`/pipes are added), fall back to a plain literal (always
+    // compiles).
+    if let Some(max_chars) = budget.max_pattern_chars {
+        let joined_chars = kept.iter().map(|b| b.chars().count()).sum::<usize>()
+            + if kept.len() == 1 {
+                0
+            } else {
+                kept.len() - 1 + "(?:)".len()
+            };
+        if joined_chars > max_chars {
+            return WordPattern::Literal(escape_regex(word));
+        }
     }
     if kept.len() == 1 {
         WordPattern::Literal(kept.into_iter().next().unwrap())
@@ -1125,6 +1170,15 @@ pub fn prepare_advanced_query(
     }
 
     // ── Advanced path ─────────────────────────────────────────────────────
+    // A single word is executed per branch (TermSetQuery path) and gets the
+    // relaxed budget; a phrase compiles each word's joined pattern as one DFA
+    // and must keep the tight caps (R2 — relaxing them here would make the
+    // same word work alone but crash inside a phrase).
+    let budget = if words.len() == 1 {
+        &SINGLE_WORD_BUDGET
+    } else {
+        &PHRASE_BUDGET
+    };
     let regex_terms: Vec<WordPattern> = words
         .iter()
         .enumerate()
@@ -1134,7 +1188,7 @@ pub fn prepare_advanced_query(
                 .get(&(i as u32))
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            build_word_regex(word, &flags, alts)
+            build_word_regex(word, &flags, alts, budget)
         })
         .collect();
 
@@ -1159,7 +1213,12 @@ pub fn prepare_advanced_query(
 // ── max_expansions heuristic ───────────────────────────────────────────────
 
 /// Computes the `max_expansions` limit for `RegexPhraseQuery` based on the
-/// active search options. Mirrors the Dart `calculateMaxExpansions` rules.
+/// active search options. Mirrors the Dart `calculateMaxExpansions` rules,
+/// with one deviation: a single word combining typo tolerance with a
+/// morphological/partial option uses the (much higher) morphological
+/// ceilings. Its relaxed branch set legitimately matches many terms, and the
+/// expansion guard errors on overflow — a 50-term ceiling would turn the
+/// newly-working query shape into an error on any real index.
 fn compute_max_expansions(
     words: &[String],
     search_options: &HashMap<String, HashMap<String, bool>>,
@@ -1168,8 +1227,8 @@ fn compute_max_expansions(
         .values()
         .any(|m| m.get(OPT_TYPO).copied().unwrap_or(false));
 
-    if has_typo {
-        return if words.len() > 1 { 100 } else { 50 };
+    if has_typo && words.len() > 1 {
+        return 100;
     }
 
     // Check whether any word uses a morphological or partial option, and find
@@ -1207,7 +1266,12 @@ fn compute_max_expansions(
         };
     }
 
-    if words.len() > 1 {
+    if has_typo {
+        // Single word (multi-word typo returned above), typo without any
+        // morphological option: the branch set is edit-distance-1 literals,
+        // which match few terms each.
+        50
+    } else if words.len() > 1 {
         100
     } else {
         10
@@ -1584,7 +1648,7 @@ mod tests {
             gram_suffix: true,
             ..Default::default()
         };
-        let result = build_word_regex("ספר", &flags, &[]).joined();
+        let result = build_word_regex("ספר", &flags, &[], &PHRASE_BUDGET).joined();
         assert!(!result.is_empty());
         assert!(
             result.chars().count() <= MAX_PATTERN_CHARS,
@@ -1595,12 +1659,69 @@ mod tests {
 
     #[test]
     fn word_regex_includes_alternatives() {
-        let result = build_word_regex("שר", &WordFlags::default(), &["מלך".to_string()]);
+        let result = build_word_regex(
+            "שר",
+            &WordFlags::default(),
+            &["מלך".to_string()],
+            &PHRASE_BUDGET,
+        );
         assert_eq!(
             result,
             WordPattern::Alternation(vec!["שר".to_string(), "מלך".to_string()])
         );
         assert_eq!(result.joined(), "(?:שר|מלך)");
+    }
+
+    #[test]
+    fn single_word_budget_relaxes_branch_count() {
+        // With the phrase budget, typo+partial caps at 48 branches; the
+        // single-word budget must go beyond it.
+        let flags = WordFlags {
+            typo: true,
+            partial: true,
+            ..Default::default()
+        };
+        let phrase = build_word_regex("משה", &flags, &[], &PHRASE_BUDGET);
+        let single = build_word_regex("משה", &flags, &[], &SINGLE_WORD_BUDGET);
+        assert_eq!(phrase.branches().len(), MAX_TYPO_VARIATIONS);
+        assert!(
+            single.branches().len() > MAX_TYPO_VARIATIONS,
+            "single-word budget produced only {} branches",
+            single.branches().len()
+        );
+    }
+
+    #[test]
+    fn single_word_branches_each_stay_under_dfa_limit() {
+        // The char budget is gone on the single-word path; the invariant that
+        // replaces it is that every branch compiles as its own DFA. This is
+        // the guard MAX_PATTERN_CHARS pretended to be (it counts chars, not
+        // states — the joined 48-branch pattern passes it at 806 chars and
+        // still fails to compile).
+        let flags = WordFlags {
+            typo: true,
+            partial: true,
+            ..Default::default()
+        };
+        let pattern = build_word_regex("משה", &flags, &[], &SINGLE_WORD_BUDGET);
+        for branch in pattern.branches() {
+            assert!(
+                tantivy_fst::Regex::new(branch).is_ok(),
+                "branch failed to compile: {branch}"
+            );
+        }
+    }
+
+    #[test]
+    fn phrase_words_keep_tight_caps() {
+        // R2: a multi-word query compiles each word's joined pattern as one
+        // DFA inside RegexPhraseQuery — the relaxed single-word budget must
+        // not leak there.
+        let so = make_options(&[("משה_0", &[(OPT_TYPO, true), (OPT_PARTIAL, true)])]);
+        let q = prepare_advanced_query("משה עולם", 0, &HashMap::new(), &HashMap::new(), &so);
+        assert_eq!(q.regex_terms.len(), 2);
+        assert!(q.regex_terms[0].branches().len() <= MAX_TYPO_VARIATIONS);
+        assert!(q.regex_terms[0].joined().chars().count() <= MAX_PATTERN_CHARS);
     }
 
     // ── WordPattern::parse / split_top_level_alternation ────────────────
@@ -1689,7 +1810,7 @@ mod tests {
             partial: true,
             ..Default::default()
         };
-        let pattern = build_word_regex("משה", &flags, &[]);
+        let pattern = build_word_regex("משה", &flags, &[], &SINGLE_WORD_BUDGET);
         assert!(matches!(pattern, WordPattern::Alternation(_)));
         assert_eq!(WordPattern::parse(&pattern.joined()), pattern);
     }
@@ -1829,6 +1950,19 @@ mod tests {
         assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 50);
         assert_eq!(
             compute_max_expansions(&["ספר".to_string(), "תורה".to_string()], &so),
+            100
+        );
+    }
+
+    #[test]
+    fn max_expansions_single_word_typo_with_morph_uses_morph_ceiling() {
+        // typo+partial on a single word runs on the relaxed per-branch path
+        // and legitimately matches many terms; the 50-term typo ceiling would
+        // turn it into an overflow error (R4). Multi-word stays at 100.
+        let so = make_options(&[("משה_0", &[(OPT_TYPO, true), (OPT_PARTIAL, true)])]);
+        assert_eq!(compute_max_expansions(&["משה".to_string()], &so), 4_000);
+        assert_eq!(
+            compute_max_expansions(&["משה".to_string(), "עם".to_string()], &so),
             100
         );
     }
