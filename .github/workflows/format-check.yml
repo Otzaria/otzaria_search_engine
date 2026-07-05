@@ -1,0 +1,74 @@
+name: Format Check
+
+# רץ אחרי כל קומיט (push לכל ענף) וגם ב-Pull Requests.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: format-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dart-format:
+    name: Dart format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      # pub get חיוני: סגנון ה-formatter (short/tall) נקבע לפי גרסת השפה
+      # שנפתרת מ-pubspec/.dart_tool. בלי resolution ה-formatter נופל לברירת
+      # מחדל אחרת מהמקומי, ובדיקת הפורמט נכשלת על קבצים תקינים (למשל example,
+      # שמוגדר sdk >=3.4 ולכן בסגנון short).
+      - name: flutter pub get (root)
+        run: flutter pub get
+
+      - name: flutter pub get (example)
+        working-directory: example
+        run: flutter pub get
+
+      # בודק רק את קוד החבילה (לא cargokit ה-vendored).
+      - name: dart format --set-exit-if-changed
+        run: dart format --output=none --set-exit-if-changed lib example tool
+
+  line-endings:
+    name: Line endings (no CRLF)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # נכשל אם קובץ טקסט מנוהל מכיל CRLF — בדיוק הבעיה שפרסום ממחשב Windows יוצר.
+      # *.bat / *.cmd מוחרגים כי הם חייבים CRLF (ראו .gitattributes).
+      - name: Check for CRLF in tracked text files
+        run: |
+          bad=$(git ls-files -- . ':!*.bat' ':!*.cmd' ':!*.png' ':!*.jar' \
+            | while read -r f; do
+                if grep -lIU "$(printf '\r')" "$f" >/dev/null 2>&1; then echo "$f"; fi
+              done)
+          if [ -n "$bad" ]; then
+            echo "::error::הקבצים הבאים מכילים CRLF (יש להמיר ל-LF):"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK — כל הקבצים ב-LF."
+
+  rust-format:
+    name: Rust format (rustfmt)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check

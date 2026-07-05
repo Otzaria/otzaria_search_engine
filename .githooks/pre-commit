@@ -1,0 +1,53 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# pre-commit: מפרמט ומנרמל שורות קצה אוטומטית בקבצים מבוימים (staged).
+#
+#   * Dart  -> dart format  + המרת CRLF->LF
+#   * Rust  -> rustfmt       (edition 2021) + המרת CRLF->LF
+#
+# למה צריך גם המרת CRLF->LF: dart/rustfmt משמרים את סוג שורת הקצה של הקובץ,
+# ו-`flutter pub publish` אורז את קבצי תיקיית העבודה — כך ש-CRLF ממחשב Windows
+# היה מתפרסם ל-pub.dev ושובר את בניית macOS/Linux/Android (cargokit).
+#
+# רץ על כל מחשב (Windows / macOS / Linux) דרך core.hooksPath.
+# הפעלה חד-פעמית בכל מחשב:  git config core.hooksPath .githooks
+# (או הריצו: dart run tool/install_hooks.dart)
+# ---------------------------------------------------------------------------
+set -e
+
+# קבצים מבוימים בלבד (Added/Copied/Modified/Renamed), לא מחוקים.
+staged() {
+  git diff --cached --name-only --diff-filter=ACMR -z -- "$@"
+}
+
+# המרת CRLF->LF בקובץ במקום (portable: tr קיים גם ב-Git Bash על Windows).
+strip_cr() {
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    LC_ALL=C tr -d '\r' < "$f" > "$f.lf.tmp" && mv "$f.lf.tmp" "$f"
+  done
+}
+
+# --- Dart ------------------------------------------------------------------
+if command -v dart >/dev/null 2>&1; then
+  dart_files=$(staged '*.dart' | tr '\0' '\n' | grep -v -E '\.(g|freezed|gr)\.dart$' || true)
+  if [ -n "$dart_files" ]; then
+    echo "pre-commit: dart format"
+    echo "$dart_files" | tr '\n' '\0' | xargs -0 dart format
+    echo "$dart_files" | strip_cr
+    echo "$dart_files" | tr '\n' '\0' | xargs -0 git add
+  fi
+fi
+
+# --- Rust ------------------------------------------------------------------
+if command -v rustfmt >/dev/null 2>&1; then
+  rust_files=$(staged '*.rs' | tr '\0' '\n' || true)
+  if [ -n "$rust_files" ]; then
+    echo "pre-commit: rustfmt"
+    echo "$rust_files" | tr '\n' '\0' | xargs -0 rustfmt --edition 2021
+    echo "$rust_files" | strip_cr
+    echo "$rust_files" | tr '\n' '\0' | xargs -0 git add
+  fi
+fi
+
+exit 0
