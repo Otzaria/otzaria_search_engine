@@ -2,7 +2,7 @@ use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
-use log::{debug, warn};
+use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -1441,9 +1441,26 @@ impl SearchEngine {
         Ok(())
     }
 
+    /// String-API entry: terms arriving as raw regex strings (the public
+    /// `search`/`count` family) are split on their top-level alternation so a
+    /// single-word query compiles per branch, exactly like the advanced path.
     fn build_query(
         &self,
         regex_terms: Vec<String>,
+        facets: Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<Box<dyn Query>> {
+        let patterns = regex_terms
+            .iter()
+            .map(|t| hebrew_query::WordPattern::parse(t))
+            .collect();
+        self.build_query_from_patterns(patterns, facets, slop, max_expansions)
+    }
+
+    fn build_query_from_patterns(
+        &self,
+        regex_terms: Vec<hebrew_query::WordPattern>,
         facets: Vec<String>,
         slop: u32,
         max_expansions: u32,
@@ -1454,9 +1471,20 @@ impl SearchEngine {
 
         let main_query: Box<dyn Query> = match regex_terms.len() {
             0 => Box::new(EmptyQuery),
-            1 => self.single_regex_term_query(&regex_terms[0], text_field, max_expansions)?,
+            1 => {
+                self.single_regex_term_query(regex_terms[0].branches(), text_field, max_expansions)?
+            }
             _ => {
-                let mut phrase_query = RegexPhraseQuery::new(text_field, regex_terms);
+                // The phrase path needs one pattern string per word position:
+                // `RegexPhraseQuery` compiles each as a single DFA (branch
+                // splitting cannot help here — phrase matching intersects
+                // positional postings, so the per-word budget caps in
+                // `hebrew_query` remain load-bearing for this path).
+                let joined: Vec<String> = regex_terms
+                    .iter()
+                    .map(hebrew_query::WordPattern::joined)
+                    .collect();
+                let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
                 phrase_query.set_slop(slop);
                 phrase_query.set_max_expansions(max_expansions);
                 Box::new(phrase_query)
@@ -1484,27 +1512,52 @@ impl SearchEngine {
     /// A bare `RegexQuery` would enumerate the term dictionary without any
     /// bound, so a broad pattern (e.g. a 1-char word with prefix+suffix
     /// options) could scan a huge slice of the index unchecked.
+    ///
+    /// Each alternation branch is compiled as its own DFA: a combined
+    /// `(?:b1|…|bN)` of wildcard-wrapped branches overlaps so heavily that it
+    /// blows the tantivy-fst 1 000-state cap (48 typo+partial branches — 806
+    /// chars — already fail) while every branch alone is tiny. All branches
+    /// stream into one shared `HashSet` under one global `max_expansions`, so
+    /// the resulting `TermSetQuery` is bit-identical to what the whole
+    /// pattern would have produced.
     fn single_regex_term_query(
         &self,
-        pattern: &str,
+        branches: &[String],
         text_field: Field,
         max_expansions: u32,
     ) -> Result<Box<dyn Query>> {
-        let regex = tantivy_fst::Regex::new(pattern)
-            .map_err(|e| anyhow::anyhow!("invalid regex {pattern:?}: {e}"))?;
+        let regexes: Vec<tantivy_fst::Regex> = branches
+            .iter()
+            .map(|branch| {
+                tantivy_fst::Regex::new(branch).map_err(|e| {
+                    // Surface the failing branch loudly: the historical
+                    // failure mode here was a compile error silently becoming
+                    // "0 results" in the UI.
+                    error!(
+                        "regex branch compilation failed ({} chars): {e}. Branch prefix: {}",
+                        branch.chars().count(),
+                        branch.chars().take(80).collect::<String>(),
+                    );
+                    anyhow::anyhow!("invalid regex branch ({} chars): {e}", branch.chars().count())
+                })
+            })
+            .collect::<Result<_>>()?;
         let searcher = self.index_reader.searcher();
         let mut matched: HashSet<String> = HashSet::new();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
-            let mut stream = inverted.terms().search(&regex).into_stream()?;
-            while stream.advance() {
-                if let Ok(term) = std::str::from_utf8(stream.key()) {
-                    // contains-before-insert avoids re-allocating the term
-                    // string when it was already seen in an earlier segment.
-                    if !matched.contains(term) {
-                        matched.insert(term.to_string());
-                        if matched.len() > max_expansions as usize {
-                            anyhow::bail!("query exceeded max expansions {max_expansions}");
+            for regex in &regexes {
+                let mut stream = inverted.terms().search(regex).into_stream()?;
+                while stream.advance() {
+                    if let Ok(term) = std::str::from_utf8(stream.key()) {
+                        // contains-before-insert avoids re-allocating the term
+                        // string when it was already seen in an earlier
+                        // segment or matched by an earlier branch.
+                        if !matched.contains(term) {
+                            matched.insert(term.to_string());
+                            if matched.len() > max_expansions as usize {
+                                anyhow::bail!("query exceeded max expansions {max_expansions}");
+                            }
                         }
                     }
                 }
@@ -1887,8 +1940,15 @@ impl SearchEngine {
             alternative_words,
             search_options,
         );
-        let regex_terms = prepared.regex_terms.clone();
-        let query = self.build_query(
+        // The highlight builders want one pattern string per word; the query
+        // builder gets the structured patterns so a single word compiles per
+        // branch instead of as one state-limited DFA.
+        let regex_terms: Vec<String> = prepared
+            .regex_terms
+            .iter()
+            .map(hebrew_query::WordPattern::joined)
+            .collect();
+        let query = self.build_query_from_patterns(
             prepared.regex_terms,
             facets,
             prepared.slop,
@@ -2716,6 +2776,160 @@ mod tests {
             .into_iter()
             .map(|result| result.id)
             .collect()
+    }
+
+    // ── Single-word alternation splitting (per-branch DFA) ───────────────
+
+    /// The exact pattern the generator builds for `משה` with "חלק ממילה" +
+    /// "שגיאות כתיב": 48 wildcard-wrapped branches, 806 chars. As one regex it
+    /// exceeds the tantivy-fst 1 000-state DFA cap and fails to compile; each
+    /// branch alone is tiny.
+    const BOTH_OPTIONS_PATTERN: &str = "(.{0,3}משה.{0,3}|.{0,3}מסה.{0,3}|.{0,2}משׁה.{0,2}|.{0,2}משׂה.{0,2}|.{0,3}משא.{0,3}|.{0,3}משע.{0,3}|.{0,3}משח.{0,3}|.{0,3}שמה.{0,3}|.{0,3}מהש.{0,3}|.{0,3}שה.{0,3}|.{0,3}מה.{0,3}|.{0,3}מש.{0,3}|.{0,2}ומשה.{0,2}|.{0,2}ימשה.{0,2}|.{0,2}אמשה.{0,2}|.{0,2}המשה.{0,2}|.{0,2}פמשה.{0,2}|.{0,2}למשה.{0,2}|.{0,2}ממשה.{0,2}|.{0,2}נמשה.{0,2}|.{0,2}במשה.{0,2}|.{0,2}כמשה.{0,2}|.{0,2}שמשה.{0,2}|.{0,2}תמשה.{0,2}|.{0,2}רמשה.{0,2}|.{0,2}משהו.{0,2}|.{0,2}משהי.{0,2}|.{0,2}משהא.{0,2}|.{0,2}משהה.{0,2}|.{0,2}משהפ.{0,2}|.{0,2}משהל.{0,2}|.{0,2}משהמ.{0,2}|.{0,2}משהנ.{0,2}|.{0,2}משהב.{0,2}|.{0,2}משהכ.{0,2}|.{0,2}משהש.{0,2}|.{0,2}משהת.{0,2}|.{0,2}משהר.{0,2}|.{0,2}מושה.{0,2}|.{0,2}מישה.{0,2}|.{0,2}מאשה.{0,2}|.{0,2}מהשה.{0,2}|.{0,2}מפשה.{0,2}|.{0,2}מלשה.{0,2}|.{0,2}מנשה.{0,2}|.{0,2}מבשה.{0,2}|.{0,2}מכשה.{0,2}|.{0,2}מששה.{0,2})";
+
+    #[test]
+    fn whole_pattern_exceeds_state_limit_but_split_succeeds() {
+        // Baseline for the bug this feature fixes: the combined pattern
+        // genuinely cannot compile as a single DFA...
+        assert!(
+            tantivy_fst::Regex::new(BOTH_OPTIONS_PATTERN).is_err(),
+            "combined 48-branch pattern unexpectedly compiled — did the state \
+             limit change?"
+        );
+        // ...yet the split path answers the query.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר משה אל העם", "/books/a.txt");
+        add(&mut engine, 2, "ספר בראשית", "/books/b.txt");
+        engine.commit().unwrap();
+        assert_eq!(search_ids(&mut engine, BOTH_OPTIONS_PATTERN), vec![1]);
+    }
+
+    #[test]
+    fn both_options_pattern_now_returns_results() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר משה אל העם", "/books/a.txt");
+        add(&mut engine, 2, "ספר בראשית", "/books/b.txt");
+        engine.commit().unwrap();
+
+        // The exact pattern built for `משה` with "חלק ממילה" + "שגיאות כתיב".
+        // As a single regex it exceeds the 1000-state limit and fails; the
+        // per-branch split must now find the document.
+        assert_eq!(search_ids(&mut engine, BOTH_OPTIONS_PATTERN), vec![1]);
+    }
+
+    #[test]
+    fn single_alternation_matches_same_as_combined_regex() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "משה", "/books/a.txt");
+        add(&mut engine, 2, "מסה", "/books/b.txt");
+        add(&mut engine, 3, "בראשית", "/books/c.txt");
+        engine.commit().unwrap();
+
+        // OR of two branches — finds both documents, not the third.
+        let mut ids = search_ids(&mut engine, "(משה|מסה)");
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn split_matching_parity_with_whole_pattern() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "משה", "/books/a.txt");
+        add(&mut engine, 2, "מסה", "/books/b.txt");
+        add(&mut engine, 3, "בראשית", "/books/c.txt");
+        engine.commit().unwrap();
+
+        // Capturing and non-capturing wrappers split identically (R1).
+        let mut capturing = search_ids(&mut engine, "(משה|מסה)");
+        capturing.sort_unstable();
+        let mut non_capturing = search_ids(&mut engine, "(?:משה|מסה)");
+        non_capturing.sort_unstable();
+        assert_eq!(capturing, vec![1, 2]);
+        assert_eq!(capturing, non_capturing);
+
+        // A leading empty branch (all-optional-letter word, R7) contributes
+        // nothing: no indexed term is empty.
+        assert_eq!(search_ids(&mut engine, "(?:|משה)"), vec![1]);
+
+        // A nested (non-top-level) alternation still compiles whole and
+        // matches the same set.
+        let mut nested = search_ids(&mut engine, ".{0,1}(משה|מסה).{0,1}");
+        nested.sort_unstable();
+        assert_eq!(nested, vec![1, 2]);
+    }
+
+    #[test]
+    fn char_class_and_escape_branches_match_end_to_end() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספרים", "/books/a.txt");
+        add(&mut engine, 2, "אב", "/books/b.txt");
+        add(&mut engine, 3, "shalom", "/books/c.txt");
+        engine.commit().unwrap();
+
+        // Top-level alternation between two groups, with `|` inside a char
+        // class in the second branch — the class pipe must not be split on.
+        let mut ids = search_ids(
+            &mut engine,
+            "([א-ת]{2,4}(ים|ות|ה)?)|([א-ת]+[יו][ם|ן])",
+        );
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2]);
+
+        // A bare char class containing `|` is a single literal pattern.
+        assert_eq!(search_ids(&mut engine, "[ם|ן]"), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn global_max_expansions_enforced_across_all_branches() {
+        let (mut engine, _dir) = make_engine();
+        // Terms matched by *different* branches, so only the shared union can
+        // cross the cap — no single branch does.
+        add(&mut engine, 1, "אאא", "/books/a.txt");
+        add(&mut engine, 2, "בבב", "/books/b.txt");
+        add(&mut engine, 3, "גגג", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let run = |engine: &mut SearchEngine, max_expansions: u32| {
+            engine.search(
+                vec!["(אאא|בבב|גגג)".to_string()],
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                max_expansions,
+                ResultsOrder::Catalogue,
+                None,
+            )
+        };
+        // Union of 3 terms exceeds a cap of 2...
+        assert!(run(&mut engine, 2).is_err());
+        // ...and fits a cap of 3.
+        let ids: Vec<u64> = run(&mut engine, 3)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn invalid_branch_pattern_surfaces_error() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "משה", "/books/a.txt");
+        engine.commit().unwrap();
+
+        // One malformed branch must fail the search loudly, not silently
+        // return nothing.
+        let result = engine.search(
+            vec!["משה|[".to_string()],
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            100,
+            ResultsOrder::Catalogue,
+            None,
+        );
+        assert!(result.is_err());
     }
 
     #[test]

@@ -103,13 +103,205 @@ pub(crate) const MAX_SPELLING_BRANCHES: usize = 16;
 
 /// Everything the Tantivy layer needs to execute an advanced search.
 pub struct AdvancedQuery {
-    /// One regex pattern per query word (in order). Each pattern is a
-    /// tantivy-fst–compatible whole-term regex.
-    pub regex_terms: Vec<String>,
+    /// One pattern per query word (in order). Each is a tantivy-fst–compatible
+    /// whole-term regex with its top-level alternation kept structured, so the
+    /// single-word path can compile every branch as its own small DFA.
+    pub regex_terms: Vec<WordPattern>,
     /// Maximum allowed word-position gap between adjacent terms (phrase slop).
     pub slop: u32,
     /// Term-dictionary expansion limit passed to `RegexPhraseQuery`.
     pub max_expansions: u32,
+}
+
+// ── Word patterns (structured top-level alternation) ───────────────────────
+
+/// A per-word regex term with its top-level alternation kept structured.
+///
+/// tantivy-fst compiles a whole pattern into one DFA capped at 1 000 states.
+/// Wildcard-wrapped branches overlap heavily, so a combined `(?:b1|…|bN)` can
+/// blow the cap even when every branch alone is tiny (the real typo+partial
+/// pattern — 48 branches, 806 chars — already fails while all 48 branches
+/// compile individually). Keeping the branches separate lets the engine
+/// compile each one as its own small DFA and stream all matches into a single
+/// `TermSetQuery`, which never touches the state limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WordPattern {
+    /// A pattern with no top-level alternation (compiled as-is).
+    Literal(String),
+    /// Top-level alternation branches; each is a standalone whole-term regex.
+    Alternation(Vec<String>),
+}
+
+impl WordPattern {
+    /// The branches to compile individually (a literal is its own single
+    /// branch).
+    pub fn branches(&self) -> &[String] {
+        match self {
+            WordPattern::Literal(pattern) => std::slice::from_ref(pattern),
+            WordPattern::Alternation(branches) => branches,
+        }
+    }
+
+    /// The combined single-regex form (`(?:b1|b2|…)`), used where one pattern
+    /// string is required: `RegexPhraseQuery` terms and highlight automatons.
+    pub fn joined(&self) -> String {
+        match self {
+            WordPattern::Literal(pattern) => pattern.clone(),
+            WordPattern::Alternation(branches) => format!("(?:{})", branches.join("|")),
+        }
+    }
+
+    /// Parses a raw regex string (a term arriving through the public string
+    /// API) by splitting its top-level alternation. Patterns without one —
+    /// including alternations nested inside a larger expression — stay
+    /// [`WordPattern::Literal`], preserving their exact semantics.
+    pub fn parse(pattern: &str) -> WordPattern {
+        let branches = split_top_level_alternation(pattern);
+        if branches.len() <= 1 {
+            WordPattern::Literal(pattern.to_string())
+        } else {
+            WordPattern::Alternation(branches)
+        }
+    }
+}
+
+/// Scanner state for `[...]` character classes, where `|`/`(`/`)` are
+/// literals. A `]` immediately after `[` (or after `[^`) is itself a literal
+/// and does not close the class — the same rule regex-syntax applies.
+#[derive(Default)]
+struct CharClassScanner {
+    in_class: bool,
+    index: usize, // chars seen since `[` (for the leading literal-`]` rule)
+    negated: bool,
+}
+
+impl CharClassScanner {
+    /// Processes one char while inside a class. Returns `true` when the char
+    /// was consumed here (i.e. the scanner is inside a class).
+    fn consume_inside(&mut self, ch: char) -> bool {
+        if !self.in_class {
+            return false;
+        }
+        if self.index == 0 && ch == '^' {
+            self.negated = true;
+        } else {
+            let literal_close_index = usize::from(self.negated);
+            if ch == ']' && self.index > literal_close_index {
+                self.in_class = false;
+            }
+        }
+        self.index += 1;
+        true
+    }
+
+    /// Opens a new character class (called on `[` outside a class).
+    fn open(&mut self) {
+        self.in_class = true;
+        self.index = 0;
+        self.negated = false;
+    }
+}
+
+/// Returns the inner content when one group wraps the whole pattern — either
+/// capturing `(…)` or the non-capturing `(?:…)` form [`build_word_regex`]
+/// emits. Escape-, class-, and nesting-aware; a group that closes mid-pattern
+/// (e.g. `(ו|מ)?משה`) is not stripped. Other `(?…)` constructs are left alone.
+fn strip_enclosing_group(pattern: &str) -> &str {
+    if !pattern.starts_with('(') {
+        return pattern;
+    }
+    let inner_start = if pattern.starts_with("(?:") {
+        3
+    } else if pattern[1..].starts_with('?') {
+        return pattern;
+    } else {
+        1
+    };
+    let mut depth: i32 = 0;
+    let mut escaped = false;
+    let mut class = CharClassScanner::default();
+    for (i, ch) in pattern.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if class.consume_inside(ch) {
+            continue;
+        }
+        match ch {
+            '[' => class.open(),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    // The group opened at char 0 just closed — it wraps the
+                    // whole pattern only if this is the last char.
+                    return if i == pattern.len() - 1 {
+                        &pattern[inner_start..i]
+                    } else {
+                        pattern
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    pattern
+}
+
+/// Splits a regex pattern on top-level (depth-0) `|`, aware of escapes,
+/// nested groups, and `[...]` classes (so `[ם|ן]` is never split), after
+/// stripping one enclosing group. Empty branches match only the empty string
+/// and no indexed term is empty, so they are dropped. A pattern without a
+/// top-level alternation comes back as a single element.
+pub(crate) fn split_top_level_alternation(pattern: &str) -> Vec<String> {
+    let inner = strip_enclosing_group(pattern);
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth: i32 = 0;
+    let mut escaped = false;
+    let mut class = CharClassScanner::default();
+
+    for ch in inner.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if class.consume_inside(ch) {
+            current.push(ch);
+            continue;
+        }
+        match ch {
+            '[' => {
+                class.open();
+                current.push(ch);
+            }
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            '|' if depth == 0 => parts.push(std::mem::take(&mut current)),
+            _ => current.push(ch),
+        }
+    }
+    parts.push(current);
+
+    parts.into_iter().filter(|p| !p.is_empty()).collect()
 }
 
 // ── Per-word search flags ──────────────────────────────────────────────────
@@ -758,10 +950,12 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
 /// account typo tolerance, spelling variants, morphological affixes, and any
 /// user-supplied alternative words.
 ///
-/// The result is either a plain escaped word, a single-branch pattern, or a
-/// `(?:branch1|branch2|…)` alternation. Length and count budgets ensure the
-/// compiled DFA stays within the tantivy-fst state limit.
-fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> String {
+/// The result is either a plain escaped word, a single-branch pattern
+/// ([`WordPattern::Literal`]), or a structured [`WordPattern::Alternation`]
+/// whose branches the engine compiles individually. Length and count budgets
+/// keep the *joined* form — the one the phrase path compiles as a single
+/// DFA — within the tantivy-fst state limit.
+fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> WordPattern {
     // The canonical word plus the normalized alternatives, in one filtered
     // pass (alternatives may normalize to empty; the query word never does, but
     // filtering it too keeps the pass total).
@@ -770,7 +964,7 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> S
         .filter(|c| !c.trim().is_empty())
         .collect();
     if candidates.is_empty() {
-        return escape_regex(word);
+        return WordPattern::Literal(escape_regex(word));
     }
 
     let max = flags.max_variations();
@@ -816,19 +1010,25 @@ fn build_word_regex(word: &str, flags: &WordFlags, alternatives: &[String]) -> S
     }
 
     if kept.is_empty() {
-        return escape_regex(word);
+        return WordPattern::Literal(escape_regex(word));
     }
-    let joined = if kept.len() == 1 {
-        kept.into_iter().next().unwrap()
+    // Final safety net: if the joined form — the one the phrase path compiles
+    // as a single DFA — still exceeds the budget (a single oversized branch,
+    // or branch totals that pass but overflow once `(?:`/`)`/pipes are
+    // added), fall back to a plain literal (always compiles).
+    let joined_chars = kept.iter().map(|b| b.chars().count()).sum::<usize>()
+        + if kept.len() == 1 {
+            0
+        } else {
+            kept.len() - 1 + "(?:)".len()
+        };
+    if joined_chars > MAX_PATTERN_CHARS {
+        return WordPattern::Literal(escape_regex(word));
+    }
+    if kept.len() == 1 {
+        WordPattern::Literal(kept.into_iter().next().unwrap())
     } else {
-        format!("(?:{})", kept.join("|"))
-    };
-    // Final safety net: if a single oversized branch somehow still exceeded the
-    // budget, fall back to a plain literal (always compiles).
-    if joined.chars().count() > MAX_PATTERN_CHARS {
-        escape_regex(word)
-    } else {
-        joined
+        WordPattern::Alternation(kept)
     }
 }
 
@@ -904,7 +1104,10 @@ pub fn prepare_advanced_query(
 
     // ── Plain path (no per-word options or alternatives) ──────────────────
     if !has_options && !has_alternatives {
-        let terms: Vec<String> = words.iter().map(|w| escape_regex(w)).collect();
+        let terms: Vec<WordPattern> = words
+            .iter()
+            .map(|w| WordPattern::Literal(escape_regex(w)))
+            .collect();
         let slop = if words.len() <= 1 {
             0
         } else if !custom_spacing.is_empty() {
@@ -922,7 +1125,7 @@ pub fn prepare_advanced_query(
     }
 
     // ── Advanced path ─────────────────────────────────────────────────────
-    let regex_terms: Vec<String> = words
+    let regex_terms: Vec<WordPattern> = words
         .iter()
         .enumerate()
         .map(|(i, word)| {
@@ -1381,7 +1584,7 @@ mod tests {
             gram_suffix: true,
             ..Default::default()
         };
-        let result = build_word_regex("ספר", &flags, &[]);
+        let result = build_word_regex("ספר", &flags, &[]).joined();
         assert!(!result.is_empty());
         assert!(
             result.chars().count() <= MAX_PATTERN_CHARS,
@@ -1393,7 +1596,102 @@ mod tests {
     #[test]
     fn word_regex_includes_alternatives() {
         let result = build_word_regex("שר", &WordFlags::default(), &["מלך".to_string()]);
-        assert_eq!(result, "(?:שר|מלך)");
+        assert_eq!(
+            result,
+            WordPattern::Alternation(vec!["שר".to_string(), "מלך".to_string()])
+        );
+        assert_eq!(result.joined(), "(?:שר|מלך)");
+    }
+
+    // ── WordPattern::parse / split_top_level_alternation ────────────────
+
+    #[test]
+    fn parse_splits_non_capturing_group() {
+        assert_eq!(
+            WordPattern::parse("(?:משה|מסה)"),
+            WordPattern::Alternation(vec!["משה".to_string(), "מסה".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_splits_capturing_group() {
+        assert_eq!(
+            WordPattern::parse("(משה|מסה)"),
+            WordPattern::Alternation(vec!["משה".to_string(), "מסה".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_splits_bare_top_level_alternation() {
+        assert_eq!(
+            WordPattern::parse("([א-ת]{2,4}(ים|ות|ה)?)|([א-ת]+[יו][ם|ן])"),
+            WordPattern::Alternation(vec![
+                "([א-ת]{2,4}(ים|ות|ה)?)".to_string(),
+                "([א-ת]+[יו][ם|ן])".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn pipe_inside_char_class_is_not_split() {
+        assert_eq!(
+            WordPattern::parse("[ם|ן]"),
+            WordPattern::Literal("[ם|ן]".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_pipe_is_not_split() {
+        assert_eq!(
+            WordPattern::parse(r"א\|ב"),
+            WordPattern::Literal(r"א\|ב".to_string())
+        );
+    }
+
+    #[test]
+    fn nested_alternation_stays_whole() {
+        // A group that does not wrap the whole pattern must not be stripped,
+        // and its inner `|` is not top-level (R1).
+        assert_eq!(
+            WordPattern::parse(".{0,2}(א|ב).{0,2}"),
+            WordPattern::Literal(".{0,2}(א|ב).{0,2}".to_string())
+        );
+        assert_eq!(
+            WordPattern::parse("(ו|מ)?משה"),
+            WordPattern::Literal("(ו|מ)?משה".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_branches_are_dropped() {
+        // The all-optional-letter word emits a leading empty branch (R7); it
+        // matches only the empty string, which no indexed term is.
+        assert_eq!(
+            WordPattern::parse("(?:|.{0,3}ו.{0,3}|.{0,3}וו.{0,3})"),
+            WordPattern::Alternation(vec![
+                ".{0,3}ו.{0,3}".to_string(),
+                ".{0,3}וו.{0,3}".to_string(),
+            ])
+        );
+        // Degenerate all-empty alternation collapses to a literal.
+        assert_eq!(
+            WordPattern::parse("(?:|)"),
+            WordPattern::Literal("(?:|)".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_round_trips_generator_output() {
+        // parse(joined()) must reproduce the generator's own branches, so the
+        // raw-string API path and the structured path stay in lockstep.
+        let flags = WordFlags {
+            typo: true,
+            partial: true,
+            ..Default::default()
+        };
+        let pattern = build_word_regex("משה", &flags, &[]);
+        assert!(matches!(pattern, WordPattern::Alternation(_)));
+        assert_eq!(WordPattern::parse(&pattern.joined()), pattern);
     }
 
     // ── parse_custom_spacing ─────────────────────────────────────────────
@@ -1427,6 +1725,11 @@ mod tests {
 
     // ── prepare_advanced_query ───────────────────────────────────────────
 
+    /// The joined (single-string) form of each term, for string assertions.
+    fn joined_terms(q: &AdvancedQuery) -> Vec<String> {
+        q.regex_terms.iter().map(WordPattern::joined).collect()
+    }
+
     #[test]
     fn plain_two_word_query_uses_distance_as_slop() {
         let q = prepare_advanced_query(
@@ -1436,7 +1739,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(q.regex_terms, vec!["שלום", "עולם"]);
+        assert_eq!(joined_terms(&q), vec!["שלום", "עולם"]);
         assert_eq!(q.slop, 3);
         assert_eq!(q.max_expansions, 100);
     }
@@ -1452,7 +1755,7 @@ mod tests {
     #[test]
     fn nikud_is_stripped_from_query() {
         let q = prepare_advanced_query("סֵפֶר", 0, &HashMap::new(), &HashMap::new(), &HashMap::new());
-        assert_eq!(q.regex_terms, vec!["ספר"]);
+        assert_eq!(joined_terms(&q), vec!["ספר"]);
     }
 
     #[test]
@@ -1464,7 +1767,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(q.regex_terms, vec!["torah"]);
+        assert_eq!(joined_terms(&q), vec!["torah"]);
     }
 
     #[test]
@@ -1472,7 +1775,7 @@ mod tests {
         let mut alts = HashMap::new();
         alts.insert(0u32, vec!["תּוֹרָה".to_string()]);
         let q = prepare_advanced_query("ספר", 0, &HashMap::new(), &alts, &HashMap::new());
-        assert_eq!(q.regex_terms, vec!["(?:ספר|תורה)"]);
+        assert_eq!(joined_terms(&q), vec!["(?:ספר|תורה)"]);
     }
 
     #[test]
@@ -1480,7 +1783,7 @@ mod tests {
         let so = make_options(&[("ספר_0", &[(OPT_GRAM_PREFIX, true)])]);
         let q = prepare_advanced_query("ספר", 0, &HashMap::new(), &HashMap::new(), &so);
         assert_eq!(
-            q.regex_terms,
+            joined_terms(&q),
             vec!["(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"]
         );
     }
