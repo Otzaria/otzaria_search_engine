@@ -2,16 +2,21 @@ use tantivy::tokenizer::{Token, TokenStream, Tokenizer};
 
 use crate::hebrew_query::{fold_presentation_form, is_attached_mark};
 
-/// טוקנייזר עברי שמתנהג כמו SimpleTokenizer עם שתי תוספות:
-/// גרש (' או ׳) בסוף טוקן נשמר, ותווים "שקופים" ([`TRANSPARENT`]) אינם
-/// שוברים טוקן אך מושמטים מטקסטו — כך שטקסט מאונדקס שמשמר פיסוק לתצוגה
-/// ממופה לאותם טרמים כמו שאילתה שעברה `sanitize_query`.
+/// טוקנייזר עברי שמתנהג כמו SimpleTokenizer עם שלוש תוספות:
+/// גרש (' או ׳) בין אותיות או בסוף טוקן נשמר בו; גרשיים (" או ״) בין
+/// אותיות נשמרות בטוקן (ראשי-תיבות הם טרם אחד); ותווים "שקופים"
+/// ([`TRANSPARENT`]) אינם שוברים טוקן אך מושמטים מטקסטו — כך שטקסט
+/// מאונדקס שמשמר פיסוק לתצוגה ממופה לאותם טרמים כמו שאילתה שעברה
+/// `sanitize_query`. ׳/״ מקופלים בטקסט הטוקן ל-'/" ASCII, וזוג גרשים
+/// רצוף בין אותיות (מוסכמת `רמב''ם` בקבצים ישנים) מאוחד ל-`"`.
 ///
 /// דוגמאות:
-///   "תוס'"  → ["תוס'"]    (גרש בסוף — נשמר)
-///   "ז\"ל"  → ["ז", "ל"]  (גרשיים באמצע — מפריד, בדיוק כמו SimpleTokenizer)
-///   "א.ב"   → ["אב"]      (נקודה שקופה — לא שוברת ולא נכללת)
-///   "עא:"   → ["עא"]      (פיסוק בסוף — מחוץ לטוקן)
+///   "תוס'"    → ["תוס'"]     (גרש בסוף — נשמר)
+///   "ז\"ל"    → ["ז\"ל"]     (גרשיים באמצע — חלק מהטוקן)
+///   "רמב''ם"  → ["רמב\"ם"]   (זוג גרשים → גרשיים)
+///   "רמב\""   → ["רמב"]      (גרשיים בקצה — מפריד)
+///   "א.ב"     → ["אב"]       (נקודה שקופה — לא שוברת ולא נכללת)
+///   "עא:"     → ["עא"]       (פיסוק בסוף — מחוץ לטוקן)
 #[derive(Clone, Default)]
 pub struct HebrewTokenizer;
 
@@ -52,6 +57,11 @@ fn is_geresh(c: char) -> bool {
     c == '\'' || c == '\u{05F3}'
 }
 
+#[inline]
+fn is_gershayim(c: char) -> bool {
+    c == '"' || c == '\u{05F4}'
+}
+
 /// תו שממשיך טוקן: אות/ספרה, או סימן ניקוד/טעם צמוד. הטקסט המנורמל
 /// לאינדוקס נקי מניקוד ממילא; קבלת הסימנים כאן היא הגנת-עומק כדי שקלט
 /// שלא נורמל (למשל דרך `add_document` ישיר) לא יתפרק באמצע מילה. הניקוד
@@ -63,11 +73,15 @@ fn is_word_char(c: char) -> bool {
 }
 
 /// תו שדורש בנייה איטית של טקסט הטוקן (סינון/קיפול) במקום העתקה ישירה.
+/// `'` ASCII נכלל בגלל איחוד זוג-הגרשים (`''`→`"`); `"` ASCII מועתק
+/// כמות-שהוא ולכן אינו כאן.
 #[inline]
 fn needs_normalising(c: char) -> bool {
     is_attached_mark(c)
         || is_transparent(c)
+        || c == '\''
         || c == '\u{05F3}'
+        || c == '\u{05F4}'
         || fold_presentation_form(c).is_some()
 }
 
@@ -97,13 +111,18 @@ impl<'a> HebrewTokenStream<'a> {
                 .map(|(i, _)| i)
                 .unwrap_or(s.len() - pos);
 
-            // מבט קדימה מעבר לגרש אחד ולתווים שקופים: גרש שאחריו (גם דרך
-            // שקופים) תו-מילה הוא אמצעי — חותך, כמו אחרי מחיקת הפיסוק.
-            let mut geresh_end: Option<usize> = None;
+            // מבט קדימה דרך תווים שקופים: אסוף את רצף הגרשים/הגרשיים
+            // (מקופלים ל-ASCII) עד התו הבא שאינו שקוף ואינו גרש — הוא
+            // שמכריע אם הרצף פנימי (הטוקן נמשך דרכו) או סוגר.
+            let mut quotes = String::new();
+            let mut first_quote_end = 0usize;
             let mut next: Option<(usize, char)> = None;
             for (i, c) in s[pos..].char_indices() {
-                if geresh_end.is_none() && is_geresh(c) {
-                    geresh_end = Some(pos + i + c.len_utf8());
+                if is_geresh(c) || is_gershayim(c) {
+                    if quotes.is_empty() {
+                        first_quote_end = pos + i + c.len_utf8();
+                    }
+                    quotes.push(if is_geresh(c) { '\'' } else { '"' });
                 } else if !is_transparent(c) {
                     next = Some((pos + i, c));
                     break;
@@ -111,14 +130,23 @@ impl<'a> HebrewTokenStream<'a> {
             }
 
             match next {
-                Some((i, c)) if is_word_char(c) => {
-                    if geresh_end.is_some() {
-                        break pos; // גרש באמצע — הטוקן נגמר לפניו
+                Some((i, c)) if is_word_char(c) => match quotes.as_str() {
+                    // בלי גרשים — פיסוק שקוף בין אותיות, הטוקן נמשך.
+                    // גרש / זוג-גרשים (D2) / גרשיים פנימיים — נכללים
+                    // בטוקן והוא נמשך.
+                    "" | "'" | "''" | "\"" => pos = i,
+                    // כל צירוף אחר ("", '"' כפולות, שלשות...) — מפריד.
+                    _ => break pos,
+                },
+                // סוף מילה אמיתי: גרש סוגר (הראשון בלבד) נכלל בטוקן;
+                // גרשיים סוגרות הן מפריד ונשארות בחוץ.
+                _ => {
+                    break if quotes.starts_with('\'') {
+                        first_quote_end
+                    } else {
+                        pos
                     }
-                    pos = i; // פיסוק שקוף בין מילים — הטוקן נמשך
                 }
-                // סוף מילה אמיתי: גרש סוגר (אם היה) נכלל בטוקן.
-                _ => break geresh_end.unwrap_or(pos),
             }
         };
 
@@ -134,15 +162,26 @@ impl<'a> TokenStream for HebrewTokenStream<'a> {
             Some((tok_text, tok_start, tok_end)) => {
                 self.token.text.clear();
                 // נרמול טקסט הטוקן לצורת מילון הטרמים: הסרת ניקוד/טעמים
-                // ופיסוק שקוף, קיפול ׳→' ופירוק Presentation Forms.
-                // במסלול המהיר — הרוב המכריע — העתקה ישירה.
+                // ופיסוק שקוף, קיפול ׳→' ו-״→", איחוד זוג גרשים רצוף
+                // ל-`"` (D2) ופירוק Presentation Forms. במסלול המהיר —
+                // הרוב המכריע — העתקה ישירה.
                 if tok_text.chars().any(needs_normalising) {
                     for c in tok_text.chars() {
                         if is_attached_mark(c) || is_transparent(c) {
                             continue;
                         }
-                        if c == '\u{05F3}' {
-                            self.token.text.push('\'');
+                        if is_geresh(c) {
+                            // זוג גרשים (גם דרך שקופים, שכבר סוננו) הוא
+                            // פנימי בהכרח — גרש סוגר נבלע יחיד — ולכן
+                            // בטוח לאחדו לגרשיים.
+                            if self.token.text.ends_with('\'') {
+                                self.token.text.pop();
+                                self.token.text.push('"');
+                            } else {
+                                self.token.text.push('\'');
+                            }
+                        } else if c == '\u{05F4}' {
+                            self.token.text.push('"');
                         } else if let Some(folded) = fold_presentation_form(c) {
                             self.token
                                 .text
@@ -202,29 +241,68 @@ mod tests {
         assert_eq!(tokenize("תוס'"), vec!["תוס'"]);
     }
 
+    // ── גרשיים בתוך טוקן (ראשי-תיבות הם טרם אחד) ─────────────────────────
+
     #[test]
-    fn test_gershayim_splits() {
-        assert_eq!(tokenize("ז\"ל"), vec!["ז", "ל"]);
+    fn test_gershayim_kept_in_token() {
+        assert_eq!(tokenize("ז\"ל"), vec!["ז\"ל"]);
+        assert_eq!(tokenize("ז\"ל אמר"), vec!["ז\"ל", "אמר"]);
     }
 
     #[test]
     fn test_rambam() {
-        assert_eq!(tokenize("רמב\"ם"), vec!["רמב", "ם"]);
+        assert_eq!(tokenize("רמב\"ם"), vec!["רמב\"ם"]);
     }
 
     #[test]
-    fn test_hebrew_gershayim_splits() {
-        assert_eq!(tokenize("רמב\u{05F4}ם"), vec!["רמב", "ם"]);
+    fn test_hebrew_gershayim_folded_to_ascii() {
+        // ״ (U+05F4) בטוקן מקופל ל-" כדי להתאים לשאילתות שעברו sanitize.
+        assert_eq!(tokenize("רמב\u{05F4}ם"), vec!["רמב\"ם"]);
+    }
+
+    #[test]
+    fn test_multiple_internal_gershayim() {
+        assert_eq!(tokenize("א\"ב\"ג"), vec!["א\"ב\"ג"]);
+    }
+
+    #[test]
+    fn test_edge_gershayim_still_separate() {
+        // גרשיים בקצה מילה — מפריד, לא נבלעות (בניגוד לגרש סוגר).
+        assert_eq!(tokenize("\"רמב"), vec!["רמב"]);
+        assert_eq!(tokenize("רמב\""), vec!["רמב"]);
+        assert_eq!(tokenize("רמב\"\"ם"), vec!["רמב", "ם"]);
+        assert_eq!(tokenize("אמר \"שלום\" לכולם"), vec!["אמר", "שלום", "לכולם"]);
+    }
+
+    #[test]
+    fn test_gershayim_across_transparent() {
+        // גרשיים ואז פיסוק שקוף ואז אות — ה-lookahead עובר דרך השקוף,
+        // עקבי עם מנגנון הגרש.
+        assert_eq!(tokenize("רמב\".ם"), vec!["רמב\"ם"]);
+    }
+
+    #[test]
+    fn test_double_geresh_collapsed_to_gershayim() {
+        // מוסכמת קבצים ישנים: רמב''ם ≡ רמב"ם (D2).
+        assert_eq!(tokenize("רמב''ם"), vec!["רמב\"ם"]);
+        assert_eq!(tokenize("רמב\u{05F3}\u{05F3}ם"), vec!["רמב\"ם"]);
+        // זוג גרשים בסוף מילה אינו מאוחד — נבלע רק גרש סוגר יחיד.
+        assert_eq!(tokenize("וכו''"), vec!["וכו'"]);
     }
 
     #[test]
     fn test_phrase_with_trailing_geresh() {
-        assert_eq!(tokenize("תוס' ד\"ה"), vec!["תוס'", "ד", "ה"]);
+        assert_eq!(tokenize("תוס' ד\"ה"), vec!["תוס'", "ד\"ה"]);
     }
 
+    // ── גרש בתוך טוקן ─────────────────────────────────────────────────────
+
     #[test]
-    fn test_geresh_in_middle_splits() {
-        assert_eq!(tokenize("ד'אש"), vec!["ד", "אש"]);
+    fn test_geresh_in_middle_kept() {
+        assert_eq!(tokenize("ד'אש"), vec!["ד'אש"]);
+        assert_eq!(tokenize("ד\u{05F3}אש"), vec!["ד'אש"]);
+        assert_eq!(tokenize("ג'ורג'"), vec!["ג'ורג'"]);
+        assert_eq!(tokenize("צ'יפס"), vec!["צ'יפס"]);
     }
 
     #[test]
@@ -270,8 +348,43 @@ mod tests {
     fn test_geresh_across_transparent() {
         // "תוס'." — הגרש נשאר סוגר גם כשפיסוק שקוף אחריו.
         assert_eq!(tokenize("תוס'."), vec!["תוס'"]);
-        // "תוס'.ב" — אחרי מחיקת הנקודה הגרש אמצעי → חותך בלעדיו.
-        assert_eq!(tokenize("תוס'.ב"), vec!["תוס", "ב"]);
+        // "תוס'.ב" — אחרי מחיקת הנקודה הגרש אמצעי → נכלל והטוקן נמשך.
+        assert_eq!(tokenize("תוס'.ב"), vec!["תוס'ב"]);
+    }
+
+    #[test]
+    fn test_gershayim_span_covers_whole_token() {
+        // ה-span קובע את גבולות ההדגשה — הגרשיים בתוך הטווח.
+        assert_eq!(spans("רמב\"ם"), vec![(0, 9)]);
+        assert_eq!(spans("רמב\u{05F4}ם אמר"), vec![(0, 10), (11, 17)]);
+        // גרשיים סוגרות מחוץ ל-span.
+        assert_eq!(spans("רמב\""), vec![(0, 6)]);
+    }
+
+    #[test]
+    fn test_tokens_never_contain_hebrew_geresh_forms() {
+        // הערובה המורחבת של c7a6e22: טוקן לעולם לא מכיל ׳/״, וגרשיים
+        // בטוקן הן תמיד `"` ASCII יחידה.
+        let samples = [
+            "רמב\u{05F4}ם",
+            "תוס\u{05F3} ד\u{05F4}ה",
+            "רמב''ם וכו''",
+            "ג\u{05F3}ורג\u{05F3}",
+            "א\u{05F4}ב\u{05F4}ג",
+            "שָׁמַ֣ע רמב\u{05F4}ם",
+        ];
+        for s in samples {
+            for tok in tokenize(s) {
+                assert!(
+                    !tok.contains('\u{05F3}') && !tok.contains('\u{05F4}'),
+                    "token {tok:?} from {s:?} contains a Hebrew geresh form"
+                );
+                assert!(
+                    !tok.contains("\"\"") && !tok.contains("''"),
+                    "token {tok:?} from {s:?} contains a double quote run"
+                );
+            }
+        }
     }
 
     #[test]

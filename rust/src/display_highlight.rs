@@ -619,12 +619,13 @@ mod tests {
     }
 
     #[test]
-    fn gershayim_splits_like_engine_tokenizer() {
-        // ז"ל מתפצל לשני טוקנים (כמו HebrewTokenizer); הגרשיים בטקסט המוצג
-        // נתפסות ע"י מפריד-המילים, שכולל " וגם את הצורה העברית ״.
+    fn gershayim_stay_inside_word_like_engine_tokenizer() {
+        // ז"ל הוא טוקן אחד (כמו HebrewTokenizer); הגרשיים בתבנית המילה
+        // תופסות את שתי צורות הדפוס (" ו-״).
         let hl = build("ז\"ל");
-        assert_eq!(hl.word_patterns.len(), 2);
-        assert!(hl.combined_pattern.contains(WORD_SEPARATOR));
+        assert_eq!(hl.word_patterns.len(), 1);
+        assert!(hl.combined_pattern.contains("ז"));
+        assert!(hl.combined_pattern.contains("\\u05F4"));
     }
 
     #[test]

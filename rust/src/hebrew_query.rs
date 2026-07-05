@@ -429,35 +429,56 @@ fn is_word_char(c: char) -> bool {
 
 /// Splits a sanitised query into word tokens, mirroring the `HebrewTokenizer`
 /// the `text` field is indexed with (see `crate::hebrew_tokenizer`):
-/// * `"` always separates (`ז"ל` → `ז`, `ל`), exactly like the tokenizer.
-/// * `'` between word characters separates too (`ד'אש` → `ד`, `אש`); only a
-///   trailing `'` is absorbed as the token's last character (`תוס'`).
+/// * `"` between word characters is part of the token (`ז"ל`, `רמב"ם`);
+///   at a word edge it separates (`רמב"` → `רמב`).
+/// * `'` between word characters is part of the token (`ד'אש`, `ג'ורג'`);
+///   a trailing `'` is absorbed as the token's last character (`תוס'`).
+/// * `''` between word characters collapses to a single `"` (the old-file
+///   convention `רמב''ם` ≡ `רמב"ם`); any other quote run separates.
 ///
-/// `sanitize_query` has already normalised `״`→`"` and `׳`→`'`, so query
-/// tokens line up with the ASCII-geresh index terms.
+/// `sanitize_query` has already normalised `״`→`"` and `׳`→`'` and stripped
+/// the transparent punctuation, so query tokens line up with the
+/// ASCII-quote index terms.
 pub fn split_query_words(query: &str) -> Vec<String> {
     let cleaned = sanitize_query(query);
     let chars: Vec<char> = cleaned.trim().chars().collect();
     let mut words = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        if is_word_char(chars[i]) {
-            let start = i;
-            while i < chars.len() && is_word_char(chars[i]) {
-                i += 1;
-            }
-            // A geresh right after the word that is NOT followed by another
-            // word character is trailing — absorb it, like the tokenizer.
-            if i < chars.len()
-                && chars[i] == '\''
-                && !(i + 1 < chars.len() && is_word_char(chars[i + 1]))
-            {
-                i += 1;
-            }
-            words.push(chars[start..i].iter().collect());
-        } else {
+        if !is_word_char(chars[i]) {
             i += 1;
+            continue;
         }
+        let mut word = String::new();
+        loop {
+            while i < chars.len() && is_word_char(chars[i]) {
+                word.push(chars[i]);
+                i += 1;
+            }
+            // רצף הגרשים/הגרשיים שאחרי המילה; התו שאחריו מכריע אם הרצף
+            // פנימי (הטוקן נמשך דרכו) או סוגר — כמו בטוקנייזר.
+            let run_start = i;
+            while i < chars.len() && (chars[i] == '\'' || chars[i] == '"') {
+                i += 1;
+            }
+            let followed_by_word = i < chars.len() && is_word_char(chars[i]);
+            match (&chars[run_start..i], followed_by_word) {
+                ([], _) => break,
+                (['\''], true) => word.push('\''),
+                (['\'', '\''], true) => word.push('"'),
+                (['"'], true) => word.push('"'),
+                // סוף מילה: גרש סוגר (הראשון בלבד) נבלע; גרשיים — לא.
+                ([first, ..], false) => {
+                    if *first == '\'' {
+                        word.push('\'');
+                    }
+                    break;
+                }
+                // צירוף לא-חוקי לפני תו-מילה (`""`, שלשות...) — מפריד.
+                (_, true) => break,
+            }
+        }
+        words.push(word);
     }
     words
 }
@@ -1524,23 +1545,62 @@ mod tests {
 
     #[test]
     fn split_handles_geresh_and_gershayim() {
-        // תואם את HebrewTokenizer: גרשיים וגרש פנימי מפרידים; רק גרש בסוף
-        // מילה נשמר; ״/׳ עבריים מנורמלים ללועזיים לפני הפיצול.
+        // תואם את HebrewTokenizer: גרשיים וגרש בין אותיות הם חלק מהמילה;
+        // גרש סוגר נבלע; ״/׳ עבריים מנורמלים ללועזיים לפני הפיצול.
         assert_eq!(split_query_words("שלום עולם"), vec!["שלום", "עולם"]);
         assert_eq!(split_query_words("תוס'"), vec!["תוס'"]);
-        assert_eq!(split_query_words("ז\"ל"), vec!["ז", "ל"]);
-        assert_eq!(split_query_words("ד'אש"), vec!["ד", "אש"]);
-        assert_eq!(split_query_words("ג'ורג'"), vec!["ג", "ורג'"]);
-        assert_eq!(split_query_words("רמב״ם"), vec!["רמב", "ם"]);
+        assert_eq!(split_query_words("ז\"ל"), vec!["ז\"ל"]);
+        assert_eq!(split_query_words("ד'אש"), vec!["ד'אש"]);
+        assert_eq!(split_query_words("ג'ורג'"), vec!["ג'ורג'"]);
+        assert_eq!(split_query_words("רמב״ם"), vec!["רמב\"ם"]);
+        assert_eq!(split_query_words("א\"ב\"ג"), vec!["א\"ב\"ג"]);
         assert_eq!(
             split_query_words("הרב פלוני ז\"ל"),
-            vec!["הרב", "פלוני", "ז", "ל"]
+            vec!["הרב", "פלוני", "ז\"ל"]
         );
         // גרשיים בסוף מילה או בתחילתה אינם חלק מהטוקן.
         assert_eq!(split_query_words("רמב\""), vec!["רמב"]);
         assert_eq!(split_query_words("\"רמב"), vec!["רמב"]);
-        // גרש כפול: הראשון נבלע כסופי, השני מפריד (כמו בטוקנייזר).
-        assert_eq!(split_query_words("רמב''ם"), vec!["רמב'", "ם"]);
+        assert_eq!(split_query_words("רמב\"\"ם"), vec!["רמב", "ם"]);
+        // זוג גרשים בין אותיות מאוחד לגרשיים (D2); בסוף מילה — נבלע
+        // רק הראשון, כגרש סוגר.
+        assert_eq!(split_query_words("רמב''ם"), vec!["רמב\"ם"]);
+        assert_eq!(split_query_words("וכו''"), vec!["וכו'"]);
+    }
+
+    #[test]
+    fn split_query_words_matches_index_analyzer() {
+        // טסט החוזה שכל המערכת תלויה בו: המסלול המתקדם וההדגשות מפצלים
+        // ב-split_query_words, בעוד המדויק/המקורב עוברים דרך ה-analyzer
+        // החי — כל סטייה ביניהם היא טרם שלעולם לא יימצא.
+        let samples = [
+            "רמב\"ם",
+            "רמב״ם",
+            "רמב''ם",
+            "ז\"ל אמר",
+            "ג'ורג' וד'אש",
+            "תוס' ד\"ה",
+            "תוס׳ ד״ה",
+            "א\"ב\"ג",
+            "\"רמב",
+            "רמב\"",
+            "רמב\"\"ם",
+            "וכו''",
+            "הרב פלוני ז״ל; ועי' תוס׳!",
+            "שאלה: מה הדין? (עא:) וצ\"ע",
+            // ללא ניקוד: הסרת הסימנים מטקסט הטוקן היא נרמול של ה-analyzer
+            // שאינו חלק מחוזה גבולות-הפיצול.
+            "אשר־שמע אל־משה בית-דין",
+            "3.14 סי' קכ\"ה ס\"ק ז'",
+            "ה\"מגיד משנה\" כתב",
+        ];
+        for s in samples {
+            assert_eq!(
+                split_query_words(s),
+                analyzer_terms(s),
+                "split/tokenizer drift for: {s}"
+            );
+        }
     }
 
     #[test]
