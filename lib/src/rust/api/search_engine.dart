@@ -204,6 +204,38 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Delete a document by its numeric id. Does not commit.
   Future<void> deleteDocumentById({required BigInt id});
 
+  /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
+  /// paints the index terms within `max_distance` edits of each query token,
+  /// plus the dictionary morphological forms when a magic dictionary is
+  /// loaded — mirroring [`Self::build_fuzzy_highlight`]'s term collection,
+  /// so an opened book highlights exactly what the fuzzy search matched.
+  Future<HighlightPattern?> generateIndexFuzzyHighlightPattern({
+    required String query,
+    required int maxDistance,
+  });
+
+  /// Builds display-highlight patterns from the index terms this query
+  /// actually matches — the same automaton scan the search and the snippet
+  /// highlighter run — so a document found via any variant (typo,
+  /// morphological affix, partial word) highlights exactly that variant in
+  /// an opened book. Full parity with search by construction: the automatons
+  /// are the very `regex_terms` branches `prepare_advanced_query` builds for
+  /// the search query.
+  ///
+  /// A word whose branches match nothing in this index (or fail to compile)
+  /// falls back to the query-shape pattern of [`generate_highlight_pattern`],
+  /// so the result is never worse than the pure-string one. Runs FST scans
+  /// against the term dictionary — async, unlike the sync pure-string
+  /// fallback; the app fetches it once per search-parameter change and
+  /// caches the compiled `RegExp`s.
+  Future<HighlightPattern?> generateIndexHighlightPattern({
+    required String query,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
   /// Content fingerprint per distinct `filePath`, read columnar from the
   /// live documents (like [`Self::count_documents_by_file_path`], no stored
   /// fields are touched).

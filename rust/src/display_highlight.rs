@@ -31,7 +31,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::hebrew_query::{
-    generate_spelling_variations, split_query_words, strip_nikud, word_flags_at, WordFlags,
+    generate_spelling_variations, normalize_for_index, split_query_words, word_flags_at, WordFlags,
     MAX_SPELLING_BRANCHES,
 };
 
@@ -52,10 +52,14 @@ pub struct DisplayHighlight {
 // ── Pattern fragments (Dart-RegExp dialect) ────────────────────────────────
 
 /// Character class of nikud/cantillation marks *attached to a letter* —
-/// U+0591–U+05C7 minus maqaf (U+05BE) and paseq (U+05C0), which separate
-/// words. Were they included, the `*` after a letter would swallow a maqaf
-/// between words and break word-boundary detection (e.g. "אשר־שמע").
-const ATTACHED_MARKS_CLASS: &str = r"[֑-ֽֿׁ-ׇ]*";
+/// U+0591–U+05C7 minus the separators in that range: maqaf (U+05BE), paseq
+/// (U+05C0), sof pasuq (U+05C3) and nun hafukha (U+05C6) — the same set
+/// `hebrew_query::is_attached_mark` excludes. Were they included, the `*`
+/// after a letter would swallow a separator between words and break
+/// word-boundary detection (e.g. "אשר־שמע") or let a one-word pattern
+/// highlight across a verse boundary (e.g. "אב" matching "א׃ב").
+pub(crate) const ATTACHED_MARKS_CLASS: &str =
+    "[\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]*";
 
 /// Separator between adjacent query words in displayed text: whitespace,
 /// Hebrew marks, HTML tags (so markup between words is not a mismatch), or
@@ -162,7 +166,7 @@ fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[Str
     let mut seen_terms: HashSet<String> = HashSet::new();
 
     let push_term = |terms: &mut Vec<String>, seen: &mut HashSet<String>, raw: &str| {
-        let stripped = strip_nikud(raw);
+        let stripped = normalize_for_index(raw);
         if stripped.trim().is_empty() {
             return;
         }
@@ -250,6 +254,23 @@ pub fn build_display_highlight(
         word_boundary_eligible.push(!has_expansion);
     }
 
+    assemble_display_highlight(
+        word_patterns,
+        word_boundary_eligible,
+        distance,
+        custom_spacing,
+    )
+}
+
+/// Joins per-word patterns into the final [`DisplayHighlight`]: the combined
+/// pattern chains the words with [`separator_with_spacing`] per gap. Shared by
+/// the query-shape and matched-terms entry points.
+fn assemble_display_highlight(
+    word_patterns: Vec<String>,
+    word_boundary_eligible: Vec<bool>,
+    distance: u32,
+    custom_spacing: &HashMap<String, String>,
+) -> Option<DisplayHighlight> {
     if word_patterns.is_empty() {
         return None;
     }
@@ -273,6 +294,112 @@ pub fn build_display_highlight(
         word_patterns,
         word_boundary_eligible,
     })
+}
+
+// ── Matched-terms entry point ──────────────────────────────────────────────
+
+/// Longest-first charwise branches for a set of matched index terms.
+///
+/// Alternation in Dart's `RegExp` is leftmost-first, so a shorter term that
+/// prefixes a longer one (`ספר` vs `ספרים`) must come after it or it would
+/// truncate the longer word's highlight. Budget-capped like
+/// [`build_word_display_pattern`]; the first branch is always kept.
+fn build_terms_display_pattern(terms: &[String]) -> String {
+    let mut sorted: Vec<&str> = terms.iter().map(String::as_str).collect();
+    sorted.sort_by(|a, b| {
+        b.chars()
+            .count()
+            .cmp(&a.chars().count())
+            .then_with(|| a.cmp(b))
+    });
+    sorted.dedup();
+
+    let mut branches: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for term in sorted {
+        let branch = charwise_display_pattern(term);
+        let len = branch.chars().count();
+        if !branches.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
+            break;
+        }
+        total += len;
+        branches.push(branch);
+    }
+
+    match branches.len() {
+        0 => String::new(),
+        1 => branches.into_iter().next().unwrap(),
+        _ => format!("(?:{})", branches.join("|")),
+    }
+}
+
+/// Builds display-highlight patterns from the *index terms the query actually
+/// matches* — one `Vec<String>` per query word, aligned with
+/// [`split_query_words`] over the engine-normalized query (the same order
+/// `hebrew_query::prepare_advanced_query` builds `regex_terms` in).
+///
+/// Because the terms come from the same automaton scan the search itself
+/// performs, a document found via ANY variant — typo, morphological affix,
+/// partial word — highlights that variant: full parity by construction. And
+/// since every branch is a complete index token, the whole inflected word is
+/// highlighted and the word keeps token-boundary eligibility even under
+/// morphological options (unlike the query-shape fallback, which highlights a
+/// bare root and must waive boundaries).
+///
+/// A word with an empty term list (nothing in this index matched, or its
+/// automatons failed to compile) falls back to the query-shape
+/// [`build_word_display_pattern`] with its original boundary rules — the
+/// result is never worse than [`build_display_highlight`].
+pub fn build_display_highlight_from_terms(
+    query: &str,
+    distance: u32,
+    custom_spacing: &HashMap<String, String>,
+    alternative_words: &HashMap<u32, Vec<String>>,
+    search_options: &HashMap<String, HashMap<String, bool>>,
+    per_word_terms: &[Vec<String>],
+) -> Option<DisplayHighlight> {
+    let normalized = normalize_for_index(query);
+    let words = split_query_words(&normalized);
+    if words.is_empty() {
+        return None;
+    }
+
+    let mut word_patterns: Vec<String> = Vec::new();
+    let mut word_boundary_eligible: Vec<bool> = Vec::new();
+    for (i, word) in words.iter().enumerate() {
+        let flags = word_flags_at(&words, i, search_options);
+        let alts = alternative_words
+            .get(&(i as u32))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let matched = per_word_terms.get(i).map(Vec::as_slice).unwrap_or(&[]);
+
+        let (pattern, boundary_eligible) = if matched.is_empty() {
+            let has_expansion = flags.prefix
+                || flags.suffix
+                || flags.gram_prefix
+                || flags.gram_suffix
+                || flags.partial;
+            (
+                build_word_display_pattern(word, &flags, alts),
+                !has_expansion,
+            )
+        } else {
+            (build_terms_display_pattern(matched), true)
+        };
+        if pattern.is_empty() {
+            continue;
+        }
+        word_patterns.push(pattern);
+        word_boundary_eligible.push(boundary_eligible);
+    }
+
+    assemble_display_highlight(
+        word_patterns,
+        word_boundary_eligible,
+        distance,
+        custom_spacing,
+    )
 }
 
 // ── Literal in-book pattern ────────────────────────────────────────────────
@@ -332,6 +459,40 @@ fn literal_charwise_pattern(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_marks_class_equals_tokenizer_attached_set() {
+        // מפרקים את מחלקת התווים (תווים בודדים וטווחים) ומשווים לסט של
+        // is_attached_mark — כך מפרידי הפסוק (מקף, פסק, סוף-פסוק, נו"ן
+        // הפוכה) לא יחזרו למחלקה בטעות ויאירו טקסט שחוצה גבול מילה/פסוק.
+        let inner: Vec<char> = ATTACHED_MARKS_CLASS
+            .trim_end_matches('*')
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .chars()
+            .collect();
+        let mut in_class = HashSet::new();
+        let mut i = 0;
+        while i < inner.len() {
+            if i + 2 < inner.len() && inner[i + 1] == '-' {
+                for c in inner[i]..=inner[i + 2] {
+                    in_class.insert(c);
+                }
+                i += 3;
+            } else {
+                in_class.insert(inner[i]);
+                i += 1;
+            }
+        }
+        for cp in 0x0591u32..=0x05C7 {
+            let c = char::from_u32(cp).unwrap();
+            assert_eq!(
+                in_class.contains(&c),
+                crate::hebrew_query::is_attached_mark(c),
+                "U+{cp:04X} disagrees with is_attached_mark"
+            );
+        }
+    }
 
     mod literal_pattern {
         use super::super::build_literal_pattern;
@@ -526,6 +687,118 @@ mod tests {
                 "query: {query:?}"
             );
         }
+    }
+
+    // ── Matched-terms patterns ─────────────────────────────────────────
+
+    fn charwise(term: &str) -> String {
+        charwise_display_pattern(term)
+    }
+
+    #[test]
+    fn terms_pattern_sorts_longest_first() {
+        // Leftmost-first alternation: ספר before הספרים would truncate the
+        // longer word's highlight to its inner substring.
+        let p = build_terms_display_pattern(&["ספר".to_string(), "הספרים".to_string()]);
+        assert_eq!(p, format!("(?:{}|{})", charwise("הספרים"), charwise("ספר")));
+    }
+
+    #[test]
+    fn terms_pattern_dedups_and_bounds_budget() {
+        let dup = build_terms_display_pattern(&["ספר".to_string(), "ספר".to_string()]);
+        assert_eq!(dup, charwise("ספר"));
+
+        // Terms far beyond the char budget: the pattern stays bounded but
+        // never empty.
+        let many: Vec<String> = (0..2_000).map(|i| format!("מלה{i:04}")).collect();
+        let p = build_terms_display_pattern(&many);
+        assert!(!p.is_empty());
+        // The budget bounds the branch bodies; `|` separators and the `(?:)`
+        // wrapper add at most one char per branch plus the group frame.
+        let branch_count = p.matches('|').count() + 1;
+        assert!(p.chars().count() <= MAX_DISPLAY_PATTERN_CHARS + branch_count + 4);
+    }
+
+    #[test]
+    fn from_terms_uses_matched_terms_and_keeps_boundaries() {
+        // A typo-matched term the query-shape builder could never know about.
+        let options = options_for("משה", 0, "שגיאות כתיב");
+        let hl = build_display_highlight_from_terms(
+            "משה",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options,
+            &[vec!["מסה".to_string()]],
+        )
+        .unwrap();
+        assert_eq!(hl.combined_pattern, charwise("מסה"));
+        // Matched terms are complete index tokens — boundaries stay valid
+        // even for options that waive them on the query-shape path.
+        assert_eq!(hl.word_boundary_eligible, vec![true]);
+    }
+
+    #[test]
+    fn from_terms_partial_word_keeps_boundaries_unlike_query_shape() {
+        let options = options_for("ספר", 0, "חלק ממילה");
+
+        let query_shape =
+            build_display_highlight("ספר", 0, &HashMap::new(), &HashMap::new(), &options).unwrap();
+        assert_eq!(query_shape.word_boundary_eligible, vec![false]);
+
+        let from_terms = build_display_highlight_from_terms(
+            "ספר",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options,
+            &[vec!["הספרים".to_string(), "ספר".to_string()]],
+        )
+        .unwrap();
+        // The full inflected word is a branch, so the whole word highlights
+        // and token boundaries hold.
+        assert_eq!(from_terms.word_boundary_eligible, vec![true]);
+        assert!(from_terms.combined_pattern.contains(&charwise("הספרים")));
+    }
+
+    #[test]
+    fn from_terms_falls_back_per_word() {
+        // Word 0 has no matched terms → query-shape pattern; word 1 has one.
+        let hl = build_display_highlight_from_terms(
+            "שלום עולם",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[Vec::new(), vec!["עולם".to_string()]],
+        )
+        .unwrap();
+        assert_eq!(hl.word_patterns.len(), 2);
+        assert_eq!(hl.word_patterns[0], charwise("שלום"));
+        assert_eq!(hl.word_patterns[1], charwise("עולם"));
+        assert!(hl.combined_pattern.contains(WORD_SEPARATOR));
+    }
+
+    #[test]
+    fn from_terms_without_any_terms_matches_query_shape_builder() {
+        // No per-word terms at all → same output as build_display_highlight.
+        let options = options_for("שלום", 0, "כתיב מלא/חסר");
+        let from_terms = build_display_highlight_from_terms(
+            "שלום",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options,
+            &[],
+        )
+        .unwrap();
+        let query_shape =
+            build_display_highlight("שלום", 0, &HashMap::new(), &HashMap::new(), &options).unwrap();
+        assert_eq!(from_terms.combined_pattern, query_shape.combined_pattern);
+        assert_eq!(
+            from_terms.word_boundary_eligible,
+            query_shape.word_boundary_eligible
+        );
     }
 
     #[test]

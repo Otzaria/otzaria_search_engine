@@ -418,10 +418,13 @@ fn collapse_whitespace(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// תו שממשיך טוקן בשאילתה — משקף אחד-לאחד את `is_word_char` של
+/// `HebrewTokenizer` (אות/ספרה או ניקוד/טעם צמוד), כך שטוקני שאילתה נשברים
+/// בדיוק היכן שהאינדקס שובר. בפרט, מפרידי הפיסוק שבטווח העברי — פסק
+/// (U+05C0), סוף-פסוק (U+05C3) ונו"ן הפוכה (U+05C6) — שוברים טוקן; אחרת
+/// `ברא׃` היה נשאר טוקן אחד שלא קיים במילון האינדקס.
 fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric()
-        || ('\u{05D0}'..='\u{05EA}').contains(&c)
-        || ('\u{0590}'..='\u{05C7}').contains(&c)
+    c.is_alphanumeric() || is_attached_mark(c)
 }
 
 /// Splits a sanitised query into word tokens, mirroring the `HebrewTokenizer`
@@ -459,19 +462,16 @@ pub fn split_query_words(query: &str) -> Vec<String> {
     words
 }
 
-/// Strips Hebrew nikud and cantillation marks (U+0591–U+05C7), after folding
-/// presentation-form ligatures so their embedded marks are stripped too.
-pub fn strip_nikud(text: &str) -> String {
-    fold_presentation_forms(text)
-        .chars()
-        .filter(|c| !('\u{0591}'..='\u{05C7}').contains(c))
-        .collect()
-}
-
-/// Normalises text to the index term dictionary's shape: strips nikud then
-/// lowercases. This is how the `"hebrew"` analyzer maps indexed text to terms.
+/// Normalises text to the index term dictionary's shape: folds presentation
+/// forms, strips *attached* nikud/cantillation marks and lowercases. This is
+/// how the `"hebrew"` analyzer maps indexed text to terms.
+///
+/// Deliberately does NOT delete the whole U+0591–U+05C7 range: that would
+/// also remove the separator punctuation inside it (maqaf, paseq, sof pasuq),
+/// gluing `"אשר־שמע"` into one word before `split_query_words` gets to treat
+/// the maqaf as a word break.
 pub(crate) fn normalize_for_index(text: &str) -> String {
-    strip_nikud(text).to_lowercase()
+    strip_attached_marks(&fold_presentation_forms(text)).to_lowercase()
 }
 
 // ── Hebrew character classes & folding ──────────────────────────────────────
@@ -1386,9 +1386,16 @@ mod tests {
     }
 
     #[test]
-    fn strip_nikud_folds_presentation_forms() {
-        assert_eq!(strip_nikud("מ\u{FB1D}ם"), "מים");
-        assert_eq!(strip_nikud("שָׁלוֹם"), "שלום");
+    fn normalize_for_index_keeps_separators() {
+        // רגרסיה: strip_nikud היה מוחק גם את המקף/סוף-פסוק שבטווח הניקוד,
+        // ומדביק מילים לפני שהפיצול הספיק לראות את המפריד.
+        assert_eq!(normalize_for_index("אֲשֶׁר־שָׁמַע"), "אשר־שמע");
+        assert_eq!(
+            normalize_for_index("בָּרָא\u{05C3} וְהָאָרֶץ"),
+            "ברא\u{05C3} והארץ"
+        );
+        assert_eq!(normalize_for_index("מ\u{FB1D}ם"), "מים");
+        assert_eq!(normalize_for_index("Torah"), "torah");
     }
 
     // ── שקילות מילון הטרמים: הצנרת הישנה מול המשמרת-פיסוק ──────────────
@@ -1489,6 +1496,35 @@ mod tests {
         assert_eq!(split_query_words("\"רמב"), vec!["רמב"]);
         // גרש כפול: הראשון נבלע כסופי, השני מפריד (כמו בטוקנייזר).
         assert_eq!(split_query_words("רמב''ם"), vec!["רמב'", "ם"]);
+    }
+
+    #[test]
+    fn split_breaks_on_hebrew_separators_like_tokenizer() {
+        // סוף-פסוק, פסק ונו"ן הפוכה שוברים טוקן — כמו ב-HebrewTokenizer
+        // (test_separators_still_split). בלעדי זה `ברא׃` נשאר טוקן אחד
+        // שאינו קיים במילון האינדקס.
+        assert_eq!(split_query_words("ברא\u{05C3} והארץ"), vec!["ברא", "והארץ"]);
+        assert_eq!(split_query_words("ברא\u{05C3}והארץ"), vec!["ברא", "והארץ"]);
+        assert_eq!(split_query_words("א\u{05C0}ב"), vec!["א", "ב"]);
+        assert_eq!(split_query_words("א\u{05C6}ב"), vec!["א", "ב"]);
+        // ניקוד וטעמים צמודים עדיין אינם שוברים מילה.
+        assert_eq!(split_query_words("שָׁמַ֣ע"), vec!["שָׁמַ֣ע"]);
+    }
+
+    #[test]
+    fn prepare_advanced_query_breaks_sof_pasuq_like_index() {
+        // המסלול המלא: שאילתה עם סוף-פסוק מפיקה שני טרמים שקיימים באינדקס,
+        // לא טרם דבוק `ברא׃` שלעולם לא יתאים.
+        let q = prepare_advanced_query(
+            "ברא\u{05C3} והארץ",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(q.regex_terms.len(), 2);
+        assert_eq!(q.regex_terms[0].joined(), "ברא");
+        assert_eq!(q.regex_terms[1].joined(), "והארץ");
     }
 
     // ── generate_spelling_variations ────────────────────────────────────
@@ -1877,6 +1913,20 @@ mod tests {
     fn nikud_is_stripped_from_query() {
         let q = prepare_advanced_query("סֵפֶר", 0, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert_eq!(joined_terms(&q), vec!["ספר"]);
+    }
+
+    #[test]
+    fn maqaf_in_raw_query_separates_words() {
+        // רגרסיה: הנרמול רץ לפני פיצול המילים, ומחיקת המקף בו הדביקה
+        // "אשר־שמע" למילה אחת ("אשרשמע") שאינה במילון הטרמים.
+        let q = prepare_advanced_query(
+            "אֲשֶׁר־שָׁמַע",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(joined_terms(&q), vec!["אשר", "שמע"]);
     }
 
     #[test]

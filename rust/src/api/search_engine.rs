@@ -1675,17 +1675,18 @@ impl SearchEngine {
     }
 
     /// Tokenizes `text` with the same `"hebrew"` analyzer the `text` field is
-    /// indexed with, after stripping nikud — so exact/fuzzy terms line up with
-    /// the (normalized) index term dictionary, including geresh/gershayim kept
-    /// inside tokens (ז"ל, תוס').
+    /// indexed with — so exact/fuzzy terms line up with the (normalized) index
+    /// term dictionary, including geresh/gershayim kept inside tokens (ז"ל,
+    /// תוס'). No pre-normalization: the tokenizer already strips attached
+    /// marks and folds presentation forms, and a `strip_nikud` pass here would
+    /// also delete maqaf/sof-pasuq, gluing `"אשר־שמע"` into one bogus term.
     fn index_token_texts(&self, text: &str) -> Result<Vec<String>> {
-        let normalized = hebrew_query::strip_nikud(text);
         let mut analyzer = self
             .index
             .tokenizers()
             .get("hebrew")
             .context("hebrew tokenizer not registered")?;
-        let mut stream = analyzer.token_stream(&normalized);
+        let mut stream = analyzer.token_stream(text);
         let mut out = Vec::new();
         while let Some(token) = stream.next() {
             out.push(token.text.clone());
@@ -2270,6 +2271,149 @@ impl SearchEngine {
             }
         };
         Ok(addresses)
+    }
+
+    /// Builds display-highlight patterns from the index terms this query
+    /// actually matches — the same automaton scan the search and the snippet
+    /// highlighter run — so a document found via any variant (typo,
+    /// morphological affix, partial word) highlights exactly that variant in
+    /// an opened book. Full parity with search by construction: the automatons
+    /// are the very `regex_terms` branches `prepare_advanced_query` builds for
+    /// the search query.
+    ///
+    /// A word whose branches match nothing in this index (or fail to compile)
+    /// falls back to the query-shape pattern of [`generate_highlight_pattern`],
+    /// so the result is never worse than the pure-string one. Runs FST scans
+    /// against the term dictionary — async, unlike the sync pure-string
+    /// fallback; the app fetches it once per search-parameter change and
+    /// caches the compiled `RegExp`s.
+    pub fn generate_index_highlight_pattern(
+        &self,
+        query: String,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<Option<HighlightPattern>> {
+        let advanced = hebrew_query::prepare_advanced_query(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+        );
+        let searcher = self.index_reader.searcher();
+
+        // Per word: compile the word's branches and collect the index terms
+        // they match. `automaton_highlight_terms` splits its budget across the
+        // word's branches, so a wide word (partial + typo) still spreads its
+        // term allowance over all variants instead of exhausting it on the
+        // first branch; the display char budget bounds the final pattern size.
+        let mut per_word_terms: Vec<Vec<String>> = Vec::with_capacity(advanced.regex_terms.len());
+        for word_pattern in &advanced.regex_terms {
+            let automatons: Vec<tantivy_fst::Regex> = word_pattern
+                .branches()
+                .iter()
+                .filter_map(|branch| match tantivy_fst::Regex::new(branch) {
+                    Ok(re) => Some(re),
+                    Err(e) => {
+                        // A branch the search itself would reject: skip it for
+                        // highlighting (the search surfaces the error), keep
+                        // painting what the remaining branches match.
+                        log::error!(
+                            "highlight branch failed to compile ({} chars): {e}",
+                            branch.chars().count()
+                        );
+                        None
+                    }
+                })
+                .collect();
+            let matched: Vec<String> = if automatons.is_empty() {
+                Vec::new()
+            } else {
+                self.automaton_highlight_terms(&searcher, &automatons)?
+                    .into_iter()
+                    .collect()
+            };
+            per_word_terms.push(matched);
+        }
+
+        Ok(display_highlight::build_display_highlight_from_terms(
+            &query,
+            distance,
+            &custom_spacing,
+            &alternative_words,
+            &search_options,
+            &per_word_terms,
+        )
+        .map(|hl| HighlightPattern {
+            combined_pattern: hl.combined_pattern,
+            word_patterns: hl.word_patterns,
+            word_boundary_eligible: hl.word_boundary_eligible,
+        }))
+    }
+
+    /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
+    /// paints the index terms within `max_distance` edits of each query token,
+    /// plus the dictionary morphological forms when a magic dictionary is
+    /// loaded — mirroring [`Self::build_fuzzy_highlight`]'s term collection,
+    /// so an opened book highlights exactly what the fuzzy search matched.
+    pub fn generate_index_fuzzy_highlight_pattern(
+        &self,
+        query: String,
+        max_distance: u8,
+    ) -> Result<Option<HighlightPattern>> {
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy highlight distance is limited to 2, got {max_distance}"
+        );
+        let tokens = self.index_token_texts(&query)?;
+        // `build_display_highlight_from_terms` walks `split_query_words`;
+        // the analyzer tokens are aligned with it by design, but if they ever
+        // diverge, feeding misaligned terms would paint the wrong word — fall
+        // back to the query-shape pattern instead.
+        let words = hebrew_query::split_query_words(&hebrew_query::normalize_for_index(&query));
+        let per_word_terms: Vec<Vec<String>> = if tokens.len() != words.len() {
+            Vec::new()
+        } else {
+            let searcher = self.index_reader.searcher();
+            let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+            let mut collected = Vec::with_capacity(tokens.len());
+            for token in &tokens {
+                let mut matched = if max_distance == 0 {
+                    HashSet::new()
+                } else {
+                    self.automaton_highlight_terms(
+                        &searcher,
+                        &[DfaWrapper(builder.build_dfa(token))],
+                    )?
+                };
+                matched.insert(token.clone());
+                if max_distance > 0 {
+                    if let Some(dict) = self.magic_dict.as_ref() {
+                        for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
+                            matched.insert(form);
+                        }
+                    }
+                }
+                collected.push(matched.into_iter().collect());
+            }
+            collected
+        };
+
+        Ok(display_highlight::build_display_highlight_from_terms(
+            &query,
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &per_word_terms,
+        )
+        .map(|hl| HighlightPattern {
+            combined_pattern: hl.combined_pattern,
+            word_patterns: hl.word_patterns,
+            word_boundary_eligible: hl.word_boundary_eligible,
+        }))
     }
 
     /// Materializes the concrete `text` terms that the advanced-mode regex
@@ -3002,6 +3146,31 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn exact_search_raw_maqaf_query_becomes_phrase() {
+        // רגרסיה: strip_nikud לפני הטוקניזציה מחק את המקף והדביק
+        // "אשר־שמע" לטרם בודד ("אשרשמע") שאינו קיים באינדקס.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ברוך אֲשֶׁר־שָׁמַע את הדבר", "/books/a.txt");
+        add(&mut engine, 2, "אשר לא שמע דבר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let ids: Vec<u64> = engine
+            .search_exact(
+                "אשר־שמע".to_string(),
+                vec![],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        // phrase של שתי מילים סמוכות — תופס את 1, לא את 2 (מילים מרוחקות).
+        assert_eq!(ids, vec![1]);
+    }
+
     // ── Single-word alternation splitting (per-branch DFA) ───────────────
 
     /// The exact pattern the generator builds for `משה` with "חלק ממילה" +
@@ -3188,6 +3357,186 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    // ── Index-aware display highlight (parity with search, R5) ───────────
+
+    /// Charwise display form of a nikud-free term, as the Dart layer receives
+    /// it (each Hebrew letter may carry attached marks in displayed text).
+    fn charwise(term: &str) -> String {
+        term.chars()
+            .map(|c| format!("{c}{}", crate::display_highlight::ATTACHED_MARKS_CLASS))
+            .collect()
+    }
+
+    fn typo_options(word: &str) -> HashMap<String, HashMap<String, bool>> {
+        HashMap::from([(
+            format!("{word}_0"),
+            HashMap::from([("שגיאות כתיב".to_string(), true)]),
+        )])
+    }
+
+    #[test]
+    fn index_highlight_paints_typo_matched_term() {
+        let (mut engine, _dir) = make_engine();
+        // The document is findable only via the typo variant מסה — the
+        // query-shape pattern (which knows only משה + spelling) would leave
+        // it with no highlight at all.
+        add(&mut engine, 1, "ויקח מסה גדולה", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let hl = engine
+            .generate_index_highlight_pattern(
+                "משה".to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                typo_options("משה"),
+            )
+            .unwrap()
+            .expect("pattern");
+        // Only מסה exists in this index, so it is the single branch.
+        assert_eq!(hl.combined_pattern, charwise("מסה"));
+        assert_eq!(hl.word_boundary_eligible, vec![true]);
+    }
+
+    #[test]
+    fn index_highlight_partial_word_paints_whole_token_with_boundaries() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "הספרים הקדושים", "/books/a.txt");
+        add(&mut engine, 2, "ספר תורה", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let options = HashMap::from([(
+            "ספר_0".to_string(),
+            HashMap::from([("חלק ממילה".to_string(), true)]),
+        )]);
+        let hl = engine
+            .generate_index_highlight_pattern(
+                "ספר".to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+            )
+            .unwrap()
+            .expect("pattern");
+
+        // Both matched tokens are branches, longest first, and — unlike the
+        // query-shape path, which waives boundaries for "חלק ממילה" — the
+        // whole inflected word highlights under token boundaries.
+        assert!(hl.combined_pattern.contains(&charwise("הספרים")));
+        assert!(hl.combined_pattern.contains(&charwise("ספר")));
+        assert!(
+            hl.combined_pattern.find(&charwise("הספרים")).unwrap()
+                < hl.combined_pattern
+                    .find(&format!("|{}", charwise("ספר")))
+                    .unwrap(),
+            "longer term must precede its prefix in the alternation"
+        );
+        assert_eq!(hl.word_boundary_eligible, vec![true]);
+    }
+
+    #[test]
+    fn index_highlight_falls_back_to_query_shape_when_nothing_matches() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "בראשית ברא", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let from_index = engine
+            .generate_index_highlight_pattern(
+                "משה".to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                typo_options("משה"),
+            )
+            .unwrap()
+            .expect("pattern");
+        let query_shape = generate_highlight_pattern(
+            "משה".to_string(),
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            typo_options("משה"),
+        )
+        .expect("pattern");
+        // Nothing in the index matches → never worse than the pure-string
+        // pattern the app used until now.
+        assert_eq!(from_index.combined_pattern, query_shape.combined_pattern);
+        assert_eq!(
+            from_index.word_boundary_eligible,
+            query_shape.word_boundary_eligible
+        );
+    }
+
+    #[test]
+    fn index_highlight_multi_word_paints_each_words_variants() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר מסה אל העם", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let options = HashMap::from([(
+            "משה_1".to_string(),
+            HashMap::from([("שגיאות כתיב".to_string(), true)]),
+        )]);
+        let hl = engine
+            .generate_index_highlight_pattern(
+                "ויאמר משה".to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+            )
+            .unwrap()
+            .expect("pattern");
+
+        assert_eq!(hl.word_patterns.len(), 2);
+        assert_eq!(hl.word_patterns[0], charwise("ויאמר"));
+        assert_eq!(hl.word_patterns[1], charwise("מסה"));
+        // Combined phrase pattern chains both words.
+        assert!(hl.combined_pattern.starts_with(&charwise("ויאמר")));
+        assert!(hl.combined_pattern.ends_with(&charwise("מסה")));
+    }
+
+    #[test]
+    fn index_fuzzy_highlight_paints_edit_distance_matches() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויקח מסה גדולה", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let hl = engine
+            .generate_index_fuzzy_highlight_pattern("משה".to_string(), 1)
+            .unwrap()
+            .expect("pattern");
+        // The edit-distance-1 match from the index plus the literal token.
+        assert!(hl.combined_pattern.contains(&charwise("מסה")));
+        assert!(hl.combined_pattern.contains(&charwise("משה")));
+
+        // Distance above the FuzzyTermQuery limit is rejected loudly.
+        assert!(engine
+            .generate_index_fuzzy_highlight_pattern("משה".to_string(), 3)
+            .is_err());
+    }
+
+    #[test]
+    fn index_highlight_plain_query_matches_exact_token() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+
+        // No options at all (the plain path of prepare_advanced_query).
+        let hl = engine
+            .generate_index_highlight_pattern(
+                "שלום".to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .unwrap()
+            .expect("pattern");
+        assert_eq!(hl.combined_pattern, charwise("שלום"));
     }
 
     #[test]
