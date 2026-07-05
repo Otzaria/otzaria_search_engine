@@ -1084,18 +1084,21 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
-        let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_stream(
-            query,
-            |_| Ok(None),
-            limit,
-            offset,
-            &order,
-            &hl,
-            chunk_size,
-            sink,
-        )
+        let result = (|| {
+            let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
+            let hl = highlight.unwrap_or_else(HighlightConfig::default);
+            self.run_search_stream(
+                query,
+                |_| Ok(None),
+                limit,
+                offset,
+                &order,
+                &hl,
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
     }
 
     // ── High-level mode-specific search API ──────────────────────────────────────
@@ -1156,17 +1159,20 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let q = self.build_exact_query(&query, &facets)?;
-        self.run_search_stream(
-            q,
-            |_| Ok(None),
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            chunk_size,
-            sink,
-        )
+        let result = (|| {
+            let q = self.build_exact_query(&query, &facets)?;
+            self.run_search_stream(
+                q,
+                |_| Ok(None),
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
     }
 
     pub fn count_exact(&self, query: String, facets: Vec<String>) -> Result<u32> {
@@ -1269,24 +1275,27 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let (q, regex_terms) = self.build_advanced_query(
-            &query,
-            distance,
-            &custom_spacing,
-            &alternative_words,
-            &search_options,
-            facets,
-        )?;
-        self.run_search_stream(
-            q,
-            |s| self.advanced_highlight_query(s, &regex_terms),
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            chunk_size,
-            sink,
-        )
+        let result = (|| {
+            let (q, regex_terms) = self.build_advanced_query(
+                &query,
+                distance,
+                &custom_spacing,
+                &alternative_words,
+                &search_options,
+                facets,
+            )?;
+            self.run_search_stream(
+                q,
+                |s| self.advanced_highlight_query(s, &regex_terms),
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
     }
 
     pub fn count_advanced(
@@ -1415,23 +1424,26 @@ impl SearchEngine {
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
-        let token_texts = self.index_token_texts(&query)?;
-        let rank = matches!(order, ResultsOrder::Relevance);
-        let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
-        self.run_search_stream(
-            q,
-            |s| {
-                Ok(self
-                    .build_fuzzy_highlight(s, &token_texts, max_distance)
-                    .ok())
-            },
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            chunk_size,
-            sink,
-        )
+        let result = (|| {
+            let token_texts = self.index_token_texts(&query)?;
+            let rank = matches!(order, ResultsOrder::Relevance);
+            let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+            self.run_search_stream(
+                q,
+                |s| {
+                    Ok(self
+                        .build_fuzzy_highlight(s, &token_texts, max_distance)
+                        .ok())
+                },
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                &sink,
+            )
+        })();
+        Self::surface_stream_error(&sink, result)
     }
 
     pub fn count_fuzzy(&self, query: String, facets: Vec<String>, max_distance: u8) -> Result<u32> {
@@ -1627,7 +1639,10 @@ impl SearchEngine {
                         branch.chars().count(),
                         branch.chars().take(80).collect::<String>(),
                     );
-                    anyhow::anyhow!("invalid regex branch ({} chars): {e}", branch.chars().count())
+                    anyhow::anyhow!(
+                        "invalid regex branch ({} chars): {e}",
+                        branch.chars().count()
+                    )
                 })
             })
             .collect::<Result<_>>()?;
@@ -2150,6 +2165,27 @@ impl SearchEngine {
         Ok(results)
     }
 
+    /// Routes a stream-search failure into the stream itself, where the Dart
+    /// side receives it as an `onError` event.
+    ///
+    /// Returning `Err` from a `StreamSink`-taking function does NOT reach the
+    /// app: the generated Dart wrapper fires the call `unawaited` and returns
+    /// `sink.stream` immediately, so the error becomes an unhandled async
+    /// error while dropping the Rust sink just closes the stream — the user
+    /// sees 0 results and no failure. This was the silent-failure half of the
+    /// state-limit bug, and relaxing budgets makes `max_expansions` overflow
+    /// (which must stay an error) more reachable, so it has to be visible.
+    fn surface_stream_error(
+        sink: &StreamSink<Vec<SearchResult>>,
+        result: Result<()>,
+    ) -> Result<()> {
+        if let Err(err) = result {
+            error!("stream search failed: {err:#}");
+            let _ = sink.add_error(err);
+        }
+        Ok(())
+    }
+
     fn run_search_stream<F>(
         &self,
         query: Box<dyn Query>,
@@ -2159,7 +2195,7 @@ impl SearchEngine {
         order: &ResultsOrder,
         hl: &HighlightConfig,
         chunk_size: u32,
-        sink: StreamSink<Vec<SearchResult>>,
+        sink: &StreamSink<Vec<SearchResult>>,
     ) -> Result<()>
     where
         F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
@@ -3055,10 +3091,7 @@ mod tests {
 
         // Top-level alternation between two groups, with `|` inside a char
         // class in the second branch — the class pipe must not be split on.
-        let mut ids = search_ids(
-            &mut engine,
-            "([א-ת]{2,4}(ים|ות|ה)?)|([א-ת]+[יו][ם|ן])",
-        );
+        let mut ids = search_ids(&mut engine, "([א-ת]{2,4}(ים|ות|ה)?)|([א-ת]+[יו][ם|ן])");
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 2]);
 
@@ -3097,6 +3130,43 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn advanced_typo_partial_single_word_finds_document() {
+        // End-to-end through the app path (search_advanced): the exact option
+        // combination that used to blow the 1000-state DFA cap and silently
+        // return nothing. Runs on the relaxed single-word budget.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר משה אל העם", "/books/a.txt");
+        add(&mut engine, 2, "ספר בראשית", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let mut options: HashMap<String, HashMap<String, bool>> = HashMap::new();
+        options.insert(
+            "משה_0".to_string(),
+            HashMap::from([
+                ("שגיאות כתיב".to_string(), true),
+                ("חלק ממילה".to_string(), true),
+            ]),
+        );
+        let ids: Vec<u64> = engine
+            .search_advanced(
+                "משה".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![1]);
     }
 
     #[test]
