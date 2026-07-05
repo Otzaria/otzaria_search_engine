@@ -2073,6 +2073,20 @@ impl SearchEngine {
         }
     }
 
+    /// The quote-free spelling of a token that carries gershayim/geresh
+    /// (`רמב"ם` → `רמבם`). Clean-typography editions store that term, so the
+    /// fuzzy builders add it as an exact-tier alternative: the bridge works
+    /// even at distance 0, and clean-edition hits rank as exact matches
+    /// instead of edit-distance tail matches. `None` when the token has no
+    /// quotes (the common case) or nothing remains without them.
+    fn quoteless_variant(token: &str) -> Option<String> {
+        if !token.contains(['"', '\'']) {
+            return None;
+        }
+        let clean: String = token.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+        (!clean.is_empty()).then_some(clean)
+    }
+
     /// The two summed `Should` clauses that lift an exact-token hit to the top
     /// relevance tier: a `ConstScoreQuery` floor (immune to BM25 `idf` collapse
     /// on near-ubiquitous terms) plus a small BM25 `TermQuery` add-on for
@@ -2128,14 +2142,31 @@ impl SearchEngine {
                 let fuzzy = FuzzyTermQuery::new(term, max_distance, true);
                 // Bare recall is one fuzzy automaton per token. distance 0 is
                 // exact already, and unranked paths (count/catalogue) need no
-                // scoring, so both stay byte-identical to the bare query. On the
-                // ranked path above distance 0 we add the exact tier so an exact
-                // hit outranks a bare edit-distance neighbour; the exact term is
-                // a subset of the fuzzy match, so recall is unchanged.
+                // scoring, so both stay the bare query — except that a
+                // quote-bearing token also matches its quote-free spelling
+                // (clean-typography editions), even at distance 0. On the
+                // ranked path above distance 0 we add the exact tier so an
+                // exact hit outranks a bare edit-distance neighbour; the exact
+                // term is a subset of the fuzzy match, so recall is unchanged.
                 let token_query: Box<dyn Query> = if !rank || max_distance == 0 {
-                    Box::new(fuzzy)
+                    match Self::quoteless_variant(t) {
+                        Some(clean) => Box::new(BooleanQuery::new(vec![
+                            (Occur::Should, Box::new(fuzzy) as Box<dyn Query>),
+                            (
+                                Occur::Should,
+                                Box::new(TermQuery::new(
+                                    Term::from_field_text(text_f, &clean),
+                                    IndexRecordOption::Basic,
+                                )),
+                            ),
+                        ])),
+                        None => Box::new(fuzzy),
+                    }
                 } else {
                     let mut should = Self::exact_rank_clauses(text_f, t);
+                    if let Some(clean) = Self::quoteless_variant(t) {
+                        should.extend(Self::exact_rank_clauses(text_f, &clean));
+                    }
                     should.push((
                         Occur::Should,
                         Box::new(BoostQuery::new(Box::new(fuzzy), FUZZY_BOOST_FUZZY)),
@@ -2238,19 +2269,36 @@ impl SearchEngine {
             } else {
                 Box::new(fuzzy_q)
             };
+            let clean = Self::quoteless_variant(token);
             let mut forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
-            forms.retain(|f| f != token);
+            forms.retain(|f| f != token && Some(f.as_str()) != clean.as_deref());
 
             // Unranked: the original recall shape — `fuzzy OR termset`, or just
             // `fuzzy` when the dictionary has no extra forms. Ranked: prepend the
             // exact tier (the exact term is a subset of the fuzzy match, so this
             // never changes recall) and boost the lexical tier. `BooleanQuery`
             // sums `Should` scores, so exact-floor + BM25 > lexical > fuzzy.
+            // A quote-bearing token also carries its quote-free spelling in
+            // the exact tier — clean-typography editions match at distance 0
+            // and rank as exact, not as edit-distance tail.
             let mut should: Vec<(Occur, Box<dyn Query>)> = if rank {
                 Self::exact_rank_clauses(text_f, token)
             } else {
-                Vec::with_capacity(2)
+                Vec::with_capacity(3)
             };
+            if let Some(clean) = &clean {
+                if rank {
+                    should.extend(Self::exact_rank_clauses(text_f, clean));
+                } else {
+                    should.push((
+                        Occur::Should,
+                        Box::new(TermQuery::new(
+                            Term::from_field_text(text_f, clean),
+                            IndexRecordOption::Basic,
+                        )),
+                    ));
+                }
+            }
             should.push((Occur::Should, fuzzy));
             if !forms.is_empty() {
                 let set_terms: Vec<Term> = forms
@@ -2305,6 +2353,16 @@ impl SearchEngine {
                     token.clone(),
                     MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
                 );
+                // The quote-free spelling rides along ahead of the budgeted
+                // expansions, like in the single-token path.
+                if let Some(clean) = Self::quoteless_variant(token) {
+                    Self::push_limited_unique(
+                        &mut terms,
+                        &mut seen,
+                        clean,
+                        MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN,
+                    );
+                }
                 for form in dict.recall_forms(token, MAX_LEXICAL_FORMS) {
                     Self::push_limited_unique(
                         &mut terms,
@@ -3405,7 +3463,7 @@ mod tests {
             CREATE TABLE surface (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE, base_id INTEGER NOT NULL REFERENCES base(id), notes TEXT);
             CREATE TABLE variant (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL UNIQUE);
             CREATE TABLE surface_variant (surface_id INTEGER NOT NULL REFERENCES surface(id), variant_id INTEGER NOT NULL REFERENCES variant(id), PRIMARY KEY (surface_id, variant_id));
-            INSERT INTO base (id, value) VALUES (1, 'הלכ'), (2, 'ישנ');
+            INSERT INTO base (id, value) VALUES (1, 'הלכ'), (2, 'ישנ'), (3, 'אדמור');
             INSERT INTO surface (id, value, base_id) VALUES
                 (1, 'הלכתי', 1),
                 (2, 'הולכ', 1),
@@ -3413,7 +3471,11 @@ mod tests {
                 (4, 'הולכימ', 1),
                 (5, 'לישונ', 2),
                 (6, 'ישנ', 2),
-                (7, 'בלשונ', 2);
+                (7, 'בלשונ', 2),
+                -- מסמן את הפער השיורי של אופציה A (ראו §5.2 בתכנון): ה-DB
+                -- מחזיק צורות נקיות בלבד, בעוד שהאינדקס עשוי לשאת אדמו"ר.
+                (8, 'אדמור', 3),
+                (9, 'אדמורימ', 3);
             "#,
         )
         .unwrap();
