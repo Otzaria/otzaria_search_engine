@@ -52,6 +52,12 @@ pub struct DocumentInput {
     pub segment: u64,
     pub is_pdf: bool,
     pub file_path: String,
+    /// Book-level content fingerprint (see [`compute_content_fingerprint`]).
+    /// The same value is stamped on every document of a book, so
+    /// [`SearchEngine::get_book_fingerprints`] can compare an index against the
+    /// current library source. `None`/`0` means "no fingerprint recorded"
+    /// (e.g. PDF books).
+    pub content_hash: Option<u64>,
 }
 
 pub struct HighlightConfig {
@@ -143,9 +149,19 @@ const FUZZY_BOOST_EXACT_REL: Score = 1.0;
 const FUZZY_BOOST_LEXICAL: Score = 30.0;
 const FUZZY_BOOST_FUZZY: Score = 1.0;
 
-/// The eight schema fields resolved together by [`SearchEngine::all_fields`]:
-/// `(title, reference, text, id, segment, isPdf, filePath, topics)`.
-type SchemaFields = (Field, Field, Field, Field, Field, Field, Field, Field);
+/// The nine schema fields resolved together by [`SearchEngine::all_fields`]:
+/// `(title, reference, text, id, segment, isPdf, filePath, topics, contentHash)`.
+type SchemaFields = (
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+);
 
 #[derive(Serialize, Deserialize)]
 struct IndexMetadata {
@@ -259,6 +275,30 @@ pub fn normalize_pdf_text_for_indexing(input: String) -> String {
 #[frb(sync)]
 pub fn is_probably_garbage_pdf_text(normalized_text: String) -> bool {
     hebrew_query::is_probably_garbage_pdf_text(&normalized_text)
+}
+
+/// 64-bit content fingerprint (FNV-1a over UTF-8 bytes) of a book's raw
+/// source text. Stamp it on every [`DocumentInput`] of the book at indexing
+/// time; recompute it from the current library source and compare against
+/// [`SearchEngine::get_book_fingerprints`] to detect books whose content
+/// changed without reindexing everything.
+///
+/// Never returns 0 — that value is reserved for "no fingerprint recorded".
+/// Deliberately hashes the *raw* text (before normalization/tokenization) so
+/// the fingerprint does not shift when text-processing internals change.
+pub fn compute_content_fingerprint(text: String) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
@@ -532,6 +572,10 @@ fn current_schema() -> Schema {
     schema_builder.add_u64_field("segment", STORED);
     schema_builder.add_bool_field("isPdf", STORED);
     schema_builder.add_text_field("filePath", STRING | FAST | STORED);
+    // Book-level content fingerprint, stamped identically on all documents of
+    // a book. FAST-only: read columnar by get_book_fingerprints, never searched
+    // or returned. 0 = no fingerprint recorded.
+    schema_builder.add_u64_field("contentHash", FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
     schema_builder.build()
 }
@@ -629,6 +673,8 @@ impl SearchEngine {
     // ── Write API ──────────────────────────────────────────────────────────────
 
     /// Add a single document. Does not commit.
+    /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
+    /// [`Self::add_documents_batch`] is the fingerprint-aware path.
     pub fn add_document(
         &mut self,
         _id: u64,
@@ -640,18 +686,28 @@ impl SearchEngine {
         _is_pdf: bool,
         _file_path: &str,
     ) -> Result<()> {
-        let (title_f, reference_f, text_f, id_f, segment_f, is_pdf_f, file_path_f, topics_f) =
-            self.all_fields()?;
+        let (
+            title_f,
+            reference_f,
+            text_f,
+            id_f,
+            segment_f,
+            is_pdf_f,
+            file_path_f,
+            topics_f,
+            content_hash_f,
+        ) = self.all_fields()?;
         let topics_facet = Facet::from_text(_topics)?;
         self.writer_mut()?.add_document(doc!(
-            title_f     => _title,
-            reference_f => _reference,
-            text_f      => _text,
-            id_f        => _id,
-            segment_f   => _segment,
-            is_pdf_f    => _is_pdf,
-            file_path_f => _file_path,
-            topics_f    => topics_facet
+            title_f        => _title,
+            reference_f    => _reference,
+            text_f         => _text,
+            id_f           => _id,
+            segment_f      => _segment,
+            is_pdf_f       => _is_pdf,
+            file_path_f    => _file_path,
+            topics_f       => topics_facet,
+            content_hash_f => 0u64
         ))?;
         Ok(())
     }
@@ -659,20 +715,30 @@ impl SearchEngine {
     /// Add many documents in a single FFI call. Does not commit.
     /// For initial bulk loads – no duplicate checking.
     pub fn add_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
-        let (title_f, reference_f, text_f, id_f, segment_f, is_pdf_f, file_path_f, topics_f) =
-            self.all_fields()?;
+        let (
+            title_f,
+            reference_f,
+            text_f,
+            id_f,
+            segment_f,
+            is_pdf_f,
+            file_path_f,
+            topics_f,
+            content_hash_f,
+        ) = self.all_fields()?;
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
             writer.add_document(doc!(
-                title_f     => doc.title,
-                reference_f => doc.reference,
-                text_f      => doc.text,
-                id_f        => doc.id,
-                segment_f   => doc.segment,
-                is_pdf_f    => doc.is_pdf,
-                file_path_f => doc.file_path,
-                topics_f    => topics_facet
+                title_f        => doc.title,
+                reference_f    => doc.reference,
+                text_f         => doc.text,
+                id_f           => doc.id,
+                segment_f      => doc.segment,
+                is_pdf_f       => doc.is_pdf,
+                file_path_f    => doc.file_path,
+                topics_f       => topics_facet,
+                content_hash_f => doc.content_hash.unwrap_or(0)
             ))?;
         }
         Ok(())
@@ -698,21 +764,31 @@ impl SearchEngine {
 
     /// Upsert many documents in a single FFI call. Does not commit.
     pub fn upsert_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
-        let (title_f, reference_f, text_f, id_f, segment_f, is_pdf_f, file_path_f, topics_f) =
-            self.all_fields()?;
+        let (
+            title_f,
+            reference_f,
+            text_f,
+            id_f,
+            segment_f,
+            is_pdf_f,
+            file_path_f,
+            topics_f,
+            content_hash_f,
+        ) = self.all_fields()?;
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
             writer.add_document(doc!(
-                title_f     => doc.title,
-                reference_f => doc.reference,
-                text_f      => doc.text,
-                id_f        => doc.id,
-                segment_f   => doc.segment,
-                is_pdf_f    => doc.is_pdf,
-                file_path_f => doc.file_path,
-                topics_f    => topics_facet
+                title_f        => doc.title,
+                reference_f    => doc.reference,
+                text_f         => doc.text,
+                id_f           => doc.id,
+                segment_f      => doc.segment,
+                is_pdf_f       => doc.is_pdf,
+                file_path_f    => doc.file_path,
+                topics_f       => topics_facet,
+                content_hash_f => doc.content_hash.unwrap_or(0)
             ))?;
         }
         Ok(())
@@ -890,6 +966,18 @@ impl SearchEngine {
     /// [`Self::count_documents_by_file_path`].
     pub fn get_indexed_file_paths(&self) -> Result<Vec<String>> {
         Ok(self.count_documents_by_file_path()?.into_keys().collect())
+    }
+
+    /// Content fingerprint per distinct `filePath`, read columnar from the
+    /// live documents (like [`Self::count_documents_by_file_path`], no stored
+    /// fields are touched).
+    ///
+    /// A value of 0 means "unverifiable": either the book was indexed without
+    /// a fingerprint (e.g. PDF), or its live documents disagree (partial
+    /// reindex) — callers should treat such books as changed or skip them.
+    pub fn get_book_fingerprints(&self) -> Result<HashMap<String, u64>> {
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(&AllQuery, &BookFingerprintCollector)?)
     }
 
     /// Fetch a single document by its numeric id. Returns None if not found.
@@ -1384,6 +1472,7 @@ impl SearchEngine {
             self.schema.get_field("isPdf")?,
             self.schema.get_field("filePath")?,
             self.schema.get_field("topics")?,
+            self.schema.get_field("contentHash")?,
         ))
     }
 
@@ -2574,6 +2663,105 @@ impl SegmentCollector for BookCountSegmentCollector {
     }
 }
 
+// ── BookFingerprintCollector ───────────────────────────────────────────────────
+
+/// Collects the `contentHash` fast-field value per `filePath` fast field.
+/// Per-segment work uses term ordinals; strings are decoded only in harvest().
+/// Documents of the same book that disagree on the hash collapse to 0
+/// ("unverifiable"), and 0 wins over any value when merging segments.
+struct BookFingerprintCollector;
+
+struct BookFingerprintSegmentCollector {
+    str_col: Option<tantivy::columnar::StrColumn>,
+    hash_col: Option<tantivy::columnar::Column<u64>>,
+    fingerprints: HashMap<u64, u64>,
+}
+
+impl Collector for BookFingerprintCollector {
+    type Fruit = HashMap<String, u64>;
+    type Child = BookFingerprintSegmentCollector;
+
+    fn for_segment(
+        &self,
+        _seg_ord: SegmentOrdinal,
+        reader: &SegmentReader,
+    ) -> tantivy::Result<BookFingerprintSegmentCollector> {
+        let str_col = reader.fast_fields().str("filePath")?;
+        // אינדקסים מלפני הוספת השדה: אין עמודה — כל הספרים "לא ניתנים לאימות".
+        let hash_col = reader.fast_fields().u64("contentHash").ok();
+        Ok(BookFingerprintSegmentCollector {
+            str_col,
+            hash_col,
+            fingerprints: HashMap::new(),
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(
+        &self,
+        per_segment: Vec<tantivy::Result<HashMap<String, u64>>>,
+    ) -> tantivy::Result<HashMap<String, u64>> {
+        let mut merged: HashMap<String, u64> = HashMap::new();
+        for seg_result in per_segment {
+            for (path, hash) in seg_result? {
+                merged
+                    .entry(path)
+                    .and_modify(|existing| {
+                        if *existing != hash {
+                            *existing = 0;
+                        }
+                    })
+                    .or_insert(hash);
+            }
+        }
+        Ok(merged)
+    }
+}
+
+impl SegmentCollector for BookFingerprintSegmentCollector {
+    type Fruit = tantivy::Result<HashMap<String, u64>>;
+
+    fn collect(&mut self, doc_id: DocId, _score: Score) {
+        let Some(str_col) = &self.str_col else {
+            return;
+        };
+        let Some(term_ord) = str_col.term_ords(doc_id).next() else {
+            return;
+        };
+        let hash = self
+            .hash_col
+            .as_ref()
+            .and_then(|col| col.first(doc_id))
+            .unwrap_or(0);
+        self.fingerprints
+            .entry(term_ord)
+            .and_modify(|existing| {
+                if *existing != hash {
+                    *existing = 0;
+                }
+            })
+            .or_insert(hash);
+    }
+
+    fn harvest(self) -> tantivy::Result<HashMap<String, u64>> {
+        let Some(col) = self.str_col else {
+            return Ok(HashMap::new());
+        };
+        let mut result = HashMap::with_capacity(self.fingerprints.len());
+        let mut buf = String::new();
+        for (term_ord, hash) in self.fingerprints {
+            buf.clear();
+            if col.ord_to_str(term_ord, &mut buf)? {
+                result.insert(buf.clone(), hash);
+            }
+        }
+        Ok(result)
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -3159,6 +3347,97 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn compute_content_fingerprint_is_stable_and_never_zero() {
+        let a = compute_content_fingerprint("בראשית ברא".to_string());
+        let b = compute_content_fingerprint("בראשית ברא".to_string());
+        let c = compute_content_fingerprint("בראשית ברה".to_string());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, 0);
+        assert_ne!(compute_content_fingerprint(String::new()), 0);
+    }
+
+    fn fingerprint_doc(id: u64, text: &str, file_path: &str, hash: Option<u64>) -> DocumentInput {
+        DocumentInput {
+            id,
+            title: "ספר".to_string(),
+            reference: "ref".to_string(),
+            topics: "/root".to_string(),
+            text: text.to_string(),
+            segment: 0,
+            is_pdf: false,
+            file_path: file_path.to_string(),
+            content_hash: hash,
+        }
+    }
+
+    #[test]
+    fn get_book_fingerprints_returns_per_book_hash() {
+        let (mut engine, _dir) = make_engine();
+        let hash_a = compute_content_fingerprint("ספר א".to_string());
+        let hash_b = compute_content_fingerprint("ספר ב".to_string());
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(1, "שורה ראשונה", "id:1", Some(hash_a)),
+                fingerprint_doc(2, "שורה שנייה", "id:1", Some(hash_a)),
+                fingerprint_doc(3, "טקסט אחר", "id:2", Some(hash_b)),
+                // PDF-כמו: ללא טביעת אצבע — צריך להופיע כ-0.
+                fingerprint_doc(4, "עמוד", "C:/books/a.pdf", None),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+
+        let fingerprints = engine.get_book_fingerprints().unwrap();
+        assert_eq!(fingerprints.get("id:1"), Some(&hash_a));
+        assert_eq!(fingerprints.get("id:2"), Some(&hash_b));
+        assert_eq!(fingerprints.get("C:/books/a.pdf"), Some(&0));
+    }
+
+    #[test]
+    fn get_book_fingerprints_reflects_reindex_and_delete() {
+        let (mut engine, _dir) = make_engine();
+        let old_hash = compute_content_fingerprint("ישן".to_string());
+        let new_hash = compute_content_fingerprint("חדש".to_string());
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(1, "ישן", "id:1", Some(old_hash)),
+                fingerprint_doc(2, "אחר", "id:2", Some(old_hash)),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+
+        // אינדוקס מחדש של ספר: מחיקה לפי כותרת קודם הייתה מוחקת את שניהם —
+        // כאן מדמים דרך upsert לפי id של מסמכי הספר בלבד.
+        engine
+            .upsert_documents_batch(vec![fingerprint_doc(1, "חדש", "id:1", Some(new_hash))])
+            .unwrap();
+        engine.commit().unwrap();
+
+        let fingerprints = engine.get_book_fingerprints().unwrap();
+        assert_eq!(fingerprints.get("id:1"), Some(&new_hash));
+        assert_eq!(fingerprints.get("id:2"), Some(&old_hash));
+
+        engine.remove_documents_by_title("ספר").unwrap();
+        engine.commit().unwrap();
+        assert!(engine.get_book_fingerprints().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_book_fingerprints_conflicting_docs_collapse_to_zero() {
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(1, "שורה", "id:1", Some(7)),
+                fingerprint_doc(2, "שורה", "id:1", Some(9)),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+
+        let fingerprints = engine.get_book_fingerprints().unwrap();
+        assert_eq!(fingerprints.get("id:1"), Some(&0));
     }
 
     #[test]

@@ -76,6 +76,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Map<String, int> dco_decode_Map_String_u_32_None(dynamic raw);
 
   @protected
+  Map<String, BigInt> dco_decode_Map_String_u_64_None(dynamic raw);
+
+  @protected
   Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw);
 
   @protected
@@ -120,6 +123,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
   DocumentInput dco_decode_document_input(dynamic raw);
@@ -174,6 +180,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<(String, int)> dco_decode_list_record_string_u_32(dynamic raw);
 
   @protected
+  List<(String, BigInt)> dco_decode_list_record_string_u_64(dynamic raw);
+
+  @protected
   List<(int, List<String>)> dco_decode_list_record_u_32_list_string(
     dynamic raw,
   );
@@ -203,6 +212,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
   (String, bool) dco_decode_record_string_bool(dynamic raw);
 
   @protected
@@ -215,6 +227,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   (String, int) dco_decode_record_string_u_32(dynamic raw);
+
+  @protected
+  (String, BigInt) dco_decode_record_string_u_64(dynamic raw);
 
   @protected
   (int, List<String>) dco_decode_record_u_32_list_string(dynamic raw);
@@ -299,6 +314,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Map<String, BigInt> sse_decode_Map_String_u_64_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Map<int, List<String>> sse_decode_Map_u_32_list_String_None(
     SseDeserializer deserializer,
   );
@@ -353,6 +373,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
   DocumentInput sse_decode_document_input(SseDeserializer deserializer);
@@ -421,6 +444,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<(String, BigInt)> sse_decode_list_record_string_u_64(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(int, List<String>)> sse_decode_list_record_u_32_list_string(
     SseDeserializer deserializer,
   );
@@ -460,6 +488,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
   (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
 
   @protected
@@ -474,6 +505,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   (String, int) sse_decode_record_string_u_32(SseDeserializer deserializer);
+
+  @protected
+  (String, BigInt) sse_decode_record_string_u_64(SseDeserializer deserializer);
 
   @protected
   (int, List<String>) sse_decode_record_u_32_list_string(
@@ -573,6 +607,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_Map_String_u_64_None(
+    Map<String, BigInt> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_Map_u_32_list_String_None(
     Map<int, List<String>> self,
     SseSerializer serializer,
@@ -642,6 +682,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_document_input(DocumentInput self, SseSerializer serializer);
@@ -728,6 +771,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_record_string_u_64(
+    List<(String, BigInt)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_u_32_list_string(
     List<(int, List<String>)> self,
     SseSerializer serializer,
@@ -773,6 +822,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_record_string_bool(
     (String, bool) self,
     SseSerializer serializer,
@@ -793,6 +845,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_string_u_32(
     (String, int) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_string_u_64(
+    (String, BigInt) self,
     SseSerializer serializer,
   );
 

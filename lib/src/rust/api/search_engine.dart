@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `DfaWrapper`, `IndexMetadata`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `for_segment`, `harvest`, `is_match`, `merge_fruits`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `DfaWrapper`, `IndexMetadata`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `collect`, `for_segment`, `for_segment`, `harvest`, `harvest`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -101,9 +101,25 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
       normalizedText: normalizedText,
     );
 
+/// 64-bit content fingerprint (FNV-1a over UTF-8 bytes) of a book's raw
+/// source text. Stamp it on every [`DocumentInput`] of the book at indexing
+/// time; recompute it from the current library source and compare against
+/// [`SearchEngine::get_book_fingerprints`] to detect books whose content
+/// changed without reindexing everything.
+///
+/// Never returns 0 — that value is reserved for "no fingerprint recorded".
+/// Deliberately hashes the *raw* text (before normalization/tokenization) so
+/// the fingerprint does not shift when text-processing internals change.
+Future<BigInt> computeContentFingerprint({required String text}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineComputeContentFingerprint(text: text);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
   /// Add a single document. Does not commit.
+  /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
+  /// [`Self::add_documents_batch`] is the fingerprint-aware path.
   Future<void> addDocument({
     required BigInt id,
     required String title,
@@ -187,6 +203,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Delete a document by its numeric id. Does not commit.
   Future<void> deleteDocumentById({required BigInt id});
+
+  /// Content fingerprint per distinct `filePath`, read columnar from the
+  /// live documents (like [`Self::count_documents_by_file_path`], no stored
+  /// fields are touched).
+  ///
+  /// A value of 0 means "unverifiable": either the book was indexed without
+  /// a fingerprint (e.g. PDF), or its live documents disagree (partial
+  /// reindex) — callers should treat such books as changed or skip them.
+  Future<Map<String, BigInt>> getBookFingerprints();
 
   /// Fetch a single document by its numeric id. Returns None if not found.
   /// The `text` field contains the raw stored text (no snippet/highlight).
@@ -437,6 +462,13 @@ class DocumentInput {
   final bool isPdf;
   final String filePath;
 
+  /// Book-level content fingerprint (see [`compute_content_fingerprint`]).
+  /// The same value is stamped on every document of a book, so
+  /// [`SearchEngine::get_book_fingerprints`] can compare an index against the
+  /// current library source. `None`/`0` means "no fingerprint recorded"
+  /// (e.g. PDF books).
+  final BigInt? contentHash;
+
   const DocumentInput({
     required this.id,
     required this.title,
@@ -446,6 +478,7 @@ class DocumentInput {
     required this.segment,
     required this.isPdf,
     required this.filePath,
+    this.contentHash,
   });
 
   @override
@@ -457,7 +490,8 @@ class DocumentInput {
       text.hashCode ^
       segment.hashCode ^
       isPdf.hashCode ^
-      filePath.hashCode;
+      filePath.hashCode ^
+      contentHash.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -471,7 +505,8 @@ class DocumentInput {
           text == other.text &&
           segment == other.segment &&
           isPdf == other.isPdf &&
-          filePath == other.filePath;
+          filePath == other.filePath &&
+          contentHash == other.contentHash;
 }
 
 class FacetCount {
