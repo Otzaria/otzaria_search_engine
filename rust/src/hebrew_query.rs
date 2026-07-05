@@ -247,6 +247,135 @@ pub(crate) fn normalize_for_index(text: &str) -> String {
     strip_nikud(text).to_lowercase()
 }
 
+// ── Document ingestion normalisation ───────────────────────────────────────
+//
+// The single source of truth for the text normalisation applied to every line
+// before it is stored in the index. The Dart app used to reimplement this in
+// `IndexingDocumentBuilder` (`sanitizeQuery(removeVolwels(stripHtmlIfNeeded(x)))`);
+// it now delegates here so index-time and query-time normalisation cannot drift.
+
+/// Strips HTML tags and entities, mirroring the Dart `stripHtmlIfNeeded`:
+/// the four whitespace entities become a space first (so adjacent words are
+/// not merged), then `<…>` tags and remaining `&…;` entities are removed.
+///
+/// Char-based to match the Dart regex `<[^>]*>|&[^;]+;`: a `<` is dropped
+/// through the next `>` (kept verbatim if unterminated); an `&` is dropped
+/// through the next `;` only if at least one non-`;` char precedes it.
+pub fn strip_html_for_indexing(text: &str) -> String {
+    // Named whitespace entities → space, matching Dart's pre-pass order so
+    // they are not swallowed by the generic `&…;` rule below.
+    let spaced = text
+        .replace("&nbsp;", " ")
+        .replace("&thinsp;", " ")
+        .replace("&ensp;", " ")
+        .replace("&emsp;", " ");
+
+    let chars: Vec<char> = spaced.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '<' => {
+                // `<[^>]*>` — find the closing `>`; drop the whole span.
+                if let Some(close) = chars[i + 1..].iter().position(|&c| c == '>') {
+                    i += close + 2; // past the '>'
+                } else {
+                    out.push('<'); // unterminated: regex would not match
+                    i += 1;
+                }
+            }
+            '&' => {
+                // `&[^;]+;` — needs ≥1 non-`;` char then a `;`.
+                let rest = &chars[i + 1..];
+                match rest.iter().position(|&c| c == ';') {
+                    Some(semi) if semi >= 1 => i += semi + 2, // past the ';'
+                    _ => {
+                        out.push('&');
+                        i += 1;
+                    }
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Removes nikud/cantillation, mirroring the Dart `removeVolwels`: the maqaf
+/// (`־`), paseq (`׀`) and ASCII pipe (`|`) become spaces *first* (so tokens
+/// split around them), then U+0591–U+05C7 marks are dropped. The maqaf/paseq
+/// are themselves inside that range, hence the ordering matters.
+pub fn remove_vowels(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            '\u{05BE}' | '\u{05C0}' | '|' => Some(' '),
+            c if ('\u{0591}'..='\u{05C7}').contains(&c) => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
+/// Full ingestion normalisation for text-book lines:
+/// `sanitize_query(remove_vowels(strip_html_for_indexing(input)))`.
+pub fn normalize_text_for_indexing(input: &str) -> String {
+    sanitize_query(&remove_vowels(&strip_html_for_indexing(input)))
+}
+
+const PDF_INVISIBLE: &[char] = &[
+    // Dart `_pdfInvisibleChars`: U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+FEFF
+    '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}',
+    '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{FEFF}',
+];
+
+/// Ingestion normalisation for PDF text, mirroring the Dart
+/// `normalizePdfTextForIndexing`: strip HTML, drop bidi/zero-width invisibles,
+/// collapse whitespace, then the same `remove_vowels`/`sanitize_query` pass.
+pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
+    let stripped = strip_html_for_indexing(input);
+    let without_invisible: String = stripped
+        .chars()
+        .filter(|c| !PDF_INVISIBLE.contains(c))
+        .collect();
+    let collapsed = collapse_whitespace(&without_invisible);
+    sanitize_query(&remove_vowels(&collapsed))
+}
+
+/// Heuristic mirroring the Dart `isProbablyGarbagePdfText`: after removing all
+/// whitespace, flags pages whose ratio of Hebrew/Latin letters and digits is
+/// too low to be real content (OCR noise, ligature soup, etc.).
+///
+/// Counts are over Unicode scalar values; realistic Hebrew/Latin PDF text is
+/// entirely in the BMP, so this matches the Dart UTF-16 length exactly.
+pub fn is_probably_garbage_pdf_text(normalized_text: &str) -> bool {
+    let compact: Vec<char> = normalized_text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let total = compact.len();
+    if total == 0 {
+        return true;
+    }
+    let is_letter_or_digit =
+        |c: char| ('\u{05D0}'..='\u{05EA}').contains(&c) || c.is_ascii_alphanumeric();
+    let letters = compact.iter().filter(|&&c| is_letter_or_digit(c)).count();
+    if letters == 0 {
+        return true;
+    }
+    let non_letters = total - letters; // compact has no whitespace
+    let ratio_letters = letters as f64 / total as f64;
+
+    if total >= 50 && ratio_letters < 0.10 {
+        return true;
+    }
+    if total >= 20 && ratio_letters < 0.20 && non_letters > letters {
+        return true;
+    }
+    false
+}
+
 // ── Regex escaping ─────────────────────────────────────────────────────────
 
 /// Escapes tantivy-fst regex metacharacters. Normalised Hebrew/Latin tokens
@@ -277,12 +406,17 @@ fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, value: String)
 
 // ── כתיב מלא/חסר (full/partial spelling) ──────────────────────────────────
 
-/// Generates all כתיב מלא/חסר variants by toggling each optional `י ו ' "`.
-/// Insertion order matches the Dart implementation (bitmask 0..2^n, bit set
-/// means "keep the optional character").
-pub(crate) fn generate_spelling_variations(word: &str) -> Vec<String> {
+/// Generates up to `limit` כתיב מלא/חסר variants by toggling each optional
+/// `י ו ' "`. Insertion order matches the Dart implementation (bitmask
+/// 0..2^n, bit set means "keep the optional character"); generation stops as
+/// soon as `limit` unique variants exist, so a word with many optional
+/// letters never enumerates the full 2^n space just to be truncated later.
+pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<String> {
     if word.is_empty() {
         return vec![String::new()];
+    }
+    if limit == 0 {
+        return Vec::new();
     }
     let chars: Vec<char> = word.chars().collect();
     let optional: Vec<usize> = chars
@@ -310,6 +444,9 @@ pub(crate) fn generate_spelling_variations(word: &str) -> Vec<String> {
         }
         variant.extend(&chars[prev..]);
         push_unique(&mut out, &mut seen, variant);
+        if out.len() >= limit {
+            break;
+        }
     }
     out
 }
@@ -478,9 +615,8 @@ fn partial_word_pattern(root: &str) -> String {
 /// Joins spelling variants each through a builder, wrapped in a non-capturing
 /// group. The spelling-only case passes [`escape_regex`] as the builder.
 fn join_spelling(word: &str, limit: usize, build: fn(&str) -> String) -> String {
-    let branches: Vec<String> = generate_spelling_variations(word)
+    let branches: Vec<String> = generate_spelling_variations(word, limit)
         .into_iter()
-        .take(limit)
         .map(|v| build(&v))
         .collect();
     format!("(?:{})", branches.join("|"))
@@ -820,6 +956,87 @@ mod tests {
         assert_eq!(sanitize_query("תוס׳"), "תוס'");
     }
 
+    // ── ingestion normalisation (parity with the old Dart IndexingDocumentBuilder) ──
+
+    #[test]
+    fn strip_html_matches_dart() {
+        assert_eq!(strip_html_for_indexing("<b>שלום</b>"), "שלום");
+        // whitespace entities become spaces so adjacent words don't merge
+        assert_eq!(
+            strip_html_for_indexing("לאמר&nbsp;&nbsp;שירה"),
+            "לאמר  שירה"
+        );
+        // generic entities are removed entirely
+        assert_eq!(strip_html_for_indexing("a&amp;b"), "ab");
+        // unterminated '<' (no closing '>') is kept, like the Dart regex
+        assert_eq!(strip_html_for_indexing("a < b"), "a < b");
+        assert_eq!(
+            strip_html_for_indexing("<span dir=\"rtl\">טקסט</span>"),
+            "טקסט"
+        );
+    }
+
+    #[test]
+    fn remove_vowels_matches_dart() {
+        assert_eq!(remove_vowels("שָׁלוֹם"), "שלום");
+        assert_eq!(remove_vowels("בְּרֵאשִׁית"), "בראשית");
+        // maqaf, paseq and pipe fold to a space (before the nikud strip)
+        assert_eq!(remove_vowels("א־ב"), "א ב");
+        assert_eq!(remove_vowels("א׀ב"), "א ב");
+        assert_eq!(remove_vowels("א|ב"), "א ב");
+        assert_eq!(remove_vowels("שלום"), "שלום");
+    }
+
+    #[test]
+    fn normalize_text_for_indexing_matches_dart_chain() {
+        // sanitize_query(remove_vowels(strip_html(x)))
+        assert_eq!(
+            normalize_text_for_indexing("<b>שָׁלוֹם, עולם!</b>"),
+            "שלום עולם"
+        );
+        assert_eq!(normalize_text_for_indexing("רמב״ם"), "רמב\"ם");
+        assert_eq!(normalize_text_for_indexing("אל־משה"), "אל משה");
+    }
+
+    #[test]
+    fn normalize_pdf_text_matches_dart_chain() {
+        // zero-width chars are dropped (no space), whitespace collapses
+        assert_eq!(
+            normalize_pdf_text_for_indexing("שלום\u{200B}עולם"),
+            "שלוםעולם"
+        );
+        assert_eq!(
+            normalize_pdf_text_for_indexing("<p>אבג   דהו</p>"),
+            "אבג דהו"
+        );
+        // bidi override + BOM removed
+        assert_eq!(
+            normalize_pdf_text_for_indexing("\u{FEFF}טקסט\u{202E}רגיל"),
+            "טקסטרגיל"
+        );
+    }
+
+    #[test]
+    fn garbage_pdf_detection_matches_dart() {
+        assert!(is_probably_garbage_pdf_text(""));
+        assert!(is_probably_garbage_pdf_text("   \n  "));
+        // no letters at all
+        assert!(is_probably_garbage_pdf_text("!@#$%^&*()"));
+        // real content is not garbage
+        assert!(!is_probably_garbage_pdf_text(
+            "שלום עולם זה טקסט תקין לגמרי"
+        ));
+        assert!(!is_probably_garbage_pdf_text("hello world normal text"));
+        // total>=50, ratio<0.10 → garbage (5 letters, 50 symbols = 55 chars)
+        let low_ratio = format!("{}{}", "אבגדה", "#".repeat(50));
+        assert!(is_probably_garbage_pdf_text(&low_ratio));
+        // total>=20, ratio<0.20 and non_letters>letters → garbage
+        let mid_ratio = format!("{}{}", "אבג", "#".repeat(20));
+        assert!(is_probably_garbage_pdf_text(&mid_ratio));
+        // just under the length thresholds → not garbage
+        assert!(!is_probably_garbage_pdf_text("אב#######"));
+    }
+
     // ── split_query_words ────────────────────────────────────────────────
 
     #[test]
@@ -847,8 +1064,10 @@ mod tests {
 
     #[test]
     fn spelling_variations_toggle_optional_letters() {
-        assert_eq!(generate_spelling_variations("בוא"), vec!["בא", "בוא"]);
-        assert_eq!(generate_spelling_variations("גמל"), vec!["גמל"]);
+        assert_eq!(generate_spelling_variations("בוא", 100), vec!["בא", "בוא"]);
+        assert_eq!(generate_spelling_variations("גמל", 100), vec!["גמל"]);
+        // ה-limit עוצר את המנייה מוקדם — לא רק חותך את התוצאה.
+        assert_eq!(generate_spelling_variations("בוא", 1), vec!["בא"]);
     }
 
     // ── typo variations ──────────────────────────────────────────────────

@@ -31,8 +31,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::hebrew_query::{
-    escape_regex, generate_spelling_variations, split_query_words, strip_nikud, word_flags_at,
-    WordFlags, MAX_SPELLING_BRANCHES,
+    generate_spelling_variations, split_query_words, strip_nikud, word_flags_at, WordFlags,
+    MAX_SPELLING_BRANCHES,
 };
 
 // ── Output type ────────────────────────────────────────────────────────────
@@ -134,10 +134,24 @@ fn charwise_display_pattern(term: &str) -> String {
             }
             '"' => out.push_str("[\"\\u05F4]"),
             '\'' => out.push_str("['\\u05F3]"),
-            _ => out.push_str(&escape_regex(&ch.to_string())),
+            _ => push_escaped_char(&mut out, ch),
         }
     }
     out
+}
+
+/// דוחף תו בודד ל-`out` עם escape של מטא-תווי רגקס — בלי הקצאות ביניים
+/// (בניגוד ל-`escape_regex` שמקבל מחרוזת). אותה קבוצת תווים כמו
+/// `hebrew_query::escape_regex`, תקפה גם ל-RegExp של Dart.
+#[inline]
+fn push_escaped_char(out: &mut String, ch: char) {
+    if matches!(
+        ch,
+        '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+    ) {
+        out.push('\\');
+    }
+    out.push(ch);
 }
 
 /// Expands one query word (plus its alternatives) into display branches:
@@ -153,10 +167,7 @@ fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[Str
             return;
         }
         if flags.spelling {
-            for variant in generate_spelling_variations(&stripped)
-                .into_iter()
-                .take(MAX_SPELLING_BRANCHES)
-            {
+            for variant in generate_spelling_variations(&stripped, MAX_SPELLING_BRANCHES) {
                 if seen.insert(variant.clone()) {
                     terms.push(variant);
                 }
@@ -264,11 +275,103 @@ pub fn build_display_highlight(
     })
 }
 
+// ── Literal in-book pattern ────────────────────────────────────────────────
+
+/// מחלקת האותיות העבריות לבדיקת גבולות מילה בתבנית הליטרלית: אותיות בסיס
+/// (U+05D0–U+05EA), ליגטורות וגרשיים (U+05F0–U+05F4) וצורות תצוגה
+/// (U+FB1D–U+FB4F) — תואם את `_isHebrewLetter` של החיפוש המקומי בספר.
+const HEBREW_LETTER_CLASS: &str = r"א-תװ-״יִ-ﭏ";
+
+/// Builds the regex for highlighting *literal* in-book search matches (the
+/// simple/exact mode that scans the open book locally): the query phrase
+/// as-typed, whitespace-joined, nikud-tolerant after every character,
+/// geresh/gershayim matching both ASCII and Hebrew forms, and word-boundary
+/// lookarounds so `אמר` does not light up inside `ויאמר` — mirroring the
+/// local search's `_containsWholeWord` semantics.
+///
+/// The query is deliberately NOT sanitized or tokenized like engine queries:
+/// the local scan matches the text as typed, and the highlight must mirror
+/// that scan, not the engine's tokenizer.
+///
+/// Dart-RegExp dialect; compile with `caseSensitive: false, unicode: true`.
+/// Returns `None` for a whitespace-only query.
+pub fn build_literal_pattern(query: &str) -> Option<String> {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    let phrase = words
+        .iter()
+        .map(|w| literal_charwise_pattern(w))
+        .collect::<Vec<_>>()
+        .join(r"\s+");
+    Some(format!(
+        "(?<![{cls}])(?:{phrase})(?![{cls}])",
+        cls = HEBREW_LETTER_CLASS,
+    ))
+}
+
+/// תבנית תו-אחר-תו לביטוי ליטרלי: אחרי כל תו מותרים סימני ניקוד/טעמים
+/// (הטקסט המוצג מנוקד; השאילתה בדרך כלל לא), וגרש/גרשיים תופסים את שתי
+/// הצורות — הלועזית והעברית.
+fn literal_charwise_pattern(word: &str) -> String {
+    let mut out = String::with_capacity(word.len() * 4);
+    for ch in word.chars() {
+        match ch {
+            '"' | '\u{05F4}' => out.push_str("[\"\\u05F4]"),
+            '\'' | '\u{05F3}' => out.push_str("['\\u05F3]"),
+            _ => push_escaped_char(&mut out, ch),
+        }
+        out.push_str(ATTACHED_MARKS_CLASS);
+    }
+    out
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod literal_pattern {
+        use super::super::build_literal_pattern;
+
+        #[test]
+        fn whole_word_boundaries() {
+            let p = build_literal_pattern("אמר").unwrap();
+            assert!(p.starts_with("(?<!["));
+            assert!(p.ends_with("])"));
+        }
+
+        #[test]
+        fn multi_word_joined_by_whitespace() {
+            let p = build_literal_pattern("  כל   היום  ").unwrap();
+            assert!(p.contains(r"\s+"));
+        }
+
+        #[test]
+        fn quotes_match_both_forms() {
+            let ascii = build_literal_pattern("ז\"ל").unwrap();
+            let hebrew = build_literal_pattern("ז\u{05F4}ל").unwrap();
+            assert_eq!(ascii, hebrew);
+            assert!(ascii.contains("[\"\\u05F4]"));
+
+            let geresh = build_literal_pattern("תוס'").unwrap();
+            assert!(geresh.contains("['\\u05F3]"));
+        }
+
+        #[test]
+        fn metacharacters_are_escaped() {
+            let p = build_literal_pattern("א.ב").unwrap();
+            assert!(p.contains(r"\."));
+        }
+
+        #[test]
+        fn empty_query_yields_none() {
+            assert!(build_literal_pattern("").is_none());
+            assert!(build_literal_pattern("   ").is_none());
+        }
+    }
 
     fn build(query: &str) -> DisplayHighlight {
         build_display_highlight(query, 0, &HashMap::new(), &HashMap::new(), &HashMap::new())

@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1146007788;
+  int get rustContentHash => -1563882781;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -446,9 +446,27 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, Map<String, bool>> searchOptions,
   });
 
+  String? crateApiSearchEngineGenerateLiteralHighlightPattern({
+    required String query,
+  });
+
+  bool crateApiSearchEngineIsProbablyGarbagePdfText({
+    required String normalizedText,
+  });
+
+  String crateApiSearchEngineNormalizePdfTextForIndexing({
+    required String input,
+  });
+
+  String crateApiSearchEngineNormalizeTextForIndexing({required String input});
+
   Future<void> crateApiDiagnosticTestRunDiagnosticTest();
 
   Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark();
+
+  String crateApiSearchEngineSanitizeQuery({required String query});
+
+  List<String> crateApiSearchEngineSplitQueryWords({required String query});
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_RegexBenchmarker;
@@ -2904,6 +2922,118 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  String? crateApiSearchEngineGenerateLiteralHighlightPattern({
+    required String query,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(query, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 49)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_String,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiSearchEngineGenerateLiteralHighlightPatternConstMeta,
+        argValues: [query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineGenerateLiteralHighlightPatternConstMeta =>
+      const TaskConstMeta(
+        debugName: "generate_literal_highlight_pattern",
+        argNames: ["query"],
+      );
+
+  @override
+  bool crateApiSearchEngineIsProbablyGarbagePdfText({
+    required String normalizedText,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(normalizedText, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 50)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineIsProbablyGarbagePdfTextConstMeta,
+        argValues: [normalizedText],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineIsProbablyGarbagePdfTextConstMeta =>
+      const TaskConstMeta(
+        debugName: "is_probably_garbage_pdf_text",
+        argNames: ["normalizedText"],
+      );
+
+  @override
+  String crateApiSearchEngineNormalizePdfTextForIndexing({
+    required String input,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(input, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 51)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineNormalizePdfTextForIndexingConstMeta,
+        argValues: [input],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineNormalizePdfTextForIndexingConstMeta =>
+      const TaskConstMeta(
+        debugName: "normalize_pdf_text_for_indexing",
+        argNames: ["input"],
+      );
+
+  @override
+  String crateApiSearchEngineNormalizeTextForIndexing({required String input}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(input, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineNormalizeTextForIndexingConstMeta,
+        argValues: [input],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineNormalizeTextForIndexingConstMeta =>
+      const TaskConstMeta(
+        debugName: "normalize_text_for_indexing",
+        argNames: ["input"],
+      );
+
+  @override
   Future<void> crateApiDiagnosticTestRunDiagnosticTest() {
     return handler.executeNormal(
       NormalTask(
@@ -2912,7 +3042,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2939,7 +3069,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2956,6 +3086,52 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiFocusedBenchmarkRunFocusedBenchmarkConstMeta =>
       const TaskConstMeta(debugName: "run_focused_benchmark", argNames: []);
+
+  @override
+  String crateApiSearchEngineSanitizeQuery({required String query}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(query, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 55)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineSanitizeQueryConstMeta,
+        argValues: [query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSanitizeQueryConstMeta =>
+      const TaskConstMeta(debugName: "sanitize_query", argNames: ["query"]);
+
+  @override
+  List<String> crateApiSearchEngineSplitQueryWords({required String query}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(query, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 56)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineSplitQueryWordsConstMeta,
+        argValues: [query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSplitQueryWordsConstMeta =>
+      const TaskConstMeta(debugName: "split_query_words", argNames: ["query"]);
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_RegexBenchmarker => wire

@@ -6,10 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `consume_inside`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `open`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `split_top_level_alternatives`, `strip_enclosing_group`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `CharClassScanner`, `DfaWrapper`, `IndexMetadata`
+// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `DfaWrapper`, `IndexMetadata`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `for_segment`, `harvest`, `is_match`, `merge_fruits`, `requires_scoring`, `start`
-// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -40,6 +39,66 @@ HighlightPattern? generateHighlightPattern({
   alternativeWords: alternativeWords,
   searchOptions: searchOptions,
 );
+
+/// Builds the regex for highlighting *literal* in-book search matches (the
+/// simple/exact mode that scans an open book locally): the phrase as typed,
+/// whitespace-joined, nikud-tolerant, geresh/gershayim matching both ASCII and
+/// Hebrew forms, with word-boundary lookarounds. The Dart side compiles the
+/// returned string with `RegExp(pattern, caseSensitive: false, unicode: true)`
+/// and performs no pattern construction of its own.
+///
+/// Pure string computation — safe to call synchronously. Returns `None` for a
+/// whitespace-only query.
+String? generateLiteralHighlightPattern({required String query}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineGenerateLiteralHighlightPattern(query: query);
+
+/// Normalises a search query exactly like the engine does internally, so the
+/// app can build option keys / UI state from the same tokens the engine sees.
+///
+/// `״→"`, `׳→'`, `־`/`-`→space; strips `,;!?:*()[]{}^$|\+.~\``; collapses
+/// whitespace; trims. Pure string computation — safe to call synchronously.
+/// This is the single source of truth; the Dart `SearchQueryBuilder.sanitizeQuery`
+/// delegates here so index-time and query-time normalisation cannot drift apart.
+String sanitizeQuery({required String query}) =>
+    RustLib.instance.api.crateApiSearchEngineSanitizeQuery(query: query);
+
+/// Splits a query into word tokens the same way the engine tokenizes the
+/// indexed `text` field (see [`generate_highlight_pattern`] for the key format
+/// that consumes these). `"` always separates; a trailing `'` is kept inside
+/// the token (`תוס'`), an internal `'` separates (`ד'אש`).
+///
+/// Pure string computation — safe to call synchronously. Single source of
+/// truth for `SearchQueryBuilder.splitQueryWords`.
+List<String> splitQueryWords({required String query}) =>
+    RustLib.instance.api.crateApiSearchEngineSplitQueryWords(query: query);
+
+/// Normalises a text-book line for indexing exactly the way the engine expects
+/// stored text to look: strip HTML, fold nikud/maqaf/paseq, then the same
+/// punctuation sanitisation queries go through. Single source of truth for the
+/// Dart `IndexingDocumentBuilder.normalizeTextForIndexing`.
+///
+/// Pure string computation — safe to call synchronously (including from the
+/// indexing isolate).
+String normalizeTextForIndexing({required String input}) => RustLib.instance.api
+    .crateApiSearchEngineNormalizeTextForIndexing(input: input);
+
+/// Like [`normalize_text_for_indexing`] but for PDF page text: also drops bidi
+/// and zero-width invisibles and collapses whitespace first. Single source of
+/// truth for the Dart `IndexingDocumentBuilder.normalizePdfTextForIndexing`.
+String normalizePdfTextForIndexing({required String input}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineNormalizePdfTextForIndexing(input: input);
+
+/// Whether a normalised PDF page looks like garbage (OCR noise) and should be
+/// skipped. Single source of truth for the Dart
+/// `IndexingDocumentBuilder.isProbablyGarbagePdfText`.
+bool isProbablyGarbagePdfText({required String normalizedText}) =>
+    RustLib.instance.api.crateApiSearchEngineIsProbablyGarbagePdfText(
+      normalizedText: normalizedText,
+    );
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {

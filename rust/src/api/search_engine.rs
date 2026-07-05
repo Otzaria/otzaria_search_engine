@@ -194,6 +194,72 @@ pub fn generate_highlight_pattern(
     })
 }
 
+/// Builds the regex for highlighting *literal* in-book search matches (the
+/// simple/exact mode that scans an open book locally): the phrase as typed,
+/// whitespace-joined, nikud-tolerant, geresh/gershayim matching both ASCII and
+/// Hebrew forms, with word-boundary lookarounds. The Dart side compiles the
+/// returned string with `RegExp(pattern, caseSensitive: false, unicode: true)`
+/// and performs no pattern construction of its own.
+///
+/// Pure string computation — safe to call synchronously. Returns `None` for a
+/// whitespace-only query.
+#[frb(sync)]
+pub fn generate_literal_highlight_pattern(query: String) -> Option<String> {
+    display_highlight::build_literal_pattern(&query)
+}
+
+/// Normalises a search query exactly like the engine does internally, so the
+/// app can build option keys / UI state from the same tokens the engine sees.
+///
+/// `״→"`, `׳→'`, `־`/`-`→space; strips `,;!?:*()[]{}^$|\+.~\``; collapses
+/// whitespace; trims. Pure string computation — safe to call synchronously.
+/// This is the single source of truth; the Dart `SearchQueryBuilder.sanitizeQuery`
+/// delegates here so index-time and query-time normalisation cannot drift apart.
+#[frb(sync)]
+pub fn sanitize_query(query: String) -> String {
+    hebrew_query::sanitize_query(&query)
+}
+
+/// Splits a query into word tokens the same way the engine tokenizes the
+/// indexed `text` field (see [`generate_highlight_pattern`] for the key format
+/// that consumes these). `"` always separates; a trailing `'` is kept inside
+/// the token (`תוס'`), an internal `'` separates (`ד'אש`).
+///
+/// Pure string computation — safe to call synchronously. Single source of
+/// truth for `SearchQueryBuilder.splitQueryWords`.
+#[frb(sync)]
+pub fn split_query_words(query: String) -> Vec<String> {
+    hebrew_query::split_query_words(&query)
+}
+
+/// Normalises a text-book line for indexing exactly the way the engine expects
+/// stored text to look: strip HTML, fold nikud/maqaf/paseq, then the same
+/// punctuation sanitisation queries go through. Single source of truth for the
+/// Dart `IndexingDocumentBuilder.normalizeTextForIndexing`.
+///
+/// Pure string computation — safe to call synchronously (including from the
+/// indexing isolate).
+#[frb(sync)]
+pub fn normalize_text_for_indexing(input: String) -> String {
+    hebrew_query::normalize_text_for_indexing(&input)
+}
+
+/// Like [`normalize_text_for_indexing`] but for PDF page text: also drops bidi
+/// and zero-width invisibles and collapses whitespace first. Single source of
+/// truth for the Dart `IndexingDocumentBuilder.normalizePdfTextForIndexing`.
+#[frb(sync)]
+pub fn normalize_pdf_text_for_indexing(input: String) -> String {
+    hebrew_query::normalize_pdf_text_for_indexing(&input)
+}
+
+/// Whether a normalised PDF page looks like garbage (OCR noise) and should be
+/// skipped. Single source of truth for the Dart
+/// `IndexingDocumentBuilder.isProbablyGarbagePdfText`.
+#[frb(sync)]
+pub fn is_probably_garbage_pdf_text(normalized_text: String) -> bool {
+    hebrew_query::is_probably_garbage_pdf_text(&normalized_text)
+}
+
 fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
     let metadata_path = index_metadata_path(index_path);
 
