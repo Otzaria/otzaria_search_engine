@@ -136,7 +136,10 @@ fn charwise_display_pattern(term: &str) -> String {
                 out.push(ch);
                 out.push_str(ATTACHED_MARKS_CLASS);
             }
-            '"' => out.push_str("[\"\\u05F4]"),
+            // `"` בטרם ≡ גרשיים בדפוס: ", ״, או זוג גרשים (מוסכמת
+            // `רמב''ם` בקבצים ישנים — הטוקנייזר מאחד אותו ל-`"` אבל טקסט
+            // התצוגה נשמר כפי שנדפס).
+            '"' => out.push_str("(?:[\"\\u05F4]|['\\u05F3]{2})"),
             '\'' => out.push_str("['\\u05F3]"),
             _ => push_escaped_char(&mut out, ch),
         }
@@ -445,7 +448,7 @@ fn literal_charwise_pattern(word: &str) -> String {
     let mut out = String::with_capacity(word.len() * 4);
     for ch in word.chars() {
         match ch {
-            '"' | '\u{05F4}' => out.push_str("[\"\\u05F4]"),
+            '"' | '\u{05F4}' => out.push_str("(?:[\"\\u05F4]|['\\u05F3]{2})"),
             '\'' | '\u{05F3}' => out.push_str("['\\u05F3]"),
             _ => push_escaped_char(&mut out, ch),
         }
@@ -515,7 +518,8 @@ mod tests {
             let ascii = build_literal_pattern("ז\"ל").unwrap();
             let hebrew = build_literal_pattern("ז\u{05F4}ל").unwrap();
             assert_eq!(ascii, hebrew);
-            assert!(ascii.contains("[\"\\u05F4]"));
+            // המחלקה תופסת ", ״ וגם זוג גרשים מודפס (רמב''ם).
+            assert!(ascii.contains("(?:[\"\\u05F4]|['\\u05F3]{2})"));
 
             let geresh = build_literal_pattern("תוס'").unwrap();
             assert!(geresh.contains("['\\u05F3]"));
@@ -625,7 +629,10 @@ mod tests {
         let hl = build("ז\"ל");
         assert_eq!(hl.word_patterns.len(), 1);
         assert!(hl.combined_pattern.contains("ז"));
-        assert!(hl.combined_pattern.contains("\\u05F4"));
+        // ", ״ או זוג גרשים מודפס — טקסט התצוגה נשמר כפי שנדפס.
+        assert!(hl
+            .combined_pattern
+            .contains("(?:[\"\\u05F4]|['\\u05F3]{2})"));
     }
 
     #[test]
