@@ -5543,13 +5543,16 @@ mod tests {
 
     #[test]
     fn advanced_search_matches_gershayim_tokens_end_to_end() {
-        // HebrewTokenizer מפצל על גרשיים (ז"ל → ז, ל) ושומר רק גרש סופי
-        // (תוס'); split_query_words חייב לפצל את השאילתה באותה צורה — אחרת
-        // ז"ל לעולם לא יימצא. כולל נורמליזציה של ״ עברי בשאילתה.
+        // HebrewTokenizer שומר גרשיים וגרש פנימי בטוקן (ז"ל, רמב"ם — טרם
+        // אחד); split_query_words חייב לפצל את השאילתה באותה צורה — אחרת
+        // ז"ל לעולם לא יימצא. כולל נורמליזציה של ״ עברי משני הצדדים
+        // וקיפול זוג-הגרשים (רמב''ם) בשאילתה.
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "הרב פלוני ז\"ל אמר", "/books/a.txt");
         add(&mut engine, 2, "כתב הרמב\u{05F4}ם בהלכות", "/books/b.txt");
         add(&mut engine, 3, "דברי תוס' שם", "/books/c.txt");
+        add(&mut engine, 4, "מסמך עם רמב ם כשתי מילים", "/books/d.txt");
+        add(&mut engine, 5, "אמר ג'ורג' לד'אש", "/books/e.txt");
         engine.commit().unwrap();
 
         let advanced_ids = |engine: &mut SearchEngine, query: &str| {
@@ -5579,7 +5582,180 @@ mod tests {
             vec![2],
             "״ עברי באינדקס, \" בשאילתה"
         );
+        assert_eq!(
+            advanced_ids(&mut engine, "הרמב''ם"),
+            vec![2],
+            "זוג גרשים בשאילתה (מוסכמת קבצים ישנים)"
+        );
         assert_eq!(advanced_ids(&mut engine, "תוס'"), vec![3], "גרש סופי");
+        assert_eq!(
+            advanced_ids(&mut engine, "ג'ורג'"),
+            vec![5],
+            "גרש פנימי + סופי"
+        );
+        assert!(
+            !advanced_ids(&mut engine, "רמב\"ם").contains(&4),
+            "רמב ם כשתי מילים אינו צירוף מקרי של רמב\"ם"
+        );
+    }
+
+    #[test]
+    fn exact_search_gershayim_token_is_a_single_term() {
+        // כל צורות הדפוס של השאילתה מתלכדות לטרם `רמב"ם` אחד ומוצאות
+        // מסמך שנדפס ב-״; צירוף מקרי `רמב ם` (שתי מילים) לא נתפס עוד —
+        // זו בדיוק מטרת השינוי. המחיר המקובל (D1): שאילתה נטולת-גרשיים
+        // לא מוצאת את המהדורה המנוקדת-בגרשיים בחיפוש מדויק.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "דברי רמב\u{05F4}ם בהלכות", "/books/a.txt");
+        add(&mut engine, 2, "צירוף רמב ם מקרי", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let exact_ids = |engine: &SearchEngine, query: &str| {
+            ids(engine
+                .search_exact(query.to_string(), vec![], 100, 0, ResultsOrder::Catalogue)
+                .unwrap())
+        };
+
+        for query in ["רמב\"ם", "רמב\u{05F4}ם", "רמב''ם"] {
+            assert_eq!(exact_ids(&engine, query), vec![1], "query {query:?}");
+        }
+        assert_eq!(
+            exact_ids(&engine, "רמבם"),
+            Vec::<u64>::new(),
+            "המחיר המתועד של אופציה A: מדויק רגיש-גרשיים"
+        );
+        // ביטוי רב-מילים עם טוקן-גרש: PhraseQuery על הטרמים החדשים.
+        add(&mut engine, 3, "דברי תוס' ד\"ה אמר שם", "/books/c.txt");
+        engine.commit().unwrap();
+        assert_eq!(exact_ids(&engine, "תוס' ד\"ה"), vec![3]);
+    }
+
+    #[test]
+    fn fuzzy_bridges_gershayim_and_clean_editions() {
+        // הגישור המקורב: `"` = עריכת codepoint אחת, ו-Fix 2 מזריק את
+        // הצורה הנקייה גם במרחק 0.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "דברי רמב\"ם בהלכות", "/books/a.txt");
+        add(&mut engine, 2, "דברי רמבם בהלכות", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let fuzzy_ids = |engine: &SearchEngine, query: &str, d: u8| {
+            ids(engine
+                .search_fuzzy(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    d,
+                    ResultsOrder::Relevance,
+                )
+                .unwrap())
+        };
+
+        // במרחק 1 — בשני הכיוונים.
+        let got = fuzzy_ids(&engine, "רמב\"ם", 1);
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+        let got = fuzzy_ids(&engine, "רמבם", 1);
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+        // במרחק 0 — הודות לווריאנט הנקי (Fix 2).
+        let got = fuzzy_ids(&engine, "רמב\"ם", 0);
+        assert!(
+            got.contains(&1) && got.contains(&2),
+            "הווריאנט הנקי מגשר גם במרחק 0, got {got:?}"
+        );
+        // תקציב העריכה לא נבלע ע"י הגרשיים: רמכם רחוק מ-רמב"ם 2 עריכות.
+        let got = fuzzy_ids(&engine, "רמכם", 1);
+        assert!(
+            got.contains(&2) && !got.contains(&1),
+            "got {got:?}: רמכם→רמבם עריכה אחת, רמכם→רמב\"ם שתיים"
+        );
+        let got = fuzzy_ids(&engine, "רמכם", 2);
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+    }
+
+    #[test]
+    fn lexical_fuzzy_expands_quote_bearing_token() {
+        // Fix 1 מקצה-לקצה: מפתח ה-lookup של טוקן-גרשיים פוגע ב-lexical.db
+        // (אחרי מחיקת `"` ASCII), וההרחבה הלקסיקלית מזריקה קרובים שמרחק
+        // העריכה לבדו לעולם לא היה תופס.
+        let (mut engine, dir) = make_engine();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+        add(&mut engine, 1, "דברי אדמורים רבים כאן", "/books/a.txt");
+        add(&mut engine, 2, "דברי אדמו\"ר אחד כאן", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let got = ids(engine
+            .search_fuzzy(
+                "אדמו\"ר".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                1,
+                ResultsOrder::Relevance,
+            )
+            .unwrap());
+        assert!(
+            got.contains(&1),
+            "אדמורים רחוק 3 עריכות — מושג רק דרך ההרחבה הלקסיקלית, got {got:?}"
+        );
+        assert!(got.contains(&2), "הטרם המדויק עצמו, got {got:?}");
+
+        // הפער השיורי המתועד (§5.2): המילון פולט צורות נקיות בלבד, ולכן
+        // שאילתה נקייה לא מגיעה לטרם-אינדקס שנושא גרשיים כשהוא מחוץ
+        // לתקציב העריכה (אדמורים→אדמו"ר = 3 עריכות).
+        let got = ids(engine
+            .search_fuzzy(
+                "אדמורים".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                1,
+                ResultsOrder::Relevance,
+            )
+            .unwrap());
+        assert!(got.contains(&1), "got {got:?}");
+        assert!(
+            !got.contains(&2),
+            "אם זה נתפס — הפער השיורי נסגר ואפשר לעדכן את התיעוד, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn advanced_typo_and_prefix_flags_work_on_gershayim_tokens() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "דברי רמבם בהלכות", "/books/a.txt");
+        add(&mut engine, 2, "כתב הרמב\"ם על כך", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let search = |engine: &mut SearchEngine, query: &str, opt: &str| {
+            let mut word_opts = HashMap::new();
+            word_opts.insert(opt.to_string(), true);
+            let mut options = HashMap::new();
+            options.insert(format!("{query}_0"), word_opts);
+            ids(engine
+                .search_advanced(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    0,
+                    HashMap::new(),
+                    HashMap::new(),
+                    options,
+                    ResultsOrder::Catalogue,
+                )
+                .unwrap())
+        };
+
+        // דגל typo: וריאנט-המחיקה של הגרפמה `"` מגשר למהדורות נקיות.
+        let got = search(&mut engine, "רמב\"ם", hebrew_query::OPT_TYPO);
+        assert!(
+            got.contains(&1),
+            "מחיקת `\"` מייצרת את רמבם, got {got:?}"
+        );
+        // קידומות דקדוקיות סביב שורש עם `"` literal.
+        let got = search(&mut engine, "רמב\"ם", "קידומות דקדוקיות");
+        assert!(got.contains(&2), "ה־רמב\"ם עם קידומת, got {got:?}");
     }
 
     #[test]
