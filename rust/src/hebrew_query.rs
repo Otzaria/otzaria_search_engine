@@ -234,25 +234,117 @@ pub fn split_query_words(query: &str) -> Vec<String> {
     words
 }
 
-/// Strips Hebrew nikud and cantillation marks (U+0591–U+05C7).
+/// Strips Hebrew nikud and cantillation marks (U+0591–U+05C7), after folding
+/// presentation-form ligatures so their embedded marks are stripped too.
 pub fn strip_nikud(text: &str) -> String {
-    text.chars()
+    fold_presentation_forms(text)
+        .chars()
         .filter(|c| !('\u{0591}'..='\u{05C7}').contains(c))
         .collect()
 }
 
 /// Normalises text to the index term dictionary's shape: strips nikud then
-/// lowercases. This is how the `"default"` analyzer processes indexed text.
+/// lowercases. This is how the `"hebrew"` analyzer maps indexed text to terms.
 pub(crate) fn normalize_for_index(text: &str) -> String {
     strip_nikud(text).to_lowercase()
+}
+
+// ── Hebrew character classes & folding ──────────────────────────────────────
+
+/// ניקוד וטעמים *הצמודים לאות* — U+0591–U+05C7 ללא המפרידים שבטווח:
+/// מקף (U+05BE), פסק (U+05C0), סוף-פסוק (U+05C3) ונו"ן הפוכה (U+05C6).
+/// המפרידים הם פיסוק גלוי לעין ולכן נשמרים בטקסט התצוגה ושוברים טוקנים.
+#[inline]
+pub(crate) fn is_attached_mark(c: char) -> bool {
+    matches!(c, '\u{0591}'..='\u{05C7}')
+        && !matches!(c, '\u{05BE}' | '\u{05C0}' | '\u{05C3}' | '\u{05C6}')
+}
+
+/// מסיר ניקוד וטעמים צמודים בלבד ([`is_attached_mark`]) — משאיר מקף, פסק
+/// וסוף-פסוק שהם פיסוק, לא ניקוד.
+pub fn strip_attached_marks(text: &str) -> String {
+    text.chars().filter(|c| !is_attached_mark(*c)).collect()
+}
+
+/// הפירוק הקנוני (NFKD) של Hebrew Presentation Forms — U+FB1D–U+FB4F.
+/// גופנים רבים חסרים את הגליפים האלה (יִ הוצגה כ"?") ומילון הטרמים לעולם
+/// אינו מכיל אותם, ולכן גם התצוגה וגם הטוקנים מפרקים אותם לאות + סימן.
+/// מחזיר `None` לתו רגיל. U+FB29 (סימן פלוס חלופי) נשאר כמות שהוא.
+pub(crate) fn fold_presentation_form(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{FB1D}' => "\u{05D9}\u{05B4}",
+        '\u{FB1E}' => "", // varika — סימן צמוד ללא פירוק, מושמט
+        '\u{FB1F}' => "\u{05F2}\u{05B7}",
+        '\u{FB20}' => "\u{05E2}",
+        '\u{FB21}' => "\u{05D0}",
+        '\u{FB22}' => "\u{05D3}",
+        '\u{FB23}' => "\u{05D4}",
+        '\u{FB24}' => "\u{05DB}",
+        '\u{FB25}' => "\u{05DC}",
+        '\u{FB26}' => "\u{05DD}",
+        '\u{FB27}' => "\u{05E8}",
+        '\u{FB28}' => "\u{05EA}",
+        '\u{FB2A}' => "\u{05E9}\u{05C1}",
+        '\u{FB2B}' => "\u{05E9}\u{05C2}",
+        '\u{FB2C}' => "\u{05E9}\u{05BC}\u{05C1}",
+        '\u{FB2D}' => "\u{05E9}\u{05BC}\u{05C2}",
+        '\u{FB2E}' => "\u{05D0}\u{05B7}",
+        '\u{FB2F}' => "\u{05D0}\u{05B8}",
+        '\u{FB30}' => "\u{05D0}\u{05BC}",
+        '\u{FB31}' => "\u{05D1}\u{05BC}",
+        '\u{FB32}' => "\u{05D2}\u{05BC}",
+        '\u{FB33}' => "\u{05D3}\u{05BC}",
+        '\u{FB34}' => "\u{05D4}\u{05BC}",
+        '\u{FB35}' => "\u{05D5}\u{05BC}",
+        '\u{FB36}' => "\u{05D6}\u{05BC}",
+        '\u{FB38}' => "\u{05D8}\u{05BC}",
+        '\u{FB39}' => "\u{05D9}\u{05BC}",
+        '\u{FB3A}' => "\u{05DA}\u{05BC}",
+        '\u{FB3B}' => "\u{05DB}\u{05BC}",
+        '\u{FB3C}' => "\u{05DC}\u{05BC}",
+        '\u{FB3E}' => "\u{05DE}\u{05BC}",
+        '\u{FB40}' => "\u{05E0}\u{05BC}",
+        '\u{FB41}' => "\u{05E1}\u{05BC}",
+        '\u{FB43}' => "\u{05E3}\u{05BC}",
+        '\u{FB44}' => "\u{05E4}\u{05BC}",
+        '\u{FB46}' => "\u{05E6}\u{05BC}",
+        '\u{FB47}' => "\u{05E7}\u{05BC}",
+        '\u{FB48}' => "\u{05E8}\u{05BC}",
+        '\u{FB49}' => "\u{05E9}\u{05BC}",
+        '\u{FB4A}' => "\u{05EA}\u{05BC}",
+        '\u{FB4B}' => "\u{05D5}\u{05B9}",
+        '\u{FB4C}' => "\u{05D1}\u{05BF}",
+        '\u{FB4D}' => "\u{05DB}\u{05BF}",
+        '\u{FB4E}' => "\u{05E4}\u{05BF}",
+        '\u{FB4F}' => "\u{05D0}\u{05DC}",
+        _ => return None,
+    })
+}
+
+/// מפרק את כל תווי ה-Presentation Forms שבטקסט ([`fold_presentation_form`]).
+pub fn fold_presentation_forms(text: &str) -> String {
+    if !text.chars().any(|c| fold_presentation_form(c).is_some()) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match fold_presentation_form(c) {
+            Some(folded) => out.push_str(folded),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 // ── Document ingestion normalisation ───────────────────────────────────────
 //
 // The single source of truth for the text normalisation applied to every line
-// before it is stored in the index. The Dart app used to reimplement this in
-// `IndexingDocumentBuilder` (`sanitizeQuery(removeVolwels(stripHtmlIfNeeded(x)))`);
-// it now delegates here so index-time and query-time normalisation cannot drift.
+// before it is stored in the index. The stored text is also what search
+// results DISPLAY, so ingestion keeps punctuation and folds only what must
+// never be shown or matched: HTML, nikud/cantillation, presentation forms.
+// Term-dictionary equality with the sanitised query side is guaranteed by the
+// `HebrewTokenizer`, which treats the punctuation `sanitize_query` strips as
+// "transparent" (see `crate::hebrew_tokenizer`).
 
 /// Strips HTML tags and entities, mirroring the Dart `stripHtmlIfNeeded`:
 /// the four whitespace entities become a space first (so adjacent words are
@@ -304,24 +396,13 @@ pub fn strip_html_for_indexing(text: &str) -> String {
     out
 }
 
-/// Removes nikud/cantillation, mirroring the Dart `removeVolwels`: the maqaf
-/// (`־`), paseq (`׀`) and ASCII pipe (`|`) become spaces *first* (so tokens
-/// split around them), then U+0591–U+05C7 marks are dropped. The maqaf/paseq
-/// are themselves inside that range, hence the ordering matters.
-pub fn remove_vowels(text: &str) -> String {
-    text.chars()
-        .filter_map(|c| match c {
-            '\u{05BE}' | '\u{05C0}' | '|' => Some(' '),
-            c if ('\u{0591}'..='\u{05C7}').contains(&c) => None,
-            c => Some(c),
-        })
-        .collect()
-}
-
-/// Full ingestion normalisation for text-book lines:
-/// `sanitize_query(remove_vowels(strip_html_for_indexing(input)))`.
+/// Full ingestion normalisation for text-book lines: strip HTML, decompose
+/// presentation forms, strip attached nikud/cantillation, collapse whitespace.
+/// Punctuation is intentionally preserved — it is shown in search results.
 pub fn normalize_text_for_indexing(input: &str) -> String {
-    sanitize_query(&remove_vowels(&strip_html_for_indexing(input)))
+    collapse_whitespace(&strip_attached_marks(&fold_presentation_forms(
+        &strip_html_for_indexing(input),
+    )))
 }
 
 const PDF_INVISIBLE: &[char] = &[
@@ -330,17 +411,17 @@ const PDF_INVISIBLE: &[char] = &[
     '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{FEFF}',
 ];
 
-/// Ingestion normalisation for PDF text, mirroring the Dart
-/// `normalizePdfTextForIndexing`: strip HTML, drop bidi/zero-width invisibles,
-/// collapse whitespace, then the same `remove_vowels`/`sanitize_query` pass.
+/// Ingestion normalisation for PDF text: like [`normalize_text_for_indexing`]
+/// but also drops bidi/zero-width invisibles OCR tends to leave behind.
 pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
     let stripped = strip_html_for_indexing(input);
     let without_invisible: String = stripped
         .chars()
         .filter(|c| !PDF_INVISIBLE.contains(c))
         .collect();
-    let collapsed = collapse_whitespace(&without_invisible);
-    sanitize_query(&remove_vowels(&collapsed))
+    collapse_whitespace(&strip_attached_marks(&fold_presentation_forms(
+        &without_invisible,
+    )))
 }
 
 /// Heuristic mirroring the Dart `isProbablyGarbagePdfText`: after removing all
@@ -350,7 +431,9 @@ pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
 /// Counts are over Unicode scalar values; realistic Hebrew/Latin PDF text is
 /// entirely in the BMP, so this matches the Dart UTF-16 length exactly.
 pub fn is_probably_garbage_pdf_text(normalized_text: &str) -> bool {
-    let compact: Vec<char> = normalized_text
+    // הספים כוילו על טקסט נטול-פיסוק; הנרמול משמר פיסוק לתצוגה מאז,
+    // ולכן מסננים אותו כאן כדי לא להטות את היחסים.
+    let compact: Vec<char> = sanitize_query(normalized_text)
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
@@ -977,29 +1060,43 @@ mod tests {
     }
 
     #[test]
-    fn remove_vowels_matches_dart() {
-        assert_eq!(remove_vowels("שָׁלוֹם"), "שלום");
-        assert_eq!(remove_vowels("בְּרֵאשִׁית"), "בראשית");
-        // maqaf, paseq and pipe fold to a space (before the nikud strip)
-        assert_eq!(remove_vowels("א־ב"), "א ב");
-        assert_eq!(remove_vowels("א׀ב"), "א ב");
-        assert_eq!(remove_vowels("א|ב"), "א ב");
-        assert_eq!(remove_vowels("שלום"), "שלום");
+    fn strip_attached_marks_keeps_separators() {
+        assert_eq!(strip_attached_marks("שָׁלוֹם"), "שלום");
+        assert_eq!(strip_attached_marks("בְּרֵאשִׁית"), "בראשית");
+        // מקף, פסק וסוף-פסוק הם פיסוק גלוי — נשמרים.
+        assert_eq!(strip_attached_marks("א־ב"), "א־ב");
+        assert_eq!(strip_attached_marks("א׀ב"), "א׀ב");
+        assert_eq!(strip_attached_marks("ברא\u{05C3}"), "ברא\u{05C3}");
+        assert_eq!(strip_attached_marks("שלום"), "שלום");
     }
 
     #[test]
-    fn normalize_text_for_indexing_matches_dart_chain() {
-        // sanitize_query(remove_vowels(strip_html(x)))
+    fn normalize_text_for_indexing_keeps_punctuation_strips_marks() {
+        // הטקסט השמור מוצג בתוצאות: פיסוק נשמר, HTML וניקוד מוסרים.
         assert_eq!(
             normalize_text_for_indexing("<b>שָׁלוֹם, עולם!</b>"),
-            "שלום עולם"
+            "שלום, עולם!"
         );
-        assert_eq!(normalize_text_for_indexing("רמב״ם"), "רמב\"ם");
-        assert_eq!(normalize_text_for_indexing("אל־משה"), "אל משה");
+        assert_eq!(normalize_text_for_indexing("רמב״ם"), "רמב״ם");
+        assert_eq!(normalize_text_for_indexing("אל־משה"), "אל־משה");
+        assert_eq!(normalize_text_for_indexing("(עא:) וכו'"), "(עא:) וכו'");
+        // מפרידי הפסוק שבטווח הניקוד הם פיסוק — נשמרים.
+        assert_eq!(
+            normalize_text_for_indexing("בָּרָא\u{05C3} וְהָאָרֶץ"),
+            "ברא\u{05C3} והארץ"
+        );
     }
 
     #[test]
-    fn normalize_pdf_text_matches_dart_chain() {
+    fn normalize_text_for_indexing_folds_presentation_forms() {
+        // issue #500: יִ מורכבת (U+FB1D) שרדה את הסרת הניקוד והוצגה כ"?".
+        assert_eq!(normalize_text_for_indexing("מ\u{FB1D}ם"), "מים");
+        assert_eq!(normalize_text_for_indexing("\u{FB2A}לום"), "שלום");
+        assert_eq!(normalize_text_for_indexing("\u{FB4F}הים"), "אלהים");
+    }
+
+    #[test]
+    fn normalize_pdf_text_matches_text_chain_plus_invisibles() {
         // zero-width chars are dropped (no space), whitespace collapses
         assert_eq!(
             normalize_pdf_text_for_indexing("שלום\u{200B}עולם"),
@@ -1014,6 +1111,73 @@ mod tests {
             normalize_pdf_text_for_indexing("\u{FEFF}טקסט\u{202E}רגיל"),
             "טקסטרגיל"
         );
+        // punctuation preserved, nikud stripped — like the text-book chain
+        assert_eq!(
+            normalize_pdf_text_for_indexing("שָׁלוֹם, (עולם)"),
+            "שלום, (עולם)"
+        );
+    }
+
+    #[test]
+    fn strip_nikud_folds_presentation_forms() {
+        assert_eq!(strip_nikud("מ\u{FB1D}ם"), "מים");
+        assert_eq!(strip_nikud("שָׁלוֹם"), "שלום");
+    }
+
+    // ── שקילות מילון הטרמים: הצנרת הישנה מול המשמרת-פיסוק ──────────────
+
+    /// `removeVolwels` של הצנרת הישנה: מקף/פסק/`|` → רווח, ואז מחיקת כל
+    /// טווח הניקוד. משמש רק כייחוס בטסט השקילות.
+    fn old_remove_vowels(text: &str) -> String {
+        text.chars()
+            .filter_map(|c| match c {
+                '\u{05BE}' | '\u{05C0}' | '|' => Some(' '),
+                c if ('\u{0591}'..='\u{05C7}').contains(&c) => None,
+                c => Some(c),
+            })
+            .collect()
+    }
+
+    /// הצנרת שהייתה בשימוש עד שהטקסט השמור החל לשמר פיסוק.
+    fn old_normalize(input: &str) -> String {
+        sanitize_query(&old_remove_vowels(&strip_html_for_indexing(input)))
+    }
+
+    fn analyzer_terms(text: &str) -> Vec<String> {
+        use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
+        let mut analyzer = TextAnalyzer::builder(crate::hebrew_tokenizer::HebrewTokenizer)
+            .filter(LowerCaser)
+            .build();
+        let mut stream = analyzer.token_stream(text);
+        let mut terms = Vec::new();
+        while stream.advance() {
+            terms.push(stream.token().text.clone());
+        }
+        terms
+    }
+
+    #[test]
+    fn new_ingestion_produces_identical_terms_to_old_pipeline() {
+        // כל סטייה כאן = רגרסיית recall שקטה: שאילתה שעברה sanitize_query
+        // תחפש טרם שאינו קיים באינדקס המשמר-פיסוק.
+        let corpus = [
+            "וּבָזֶה יוּבַן שַׁ\"ס דִּזְבָחִים הַמִּזְבֵּחַ מְקַדֵּשׁ (עא:)",
+            "אמרו חז\"ל יומא עא. הממלא גרונם של תלמידי חכמים",
+            "כאילו מנסך יין על גבי מזבח וכו' ואמר המזבח",
+            "רמב״ם הל' תשובה פ\"ג ה\"ד; ועי' תוס׳ ד\"ה אמר",
+            "אֲשֶׁר־שָׁמַע אל־משה בית-דין א|ב א׀ב",
+            "בְּרֵאשִׁית בָּרָא אֱלֹהִים אֵת הַשָּׁמַיִם וְאֵת הָאָרֶץ",
+            "שאלה: מה הדין? תשובה — [עיין] {שם} וצ\"ע!",
+            "3.14 ד'אש תוס'. סי' קכ\"ה ס\"ק ז'",
+            "hello, world! (test) A.B.C 1+2",
+        ];
+        for text in corpus {
+            assert_eq!(
+                analyzer_terms(&normalize_text_for_indexing(text)),
+                analyzer_terms(&old_normalize(text)),
+                "term drift for: {text}"
+            );
+        }
     }
 
     #[test]

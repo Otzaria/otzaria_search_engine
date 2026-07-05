@@ -75,9 +75,10 @@ List<String> splitQueryWords({required String query}) =>
     RustLib.instance.api.crateApiSearchEngineSplitQueryWords(query: query);
 
 /// Normalises a text-book line for indexing exactly the way the engine expects
-/// stored text to look: strip HTML, fold nikud/maqaf/paseq, then the same
-/// punctuation sanitisation queries go through. Single source of truth for the
-/// Dart `IndexingDocumentBuilder.normalizeTextForIndexing`.
+/// stored text to look: strip HTML, decompose presentation forms and strip
+/// nikud/cantillation — keeping punctuation, which search results display.
+/// Single source of truth for the Dart
+/// `IndexingDocumentBuilder.normalizeTextForIndexing`.
 ///
 /// Pure string computation — safe to call synchronously (including from the
 /// indexing isolate).

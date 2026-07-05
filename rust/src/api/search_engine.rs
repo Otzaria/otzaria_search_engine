@@ -233,9 +233,10 @@ pub fn split_query_words(query: String) -> Vec<String> {
 }
 
 /// Normalises a text-book line for indexing exactly the way the engine expects
-/// stored text to look: strip HTML, fold nikud/maqaf/paseq, then the same
-/// punctuation sanitisation queries go through. Single source of truth for the
-/// Dart `IndexingDocumentBuilder.normalizeTextForIndexing`.
+/// stored text to look: strip HTML, decompose presentation forms and strip
+/// nikud/cantillation — keeping punctuation, which search results display.
+/// Single source of truth for the Dart
+/// `IndexingDocumentBuilder.normalizeTextForIndexing`.
 ///
 /// Pure string computation — safe to call synchronously (including from the
 /// indexing isolate).
@@ -3737,6 +3738,49 @@ mod tests {
             )
             .unwrap());
         assert_eq!(got, vec![1]);
+    }
+
+    #[test]
+    fn test_stored_text_keeps_punctuation_and_highlight_lands_on_it() {
+        let (mut engine, _dir) = make_engine();
+        // מקצה-לקצה של issue #446/#500: הטקסט השמור משמר פיסוק ונקי מניקוד
+        // ומ-Presentation Forms, ושאילתה רגילה מוצאת ומדגישה אותו.
+        let raw = "וּבָזֶה יוּבַן שַׁ\"ס (עא:) הַמְמַלֵּא גְּרוֹנָם, מ\u{FB1D}ם וכו'";
+        let stored = crate::hebrew_query::normalize_text_for_indexing(raw);
+        assert_eq!(stored, "ובזה יובן ש\"ס (עא:) הממלא גרונם, מים וכו'");
+        engine
+            .add_document(
+                1,
+                "title",
+                "ref",
+                "/root",
+                &stored,
+                0,
+                false,
+                "/books/a.txt",
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        for query in ["הממלא", "מים", "עא"] {
+            let results = engine
+                .search_exact(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    ResultsOrder::Catalogue,
+                )
+                .unwrap();
+            assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
+            assert!(
+                results[0]
+                    .text
+                    .contains(&format!("<font color=red>{query}</font>")),
+                "highlight missing for {query}: {}",
+                results[0].text
+            );
+        }
     }
 
     #[test]
