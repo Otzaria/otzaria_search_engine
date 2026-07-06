@@ -14,9 +14,11 @@
 //!
 //! Each regex term is compiled to a DFA by tantivy-fst. Two hard limits apply:
 //!
-//! * The DFA state count is capped at 1 000. A pattern whose length grows
-//!   unboundedly (e.g. `.*`) can blow past this and cause a compile error at
-//!   query time. Every window/wildcard in this module is therefore bounded.
+//! * The DFA state count is capped at 8 192 (vendored tantivy-fst; upstream
+//!   caps at 1 000 — see vendor/tantivy-fst/README.md). A pattern whose
+//!   length grows unboundedly (e.g. `.*`) can blow past this and cause a
+//!   compile error at query time. Every window/wildcard in this module is
+//!   therefore bounded.
 //! * `RegexPhraseQuery::set_max_expansions` guards against runaway dictionary
 //!   scans; we set it conservatively per query shape.
 //!
@@ -82,19 +84,23 @@ const INSERTION_LETTERS: &[&str] = &[
 
 /// Char budget for a *joined* per-word pattern on the phrase path, where
 /// `RegexPhraseQuery` compiles each word's whole pattern as one DFA. It is a
-/// crude proxy for the tantivy-fst 1 000-state cap (chars ≠ states — heavily
-/// overlapping wildcard branches can fail far below this), kept as a cheap
-/// guard for the path that has no per-branch alternative yet.
-const MAX_PATTERN_CHARS: usize = 1_000;
+/// crude proxy for the vendored tantivy-fst 8 192-state cap (chars ≠ states —
+/// heavily overlapping wildcard branches can fail far below this), kept as a
+/// cheap guard for the path that has no per-branch alternative yet. Scaled ×6
+/// with the state-cap raise from 1 000 (see vendor/tantivy-fst/README.md),
+/// leaving headroom for shape variance; calibrate via `benchmark_cli`.
+const MAX_PATTERN_CHARS: usize = 6_000;
 
 /// Phrase-path variation cap when typo tolerance is active (substitution +
 /// deletion + insertion can produce many candidates; we keep the most useful
-/// ones).
-const MAX_TYPO_VARIATIONS: usize = 48;
+/// ones). The historical worst shape (wildcard-wrapped typo+partial branches)
+/// determinizes to roughly ~100 states per branch, so 64 branches ≈ 6.4k
+/// states — inside the vendored 8 192-state cap with margin.
+const MAX_TYPO_VARIATIONS: usize = 64;
 
 /// Phrase-path variation cap without typo tolerance (spelling/morphological
 /// combos are naturally smaller, so a tighter budget still covers them fully).
-const MAX_NORMAL_VARIATIONS: usize = 20;
+const MAX_NORMAL_VARIATIONS: usize = 48;
 
 /// Per-word branch budgets, chosen by query shape.
 ///
@@ -132,6 +138,16 @@ const SINGLE_WORD_BUDGET: VariationBudget = VariationBudget {
 /// out identically.
 pub(crate) const MAX_SPELLING_BRANCHES: usize = 16;
 
+/// `max_expansions` ceiling for the phrase path (`RegexPhraseQuery`).
+///
+/// tantivy enforces it cumulatively across all word positions *before*
+/// loading postings, and its doc_freq bucketing contains the post-expansion
+/// cost — so the ceiling guards the memory of materialized expansions, not
+/// scan time. Half of tantivy's own default (16 384) as a conservative first
+/// step; overflowing it surfaces tantivy's `InvalidArgument` to the caller
+/// (unlike the single-word path, which degrades instead of erroring).
+const PHRASE_MAX_EXPANSIONS: u32 = 8_192;
+
 // ── Public result type ─────────────────────────────────────────────────────
 
 /// Everything the Tantivy layer needs to execute an advanced search.
@@ -144,18 +160,29 @@ pub struct AdvancedQuery {
     pub slop: u32,
     /// Term-dictionary expansion limit passed to `RegexPhraseQuery`.
     pub max_expansions: u32,
+    /// Tokens to expand through a Levenshtein-1 automaton scan (single word
+    /// with typo tolerance and no other expansion option — see
+    /// [`prepare_advanced_query`]). When non-empty, `regex_terms` carries only
+    /// the exact candidate forms and the engine adds one automaton scan per
+    /// token per segment: the whole edit-distance-1 neighborhood for the cost
+    /// of a single scan, instead of ≤128 sampled literal-variant scans. The
+    /// scan runs after the exact branches and under the same collection
+    /// budgets — lowest priority, skipped if the exact forms already exhaust
+    /// a budget. Empty on every other query shape.
+    pub typo_tokens: Vec<String>,
 }
 
 // ── Word patterns (structured top-level alternation) ───────────────────────
 
 /// A per-word regex term with its top-level alternation kept structured.
 ///
-/// tantivy-fst compiles a whole pattern into one DFA capped at 1 000 states.
-/// Wildcard-wrapped branches overlap heavily, so a combined `(?:b1|…|bN)` can
-/// blow the cap even when every branch alone is tiny (the real typo+partial
-/// pattern — 48 branches, 806 chars — already fails while all 48 branches
-/// compile individually). Keeping the branches separate lets the engine
-/// compile each one as its own small DFA and stream all matches into a single
+/// tantivy-fst compiles a whole pattern into one DFA capped at 8 192 states
+/// (vendored; upstream caps at 1 000). Wildcard-wrapped branches overlap
+/// heavily, so a combined `(?:b1|…|bN)` can blow the cap even when every
+/// branch alone is tiny (the real typo+partial pattern — 48 branches, 806
+/// chars — failed under the upstream cap while all 48 branches compile
+/// individually). Keeping the branches separate lets the engine compile each
+/// one as its own small DFA and stream all matches into a single
 /// `TermSetQuery`, which never touches the state limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WordPattern {
@@ -375,6 +402,20 @@ impl WordFlags {
         } else {
             budget.normal_variations
         }
+    }
+
+    /// Whether any expansion option besides typo tolerance is active. Typo
+    /// composes with these (each typo variant is fed through the same
+    /// morphology/spelling pattern builder), which a Levenshtein automaton
+    /// cannot replicate in one scan — so the automaton path only replaces
+    /// literal typo variants when this is `false`.
+    fn expands_beyond_typo(&self) -> bool {
+        self.prefix
+            || self.suffix
+            || self.gram_prefix
+            || self.gram_suffix
+            || self.spelling
+            || self.partial
     }
 }
 
@@ -1077,24 +1118,27 @@ fn build_word_regex(
     let mut branches: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for candidate in &candidates {
-        // Typo tolerance: expand the candidate to edit-distance-1 variants
-        // before feeding each variant into the pattern builder.
-        let roots: Vec<String> = if flags.typo {
-            generate_typo_variations(candidate, budget.typo_variations)
-        } else {
-            vec![candidate.clone()]
-        };
-
-        for root in roots {
-            let pattern = word_to_pattern(&root, flags);
-            push_unique(&mut branches, &mut seen, pattern);
-            if branches.len() >= max {
-                break;
+    // Branch order is a contract (see `single_regex_term_query`): collection
+    // budgets truncate the branch list from the back, so the exact form of
+    // *every* candidate — the query word and each alternative — must come
+    // before any typo variant. A legitimate alternative spelling must never
+    // lose its slot to a typo variant of the primary word. Pass 0 emits the
+    // exact forms; pass 1 (typo only) emits the edit-distance-1 variants,
+    // whose regenerated originals dedupe against pass 0 via `seen`.
+    'passes: for pass in 0..=usize::from(flags.typo) {
+        for candidate in &candidates {
+            let roots: Vec<String> = if pass == 0 {
+                vec![candidate.clone()]
+            } else {
+                generate_typo_variations(candidate, budget.typo_variations)
+            };
+            for root in roots {
+                let pattern = word_to_pattern(&root, flags);
+                push_unique(&mut branches, &mut seen, pattern);
+                if branches.len() >= max {
+                    break 'passes;
+                }
             }
-        }
-        if branches.len() >= max {
-            break;
         }
     }
 
@@ -1232,6 +1276,7 @@ pub fn prepare_advanced_query(
             regex_terms: terms,
             slop,
             max_expansions,
+            typo_tokens: Vec::new(),
         };
     }
 
@@ -1245,11 +1290,46 @@ pub fn prepare_advanced_query(
     } else {
         &PHRASE_BUDGET
     };
+
+    // A single word whose only expansion option is typo tolerance skips the
+    // literal edit-distance-1 variants entirely: the engine scans the term
+    // dictionary once per candidate with a Levenshtein-1 automaton instead —
+    // every substitution/deletion/insertion/transposition, not the sampled
+    // Hebrew confusion list, for ~1/128 of the scan work. The coverage is
+    // still subject to the collection budgets, and typo sits at the lowest
+    // priority: when the exact forms alone exhaust a budget (an extremely
+    // common word), the typo scan is skipped rather than pushing past it.
+    // Typo combined with morphology/spelling keeps the literal-variant path,
+    // which composes each variant through the pattern builder (an automaton
+    // can't).
+    let typo_tokens: Vec<String> = if words.len() == 1
+        && word_flags_at(&words, 0, search_options).typo
+        && !word_flags_at(&words, 0, search_options).expands_beyond_typo()
+    {
+        std::iter::once(words[0].clone())
+            .chain(
+                alternative_words
+                    .get(&0)
+                    .into_iter()
+                    .flatten()
+                    .map(|a| normalize_for_index(a)),
+            )
+            .filter(|c| !c.trim().is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let regex_terms: Vec<WordPattern> = words
         .iter()
         .enumerate()
         .map(|(i, word)| {
-            let flags = word_flags_at(&words, i, search_options);
+            let mut flags = word_flags_at(&words, i, search_options);
+            if !typo_tokens.is_empty() {
+                // The Levenshtein automaton supplies the typo coverage; the
+                // branches keep only the exact candidate forms.
+                flags.typo = false;
+            }
             let alts = alternative_words
                 .get(&(i as u32))
                 .map(Vec::as_slice)
@@ -1273,29 +1353,33 @@ pub fn prepare_advanced_query(
         regex_terms,
         slop,
         max_expansions,
+        typo_tokens,
     }
 }
 
 // ── max_expansions heuristic ───────────────────────────────────────────────
 
-/// Computes the `max_expansions` limit for `RegexPhraseQuery` based on the
-/// active search options. Mirrors the Dart `calculateMaxExpansions` rules,
-/// with one deviation: a single word combining typo tolerance with a
-/// morphological/partial option uses the (much higher) morphological
-/// ceilings. Its relaxed branch set legitimately matches many terms, and the
-/// expansion guard errors on overflow — a 50-term ceiling would turn the
-/// newly-working query shape into an error on any real index.
+/// Computes the term-expansion ceiling for the query, shaped by path:
+///
+/// - **Single word** (TermSetQuery path): overflow *degrades* — collection
+///   truncates at the ceiling and serves the highest-priority branches — and
+///   the real cost guard is the postings budget in
+///   `single_regex_term_query`. The ceiling only bounds the materialized
+///   `Vec<Term>` memory, so it sits ×10 above the historical error-guard
+///   values. A single word combining typo with a morphological/partial
+///   option uses the (much higher) morphological ceilings — its relaxed
+///   branch set legitimately matches many terms.
+/// - **Phrase** (`RegexPhraseQuery`): tantivy enforces the ceiling itself,
+///   cumulatively across positions, and overflow is an error — one flat
+///   ceiling at half the tantivy default (see [`PHRASE_MAX_EXPANSIONS`]).
 fn compute_max_expansions(
     words: &[String],
     search_options: &HashMap<String, HashMap<String, bool>>,
 ) -> u32 {
+    let single = words.len() == 1;
     let has_typo = search_options
         .values()
         .any(|m| m.get(OPT_TYPO).copied().unwrap_or(false));
-
-    if has_typo && words.len() > 1 {
-        return 100;
-    }
 
     // Check whether any word uses a morphological or partial option, and find
     // the shortest such word (wider expansion for shorter roots).
@@ -1323,24 +1407,38 @@ fn compute_max_expansions(
         }
     }
 
+    // Phrase path: one flat ceiling for every expansion-heavy shape (typo
+    // and/or morphology). The per-word shape no longer matters — tantivy
+    // enforces the ceiling cumulatively across positions, and its bucketing
+    // keeps the cost of what passes contained.
+    if !single && (has_typo || shortest_morph.is_some()) {
+        return PHRASE_MAX_EXPANSIONS;
+    }
+
     if let Some(shortest) = shortest_morph {
+        // Single word: executed per branch as a TermSetQuery, where overflow
+        // degrades (truncates) instead of erroring and the real cost guard is
+        // the postings budget in `single_regex_term_query`. These ceilings
+        // only bound the materialized `Vec<Term>` memory, so they sit ×10
+        // above the old error-guard values.
         return match shortest {
-            0 | 1 => 2_000,
-            2 => 3_000,
-            3 => 4_000,
-            _ => 5_000,
+            0 | 1 => 20_000,
+            2 => 30_000,
+            3 => 40_000,
+            _ => 50_000,
         };
     }
 
     if has_typo {
-        // Single word (multi-word typo returned above), typo without any
-        // morphological option: the branch set is edit-distance-1 literals,
-        // which match few terms each.
-        50
-    } else if words.len() > 1 {
-        100
+        // Single word, typo without any morphological option: the branch set
+        // is edit-distance-1 literals, which match few terms each.
+        500
+    } else if !single {
+        // Spelling/alternative literal branches only — each matches at most a
+        // handful of terms per position, but positions accumulate.
+        1_024
     } else {
-        10
+        100
     }
 }
 
@@ -1815,15 +1913,17 @@ mod tests {
 
     #[test]
     fn single_word_budget_relaxes_branch_count() {
-        // With the phrase budget, typo+partial caps at 48 branches; the
-        // single-word budget must go beyond it.
+        // With the phrase budget, typo+partial caps at MAX_TYPO_VARIATIONS
+        // branches; the single-word budget must go beyond it. A long word is
+        // needed to saturate both caps — a 3-letter word's edit-distance-1
+        // neighborhood is naturally smaller than the raised phrase cap.
         let flags = WordFlags {
             typo: true,
             partial: true,
             ..Default::default()
         };
-        let phrase = build_word_regex("משה", &flags, &[], &PHRASE_BUDGET);
-        let single = build_word_regex("משה", &flags, &[], &SINGLE_WORD_BUDGET);
+        let phrase = build_word_regex("בראשית", &flags, &[], &PHRASE_BUDGET);
+        let single = build_word_regex("בראשית", &flags, &[], &SINGLE_WORD_BUDGET);
         assert_eq!(phrase.branches().len(), MAX_TYPO_VARIATIONS);
         assert!(
             single.branches().len() > MAX_TYPO_VARIATIONS,
@@ -2085,40 +2185,62 @@ mod tests {
     fn max_expansions_defaults() {
         assert_eq!(
             compute_max_expansions(&["שלום".to_string()], &HashMap::new()),
-            10
+            100
         );
         assert_eq!(
             compute_max_expansions(&["שלום".to_string(), "עולם".to_string()], &HashMap::new()),
-            100
+            1_024
         );
     }
 
     #[test]
     fn max_expansions_grammatical_prefix_by_word_length() {
         let so = make_options(&[("ספר_0", &[(OPT_GRAM_PREFIX, true)])]);
-        assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 4_000);
+        assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 40_000);
     }
 
     #[test]
     fn max_expansions_typo_tolerance() {
         let so = make_options(&[("ספר_0", &[(OPT_TYPO, true)])]);
-        assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 50);
+        assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 500);
         assert_eq!(
             compute_max_expansions(&["ספר".to_string(), "תורה".to_string()], &so),
-            100
+            PHRASE_MAX_EXPANSIONS
         );
     }
 
     #[test]
     fn max_expansions_single_word_typo_with_morph_uses_morph_ceiling() {
         // typo+partial on a single word runs on the relaxed per-branch path
-        // and legitimately matches many terms; the 50-term typo ceiling would
-        // turn it into an overflow error (R4). Multi-word stays at 100.
+        // and legitimately matches many terms; a tight typo ceiling would
+        // truncate it far too early (R4). Multi-word takes the flat phrase
+        // ceiling regardless of shape.
         let so = make_options(&[("משה_0", &[(OPT_TYPO, true), (OPT_PARTIAL, true)])]);
-        assert_eq!(compute_max_expansions(&["משה".to_string()], &so), 4_000);
+        assert_eq!(compute_max_expansions(&["משה".to_string()], &so), 40_000);
         assert_eq!(
             compute_max_expansions(&["משה".to_string(), "עם".to_string()], &so),
-            100
+            PHRASE_MAX_EXPANSIONS
         );
+    }
+
+    // ── Branch-order contract (degrade truncates from the back) ─────────
+
+    #[test]
+    fn typo_branches_put_every_exact_form_before_any_typo_variant() {
+        // Truncation keeps a prefix of the branch list, so the exact form of
+        // each candidate (query word AND alternatives) must precede all typo
+        // variants — an alternative spelling must never lose its slot to a
+        // typo variant of the primary word.
+        let flags = WordFlags {
+            typo: true,
+            ..Default::default()
+        };
+        let alts = vec!["תורה".to_string()];
+        let pattern = build_word_regex("ספר", &flags, &alts, &SINGLE_WORD_BUDGET);
+        let branches = pattern.branches();
+        assert_eq!(branches[0], "ספר");
+        assert_eq!(branches[1], "תורה");
+        // Everything after the exact forms is a typo variant of one of them.
+        assert!(branches.len() > 2, "typo expansion produced no variants");
     }
 }

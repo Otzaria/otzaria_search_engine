@@ -70,9 +70,9 @@ pub fn normalize_hebrew(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.trim().chars() {
         match c {
-            _ if is_removed_point(c) => {} // nikud / teamim
+            _ if is_removed_point(c) => {}             // nikud / teamim
             '\u{05F4}' | '\u{05F3}' | '"' | '\'' => {} // gershayim / geresh
-            '\u{05BE}' => out.push(' '),   // maqaf → space
+            '\u{05BE}' => out.push(' '),               // maqaf → space
             _ => out.push(fold_final(c)),
         }
     }

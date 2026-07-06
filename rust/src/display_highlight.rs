@@ -69,8 +69,10 @@ const WORD_SEPARATOR: &str = r#"(?:\s|[֑-ׇ]|<[^>]*>|[.,:;!?'"״׳־\-–—()\
 /// Cumulative per-word pattern length budget. Display patterns are ~3× longer
 /// than index-term patterns (each letter carries a marks class), so this is
 /// looser than `hebrew_query::MAX_PATTERN_CHARS`; at least one branch is
-/// always kept.
-const MAX_DISPLAY_PATTERN_CHARS: usize = 4_000;
+/// always kept. Raised with the search-side budgets (parity), but capped
+/// short of a strict 3× of the index budget — past ~12k chars the app-side
+/// `RegExp` gets slow while extra branches stop adding visible highlights.
+const MAX_DISPLAY_PATTERN_CHARS: usize = 12_000;
 
 /// Separator allowing up to `max_intermediate_words` whole words between two
 /// adjacent query words (the "מרווח בין מילים" search option).

@@ -150,7 +150,10 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
 /// expands very widely; far more matches than a snippet could ever show.
-const MAX_HIGHLIGHT_TERMS: usize = 512;
+/// Scaled ×4 with the search-side expansion ceilings (parity: a document
+/// found via a wide expansion should still highlight its variant); the
+/// display char budget bounds the final pattern size regardless.
+const MAX_HIGHLIGHT_TERMS: usize = 2_048;
 const MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN: usize = 256;
 const LEXICAL_FUZZY_PHRASE_SLOP: u32 = 1;
 
@@ -386,10 +389,9 @@ fn content_fingerprint(text: &str) -> u64 {
 fn update_reference_trail<'a>(trail: &mut Vec<&'a str>, line: &'a str) {
     if line.chars().count() >= 4 && !trail.is_empty() {
         let prefix: Vec<char> = line.chars().take(4).collect();
-        if let Some(idx) = trail
-            .iter()
-            .position(|entry| entry.chars().take(4).eq(prefix.iter().copied()) && entry.chars().count() >= 4)
-        {
+        if let Some(idx) = trail.iter().position(|entry| {
+            entry.chars().take(4).eq(prefix.iter().copied()) && entry.chars().count() >= 4
+        }) {
             trail.truncate(idx);
         }
     }
@@ -684,13 +686,28 @@ fn current_schema() -> Schema {
 struct TermCacheKey {
     generation: u64,
     branches: Vec<String>,
+    /// Tokens expanded via Levenshtein-1 automaton scans (single-word typo
+    /// path); part of the key because the same branches with different typo
+    /// tokens materialize different term sets.
+    typo_tokens: Vec<String>,
     max_expansions: u32,
 }
 
 /// Entries kept in [`SearchEngine::term_cache`]. Each entry holds at most
-/// `max_expansions` terms (≤5 000 short Hebrew tokens ≈ ~100KB worst case),
-/// so the cache tops out at a few MB and typically far less.
+/// `max_expansions` terms (≤50 000 short Hebrew tokens ≈ ~1MB worst case), so
+/// the cache tops out at a few tens of MB when 32 distinct worst-case queries
+/// are live — typically far less (the postings budget truncates collection
+/// long before the term ceiling on any realistic query).
 const TERM_CACHE_ENTRIES: usize = 32;
+
+/// Ceiling on the summed per-segment `doc_freq` a single-word term set may
+/// accumulate. This — not the term count — is the true cost guard: executing
+/// the resulting `TermSetQuery` unions one postings list per matched term per
+/// segment into a BitSet, O(Σ doc_freq). The term-count ceiling
+/// (`max_expansions`) remains only as a memory guard on the materialized
+/// `Vec<Term>`. Initial value pending empirical calibration via
+/// `benchmark_cli` (VARIATION_CEILING_RESEARCH.md §3.א).
+const SINGLE_WORD_POSTINGS_BUDGET: u64 = 1_000_000;
 
 pub struct SearchEngine {
     schema: Schema,
@@ -1878,12 +1895,13 @@ impl SearchEngine {
             .iter()
             .map(|t| hebrew_query::WordPattern::parse(t))
             .collect();
-        self.build_query_from_patterns(patterns, facets, slop, max_expansions)
+        self.build_query_from_patterns(patterns, &[], facets, slop, max_expansions)
     }
 
     fn build_query_from_patterns(
         &self,
         regex_terms: Vec<hebrew_query::WordPattern>,
+        typo_tokens: &[String],
         facets: Vec<String>,
         slop: u32,
         max_expansions: u32,
@@ -1894,9 +1912,12 @@ impl SearchEngine {
 
         let main_query: Box<dyn Query> = match regex_terms.len() {
             0 => Box::new(EmptyQuery),
-            1 => {
-                self.single_regex_term_query(regex_terms[0].branches(), text_field, max_expansions)?
-            }
+            1 => self.single_regex_term_query(
+                regex_terms[0].branches(),
+                typo_tokens,
+                text_field,
+                max_expansions,
+            )?,
             _ => {
                 // The phrase path needs one pattern string per word position:
                 // `RegexPhraseQuery` compiles each as a single DFA (branch
@@ -1930,22 +1951,28 @@ impl SearchEngine {
     }
 
     /// Single regex term: materialize the matching index terms into a
-    /// `TermSetQuery`, enforcing `max_expansions` the same way
-    /// `RegexPhraseQuery` does for multi-term queries (error on overflow).
-    /// A bare `RegexQuery` would enumerate the term dictionary without any
-    /// bound, so a broad pattern (e.g. a 1-char word with prefix+suffix
-    /// options) could scan a huge slice of the index unchecked.
+    /// `TermSetQuery`, bounded by two budgets — `max_expansions` (term count,
+    /// a memory guard on the materialized `Vec<Term>`) and
+    /// [`SINGLE_WORD_POSTINGS_BUDGET`] (summed doc_freq, the real execution
+    /// cost). Unlike `RegexPhraseQuery`, overflow here *degrades*: collection
+    /// stops and the highest-priority automatons collected so far are served
+    /// (never an error). A bare `RegexQuery` would enumerate the term
+    /// dictionary without any bound, so a broad pattern (e.g. a 1-char word
+    /// with prefix+suffix options) could scan a huge slice of the index
+    /// unchecked.
     ///
     /// Each alternation branch is compiled as its own DFA: a combined
     /// `(?:b1|…|bN)` of wildcard-wrapped branches overlaps so heavily that it
-    /// blows the tantivy-fst 1 000-state cap (48 typo+partial branches — 806
-    /// chars — already fail) while every branch alone is tiny. All branches
-    /// stream into one shared `HashSet` under one global `max_expansions`, so
-    /// the resulting `TermSetQuery` is bit-identical to what the whole
-    /// pattern would have produced.
+    /// blew the upstream tantivy-fst 1 000-state cap (48 typo+partial
+    /// branches — 806 chars; the vendored cap is 8 192) while every branch
+    /// alone is tiny. `typo_tokens` add one Levenshtein-1 automaton each,
+    /// scanned after all branches. Everything streams into one shared
+    /// `HashSet` under the shared budgets, so the resulting `TermSetQuery`
+    /// is exactly the union of what every automaton matches.
     fn single_regex_term_query(
         &self,
         branches: &[String],
+        typo_tokens: &[String],
         text_field: Field,
         max_expansions: u32,
     ) -> Result<Box<dyn Query>> {
@@ -1958,6 +1985,7 @@ impl SearchEngine {
         let cache_key = TermCacheKey {
             generation: searcher.generation().generation_id(),
             branches: branches.to_vec(),
+            typo_tokens: typo_tokens.to_vec(),
             max_expansions,
         };
         if let Some(terms) = self.term_cache.lock().unwrap().get(&cache_key) {
@@ -1983,25 +2011,73 @@ impl SearchEngine {
                 })
             })
             .collect::<Result<_>>()?;
+        let inverted_indexes = searcher
+            .segment_readers()
+            .iter()
+            .map(|reader| reader.inverted_index(text_field))
+            .collect::<tantivy::Result<Vec<_>>>()?;
         let mut matched: HashSet<String> = HashSet::new();
-        for reader in searcher.segment_readers() {
-            let inverted = reader.inverted_index(text_field)?;
-            for regex in &regexes {
-                let mut stream = inverted.terms().search(regex).into_stream()?;
-                while stream.advance() {
-                    if let Ok(term) = std::str::from_utf8(stream.key()) {
-                        // contains-before-insert avoids re-allocating the term
-                        // string when it was already seen in an earlier
-                        // segment or matched by an earlier branch.
-                        if !matched.contains(term) {
-                            matched.insert(term.to_string());
-                            if matched.len() > max_expansions as usize {
-                                anyhow::bail!("query exceeded max expansions {max_expansions}");
-                            }
-                        }
+        // Sum of doc_freq over every stream hit — the real cost of executing
+        // the TermSetQuery (BitSet union of one postings list per matched term
+        // per segment). A term matched by several automatons in the same
+        // segment is counted once per automaton — a slight over-estimate that
+        // only errs toward earlier truncation.
+        let mut postings_cost: u64 = 0;
+        let mut truncated = false;
+        // Automatons run most-important-first: branches (exact forms before
+        // typo variants — the `build_word_regex` contract), then the
+        // Levenshtein typo automatons. Each automaton covers *all* segments
+        // before the next starts, so when a budget runs out mid-collection
+        // the query degrades to the highest-priority automaton prefix rather
+        // than over-serving whichever segment happened to be scanned first.
+        'branches: for regex in &regexes {
+            for inverted in &inverted_indexes {
+                if Self::collect_automaton_terms(
+                    inverted,
+                    regex,
+                    max_expansions,
+                    &mut matched,
+                    &mut postings_cost,
+                )? {
+                    truncated = true;
+                    break 'branches;
+                }
+            }
+        }
+        if !truncated && !typo_tokens.is_empty() {
+            // Same builder configuration as the fuzzy path (distance 1,
+            // transposition counts as one edit): the whole edit-distance-1
+            // neighborhood in one scan per token per segment, replacing the
+            // ≤128 sampled literal-variant scans (VARIATION_CEILING_RESEARCH
+            // §3.ג). Guarded by `!truncated` on purpose — typo expansion has
+            // the lowest priority, so when the exact branches alone exhaust a
+            // budget (an extremely common word) the scan is skipped entirely
+            // rather than pushed past the budget; the query then behaves as
+            // if typo tolerance found nothing, and the warn! below records it.
+            let builder = LevenshteinAutomatonBuilder::new(1, true);
+            'typo: for token in typo_tokens {
+                let automaton = DfaWrapper(builder.build_dfa(token));
+                for inverted in &inverted_indexes {
+                    if Self::collect_automaton_terms(
+                        inverted,
+                        &automaton,
+                        max_expansions,
+                        &mut matched,
+                        &mut postings_cost,
+                    )? {
+                        truncated = true;
+                        break 'typo;
                     }
                 }
             }
+        }
+        if truncated {
+            warn!(
+                "single-word term collection truncated at {} terms / ~{postings_cost} postings \
+                 (caps: {max_expansions} terms, {SINGLE_WORD_POSTINGS_BUDGET} postings); \
+                 serving the highest-priority branches collected so far",
+                matched.len(),
+            );
         }
         let terms: Arc<Vec<Term>> = Arc::new(
             matched
@@ -2014,6 +2090,44 @@ impl SearchEngine {
             .unwrap()
             .put(cache_key, terms.clone());
         Ok(Box::new(TermSetQuery::new(terms.iter().cloned())))
+    }
+
+    /// Streams every term `automaton` matches in one segment's dictionary
+    /// into `matched`, charging each hit's per-segment `doc_freq` against
+    /// `postings_cost` (the streamer decodes `TermInfo` in-memory on
+    /// `advance()`, so reading the value adds no IO). Returns `true` when a
+    /// collection budget was hit — degrade, never error: the check runs after
+    /// insertion, so even a first term costlier than the whole budget is
+    /// kept and the caller serves what was gathered.
+    fn collect_automaton_terms<A>(
+        inverted: &tantivy::InvertedIndexReader,
+        automaton: &A,
+        max_expansions: u32,
+        matched: &mut HashSet<String>,
+        postings_cost: &mut u64,
+    ) -> Result<bool>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
+        let mut stream = inverted.terms().search(automaton).into_stream()?;
+        while stream.advance() {
+            if let Ok(term) = std::str::from_utf8(stream.key()) {
+                *postings_cost += u64::from(stream.value().doc_freq);
+                // contains-before-insert avoids re-allocating the term string
+                // when it was already seen in an earlier segment or matched
+                // by an earlier automaton.
+                if !matched.contains(term) {
+                    matched.insert(term.to_string());
+                }
+                if matched.len() >= max_expansions as usize
+                    || *postings_cost >= SINGLE_WORD_POSTINGS_BUDGET
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Tokenizes `text` with the same `"hebrew"` analyzer the `text` field is
@@ -2455,6 +2569,7 @@ impl SearchEngine {
             .collect();
         let query = self.build_query_from_patterns(
             prepared.regex_terms,
+            &prepared.typo_tokens,
             facets,
             prepared.slop,
             prepared.max_expansions,
@@ -2817,14 +2932,25 @@ impl SearchEngine {
                     }
                 })
                 .collect();
-            let matched: Vec<String> = if automatons.is_empty() {
-                Vec::new()
+            let mut matched: HashSet<String> = if automatons.is_empty() {
+                HashSet::new()
             } else {
                 self.automaton_highlight_terms(&searcher, &automatons)?
-                    .into_iter()
-                    .collect()
             };
-            per_word_terms.push(matched);
+            // Single-word typo path: the search expands typo coverage through
+            // Levenshtein-1 automatons, not regex branches — run the same
+            // scan here so a document found via any edit-distance-1 variant
+            // highlights that variant (search↔highlight parity).
+            if !advanced.typo_tokens.is_empty() {
+                let builder = LevenshteinAutomatonBuilder::new(1, true);
+                let typo_automatons: Vec<DfaWrapper> = advanced
+                    .typo_tokens
+                    .iter()
+                    .map(|t| DfaWrapper(builder.build_dfa(t)))
+                    .collect();
+                matched.extend(self.automaton_highlight_terms(&searcher, &typo_automatons)?);
+            }
+            per_word_terms.push(matched.into_iter().collect());
         }
 
         Ok(display_highlight::build_display_highlight_from_terms(
@@ -3657,7 +3783,8 @@ mod tests {
     #[test]
     fn add_text_book_builds_reference_trail_ids_and_fingerprint() {
         let (mut engine, _dir) = make_engine();
-        let text = "<h1>ספר בראשית</h1>\n<h2>פרק א</h2>\nבְּרֵאשִׁית ברא אלהים\n<h2>פרק ב</h2>\nויכלו השמים";
+        let text =
+            "<h1>ספר בראשית</h1>\n<h2>פרק א</h2>\nבְּרֵאשִׁית ברא אלהים\n<h2>פרק ב</h2>\nויכלו השמים";
         let added = engine
             .add_text_book(
                 "בראשית".to_string(),
@@ -3671,13 +3798,7 @@ mod tests {
         engine.commit().unwrap();
 
         let results = engine
-            .search_exact(
-                "ויכלו".to_string(),
-                vec![],
-                10,
-                0,
-                ResultsOrder::Catalogue,
-            )
+            .search_exact("ויכלו".to_string(), vec![], 10, 0, ResultsOrder::Catalogue)
             .unwrap();
         assert_eq!(results.len(), 1);
         let hit = &results[0];
@@ -3691,7 +3812,13 @@ mod tests {
 
         // הטקסט המאונדקס מנורמל (הניקוד הוסר) והחיפוש מוצא אותו.
         let nikud_hit = engine
-            .search_exact("בראשית ברא".to_string(), vec![], 10, 0, ResultsOrder::Catalogue)
+            .search_exact(
+                "בראשית ברא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+            )
             .unwrap();
         assert_eq!(nikud_hit.len(), 1);
 
@@ -3749,20 +3876,23 @@ mod tests {
 
     /// The exact pattern the generator builds for `משה` with "חלק ממילה" +
     /// "שגיאות כתיב": 48 wildcard-wrapped branches, 806 chars. As one regex it
-    /// exceeds the tantivy-fst 1 000-state DFA cap and fails to compile; each
-    /// branch alone is tiny.
+    /// exceeded the upstream tantivy-fst 1 000-state DFA cap (the vendored
+    /// copy raises it to 8 192); each branch alone is tiny.
     const BOTH_OPTIONS_PATTERN: &str = "(.{0,3}משה.{0,3}|.{0,3}מסה.{0,3}|.{0,2}משׁה.{0,2}|.{0,2}משׂה.{0,2}|.{0,3}משא.{0,3}|.{0,3}משע.{0,3}|.{0,3}משח.{0,3}|.{0,3}שמה.{0,3}|.{0,3}מהש.{0,3}|.{0,3}שה.{0,3}|.{0,3}מה.{0,3}|.{0,3}מש.{0,3}|.{0,2}ומשה.{0,2}|.{0,2}ימשה.{0,2}|.{0,2}אמשה.{0,2}|.{0,2}המשה.{0,2}|.{0,2}פמשה.{0,2}|.{0,2}למשה.{0,2}|.{0,2}ממשה.{0,2}|.{0,2}נמשה.{0,2}|.{0,2}במשה.{0,2}|.{0,2}כמשה.{0,2}|.{0,2}שמשה.{0,2}|.{0,2}תמשה.{0,2}|.{0,2}רמשה.{0,2}|.{0,2}משהו.{0,2}|.{0,2}משהי.{0,2}|.{0,2}משהא.{0,2}|.{0,2}משהה.{0,2}|.{0,2}משהפ.{0,2}|.{0,2}משהל.{0,2}|.{0,2}משהמ.{0,2}|.{0,2}משהנ.{0,2}|.{0,2}משהב.{0,2}|.{0,2}משהכ.{0,2}|.{0,2}משהש.{0,2}|.{0,2}משהת.{0,2}|.{0,2}משהר.{0,2}|.{0,2}מושה.{0,2}|.{0,2}מישה.{0,2}|.{0,2}מאשה.{0,2}|.{0,2}מהשה.{0,2}|.{0,2}מפשה.{0,2}|.{0,2}מלשה.{0,2}|.{0,2}מנשה.{0,2}|.{0,2}מבשה.{0,2}|.{0,2}מכשה.{0,2}|.{0,2}מששה.{0,2})";
 
     #[test]
-    fn whole_pattern_exceeds_state_limit_but_split_succeeds() {
-        // Baseline for the bug this feature fixes: the combined pattern
-        // genuinely cannot compile as a single DFA...
+    fn whole_pattern_compiles_under_vendored_state_limit_and_split_succeeds() {
+        // Baseline for the vendored tantivy-fst patch: this combined pattern
+        // could not compile as one DFA under the upstream 1 000-state cap
+        // (the bug the per-branch split fixed). Under the vendored 8 192-state
+        // cap it compiles again — the fact that unlocks the relaxed phrase
+        // budgets, since a phrase word is compiled joined.
         assert!(
-            tantivy_fst::Regex::new(BOTH_OPTIONS_PATTERN).is_err(),
-            "combined 48-branch pattern unexpectedly compiled — did the state \
-             limit change?"
+            tantivy_fst::Regex::new(BOTH_OPTIONS_PATTERN).is_ok(),
+            "combined 48-branch pattern no longer compiles — did the vendored \
+             tantivy-fst STATE_LIMIT patch get lost?"
         );
-        // ...yet the split path answers the query.
+        // The split path answers the query either way.
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "ויאמר משה אל העם", "/books/a.txt");
         add(&mut engine, 2, "ספר בראשית", "/books/b.txt");
@@ -3778,8 +3908,8 @@ mod tests {
         engine.commit().unwrap();
 
         // The exact pattern built for `משה` with "חלק ממילה" + "שגיאות כתיב".
-        // As a single regex it exceeds the 1000-state limit and fails; the
-        // per-branch split must now find the document.
+        // As a single regex it exceeded the upstream 1000-state limit; the
+        // per-branch split must find the document regardless of the cap.
         assert_eq!(search_ids(&mut engine, BOTH_OPTIONS_PATTERN), vec![1]);
     }
 
@@ -3864,9 +3994,16 @@ mod tests {
                 None,
             )
         };
-        // Union of 3 terms exceeds a cap of 2...
-        assert!(run(&mut engine, 2).is_err());
-        // ...and fits a cap of 3.
+        // Union of 3 terms exceeds a cap of 2 — the single-word path degrades
+        // instead of erroring, keeping the first branches' terms (branch
+        // order is the priority contract).
+        let ids: Vec<u64> = run(&mut engine, 2)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+        // A cap of 3 fits the whole union.
         let ids: Vec<u64> = run(&mut engine, 3)
             .unwrap()
             .into_iter()
@@ -3910,6 +4047,45 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn advanced_typo_only_single_word_covers_full_edit_distance() {
+        // typo-only single word expands through a Levenshtein-1 automaton
+        // scan (VARIATION_CEILING_RESEARCH §3.ג): full edit-distance-1
+        // coverage, a superset of the historical literal variant list.
+        // "ספגר" — an insertion of ג, which is NOT in INSERTION_LETTERS — was
+        // invisible to the sampled variants and must now match; a distance-2
+        // word must not.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר בראשית", "/books/a.txt");
+        add(&mut engine, 2, "ספגר אחר", "/books/b.txt");
+        add(&mut engine, 3, "תורה צוה", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let mut options: HashMap<String, HashMap<String, bool>> = HashMap::new();
+        options.insert(
+            "ספר_0".to_string(),
+            HashMap::from([("שגיאות כתיב".to_string(), true)]),
+        );
+        let mut ids: Vec<u64> = engine
+            .search_advanced(
+                "ספר".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2]);
     }
 
     #[test]
@@ -5372,18 +5548,31 @@ mod tests {
         add(&mut engine, 2, "הספר", "/books/b.txt");
         engine.commit().unwrap();
 
-        // Two index terms match; a cap of 1 must error like RegexPhraseQuery.
-        let too_narrow = engine.search(
-            vec![".*ספר".to_string()],
-            vec![],
-            100,
-            0,
-            0,
+        // Two index terms match; a cap of 1 truncates the term set (degrade,
+        // not error) — exactly one document comes back. Which term survives
+        // depends on segment order (each doc may land in its own segment),
+        // so only the count is pinned.
+        let truncated = ids(engine
+            .search(
+                vec![".*ספר".to_string()],
+                vec![],
+                100,
+                0,
+                0,
+                1,
+                ResultsOrder::Catalogue,
+                None,
+            )
+            .unwrap());
+        assert_eq!(
+            truncated.len(),
             1,
-            ResultsOrder::Catalogue,
-            None,
+            "a cap of 1 should serve exactly one term's documents, got {truncated:?}"
         );
-        assert!(too_narrow.is_err(), "exceeding max_expansions should error");
+        assert!(
+            truncated[0] == 1 || truncated[0] == 2,
+            "unexpected document {truncated:?}"
+        );
 
         let ok = ids(engine
             .search(
@@ -5761,10 +5950,7 @@ mod tests {
 
         // דגל typo: וריאנט-המחיקה של הגרפמה `"` מגשר למהדורות נקיות.
         let got = search(&mut engine, "רמב\"ם", hebrew_query::OPT_TYPO);
-        assert!(
-            got.contains(&1),
-            "מחיקת `\"` מייצרת את רמבם, got {got:?}"
-        );
+        assert!(got.contains(&1), "מחיקת `\"` מייצרת את רמבם, got {got:?}");
         // קידומות דקדוקיות סביב שורש עם `"` literal.
         let got = search(&mut engine, "רמב\"ם", "קידומות דקדוקיות");
         assert!(got.contains(&2), "ה־רמב\"ם עם קידומת, got {got:?}");
