@@ -4529,9 +4529,11 @@ impl SseDecode for crate::api::search_engine::SearchPageResult {
         let mut var_totalCount = <u32>::sse_decode(deserializer);
         let mut var_results =
             <Vec<crate::api::search_engine::SearchResult>>::sse_decode(deserializer);
+        let mut var_truncated = <bool>::sse_decode(deserializer);
         return crate::api::search_engine::SearchPageResult {
             total_count: var_totalCount,
             results: var_results,
+            truncated: var_truncated,
         };
     }
 }
@@ -5040,6 +5042,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SearchPageResu
         [
             self.total_count.into_into_dart().into_dart(),
             self.results.into_into_dart().into_dart(),
+            self.truncated.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -5681,6 +5684,7 @@ impl SseEncode for crate::api::search_engine::SearchPageResult {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u32>::sse_encode(self.total_count, serializer);
         <Vec<crate::api::search_engine::SearchResult>>::sse_encode(self.results, serializer);
+        <bool>::sse_encode(self.truncated, serializer);
     }
 }
 

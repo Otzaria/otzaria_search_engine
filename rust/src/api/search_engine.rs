@@ -83,6 +83,12 @@ pub struct HighlightConfig {
 pub struct SearchPageResult {
     pub total_count: u32,
     pub results: Vec<SearchResult>,
+    /// `true` when a broad single-word query overflowed its collection budget
+    /// and only the highest-priority term expansions were served, so both
+    /// `total_count` and `results` are partial (see
+    /// [`SearchEngine::single_regex_term_query`]). Only the advanced path can
+    /// degrade this way; the exact/fuzzy paths always report `false`.
+    pub truncated: bool,
 }
 
 /// One event of a combined stream search (`search_*_stream_with_counts`).
@@ -497,15 +503,25 @@ fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
     check_legacy_tantivy_metadata(index_path, metadata_path)
 }
 
-/// `Some(reason)` כשה-meta.json של tantivy קיים והסכימה השמורה בו שונה
-/// מסכימת המנוע הנוכחית — בדיוק ההשוואה ש-`Index::open_or_create` מבצע.
+/// `Some(reason)` כשלא ניתן לאשר שהסכימה השמורה ב-meta.json של tantivy זהה
+/// לסכימת המנוע הנוכחית — בדיוק ההשוואה ש-`Index::open_or_create` מבצע.
 /// בלעדיה, קובץ צדדי שמצהיר על הגרסה הנכונה עובר את בדיקת התאימות בעוד
 /// שפתיחת המנוע עדיין נופלת על SchemaError (אינדקס שנבנה בגרסת-ביניים של
 /// אותה schema_version) — והאפליקציה נופלת בשקט לאינדקס זמני.
+/// גם meta.json חסר/פגום נחשב אי-התאמה: sidecar תקין לא מעיד כלום כשה-metadata
+/// של tantivy עצמו לא קריא, ופתיחת האינדקס תיכשל באותה מידה.
 fn stored_schema_mismatch(index_path: &Path) -> Option<String> {
-    let raw = fs::read_to_string(index_path.join("meta.json")).ok()?;
-    let meta: JsonValue = serde_json::from_str(&raw).ok()?;
-    let schema_json = meta.get("schema")?.clone();
+    let raw = match fs::read_to_string(index_path.join("meta.json")) {
+        Ok(raw) => raw,
+        Err(err) => return Some(format!("tantivy meta.json is missing or unreadable: {err}")),
+    };
+    let meta: JsonValue = match serde_json::from_str(&raw) {
+        Ok(meta) => meta,
+        Err(err) => return Some(format!("tantivy meta.json is not valid JSON: {err}")),
+    };
+    let Some(schema_json) = meta.get("schema").cloned() else {
+        return Some("tantivy meta.json has no schema entry".to_string());
+    };
     match serde_json::from_value::<Schema>(schema_json) {
         Ok(stored) if stored == current_schema() => None,
         Ok(_) => Some("tantivy schema on disk differs from the engine schema".to_string()),
@@ -1420,6 +1436,7 @@ impl SearchEngine {
             offset,
             &order,
             &hl,
+            false,
         )
     }
 
@@ -1707,6 +1724,7 @@ impl SearchEngine {
             offset,
             &order,
             &HighlightConfig::default(),
+            false,
         )
     }
 
@@ -1836,7 +1854,7 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
-        let (q, regex_terms, slop, _) = self.build_advanced_query(
+        let (q, regex_terms, slop, truncated) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1851,6 +1869,7 @@ impl SearchEngine {
             offset,
             &order,
             &HighlightConfig::default(),
+            truncated,
         )
     }
 
@@ -2038,6 +2057,7 @@ impl SearchEngine {
             offset,
             &order,
             &HighlightConfig::default(),
+            false,
         )
     }
 
@@ -2954,6 +2974,7 @@ impl SearchEngine {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_search_and_count<F>(
         &self,
         query: Box<dyn Query>,
@@ -2962,6 +2983,7 @@ impl SearchEngine {
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
+        truncated: bool,
     ) -> Result<SearchPageResult>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
@@ -2993,6 +3015,7 @@ impl SearchEngine {
             return Ok(SearchPageResult {
                 total_count,
                 results: Vec::new(),
+                truncated,
             });
         }
         let plan = Self::resolve_highlight(&searcher, make_highlight);
@@ -3008,6 +3031,7 @@ impl SearchEngine {
         Ok(SearchPageResult {
             total_count,
             results,
+            truncated,
         })
     }
 
@@ -4293,6 +4317,34 @@ mod tests {
             .reason
             .unwrap()
             .contains("differs from the engine schema"));
+    }
+
+    #[test]
+    fn valid_sidecar_without_tantivy_meta_requires_rebuild() {
+        // sidecar תקין לבדו לא מספיק: בלי meta.json של tantivy (חסר או
+        // פגום) פתיחת האינדקס תיכשל, ולכן הבדיקה חייבת לדרוש בנייה מחדש
+        // ולא להחזיר "תואם" רק על סמך ההצהרה בקובץ הצדדי.
+        let dir = TempDir::new().unwrap();
+        write_current_index_metadata(dir.path()).unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
+        assert_eq!(
+            compatibility.found_schema_version,
+            Some(INDEX_SCHEMA_VERSION)
+        );
+        assert!(compatibility
+            .reason
+            .unwrap()
+            .contains("missing or unreadable"));
+
+        // אותו דין ל-meta.json קיים אך פגום.
+        fs::write(dir.path().join("meta.json"), "not json").unwrap();
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
+        assert!(compatibility.reason.unwrap().contains("not valid JSON"));
     }
 
     #[test]

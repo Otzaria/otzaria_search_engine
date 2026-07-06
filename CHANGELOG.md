@@ -51,6 +51,18 @@
 
 ### Fixed (unreleased)
 
+- **`SearchPageResult.truncated` – איתות "תוצאות חלקיות" גם במסלול page/count** –
+  דגל ה-truncation שנוסף ל-stream המשולב נזרק ב-`search_and_count_advanced`,
+  כך שצרכן של ה-API המעומד היה מציג תוצאות וספירה חלקיות בלי אזהרה. כעת
+  `SearchPageResult` נושא `truncated` באותה סמנטיקה של
+  `SearchStreamUpdate.truncated`; המסלולים המדויק/המקורב תמיד `false`.
+
+- **בדיקת התאימות דורשת meta.json תקין של tantivy** – sidecar תקין עם
+  `schema_version` נכון החזיר "תואם" גם כשה-meta.json של tantivy עצמו חסר
+  או פגום — מצב שבו פתיחת האינדקס נכשלת בכל מקרה. כעת כשל
+  קריאה/פרסור/חוסר-סכימה ב-meta.json מחזיר `rebuild_required` עם הסיבה,
+  במקום ליפול בשקט ל-"compatible".
+
 - **בדיקת התאימות משווה גם את סכימת ה-tantivy בפועל** – אינדקס שנבנה
   בגרסת-ביניים של אותה schema_version (למשל `text` עם fast field, לפני
   ההסרה) עבר את בדיקת הקובץ הצדדי ("3=3, תואם") אבל הפיל את פתיחת המנוע

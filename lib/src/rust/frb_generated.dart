@@ -4575,11 +4575,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchPageResult dco_decode_search_page_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return SearchPageResult(
       totalCount: dco_decode_u_32(arr[0]),
       results: dco_decode_list_search_result(arr[1]),
+      truncated: dco_decode_bool(arr[2]),
     );
   }
 
@@ -5420,7 +5421,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_totalCount = sse_decode_u_32(deserializer);
     var var_results = sse_decode_list_search_result(deserializer);
-    return SearchPageResult(totalCount: var_totalCount, results: var_results);
+    var var_truncated = sse_decode_bool(deserializer);
+    return SearchPageResult(
+      totalCount: var_totalCount,
+      results: var_results,
+      truncated: var_truncated,
+    );
   }
 
   @protected
@@ -6253,6 +6259,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_32(self.totalCount, serializer);
     sse_encode_list_search_result(self.results, serializer);
+    sse_encode_bool(self.truncated, serializer);
   }
 
   @protected
@@ -7153,8 +7160,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// default `LogMergePolicy` repeatedly merges intermediate segments —
   /// CPU and IO that are thrown away, because the caller runs `optimize`
   /// (merge-all) once at the end anyway. Call with `true` before a bulk
-  /// build and `false` (or just `optimize`) when done. Off by default;
-  /// incremental indexing keeps normal merging.
+  /// build and `false` when done — `optimize` does NOT reset the flag, and
+  /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
+  /// default; incremental indexing keeps normal merging.
   Future<void> setBulkIndexing({required bool enabled}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSetBulkIndexing(
         that: this,

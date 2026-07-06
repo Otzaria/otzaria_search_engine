@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `add_text_book_impl`, `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `single_regex_term_query`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `update_reference_trail`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `IndexMetadata`, `TermCacheKey`
+// These functions are ignored because they are not marked as `pub`: `add_text_book_impl`, `advanced_highlight_plan`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `update_reference_trail`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
@@ -605,8 +605,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// default `LogMergePolicy` repeatedly merges intermediate segments —
   /// CPU and IO that are thrown away, because the caller runs `optimize`
   /// (merge-all) once at the end anyway. Call with `true` before a bulk
-  /// build and `false` (or just `optimize`) when done. Off by default;
-  /// incremental indexing keeps normal merging.
+  /// build and `false` when done — `optimize` does NOT reset the flag, and
+  /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
+  /// default; incremental indexing keeps normal merging.
   Future<void> setBulkIndexing({required bool enabled});
 
   /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
@@ -869,10 +870,22 @@ class SearchPageResult {
   final int totalCount;
   final List<SearchResult> results;
 
-  const SearchPageResult({required this.totalCount, required this.results});
+  /// `true` when a broad single-word query overflowed its collection budget
+  /// and only the highest-priority term expansions were served, so both
+  /// `total_count` and `results` are partial (see
+  /// [`SearchEngine::single_regex_term_query`]). Only the advanced path can
+  /// degrade this way; the exact/fuzzy paths always report `false`.
+  final bool truncated;
+
+  const SearchPageResult({
+    required this.totalCount,
+    required this.results,
+    required this.truncated,
+  });
 
   @override
-  int get hashCode => totalCount.hashCode ^ results.hashCode;
+  int get hashCode =>
+      totalCount.hashCode ^ results.hashCode ^ truncated.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -880,7 +893,8 @@ class SearchPageResult {
       other is SearchPageResult &&
           runtimeType == other.runtimeType &&
           totalCount == other.totalCount &&
-          results == other.results;
+          results == other.results &&
+          truncated == other.truncated;
 }
 
 class SearchResult {
