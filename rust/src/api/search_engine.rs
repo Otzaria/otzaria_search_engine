@@ -491,13 +491,29 @@ fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
     }
 
     if metadata_path.exists() {
-        return check_sidecar_metadata(metadata_path);
+        return check_sidecar_metadata(index_path, metadata_path);
     }
 
     check_legacy_tantivy_metadata(index_path, metadata_path)
 }
 
-fn check_sidecar_metadata(metadata_path: PathBuf) -> IndexCompatibility {
+/// `Some(reason)` כשה-meta.json של tantivy קיים והסכימה השמורה בו שונה
+/// מסכימת המנוע הנוכחית — בדיוק ההשוואה ש-`Index::open_or_create` מבצע.
+/// בלעדיה, קובץ צדדי שמצהיר על הגרסה הנכונה עובר את בדיקת התאימות בעוד
+/// שפתיחת המנוע עדיין נופלת על SchemaError (אינדקס שנבנה בגרסת-ביניים של
+/// אותה schema_version) — והאפליקציה נופלת בשקט לאינדקס זמני.
+fn stored_schema_mismatch(index_path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(index_path.join("meta.json")).ok()?;
+    let meta: JsonValue = serde_json::from_str(&raw).ok()?;
+    let schema_json = meta.get("schema")?.clone();
+    match serde_json::from_value::<Schema>(schema_json) {
+        Ok(stored) if stored == current_schema() => None,
+        Ok(_) => Some("tantivy schema on disk differs from the engine schema".to_string()),
+        Err(err) => Some(format!("stored tantivy schema is unreadable: {err}")),
+    }
+}
+
+fn check_sidecar_metadata(index_path: &Path, metadata_path: PathBuf) -> IndexCompatibility {
     let raw = match fs::read_to_string(&metadata_path) {
         Ok(raw) => raw,
         Err(err) => {
@@ -551,6 +567,16 @@ fn check_sidecar_metadata(metadata_path: PathBuf) -> IndexCompatibility {
             Some(metadata.schema_version),
             metadata_path,
             Some("index schema is newer than this engine supports".to_string()),
+        );
+    }
+
+    if let Some(reason) = stored_schema_mismatch(index_path) {
+        return compatibility(
+            false,
+            "rebuild_required",
+            Some(metadata.schema_version),
+            metadata_path,
+            Some(reason),
         );
     }
 
@@ -4229,6 +4255,44 @@ mod tests {
             compatibility.found_schema_version,
             Some(INDEX_SCHEMA_VERSION)
         );
+    }
+
+    #[test]
+    fn sidecar_version_match_but_schema_drift_requires_rebuild() {
+        // שחזור התקלה מהשטח: אינדקס שנבנה בגרסת-ביניים של אותה
+        // schema_version (למשל `text` עם fast=true לפני ההסרה) — הקובץ
+        // הצדדי מצהיר על הגרסה הנכונה, אבל open_or_create היה נופל על
+        // SchemaError. הבדיקה חייבת לדרוש בנייה מחדש, לא "תואם".
+        let dir = TempDir::new().unwrap();
+        let mut schema_builder = Schema::builder();
+        schema_builder.add_text_field(
+            "text",
+            TextOptions::default()
+                .set_indexing_options(
+                    TextFieldIndexing::default()
+                        .set_tokenizer("hebrew")
+                        .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+                )
+                .set_stored()
+                .set_fast(None),
+        );
+        let drifted = schema_builder.build();
+        Index::create_in_dir(dir.path(), drifted).unwrap();
+        // הקובץ הצדדי נכתב במפורש עם הגרסה הנוכחית — כמו אינדקס שנבנה
+        // ע"י גרסת-הביניים עצמה, שחתמה "3" עם הסכימה הישנה.
+        write_current_index_metadata(dir.path()).unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
+        assert_eq!(
+            compatibility.found_schema_version,
+            Some(INDEX_SCHEMA_VERSION)
+        );
+        assert!(compatibility
+            .reason
+            .unwrap()
+            .contains("differs from the engine schema"));
     }
 
     #[test]
