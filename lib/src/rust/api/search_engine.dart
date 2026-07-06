@@ -873,8 +873,8 @@ class SearchPageResult {
   /// `true` when a broad single-word query overflowed its collection budget
   /// and only the highest-priority term expansions were served, so both
   /// `total_count` and `results` are partial (see
-  /// [`SearchEngine::single_regex_term_query`]). Only the advanced path can
-  /// degrade this way; the exact/fuzzy paths always report `false`.
+  /// [`SearchEngine::single_regex_term_query`]). Only the regex and advanced
+  /// paths can degrade this way; the exact/fuzzy paths always report `false`.
   final bool truncated;
 
   const SearchPageResult({

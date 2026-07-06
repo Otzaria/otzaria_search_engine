@@ -52,10 +52,11 @@
 ### Fixed (unreleased)
 
 - **`SearchPageResult.truncated` – איתות "תוצאות חלקיות" גם במסלול page/count** –
-  דגל ה-truncation שנוסף ל-stream המשולב נזרק ב-`search_and_count_advanced`,
-  כך שצרכן של ה-API המעומד היה מציג תוצאות וספירה חלקיות בלי אזהרה. כעת
-  `SearchPageResult` נושא `truncated` באותה סמנטיקה של
-  `SearchStreamUpdate.truncated`; המסלולים המדויק/המקורב תמיד `false`.
+  דגל ה-truncation שנוסף ל-stream המשולב נזרק ב-`search_and_count_advanced`
+  וב-`search_and_count` הגנרי (regex), כך שצרכן של ה-API המעומד היה מציג
+  תוצאות וספירה חלקיות בלי אזהרה. כעת `SearchPageResult` נושא `truncated`
+  באותה סמנטיקה של `SearchStreamUpdate.truncated`; המסלולים המדויק/המקורב
+  תמיד `false`.
 
 - **בדיקת התאימות דורשת meta.json תקין של tantivy** – sidecar תקין עם
   `schema_version` נכון החזיר "תואם" גם כשה-meta.json של tantivy עצמו חסר
@@ -410,6 +411,7 @@ class HighlightConfig {
 class SearchPageResult {
   final int totalCount;
   final List<SearchResult> results;
+  final bool truncated; // תוצאות/ספירה חלקיות (חריגה מתקציב הרחבת מילה יחידה)
 }
 
 class FacetCount {

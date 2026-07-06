@@ -86,8 +86,8 @@ pub struct SearchPageResult {
     /// `true` when a broad single-word query overflowed its collection budget
     /// and only the highest-priority term expansions were served, so both
     /// `total_count` and `results` are partial (see
-    /// [`SearchEngine::single_regex_term_query`]). Only the advanced path can
-    /// degrade this way; the exact/fuzzy paths always report `false`.
+    /// [`SearchEngine::single_regex_term_query`]). Only the regex and advanced
+    /// paths can degrade this way; the exact/fuzzy paths always report `false`.
     pub truncated: bool,
 }
 
@@ -1427,7 +1427,7 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<SearchPageResult> {
-        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        let (query, truncated) = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search_and_count(
             query,
@@ -1436,7 +1436,7 @@ impl SearchEngine {
             offset,
             &order,
             &hl,
-            false,
+            truncated,
         )
     }
 
@@ -6592,6 +6592,48 @@ mod tests {
             !not_truncated,
             "a cap that fits every term must not report truncation"
         );
+    }
+
+    #[test]
+    fn test_search_and_count_propagates_truncation_flag() {
+        // The page/count API must surface the same degrade signal the stream
+        // does — dropping it lets a consumer show partial results unwarned.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let page = engine
+            .search_and_count(
+                vec![".*ספר".to_string()],
+                vec![],
+                100,
+                0,
+                0,
+                1,
+                ResultsOrder::Catalogue,
+                None,
+            )
+            .unwrap();
+        assert!(
+            page.truncated,
+            "a cap of 1 over two matching terms must flag the page result"
+        );
+
+        let page = engine
+            .search_and_count(
+                vec![".*ספר".to_string()],
+                vec![],
+                100,
+                0,
+                0,
+                100,
+                ResultsOrder::Catalogue,
+                None,
+            )
+            .unwrap();
+        assert!(!page.truncated, "an uncapped query must not flag the page");
+        assert_eq!(page.total_count, 2);
     }
 
     #[test]
