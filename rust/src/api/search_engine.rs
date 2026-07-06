@@ -3163,7 +3163,19 @@ impl SearchEngine {
         for doc_address in addresses {
             let retrieved_doc = match searcher.doc::<TantivyDocument>(doc_address) {
                 Ok(d) => d,
-                Err(_) => continue,
+                Err(e) => {
+                    // A hit the collectors counted but the doc store cannot
+                    // materialize (e.g. a corrupt store block). Skipping it
+                    // silently is what shows up in the UI as "3/4 results"
+                    // with a load-more button that never delivers — leave a
+                    // trace so the mismatch is diagnosable.
+                    log::error!(
+                        "dropping counted hit: doc store read failed at segment {} doc {}: {e}",
+                        doc_address.segment_ord,
+                        doc_address.doc_id
+                    );
+                    continue;
+                }
             };
 
             let title = retrieved_doc
