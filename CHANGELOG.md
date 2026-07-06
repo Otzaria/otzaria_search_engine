@@ -49,6 +49,17 @@
   `search_engine=info` — הלוגים נראים בקונסולת האפליקציה בלי הגדרה בצד
   Dart, ו-`RUST_LOG` עדיין גובר.
 
+### Added (unreleased)
+
+- **`*_with_status` למניית תוצאות – איתות truncation גם ל-count/facets** –
+  ‏`count`, `count_by_book`, `get_facet_counts` (וגם ה-`_advanced`) זרקו את
+  דגל ה-truncation של מסלול המילה-היחידה, כך שעץ סינון ה-facets היה מציג
+  ספירות חלקיות בלי סימון. נוספו טיפוסים `CountResult`, `BookCountResult`,
+  `FacetCountsResult` (כל אחד עם `truncated`) ומתודות `*_with_status`
+  מקבילות. המתודות הישנות נשמרו כתואמות לאחור (מחזירות את הערך הבודד ומשמיטות
+  את הדגל) — ומתועדות כלא-מתאימות לתצוגת UI כשחשוב לדעת אם התוצאה חלקית.
+  fuzzy אינו מתדרדר כך ולכן אין לו וריאנט status.
+
 ### Fixed (unreleased)
 
 - **`SearchPageResult.truncated` – איתות "תוצאות חלקיות" גם במסלול page/count** –

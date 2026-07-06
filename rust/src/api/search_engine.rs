@@ -121,6 +121,32 @@ pub struct FacetCount {
     pub count: u64,
 }
 
+/// A total hit count paired with the single-word truncation flag — the
+/// status-bearing return of [`SearchEngine::count_with_status`] and its
+/// advanced variant. `truncated` carries the same meaning as
+/// [`SearchStreamUpdate::truncated`]: `true` when a broad single-word query
+/// overflowed its collection budget, so `count` undercounts the true total.
+pub struct CountResult {
+    pub count: u32,
+    pub truncated: bool,
+}
+
+/// Per-`filePath` live-document counts paired with the truncation flag — the
+/// status-bearing return of [`SearchEngine::count_by_book_with_status`] and
+/// its advanced variant. When `truncated`, the per-book counts are partial.
+pub struct BookCountResult {
+    pub counts: HashMap<String, u32>,
+    pub truncated: bool,
+}
+
+/// Per-child facet counts paired with the truncation flag — the status-bearing
+/// return of [`SearchEngine::get_facet_counts_with_status`] and its advanced
+/// variant. When `truncated`, the facet counts are partial.
+pub struct FacetCountsResult {
+    pub counts: Vec<FacetCount>,
+    pub truncated: bool,
+}
+
 #[derive(Clone)]
 pub struct IndexCompatibility {
     pub compatible: bool,
@@ -1440,6 +1466,11 @@ impl SearchEngine {
         )
     }
 
+    /// Bare hit count. Drops the single-word truncation flag: a broad query
+    /// (e.g. `.*ספר`) that overflows its collection budget returns a partial
+    /// count with no signal. Not suitable for UI that must tell the user the
+    /// result is partial — use [`Self::count_with_status`], the combined
+    /// stream, or [`SearchPageResult::truncated`] there instead.
     pub fn count(
         &self,
         regex_terms: Vec<String>,
@@ -1447,10 +1478,30 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<u32> {
-        let (query, _) = self.build_query(regex_terms, facets.to_vec(), slop, max_expansions)?;
-        self.run_count(query)
+        Ok(self
+            .count_with_status(regex_terms, facets, slop, max_expansions)?
+            .count)
     }
 
+    /// Like [`Self::count`] but also reports whether single-word collection
+    /// truncated, so a UI consumer can flag a partial count.
+    pub fn count_with_status(
+        &self,
+        regex_terms: Vec<String>,
+        facets: &[String],
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<CountResult> {
+        let (query, truncated) =
+            self.build_query(regex_terms, facets.to_vec(), slop, max_expansions)?;
+        Ok(CountResult {
+            count: self.run_count(query)?,
+            truncated,
+        })
+    }
+
+    /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
+    /// use [`Self::count_by_book_with_status`] when partiality must surface.
     pub fn count_by_book(
         &self,
         regex_terms: Vec<String>,
@@ -1458,11 +1509,29 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<HashMap<String, u32>> {
-        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
-        self.run_count_by_book(query)
+        Ok(self
+            .count_by_book_with_status(regex_terms, facets, slop, max_expansions)?
+            .counts)
     }
 
-    /// Return per-child facet counts for a given prefix (e.g. "/").
+    /// Like [`Self::count_by_book`] but also reports single-word truncation.
+    pub fn count_by_book_with_status(
+        &self,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<BookCountResult> {
+        let (query, truncated) = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        Ok(BookCountResult {
+            counts: self.run_count_by_book(query)?,
+            truncated,
+        })
+    }
+
+    /// Return per-child facet counts for a given prefix (e.g. "/"). Drops the
+    /// truncation flag — see [`Self::count`]; use
+    /// [`Self::get_facet_counts_with_status`] when partiality must surface.
     pub fn get_facet_counts(
         &self,
         regex_terms: Vec<String>,
@@ -1471,8 +1540,25 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<Vec<FacetCount>> {
-        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
-        self.run_facet_counts(query, facet_prefix)
+        Ok(self
+            .get_facet_counts_with_status(regex_terms, facets, facet_prefix, slop, max_expansions)?
+            .counts)
+    }
+
+    /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
+    pub fn get_facet_counts_with_status(
+        &self,
+        regex_terms: Vec<String>,
+        facets: Vec<String>,
+        facet_prefix: String,
+        slop: u32,
+        max_expansions: u32,
+    ) -> Result<FacetCountsResult> {
+        let (query, truncated) = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        Ok(FacetCountsResult {
+            counts: self.run_facet_counts(query, facet_prefix)?,
+            truncated,
+        })
     }
 
     // ── Operational API ────────────────────────────────────────────────────────
@@ -1953,6 +2039,8 @@ impl SearchEngine {
         Self::surface_stream_error(&sink, result)
     }
 
+    /// Advanced-query hit count. Drops the single-word truncation flag — see
+    /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
     pub fn count_advanced(
         &self,
         query: String,
@@ -1962,7 +2050,30 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<u32> {
-        let (q, _, _, _) = self.build_advanced_query(
+        Ok(self
+            .count_advanced_with_status(
+                query,
+                facets,
+                distance,
+                custom_spacing,
+                alternative_words,
+                search_options,
+            )?
+            .count)
+    }
+
+    /// Like [`Self::count_advanced`] but also reports single-word truncation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn count_advanced_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<CountResult> {
+        let (q, _, _, truncated) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1970,9 +2081,14 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        self.run_count(q)
+        Ok(CountResult {
+            count: self.run_count(q)?,
+            truncated,
+        })
     }
 
+    /// Advanced-query per-book counts. Drops the truncation flag — see
+    /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
     pub fn count_by_book_advanced(
         &self,
         query: String,
@@ -1982,7 +2098,30 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<HashMap<String, u32>> {
-        let (q, _, _, _) = self.build_advanced_query(
+        Ok(self
+            .count_by_book_advanced_with_status(
+                query,
+                facets,
+                distance,
+                custom_spacing,
+                alternative_words,
+                search_options,
+            )?
+            .counts)
+    }
+
+    /// Like [`Self::count_by_book_advanced`] but also reports truncation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn count_by_book_advanced_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<BookCountResult> {
+        let (q, _, _, truncated) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1990,9 +2129,14 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        self.run_count_by_book(q)
+        Ok(BookCountResult {
+            counts: self.run_count_by_book(q)?,
+            truncated,
+        })
     }
 
+    /// Advanced-query facet counts. Drops the truncation flag — see
+    /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
     pub fn get_facet_counts_advanced(
         &self,
         query: String,
@@ -2003,7 +2147,32 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<Vec<FacetCount>> {
-        let (q, _, _, _) = self.build_advanced_query(
+        Ok(self
+            .get_facet_counts_advanced_with_status(
+                query,
+                facets,
+                facet_prefix,
+                distance,
+                custom_spacing,
+                alternative_words,
+                search_options,
+            )?
+            .counts)
+    }
+
+    /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_facet_counts_advanced_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+    ) -> Result<FacetCountsResult> {
+        let (q, _, _, truncated) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -2011,7 +2180,10 @@ impl SearchEngine {
             &search_options,
             facets,
         )?;
-        self.run_facet_counts(q, facet_prefix)
+        Ok(FacetCountsResult {
+            counts: self.run_facet_counts(q, facet_prefix)?,
+            truncated,
+        })
     }
 
     // -- Fuzzy -------------------------------------------------------------------
@@ -6634,6 +6806,39 @@ mod tests {
             .unwrap();
         assert!(!page.truncated, "an uncapped query must not flag the page");
         assert_eq!(page.total_count, 2);
+    }
+
+    #[test]
+    fn test_count_apis_with_status_surface_truncation() {
+        // count/count_by_book/get_facet_counts feed the facet filter tree; the
+        // *_with_status variants must carry the same degrade signal so a
+        // consumer can flag partial counts instead of showing them as exact.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let capped = engine
+            .count_with_status(vec![".*ספר".to_string()], &[], 0, 1)
+            .unwrap();
+        assert!(capped.truncated, "a cap of 1 must flag count_with_status");
+
+        let books = engine
+            .count_by_book_with_status(vec![".*ספר".to_string()], vec![], 0, 1)
+            .unwrap();
+        assert!(books.truncated, "a cap of 1 must flag the per-book counts");
+
+        let uncapped = engine
+            .count_with_status(vec![".*ספר".to_string()], &[], 0, 100)
+            .unwrap();
+        assert!(!uncapped.truncated, "an uncapped count must not flag");
+        assert_eq!(uncapped.count, 2);
+
+        // The bare API stays backward compatible: same count, flag dropped.
+        let bare = engine
+            .count(vec![".*ספר".to_string()], &[], 0, 100)
+            .unwrap();
+        assert_eq!(bare, uncapped.count);
     }
 
     #[test]

@@ -224,6 +224,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 
+  /// Bare hit count. Drops the single-word truncation flag: a broad query
+  /// (e.g. `.*ספר`) that overflows its collection budget returns a partial
+  /// count with no signal. Not suitable for UI that must tell the user the
+  /// result is partial — use [`Self::count_with_status`], the combined
+  /// stream, or [`SearchPageResult::truncated`] there instead.
   Future<int> count({
     required List<String> regexTerms,
     required List<String> facets,
@@ -231,6 +236,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  /// Advanced-query hit count. Drops the single-word truncation flag — see
+  /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
   Future<int> countAdvanced({
     required String query,
     required List<String> facets,
@@ -240,6 +247,18 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required Map<String, Map<String, bool>> searchOptions,
   });
 
+  /// Like [`Self::count_advanced`] but also reports single-word truncation.
+  Future<CountResult> countAdvancedWithStatus({
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
+  /// use [`Self::count_by_book_with_status`] when partiality must surface.
   Future<Map<String, int>> countByBook({
     required List<String> regexTerms,
     required List<String> facets,
@@ -247,7 +266,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  /// Advanced-query per-book counts. Drops the truncation flag — see
+  /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
   Future<Map<String, int>> countByBookAdvanced({
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  /// Like [`Self::count_by_book_advanced`] but also reports truncation.
+  Future<BookCountResult> countByBookAdvancedWithStatus({
     required String query,
     required List<String> facets,
     required int distance,
@@ -267,6 +298,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
   });
 
+  /// Like [`Self::count_by_book`] but also reports single-word truncation.
+  Future<BookCountResult> countByBookWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
+  });
+
   /// Number of live (committed, non-deleted) documents per distinct
   /// `filePath` across the whole index.
   ///
@@ -282,6 +321,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String query,
     required List<String> facets,
     required int maxDistance,
+  });
+
+  /// Like [`Self::count`] but also reports whether single-word collection
+  /// truncated, so a UI consumer can flag a partial count.
+  Future<CountResult> countWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
   });
 
   /// Delete a document by its numeric id. Does not commit.
@@ -347,7 +395,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<BigInt> getDocumentCount();
 
-  /// Return per-child facet counts for a given prefix (e.g. "/").
+  /// Return per-child facet counts for a given prefix (e.g. "/"). Drops the
+  /// truncation flag — see [`Self::count`]; use
+  /// [`Self::get_facet_counts_with_status`] when partiality must surface.
   Future<List<FacetCount>> getFacetCounts({
     required List<String> regexTerms,
     required List<String> facets,
@@ -356,7 +406,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  /// Advanced-query facet counts. Drops the truncation flag — see
+  /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
   Future<List<FacetCount>> getFacetCountsAdvanced({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
+  Future<FacetCountsResult> getFacetCountsAdvancedWithStatus({
     required String query,
     required List<String> facets,
     required String facetPrefix,
@@ -377,6 +440,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+  });
+
+  /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
+  Future<FacetCountsResult> getFacetCountsWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required String facetPrefix,
+    required int slop,
+    required int maxExpansions,
   });
 
   /// Distinct `filePath` values present in the index — i.e. which books have
@@ -634,6 +706,50 @@ abstract class SearchEngine implements RustOpaqueInterface {
   Future<void> upsertDocumentsBatch({required List<DocumentInput> docs});
 }
 
+/// Per-`filePath` live-document counts paired with the truncation flag — the
+/// status-bearing return of [`SearchEngine::count_by_book_with_status`] and
+/// its advanced variant. When `truncated`, the per-book counts are partial.
+class BookCountResult {
+  final Map<String, int> counts;
+  final bool truncated;
+
+  const BookCountResult({required this.counts, required this.truncated});
+
+  @override
+  int get hashCode => counts.hashCode ^ truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BookCountResult &&
+          runtimeType == other.runtimeType &&
+          counts == other.counts &&
+          truncated == other.truncated;
+}
+
+/// A total hit count paired with the single-word truncation flag — the
+/// status-bearing return of [`SearchEngine::count_with_status`] and its
+/// advanced variant. `truncated` carries the same meaning as
+/// [`SearchStreamUpdate::truncated`]: `true` when a broad single-word query
+/// overflowed its collection budget, so `count` undercounts the true total.
+class CountResult {
+  final int count;
+  final bool truncated;
+
+  const CountResult({required this.count, required this.truncated});
+
+  @override
+  int get hashCode => count.hashCode ^ truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CountResult &&
+          runtimeType == other.runtimeType &&
+          count == other.count &&
+          truncated == other.truncated;
+}
+
 class DocumentInput {
   final BigInt id;
   final String title;
@@ -707,6 +823,27 @@ class FacetCount {
           runtimeType == other.runtimeType &&
           path == other.path &&
           count == other.count;
+}
+
+/// Per-child facet counts paired with the truncation flag — the status-bearing
+/// return of [`SearchEngine::get_facet_counts_with_status`] and its advanced
+/// variant. When `truncated`, the facet counts are partial.
+class FacetCountsResult {
+  final List<FacetCount> counts;
+  final bool truncated;
+
+  const FacetCountsResult({required this.counts, required this.truncated});
+
+  @override
+  int get hashCode => counts.hashCode ^ truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FacetCountsResult &&
+          runtimeType == other.runtimeType &&
+          counts == other.counts &&
+          truncated == other.truncated;
 }
 
 class HighlightConfig {

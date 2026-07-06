@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 796241689;
+  int get rustContentHash => -702576681;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -164,6 +164,16 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, Map<String, bool>> searchOptions,
   });
 
+  Future<CountResult> crateApiSearchEngineSearchEngineCountAdvancedWithStatus({
+    required SearchEngine that,
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBook({
     required SearchEngine that,
     required List<String> regexTerms,
@@ -173,6 +183,17 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookAdvanced({
+    required SearchEngine that,
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  Future<BookCountResult>
+  crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -195,6 +216,15 @@ abstract class RustLibApi extends BaseApi {
     required int maxDistance,
   });
 
+  Future<BookCountResult>
+  crateApiSearchEngineSearchEngineCountByBookWithStatus({
+    required SearchEngine that,
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
+  });
+
   Future<Map<String, int>>
   crateApiSearchEngineSearchEngineCountDocumentsByFilePath({
     required SearchEngine that,
@@ -211,6 +241,14 @@ abstract class RustLibApi extends BaseApi {
     required String query,
     required List<String> facets,
     required int maxDistance,
+  });
+
+  Future<CountResult> crateApiSearchEngineSearchEngineCountWithStatus({
+    required SearchEngine that,
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
   });
 
   Future<void> crateApiSearchEngineSearchEngineDeleteDocumentById({
@@ -280,6 +318,18 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, Map<String, bool>> searchOptions,
   });
 
+  Future<FacetCountsResult>
+  crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus({
+    required SearchEngine that,
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
   Future<List<FacetCount>> crateApiSearchEngineSearchEngineGetFacetCountsExact({
     required SearchEngine that,
     required String query,
@@ -293,6 +343,16 @@ abstract class RustLibApi extends BaseApi {
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+  });
+
+  Future<FacetCountsResult>
+  crateApiSearchEngineSearchEngineGetFacetCountsWithStatus({
+    required SearchEngine that,
+    required List<String> regexTerms,
+    required List<String> facets,
+    required String facetPrefix,
+    required int slop,
+    required int maxExpansions,
   });
 
   Future<List<String>> crateApiSearchEngineSearchEngineGetIndexedFilePaths({
@@ -1169,6 +1229,75 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<CountResult> crateApiSearchEngineSearchEngineCountAdvancedWithStatus({
+    required SearchEngine that,
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(query, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_u_32(distance, serializer);
+          sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_String_Map_String_bool_None_None(
+            searchOptions,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 13,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_count_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineCountAdvancedWithStatusConstMeta,
+        argValues: [
+          that,
+          query,
+          facets,
+          distance,
+          customSpacing,
+          alternativeWords,
+          searchOptions,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineCountAdvancedWithStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_advanced_with_status",
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "distance",
+          "customSpacing",
+          "alternativeWords",
+          "searchOptions",
+        ],
+      );
+
+  @override
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBook({
     required SearchEngine that,
     required List<String> regexTerms,
@@ -1191,7 +1320,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -1242,7 +1371,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 15,
             port: port_,
           );
         },
@@ -1282,6 +1411,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<BookCountResult>
+  crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus({
+    required SearchEngine that,
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(query, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_u_32(distance, serializer);
+          sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_String_Map_String_bool_None_None(
+            searchOptions,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 16,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_book_count_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineCountByBookAdvancedWithStatusConstMeta,
+        argValues: [
+          that,
+          query,
+          facets,
+          distance,
+          customSpacing,
+          alternativeWords,
+          searchOptions,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineCountByBookAdvancedWithStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_by_book_advanced_with_status",
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "distance",
+          "customSpacing",
+          "alternativeWords",
+          "searchOptions",
+        ],
+      );
+
+  @override
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookExact({
     required SearchEngine that,
     required String query,
@@ -1300,7 +1499,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 17,
             port: port_,
           );
         },
@@ -1343,7 +1542,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 18,
             port: port_,
           );
         },
@@ -1366,6 +1565,53 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<BookCountResult>
+  crateApiSearchEngineSearchEngineCountByBookWithStatus({
+    required SearchEngine that,
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_list_String(regexTerms, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_u_32(slop, serializer);
+          sse_encode_u_32(maxExpansions, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_book_count_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineCountByBookWithStatusConstMeta,
+        argValues: [that, regexTerms, facets, slop, maxExpansions],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineCountByBookWithStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_by_book_with_status",
+        argNames: ["that", "regexTerms", "facets", "slop", "maxExpansions"],
+      );
+
+  @override
   Future<Map<String, int>>
   crateApiSearchEngineSearchEngineCountDocumentsByFilePath({
     required SearchEngine that,
@@ -1381,7 +1627,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 20,
             port: port_,
           );
         },
@@ -1423,7 +1669,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 21,
             port: port_,
           );
         },
@@ -1465,7 +1711,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 22,
             port: port_,
           );
         },
@@ -1487,6 +1733,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<CountResult> crateApiSearchEngineSearchEngineCountWithStatus({
+    required SearchEngine that,
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_list_String(regexTerms, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_u_32(slop, serializer);
+          sse_encode_u_32(maxExpansions, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 23,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_count_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSearchEngineSearchEngineCountWithStatusConstMeta,
+        argValues: [that, regexTerms, facets, slop, maxExpansions],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineCountWithStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_with_status",
+        argNames: ["that", "regexTerms", "facets", "slop", "maxExpansions"],
+      );
+
+  @override
   Future<void> crateApiSearchEngineSearchEngineDeleteDocumentById({
     required SearchEngine that,
     required BigInt id,
@@ -1503,7 +1793,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1542,7 +1832,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 25,
             port: port_,
           );
         },
@@ -1582,7 +1872,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1625,7 +1915,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1677,7 +1967,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1730,7 +2020,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1770,7 +2060,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1806,7 +2096,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1853,7 +2143,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1914,7 +2204,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1956,6 +2246,80 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<FacetCountsResult>
+  crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus({
+    required SearchEngine that,
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(query, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_String(facetPrefix, serializer);
+          sse_encode_u_32(distance, serializer);
+          sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_String_Map_String_bool_None_None(
+            searchOptions,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 34,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_facet_counts_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatusConstMeta,
+        argValues: [
+          that,
+          query,
+          facets,
+          facetPrefix,
+          distance,
+          customSpacing,
+          alternativeWords,
+          searchOptions,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_get_facet_counts_advanced_with_status",
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "facetPrefix",
+          "distance",
+          "customSpacing",
+          "alternativeWords",
+          "searchOptions",
+        ],
+      );
+
+  @override
   Future<List<FacetCount>> crateApiSearchEngineSearchEngineGetFacetCountsExact({
     required SearchEngine that,
     required String query,
@@ -1976,7 +2340,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 35,
             port: port_,
           );
         },
@@ -2022,7 +2386,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2046,6 +2410,62 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<FacetCountsResult>
+  crateApiSearchEngineSearchEngineGetFacetCountsWithStatus({
+    required SearchEngine that,
+    required List<String> regexTerms,
+    required List<String> facets,
+    required String facetPrefix,
+    required int slop,
+    required int maxExpansions,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_list_String(regexTerms, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_String(facetPrefix, serializer);
+          sse_encode_u_32(slop, serializer);
+          sse_encode_u_32(maxExpansions, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 37,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_facet_counts_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineGetFacetCountsWithStatusConstMeta,
+        argValues: [that, regexTerms, facets, facetPrefix, slop, maxExpansions],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineGetFacetCountsWithStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_get_facet_counts_with_status",
+        argNames: [
+          "that",
+          "regexTerms",
+          "facets",
+          "facetPrefix",
+          "slop",
+          "maxExpansions",
+        ],
+      );
+
+  @override
   Future<List<String>> crateApiSearchEngineSearchEngineGetIndexedFilePaths({
     required SearchEngine that,
   }) {
@@ -2060,7 +2480,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 38,
             port: port_,
           );
         },
@@ -2098,7 +2518,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 39,
             port: port_,
           );
         },
@@ -2131,7 +2551,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 40)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2158,7 +2578,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 35)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -2190,7 +2610,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2228,7 +2648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2266,7 +2686,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2318,7 +2738,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 45,
             port: port_,
           );
         },
@@ -2395,7 +2815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 46,
             port: port_,
           );
         },
@@ -2480,7 +2900,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 41,
+              funcId: 47,
               port: port_,
             );
           },
@@ -2573,7 +2993,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 42,
+              funcId: 48,
               port: port_,
             );
           },
@@ -2655,7 +3075,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2733,7 +3153,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2803,7 +3223,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2853,7 +3273,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2909,7 +3329,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2960,7 +3380,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 48,
+              funcId: 54,
               port: port_,
             );
           },
@@ -3034,7 +3454,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 49,
+              funcId: 55,
               port: port_,
             );
           },
@@ -3104,7 +3524,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 56,
             port: port_,
           );
         },
@@ -3165,7 +3585,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 51,
+              funcId: 57,
               port: port_,
             );
           },
@@ -3243,7 +3663,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 52,
+              funcId: 58,
               port: port_,
             );
           },
@@ -3317,7 +3737,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 59,
             port: port_,
           );
         },
@@ -3393,7 +3813,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 54,
+              funcId: 60,
               port: port_,
             );
           },
@@ -3457,7 +3877,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 61,
             port: port_,
           );
         },
@@ -3492,7 +3912,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 56)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 62)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -3544,7 +3964,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 63,
             port: port_,
           );
         },
@@ -3602,7 +4022,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 64,
             port: port_,
           );
         },
@@ -3634,7 +4054,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 59)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 65)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_index_compatibility,
@@ -3660,7 +4080,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 60)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 66)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_u_64,
@@ -3699,7 +4119,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             searchOptions,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 61)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 67)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_highlight_pattern,
@@ -3739,7 +4159,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(query, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 62)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 68)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_String,
@@ -3769,7 +4189,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(normalizedText, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 63)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 69)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -3797,7 +4217,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(input, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 64)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -3825,7 +4245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_String(inputs, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 65)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 71)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_pdf_index_line,
@@ -3852,7 +4272,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(input, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 66)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 72)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -3880,7 +4300,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_String(inputs, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 67)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 73)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_String,
@@ -3908,7 +4328,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 74,
             port: port_,
           );
         },
@@ -3935,7 +4355,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 75,
             port: port_,
           );
         },
@@ -3960,7 +4380,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(query, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 76)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -3983,7 +4403,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(query, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 71)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 77)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_String,
@@ -4194,6 +4614,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BookCountResult dco_decode_book_count_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return BookCountResult(
+      counts: dco_decode_Map_String_u_32_None(arr[0]),
+      truncated: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
@@ -4236,6 +4668,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  CountResult dco_decode_count_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return CountResult(
+      count: dco_decode_u_32(arr[0]),
+      truncated: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
   DocumentInput dco_decode_document_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -4269,6 +4713,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return FacetCount(
       path: dco_decode_String(arr[0]),
       count: dco_decode_u_64(arr[1]),
+    );
+  }
+
+  @protected
+  FacetCountsResult dco_decode_facet_counts_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return FacetCountsResult(
+      counts: dco_decode_list_facet_count(arr[0]),
+      truncated: dco_decode_bool(arr[1]),
     );
   }
 
@@ -4876,6 +5332,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BookCountResult sse_decode_book_count_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_counts = sse_decode_Map_String_u_32_None(deserializer);
+    var var_truncated = sse_decode_bool(deserializer);
+    return BookCountResult(counts: var_counts, truncated: var_truncated);
+  }
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8() != 0;
@@ -4926,6 +5390,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  CountResult sse_decode_count_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_count = sse_decode_u_32(deserializer);
+    var var_truncated = sse_decode_bool(deserializer);
+    return CountResult(count: var_count, truncated: var_truncated);
+  }
+
+  @protected
   DocumentInput sse_decode_document_input(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_u_64(deserializer);
@@ -4962,6 +5434,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_path = sse_decode_String(deserializer);
     var var_count = sse_decode_u_64(deserializer);
     return FacetCount(path: var_path, count: var_count);
+  }
+
+  @protected
+  FacetCountsResult sse_decode_facet_counts_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_counts = sse_decode_list_facet_count(deserializer);
+    var var_truncated = sse_decode_bool(deserializer);
+    return FacetCountsResult(counts: var_counts, truncated: var_truncated);
   }
 
   @protected
@@ -5756,6 +6238,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_book_count_result(
+    BookCountResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_Map_String_u_32_None(self.counts, serializer);
+    sse_encode_bool(self.truncated, serializer);
+  }
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
@@ -5810,6 +6302,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_count_result(CountResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.count, serializer);
+    sse_encode_bool(self.truncated, serializer);
+  }
+
+  @protected
   void sse_encode_document_input(DocumentInput self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self.id, serializer);
@@ -5834,6 +6333,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.path, serializer);
     sse_encode_u_64(self.count, serializer);
+  }
+
+  @protected
+  void sse_encode_facet_counts_result(
+    FacetCountsResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_facet_count(self.counts, serializer);
+    sse_encode_bool(self.truncated, serializer);
   }
 
   @protected
@@ -6503,6 +7012,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<void> commit() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(that: this);
 
+  /// Bare hit count. Drops the single-word truncation flag: a broad query
+  /// (e.g. `.*ספר`) that overflows its collection budget returns a partial
+  /// count with no signal. Not suitable for UI that must tell the user the
+  /// result is partial — use [`Self::count_with_status`], the combined
+  /// stream, or [`SearchPageResult::truncated`] there instead.
   Future<int> count({
     required List<String> regexTerms,
     required List<String> facets,
@@ -6516,6 +7030,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     maxExpansions: maxExpansions,
   );
 
+  /// Advanced-query hit count. Drops the single-word truncation flag — see
+  /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
   Future<int> countAdvanced({
     required String query,
     required List<String> facets,
@@ -6533,6 +7049,27 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     searchOptions: searchOptions,
   );
 
+  /// Like [`Self::count_advanced`] but also reports single-word truncation.
+  Future<CountResult> countAdvancedWithStatus({
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineCountAdvancedWithStatus(
+        that: this,
+        query: query,
+        facets: facets,
+        distance: distance,
+        customSpacing: customSpacing,
+        alternativeWords: alternativeWords,
+        searchOptions: searchOptions,
+      );
+
+  /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
+  /// use [`Self::count_by_book_with_status`] when partiality must surface.
   Future<Map<String, int>> countByBook({
     required List<String> regexTerms,
     required List<String> facets,
@@ -6546,6 +7083,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     maxExpansions: maxExpansions,
   );
 
+  /// Advanced-query per-book counts. Drops the truncation flag — see
+  /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
   Future<Map<String, int>> countByBookAdvanced({
     required String query,
     required List<String> facets,
@@ -6555,6 +7094,25 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required Map<String, Map<String, bool>> searchOptions,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookAdvanced(
+        that: this,
+        query: query,
+        facets: facets,
+        distance: distance,
+        customSpacing: customSpacing,
+        alternativeWords: alternativeWords,
+        searchOptions: searchOptions,
+      );
+
+  /// Like [`Self::count_by_book_advanced`] but also reports truncation.
+  Future<BookCountResult> countByBookAdvancedWithStatus({
+    required String query,
+    required List<String> facets,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus(
         that: this,
         query: query,
         facets: facets,
@@ -6584,6 +7142,21 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     maxDistance: maxDistance,
   );
 
+  /// Like [`Self::count_by_book`] but also reports single-word truncation.
+  Future<BookCountResult> countByBookWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineCountByBookWithStatus(
+        that: this,
+        regexTerms: regexTerms,
+        facets: facets,
+        slop: slop,
+        maxExpansions: maxExpansions,
+      );
+
   /// Number of live (committed, non-deleted) documents per distinct
   /// `filePath` across the whole index.
   ///
@@ -6612,6 +7185,21 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     query: query,
     facets: facets,
     maxDistance: maxDistance,
+  );
+
+  /// Like [`Self::count`] but also reports whether single-word collection
+  /// truncated, so a UI consumer can flag a partial count.
+  Future<CountResult> countWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
+  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountWithStatus(
+    that: this,
+    regexTerms: regexTerms,
+    facets: facets,
+    slop: slop,
+    maxExpansions: maxExpansions,
   );
 
   /// Delete a document by its numeric id. Does not commit.
@@ -6707,7 +7295,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<BigInt> getDocumentCount() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetDocumentCount(that: this);
 
-  /// Return per-child facet counts for a given prefix (e.g. "/").
+  /// Return per-child facet counts for a given prefix (e.g. "/"). Drops the
+  /// truncation flag — see [`Self::count`]; use
+  /// [`Self::get_facet_counts_with_status`] when partiality must surface.
   Future<List<FacetCount>> getFacetCounts({
     required List<String> regexTerms,
     required List<String> facets,
@@ -6723,6 +7313,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     maxExpansions: maxExpansions,
   );
 
+  /// Advanced-query facet counts. Drops the truncation flag — see
+  /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
   Future<List<FacetCount>> getFacetCountsAdvanced({
     required String query,
     required List<String> facets,
@@ -6733,6 +7325,27 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required Map<String, Map<String, bool>> searchOptions,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvanced(
+        that: this,
+        query: query,
+        facets: facets,
+        facetPrefix: facetPrefix,
+        distance: distance,
+        customSpacing: customSpacing,
+        alternativeWords: alternativeWords,
+        searchOptions: searchOptions,
+      );
+
+  /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
+  Future<FacetCountsResult> getFacetCountsAdvancedWithStatus({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus(
         that: this,
         query: query,
         facets: facets,
@@ -6767,6 +7380,23 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         facets: facets,
         facetPrefix: facetPrefix,
         maxDistance: maxDistance,
+      );
+
+  /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
+  Future<FacetCountsResult> getFacetCountsWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required String facetPrefix,
+    required int slop,
+    required int maxExpansions,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineGetFacetCountsWithStatus(
+        that: this,
+        regexTerms: regexTerms,
+        facets: facets,
+        facetPrefix: facetPrefix,
+        slop: slop,
+        maxExpansions: maxExpansions,
       );
 
   /// Distinct `filePath` values present in the index — i.e. which books have

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 796241689;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -702576681;
 
 // Section: executor
 
@@ -746,6 +746,77 @@ fn wire__crate__api__search_engine__SearchEngine_count_advanced_impl(
         },
     )
 }
+fn wire__crate__api__search_engine__SearchEngine_count_advanced_with_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SearchEngine_count_advanced_with_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
+            >>::sse_decode(&mut deserializer);
+            let api_query = <String>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::search_engine::SearchEngine::count_advanced_with_status(
+                                &*api_that_guard,
+                                api_query,
+                                api_facets,
+                                api_distance,
+                                api_custom_spacing,
+                                api_alternative_words,
+                                api_search_options,
+                            )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__search_engine__SearchEngine_count_by_book_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -878,6 +949,36 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(
         },
     )
 }
+fn wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_with_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "SearchEngine_count_by_book_advanced_with_status", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
+let api_query = <String>::sse_decode(&mut deserializer);
+let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+let api_distance = <u32>::sse_decode(&mut deserializer);
+let api_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+let api_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
+                        let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                _ => unreachable!(),
+            }
+        }
+        let api_that_guard = api_that_guard.unwrap();
+ let output_ok = crate::api::search_engine::SearchEngine::count_by_book_advanced_with_status(&*api_that_guard, api_query, api_facets, api_distance, api_custom_spacing, api_alternative_words, api_search_options)?;   Ok(output_ok)
+                    })())
+                } })
+}
 fn wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -988,6 +1089,68 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(
                                 api_query,
                                 api_facets,
                                 api_max_distance,
+                            )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__search_engine__SearchEngine_count_by_book_with_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SearchEngine_count_by_book_with_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
+            >>::sse_decode(&mut deserializer);
+            let api_regex_terms = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_slop = <u32>::sse_decode(&mut deserializer);
+            let api_max_expansions = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::search_engine::SearchEngine::count_by_book_with_status(
+                                &*api_that_guard,
+                                api_regex_terms,
+                                api_facets,
+                                api_slop,
+                                api_max_expansions,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -1158,6 +1321,67 @@ fn wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(
                             api_query,
                             api_facets,
                             api_max_distance,
+                        )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__search_engine__SearchEngine_count_with_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SearchEngine_count_with_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
+            >>::sse_decode(&mut deserializer);
+            let api_regex_terms = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_slop = <u32>::sse_decode(&mut deserializer);
+            let api_max_expansions = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::search_engine::SearchEngine::count_with_status(
+                            &*api_that_guard,
+                            api_regex_terms,
+                            &api_facets,
+                            api_slop,
+                            api_max_expansions,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -1657,6 +1881,37 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(
         },
     )
 }
+fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_with_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "SearchEngine_get_facet_counts_advanced_with_status", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
+let api_query = <String>::sse_decode(&mut deserializer);
+let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+let api_facet_prefix = <String>::sse_decode(&mut deserializer);
+let api_distance = <u32>::sse_decode(&mut deserializer);
+let api_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+let api_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
+                        let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                _ => unreachable!(),
+            }
+        }
+        let api_that_guard = api_that_guard.unwrap();
+ let output_ok = crate::api::search_engine::SearchEngine::get_facet_counts_advanced_with_status(&*api_that_guard, api_query, api_facets, api_facet_prefix, api_distance, api_custom_spacing, api_alternative_words, api_search_options)?;   Ok(output_ok)
+                    })())
+                } })
+}
 fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1771,6 +2026,70 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(
                                 api_facets,
                                 api_facet_prefix,
                                 api_max_distance,
+                            )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_with_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SearchEngine_get_facet_counts_with_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
+            >>::sse_decode(&mut deserializer);
+            let api_regex_terms = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_facet_prefix = <String>::sse_decode(&mut deserializer);
+            let api_slop = <u32>::sse_decode(&mut deserializer);
+            let api_max_expansions = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::search_engine::SearchEngine::get_facet_counts_with_status(
+                                &*api_that_guard,
+                                api_regex_terms,
+                                api_facets,
+                                api_facet_prefix,
+                                api_slop,
+                                api_max_expansions,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -4018,10 +4337,34 @@ impl SseDecode for crate::api::benchmark::BenchmarkSuite {
     }
 }
 
+impl SseDecode for crate::api::search_engine::BookCountResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_counts = <std::collections::HashMap<String, u32>>::sse_decode(deserializer);
+        let mut var_truncated = <bool>::sse_decode(deserializer);
+        return crate::api::search_engine::BookCountResult {
+            counts: var_counts,
+            truncated: var_truncated,
+        };
+    }
+}
+
 impl SseDecode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u8().unwrap() != 0
+    }
+}
+
+impl SseDecode for crate::api::search_engine::CountResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_count = <u32>::sse_decode(deserializer);
+        let mut var_truncated = <bool>::sse_decode(deserializer);
+        return crate::api::search_engine::CountResult {
+            count: var_count,
+            truncated: var_truncated,
+        };
     }
 }
 
@@ -4066,6 +4409,18 @@ impl SseDecode for crate::api::search_engine::FacetCount {
         return crate::api::search_engine::FacetCount {
             path: var_path,
             count: var_count,
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::FacetCountsResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_counts = <Vec<crate::api::search_engine::FacetCount>>::sse_decode(deserializer);
+        let mut var_truncated = <bool>::sse_decode(deserializer);
+        return crate::api::search_engine::FacetCountsResult {
+            counts: var_counts,
+            truncated: var_truncated,
         };
     }
 }
@@ -4650,51 +5005,57 @@ fn pde_ffi_dispatcher_primary_impl(
 10 => wire__crate__api__search_engine__SearchEngine_commit_impl(port, ptr, rust_vec_len, data_len),
 11 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
 12 => wire__crate__api__search_engine__SearchEngine_count_advanced_impl(port, ptr, rust_vec_len, data_len),
-13 => wire__crate__api__search_engine__SearchEngine_count_by_book_impl(port, ptr, rust_vec_len, data_len),
-14 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(port, ptr, rust_vec_len, data_len),
-15 => wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(port, ptr, rust_vec_len, data_len),
-16 => wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-17 => wire__crate__api__search_engine__SearchEngine_count_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
-18 => wire__crate__api__search_engine__SearchEngine_count_exact_impl(port, ptr, rust_vec_len, data_len),
-19 => wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-20 => wire__crate__api__search_engine__SearchEngine_delete_document_by_id_impl(port, ptr, rust_vec_len, data_len),
-21 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
-22 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_paths_impl(port, ptr, rust_vec_len, data_len),
-23 => wire__crate__api__search_engine__SearchEngine_generate_index_fuzzy_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
-24 => wire__crate__api__search_engine__SearchEngine_generate_index_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
-25 => wire__crate__api__search_engine__SearchEngine_get_book_fingerprints_impl(port, ptr, rust_vec_len, data_len),
-26 => wire__crate__api__search_engine__SearchEngine_get_document_by_id_impl(port, ptr, rust_vec_len, data_len),
-27 => wire__crate__api__search_engine__SearchEngine_get_document_count_impl(port, ptr, rust_vec_len, data_len),
-28 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_impl(port, ptr, rust_vec_len, data_len),
-29 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(port, ptr, rust_vec_len, data_len),
-30 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(port, ptr, rust_vec_len, data_len),
-31 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-32 => wire__crate__api__search_engine__SearchEngine_get_indexed_file_paths_impl(port, ptr, rust_vec_len, data_len),
-33 => wire__crate__api__search_engine__SearchEngine_get_segment_count_impl(port, ptr, rust_vec_len, data_len),
-36 => wire__crate__api__search_engine__SearchEngine_optimize_impl(port, ptr, rust_vec_len, data_len),
-37 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
-38 => wire__crate__api__search_engine__SearchEngine_rollback_impl(port, ptr, rust_vec_len, data_len),
-39 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
-40 => wire__crate__api__search_engine__SearchEngine_search_advanced_impl(port, ptr, rust_vec_len, data_len),
-41 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_impl(port, ptr, rust_vec_len, data_len),
-42 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
-43 => wire__crate__api__search_engine__SearchEngine_search_and_count_impl(port, ptr, rust_vec_len, data_len),
-44 => wire__crate__api__search_engine__SearchEngine_search_and_count_advanced_impl(port, ptr, rust_vec_len, data_len),
-45 => wire__crate__api__search_engine__SearchEngine_search_and_count_exact_impl(port, ptr, rust_vec_len, data_len),
-46 => wire__crate__api__search_engine__SearchEngine_search_and_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-47 => wire__crate__api__search_engine__SearchEngine_search_exact_impl(port, ptr, rust_vec_len, data_len),
-48 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_impl(port, ptr, rust_vec_len, data_len),
-49 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
-50 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-51 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
-52 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
-53 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
-54 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
-55 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
-57 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
-58 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
-68 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
-69 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
+13 => wire__crate__api__search_engine__SearchEngine_count_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
+14 => wire__crate__api__search_engine__SearchEngine_count_by_book_impl(port, ptr, rust_vec_len, data_len),
+15 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(port, ptr, rust_vec_len, data_len),
+16 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
+17 => wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(port, ptr, rust_vec_len, data_len),
+18 => wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+19 => wire__crate__api__search_engine__SearchEngine_count_by_book_with_status_impl(port, ptr, rust_vec_len, data_len),
+20 => wire__crate__api__search_engine__SearchEngine_count_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
+21 => wire__crate__api__search_engine__SearchEngine_count_exact_impl(port, ptr, rust_vec_len, data_len),
+22 => wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+23 => wire__crate__api__search_engine__SearchEngine_count_with_status_impl(port, ptr, rust_vec_len, data_len),
+24 => wire__crate__api__search_engine__SearchEngine_delete_document_by_id_impl(port, ptr, rust_vec_len, data_len),
+25 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
+26 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_paths_impl(port, ptr, rust_vec_len, data_len),
+27 => wire__crate__api__search_engine__SearchEngine_generate_index_fuzzy_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
+28 => wire__crate__api__search_engine__SearchEngine_generate_index_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
+29 => wire__crate__api__search_engine__SearchEngine_get_book_fingerprints_impl(port, ptr, rust_vec_len, data_len),
+30 => wire__crate__api__search_engine__SearchEngine_get_document_by_id_impl(port, ptr, rust_vec_len, data_len),
+31 => wire__crate__api__search_engine__SearchEngine_get_document_count_impl(port, ptr, rust_vec_len, data_len),
+32 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_impl(port, ptr, rust_vec_len, data_len),
+33 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(port, ptr, rust_vec_len, data_len),
+34 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
+35 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(port, ptr, rust_vec_len, data_len),
+36 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+37 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_with_status_impl(port, ptr, rust_vec_len, data_len),
+38 => wire__crate__api__search_engine__SearchEngine_get_indexed_file_paths_impl(port, ptr, rust_vec_len, data_len),
+39 => wire__crate__api__search_engine__SearchEngine_get_segment_count_impl(port, ptr, rust_vec_len, data_len),
+42 => wire__crate__api__search_engine__SearchEngine_optimize_impl(port, ptr, rust_vec_len, data_len),
+43 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
+44 => wire__crate__api__search_engine__SearchEngine_rollback_impl(port, ptr, rust_vec_len, data_len),
+45 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
+46 => wire__crate__api__search_engine__SearchEngine_search_advanced_impl(port, ptr, rust_vec_len, data_len),
+47 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_impl(port, ptr, rust_vec_len, data_len),
+48 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
+49 => wire__crate__api__search_engine__SearchEngine_search_and_count_impl(port, ptr, rust_vec_len, data_len),
+50 => wire__crate__api__search_engine__SearchEngine_search_and_count_advanced_impl(port, ptr, rust_vec_len, data_len),
+51 => wire__crate__api__search_engine__SearchEngine_search_and_count_exact_impl(port, ptr, rust_vec_len, data_len),
+52 => wire__crate__api__search_engine__SearchEngine_search_and_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+53 => wire__crate__api__search_engine__SearchEngine_search_exact_impl(port, ptr, rust_vec_len, data_len),
+54 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_impl(port, ptr, rust_vec_len, data_len),
+55 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
+56 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+57 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
+58 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
+59 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
+60 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
+61 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
+63 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
+64 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
+74 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
+75 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -4707,64 +5068,64 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        34 => wire__crate__api__search_engine__SearchEngine_has_magic_dictionary_impl(
+        40 => wire__crate__api__search_engine__SearchEngine_has_magic_dictionary_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
-        56 => wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(
+        41 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
+        62 => wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        59 => wire__crate__api__search_engine__check_index_compatibility_impl(
+        65 => wire__crate__api__search_engine__check_index_compatibility_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        60 => wire__crate__api__search_engine__compute_content_fingerprint_impl(
+        66 => wire__crate__api__search_engine__compute_content_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        61 => wire__crate__api__search_engine__generate_highlight_pattern_impl(
+        67 => wire__crate__api__search_engine__generate_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        62 => wire__crate__api__search_engine__generate_literal_highlight_pattern_impl(
+        68 => wire__crate__api__search_engine__generate_literal_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        63 => wire__crate__api__search_engine__is_probably_garbage_pdf_text_impl(
+        69 => wire__crate__api__search_engine__is_probably_garbage_pdf_text_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        64 => wire__crate__api__search_engine__normalize_pdf_text_for_indexing_impl(
+        70 => wire__crate__api__search_engine__normalize_pdf_text_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__api__search_engine__normalize_pdf_texts_for_indexing_impl(
+        71 => wire__crate__api__search_engine__normalize_pdf_texts_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__search_engine__normalize_text_for_indexing_impl(
+        72 => wire__crate__api__search_engine__normalize_text_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => wire__crate__api__search_engine__normalize_texts_for_indexing_impl(
+        73 => wire__crate__api__search_engine__normalize_texts_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        70 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
-        71 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
+        76 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
+        77 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -4854,6 +5215,48 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::benchmark::BenchmarkSuite>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::BookCountResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.counts.into_into_dart().into_dart(),
+            self.truncated.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::BookCountResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::BookCountResult>
+    for crate::api::search_engine::BookCountResult
+{
+    fn into_into_dart(self) -> crate::api::search_engine::BookCountResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::CountResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.count.into_into_dart().into_dart(),
+            self.truncated.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::CountResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::CountResult>
+    for crate::api::search_engine::CountResult
+{
+    fn into_into_dart(self) -> crate::api::search_engine::CountResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::search_engine::DocumentInput {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -4899,6 +5302,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::FacetCount>
     for crate::api::search_engine::FacetCount
 {
     fn into_into_dart(self) -> crate::api::search_engine::FacetCount {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::FacetCountsResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.counts.into_into_dart().into_dart(),
+            self.truncated.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::FacetCountsResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::FacetCountsResult>
+    for crate::api::search_engine::FacetCountsResult
+{
+    fn into_into_dart(self) -> crate::api::search_engine::FacetCountsResult {
         self
     }
 }
@@ -5283,10 +5707,26 @@ impl SseEncode for crate::api::benchmark::BenchmarkSuite {
     }
 }
 
+impl SseEncode for crate::api::search_engine::BookCountResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <std::collections::HashMap<String, u32>>::sse_encode(self.counts, serializer);
+        <bool>::sse_encode(self.truncated, serializer);
+    }
+}
+
 impl SseEncode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_u8(self as _).unwrap();
+    }
+}
+
+impl SseEncode for crate::api::search_engine::CountResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.count, serializer);
+        <bool>::sse_encode(self.truncated, serializer);
     }
 }
 
@@ -5317,6 +5757,14 @@ impl SseEncode for crate::api::search_engine::FacetCount {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.path, serializer);
         <u64>::sse_encode(self.count, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::FacetCountsResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::api::search_engine::FacetCount>>::sse_encode(self.counts, serializer);
+        <bool>::sse_encode(self.truncated, serializer);
     }
 }
 

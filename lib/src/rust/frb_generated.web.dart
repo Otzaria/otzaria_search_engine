@@ -113,6 +113,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BenchmarkSuite dco_decode_benchmark_suite(dynamic raw);
 
   @protected
+  BookCountResult dco_decode_book_count_result(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -134,6 +137,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
+  CountResult dco_decode_count_result(dynamic raw);
+
+  @protected
   DocumentInput dco_decode_document_input(dynamic raw);
 
   @protected
@@ -141,6 +147,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   FacetCount dco_decode_facet_count(dynamic raw);
+
+  @protected
+  FacetCountsResult dco_decode_facet_counts_result(dynamic raw);
 
   @protected
   HighlightConfig dco_decode_highlight_config(dynamic raw);
@@ -380,6 +389,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BenchmarkSuite sse_decode_benchmark_suite(SseDeserializer deserializer);
 
   @protected
+  BookCountResult sse_decode_book_count_result(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -409,6 +421,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
+  CountResult sse_decode_count_result(SseDeserializer deserializer);
+
+  @protected
   DocumentInput sse_decode_document_input(SseDeserializer deserializer);
 
   @protected
@@ -416,6 +431,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   FacetCount sse_decode_facet_count(SseDeserializer deserializer);
+
+  @protected
+  FacetCountsResult sse_decode_facet_counts_result(
+    SseDeserializer deserializer,
+  );
 
   @protected
   HighlightConfig sse_decode_highlight_config(SseDeserializer deserializer);
@@ -720,6 +740,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_book_count_result(
+    BookCountResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -753,6 +779,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
+  void sse_encode_count_result(CountResult self, SseSerializer serializer);
+
+  @protected
   void sse_encode_document_input(DocumentInput self, SseSerializer serializer);
 
   @protected
@@ -760,6 +789,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_facet_count(FacetCount self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_facet_counts_result(
+    FacetCountsResult self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_highlight_config(
