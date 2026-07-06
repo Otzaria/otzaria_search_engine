@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `single_regex_term_query`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `update_reference_trail`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `DfaWrapper`, `IndexMetadata`, `TermCacheKey`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `add_text_book_impl`, `advanced_highlight_query`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_rank_clauses`, `facet_filter_query`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `single_regex_term_query`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_regex_union`, `update_reference_trail`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `IndexMetadata`, `TermCacheKey`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -66,8 +66,10 @@ String sanitizeQuery({required String query}) =>
 
 /// Splits a query into word tokens the same way the engine tokenizes the
 /// indexed `text` field (see [`generate_highlight_pattern`] for the key format
-/// that consumes these). `"` always separates; a trailing `'` is kept inside
-/// the token (`תוס'`), an internal `'` separates (`ד'אש`).
+/// that consumes these). A `"` or `'` *between* word characters stays inside
+/// the token (`רמב"ם`, `ד'אש`), and a trailing `'` is absorbed (`תוס'`); a
+/// quote at a word edge separates. See [`hebrew_query::split_query_words`] for
+/// the exact rules.
 ///
 /// Pure string computation — safe to call synchronously. Single source of
 /// truth for `SearchQueryBuilder.splitQueryWords`.
@@ -156,6 +158,31 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// For initial bulk loads – no duplicate checking.
   Future<void> addDocumentsBatch({required List<DocumentInput> docs});
 
+  /// Indexes a whole PDF book in ONE FFI call. Does not commit.
+  ///
+  /// The whole-book replacement for the app's per-page PDF pipeline (Dart
+  /// isolate → per-window FFI normalize → SendPort copy → batch add), which
+  /// copied the extracted text four-five times per book. Each page's text is
+  /// split into lines; every line is normalised
+  /// ([`normalize_pdf_text_for_indexing`]) and dropped when the garbage
+  /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
+  /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
+  /// added per surviving line, with `segment` = the page's `page_index` and
+  /// ids encoding catalogue order like [`Self::add_text_book`]. PDFs record
+  /// no content fingerprint (`contentHash` = 0, their text is not in the
+  /// library DB).
+  ///
+  /// Returns the number of documents added; 0 means the PDF yielded no
+  /// usable text (scanned/garbage) — the caller falls back to a sidecar or
+  /// writes its empty-book marker.
+  Future<int> addPdfBook({
+    required String title,
+    required String topics,
+    required String filePath,
+    required int catalogueOrder,
+    required List<PdfPageInput> pages,
+  });
+
   /// Indexes a whole text book in ONE FFI call. Does not commit.
   ///
   /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
@@ -175,6 +202,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String filePath,
     required int catalogueOrder,
     required String text,
+  });
+
+  /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
+  /// content from SQLite, which stores UTF-8 — passing the bytes through
+  /// (SQLite BLOB → `Uint8List` → here) skips the UTF-8→UTF-16→UTF-8
+  /// round-trip a Dart `String` costs on the bridge (~180ms/MB measured).
+  /// Invalid UTF-8 is replaced (lossy), never an error — matching what the
+  /// Dart decode would have produced.
+  Future<int> addTextBookBytes({
+    required String title,
+    required String topics,
+    required String filePath,
+    required int catalogueOrder,
+    required List<int> text,
   });
 
   /// Delete all documents. Does not commit.
@@ -559,6 +600,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int chunkSize,
   });
 
+  /// Bulk-indexing mode: while enabled, the live writer skips background
+  /// segment merges (`NoMergePolicy`). During a full-library build the
+  /// default `LogMergePolicy` repeatedly merges intermediate segments —
+  /// CPU and IO that are thrown away, because the caller runs `optimize`
+  /// (merge-all) once at the end anyway. Call with `true` before a bulk
+  /// build and `false` (or just `optimize`) when done. Off by default;
+  /// incremental indexing keeps normal merging.
+  Future<void> setBulkIndexing({required bool enabled});
+
   /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
   /// search path. Returns `true` if the file opened and has the expected
   /// schema, `false` if it is missing or unusable — in which case the engine
@@ -785,6 +835,34 @@ class PdfIndexLine {
           isGarbage == other.isGarbage;
 }
 
+/// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
+/// display reference (built by the app from the PDF outline), the raw
+/// extracted page text, and the zero-based page index (stored as the
+/// document `segment`).
+class PdfPageInput {
+  final String reference;
+  final String text;
+  final int pageIndex;
+
+  const PdfPageInput({
+    required this.reference,
+    required this.text,
+    required this.pageIndex,
+  });
+
+  @override
+  int get hashCode => reference.hashCode ^ text.hashCode ^ pageIndex.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PdfPageInput &&
+          runtimeType == other.runtimeType &&
+          reference == other.reference &&
+          text == other.text &&
+          pageIndex == other.pageIndex;
+}
+
 enum ResultsOrder { catalogue, relevance }
 
 class SearchPageResult {
@@ -866,15 +944,28 @@ class SearchStreamUpdate {
   /// The results chunk (empty on the first, counts-bearing event).
   final List<SearchResult> results;
 
+  /// `true` when a broad single-word query overflowed its collection budget
+  /// and only the highest-priority term expansions were served, so both the
+  /// counts and the results are partial (see [`SearchEngine::single_regex_term_query`]).
+  /// Meaningful only on the first, counts-bearing event; always `false` on
+  /// result chunks and on the exact/fuzzy paths, which never degrade this way.
+  /// The UI surfaces this as a "results may be partial — narrow the search"
+  /// warning.
+  final bool truncated;
+
   const SearchStreamUpdate({
     this.totalCount,
     this.bookCounts,
     required this.results,
+    required this.truncated,
   });
 
   @override
   int get hashCode =>
-      totalCount.hashCode ^ bookCounts.hashCode ^ results.hashCode;
+      totalCount.hashCode ^
+      bookCounts.hashCode ^
+      results.hashCode ^
+      truncated.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -883,5 +974,6 @@ class SearchStreamUpdate {
           runtimeType == other.runtimeType &&
           totalCount == other.totalCount &&
           bookCounts == other.bookCounts &&
-          results == other.results;
+          results == other.results &&
+          truncated == other.truncated;
 }

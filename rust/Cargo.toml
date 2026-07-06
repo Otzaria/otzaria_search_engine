@@ -44,6 +44,9 @@ unicode-segmentation = "1.13.3"
 # from source so there is no system libsqlite dependency on Android/iOS.
 rusqlite = { version = "0.32", features = ["bundled"] }
 lru = "0.12"
+# מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
+# מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
+rayon = "1.10"
 
 # Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
 # regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).

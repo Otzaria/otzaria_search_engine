@@ -2,7 +2,7 @@ use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::indexer::NoMergePolicy;
@@ -63,6 +64,16 @@ pub struct DocumentInput {
     pub content_hash: Option<u64>,
 }
 
+/// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
+/// display reference (built by the app from the PDF outline), the raw
+/// extracted page text, and the zero-based page index (stored as the
+/// document `segment`).
+pub struct PdfPageInput {
+    pub reference: String,
+    pub text: String,
+    pub page_index: u32,
+}
+
 pub struct HighlightConfig {
     pub highlight_prefix: String,
     pub highlight_postfix: String,
@@ -89,6 +100,14 @@ pub struct SearchStreamUpdate {
     pub book_counts: Option<HashMap<String, u32>>,
     /// The results chunk (empty on the first, counts-bearing event).
     pub results: Vec<SearchResult>,
+    /// `true` when a broad single-word query overflowed its collection budget
+    /// and only the highest-priority term expansions were served, so both the
+    /// counts and the results are partial (see [`SearchEngine::single_regex_term_query`]).
+    /// Meaningful only on the first, counts-bearing event; always `false` on
+    /// result chunks and on the exact/fuzzy paths, which never degrade this way.
+    /// The UI surfaces this as a "results may be partial — narrow the search"
+    /// warning.
+    pub truncated: bool,
 }
 
 pub struct FacetCount {
@@ -111,6 +130,54 @@ pub enum ResultsOrder {
     Catalogue,
     Relevance,
 }
+
+/// Per-word index-term sets plus the intermediate-word allowance, used by the
+/// snippet renderer to keep only highlights that form an in-order *phrase*
+/// occurrence.
+///
+/// tantivy's `SnippetGenerator` highlights term-by-term: it paints every
+/// occurrence of every query term with no positional constraint. For the
+/// multi-word phrase paths (exact `PhraseQuery`, advanced/lexical-fuzzy
+/// `RegexPhraseQuery`) that over-paints — a lone "משה" lights up even when the
+/// search matched only the adjacent phrase "משה ואהרן". This filter drops such
+/// stray highlights so the snippet paints exactly what the search matched.
+///
+/// `max_gap` is the maximum number of intermediate index tokens allowed
+/// between two adjacent query words — the same intermediate-word model
+/// `display_highlight` uses for an opened book, so the results snippet and the
+/// book agree.
+struct PhraseHighlight {
+    /// One index-term set per query word, in query (= phrase) order.
+    per_word_terms: Vec<HashSet<String>>,
+    max_gap: u32,
+}
+
+/// What a highlight-query builder resolves to: the flat term query that drives
+/// tantivy's fragment selection (and, absent a phrase filter, its
+/// highlighting), plus the optional phrase constraint above.
+struct HighlightPlan {
+    /// `None` falls back to the main search query, which already exposes its
+    /// terms to `SnippetGenerator` when it is a Term/Phrase/TermSet query.
+    query: Option<Box<dyn Query>>,
+    phrase: Option<PhraseHighlight>,
+}
+
+impl HighlightPlan {
+    /// No highlight query and no phrase filter — the snippet generator falls
+    /// back to the main query's own terms (single-word/plain paths).
+    fn none() -> Self {
+        HighlightPlan {
+            query: None,
+            phrase: None,
+        }
+    }
+}
+
+/// What [`SearchEngine::build_advanced_query`] returns: the executable query,
+/// one joined regex pattern per word (for highlight-term materialization), the
+/// resolved phrase `slop` (folds `custom_spacing` in — the phrase highlight
+/// filter's gap allowance), and whether single-word collection truncated.
+type AdvancedQueryBuild = (Box<dyn Query>, Vec<String>, u32, bool);
 
 /// Regex patterns for highlighting query matches in *displayed* book text
 /// (which, unlike index terms, still carries nikud and HTML). All patterns
@@ -271,8 +338,10 @@ pub fn sanitize_query(query: String) -> String {
 
 /// Splits a query into word tokens the same way the engine tokenizes the
 /// indexed `text` field (see [`generate_highlight_pattern`] for the key format
-/// that consumes these). `"` always separates; a trailing `'` is kept inside
-/// the token (`תוס'`), an internal `'` separates (`ד'אש`).
+/// that consumes these). A `"` or `'` *between* word characters stays inside
+/// the token (`רמב"ם`, `ד'אש`), and a trailing `'` is absorbed (`תוס'`); a
+/// quote at a word edge separates. See [`hebrew_query::split_query_words`] for
+/// the exact rules.
 ///
 /// Pure string computation — safe to call synchronously. Single source of
 /// truth for `SearchQueryBuilder.splitQueryWords`.
@@ -700,6 +769,16 @@ struct TermCacheKey {
 /// long before the term ceiling on any realistic query).
 const TERM_CACHE_ENTRIES: usize = 32;
 
+/// A materialized single-word term set plus whether collection stopped early
+/// on a budget overflow. Cached together so every engine call behind one user
+/// search (stream + counts + count-by-book + facets + pagination) reports the
+/// same truncation state without re-scanning the FST dictionary.
+#[derive(Clone)]
+struct CachedTermSet {
+    terms: Arc<Vec<Term>>,
+    truncated: bool,
+}
+
 /// Ceiling on the summed per-segment `doc_freq` a single-word term set may
 /// accumulate. This — not the term count — is the true cost guard: executing
 /// the resulting `TermSetQuery` unions one postings list per matched term per
@@ -724,12 +803,30 @@ pub struct SearchEngine {
     /// (stream + count + count-by-book + facet counts + pagination), and the
     /// FST dictionary scan behind `single_regex_term_query` is the expensive
     /// part of each — this makes every call after the first near-free.
-    term_cache: Mutex<LruCache<TermCacheKey, Arc<Vec<Term>>>>,
+    term_cache: Mutex<LruCache<TermCacheKey, CachedTermSet>>,
+    /// Bulk-indexing mode (see [`SearchEngine::set_bulk_indexing`]): while
+    /// on, the live writer (and any lazily-reopened one) uses `NoMergePolicy`.
+    bulk_indexing: bool,
+}
+
+/// Installs a stderr logger (once per process) so the engine's `info!`
+/// timing logs are visible in the app console without any Dart-side setup.
+/// `RUST_LOG` still overrides the default filter; if a logger is already
+/// installed (tests, benchmark_cli), `try_init` leaves it in place.
+fn init_engine_logger() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("search_engine=info"),
+        )
+        .try_init();
+    });
 }
 
 impl SearchEngine {
     #[frb(sync)]
     pub fn new(path: &str) -> Self {
+        init_engine_logger();
         debug!("new path={}", path);
         let schema = current_schema();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
@@ -776,6 +873,7 @@ impl SearchEngine {
             term_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
+            bulk_indexing: false,
         }
     }
 
@@ -903,9 +1001,46 @@ impl SearchEngine {
         catalogue_order: u32,
         text: String,
     ) -> Result<u32> {
+        self.add_text_book_impl(title, topics, file_path, catalogue_order, &text)
+    }
+
+    /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
+    /// content from SQLite, which stores UTF-8 — passing the bytes through
+    /// (SQLite BLOB → `Uint8List` → here) skips the UTF-8→UTF-16→UTF-8
+    /// round-trip a Dart `String` costs on the bridge (~180ms/MB measured).
+    /// Invalid UTF-8 is replaced (lossy), never an error — matching what the
+    /// Dart decode would have produced.
+    pub fn add_text_book_bytes(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        text: Vec<u8>,
+    ) -> Result<u32> {
+        let text = match String::from_utf8_lossy(&text) {
+            std::borrow::Cow::Borrowed(_) => {
+                // Valid UTF-8 — take ownership without re-copying.
+                unsafe { String::from_utf8_unchecked(text) }
+            }
+            std::borrow::Cow::Owned(fixed) => fixed,
+        };
+        self.add_text_book_impl(title, topics, file_path, catalogue_order, &text)
+    }
+
+    fn add_text_book_impl(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        text: &str,
+    ) -> Result<u32> {
         if text.is_empty() {
             return Ok(0);
         }
+        let started = Instant::now();
+        let text_bytes = text.len();
         let (
             title_f,
             reference_f,
@@ -918,24 +1053,47 @@ impl SearchEngine {
             content_hash_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(&topics)?;
-        let content_hash = content_fingerprint(&text);
+        let content_hash = content_fingerprint(text);
         let id_base = (u64::from(catalogue_order) + 1) << 32;
         let writer = self.writer_mut()?;
 
+        // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
+        // writer.add_document (queue push; grows only when tantivy's indexing
+        // threads apply backpressure).
+        let prepare_started = Instant::now();
+        let lines: Vec<&str> = text.split('\n').collect();
+
+        // Sequential cheap pass: the reference trail is stateful across
+        // lines, so resolve each line to its reference index first. The
+        // stripped trail is recomputed only when a heading changes it.
         let mut trail: Vec<&str> = Vec::new();
-        // The stripped trail is recomputed only when a heading changes it —
-        // the Dart pipeline re-joined and re-stripped it for every line.
-        let mut reference = String::new();
-        let mut ordinal: u64 = 0;
-        for (segment, raw_line) in text.split('\n').enumerate() {
+        let mut references: Vec<String> = vec![String::new()];
+        let mut reference_of_line: Vec<u32> = Vec::with_capacity(lines.len());
+        for raw_line in &lines {
             if raw_line.starts_with("<h") {
                 update_reference_trail(&mut trail, raw_line);
-                reference = hebrew_query::strip_html_for_indexing(&trail.join(", "));
+                references.push(hebrew_query::strip_html_for_indexing(&trail.join(", ")));
             }
+            reference_of_line.push((references.len() - 1) as u32);
+        }
+
+        // The expensive pass — normalization is order-independent across
+        // lines, so it fans out over all cores.
+        use rayon::prelude::*;
+        let normalized: Vec<String> = lines
+            .par_iter()
+            .map(|raw_line| hebrew_query::normalize_text_for_indexing(raw_line))
+            .collect();
+        let prepare_time = prepare_started.elapsed();
+
+        let enqueue_started = Instant::now();
+        let mut ordinal: u64 = 0;
+        for (segment, normalized_line) in normalized.into_iter().enumerate() {
+            let reference = references[reference_of_line[segment] as usize].as_str();
             writer.add_document(doc!(
                 title_f        => title.as_str(),
-                reference_f    => reference.as_str(),
-                text_f         => hebrew_query::normalize_text_for_indexing(raw_line),
+                reference_f    => reference,
+                text_f         => normalized_line,
                 id_f           => id_base + ordinal + 1,
                 segment_f      => segment as u64,
                 is_pdf_f       => false,
@@ -945,6 +1103,109 @@ impl SearchEngine {
             ))?;
             ordinal += 1;
         }
+        let enqueue_time = enqueue_started.elapsed();
+        info!(
+            "add_text_book '{title}': {ordinal} docs, {text_bytes} bytes in {:?} \
+             (prepare {prepare_time:?}, enqueue {enqueue_time:?})",
+            started.elapsed()
+        );
+        Ok(ordinal as u32)
+    }
+
+    /// Indexes a whole PDF book in ONE FFI call. Does not commit.
+    ///
+    /// The whole-book replacement for the app's per-page PDF pipeline (Dart
+    /// isolate → per-window FFI normalize → SendPort copy → batch add), which
+    /// copied the extracted text four-five times per book. Each page's text is
+    /// split into lines; every line is normalised
+    /// ([`normalize_pdf_text_for_indexing`]) and dropped when the garbage
+    /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
+    /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
+    /// added per surviving line, with `segment` = the page's `page_index` and
+    /// ids encoding catalogue order like [`Self::add_text_book`]. PDFs record
+    /// no content fingerprint (`contentHash` = 0, their text is not in the
+    /// library DB).
+    ///
+    /// Returns the number of documents added; 0 means the PDF yielded no
+    /// usable text (scanned/garbage) — the caller falls back to a sidecar or
+    /// writes its empty-book marker.
+    pub fn add_pdf_book(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        pages: Vec<PdfPageInput>,
+    ) -> Result<u32> {
+        if pages.is_empty() {
+            return Ok(0);
+        }
+        let started = Instant::now();
+        let text_bytes: usize = pages.iter().map(|p| p.text.len()).sum();
+        let page_count = pages.len();
+        let (
+            title_f,
+            reference_f,
+            text_f,
+            id_f,
+            segment_f,
+            is_pdf_f,
+            file_path_f,
+            topics_f,
+            content_hash_f,
+        ) = self.all_fields()?;
+        let topics_facet = Facet::from_text(&topics)?;
+        let id_base = (u64::from(catalogue_order) + 1) << 32;
+        let writer = self.writer_mut()?;
+
+        // Normalization + garbage heuristic are per-line pure functions —
+        // fan the whole book out over all cores, then enqueue sequentially.
+        use rayon::prelude::*;
+        let prepare_started = Instant::now();
+        let lines: Vec<(usize, &str)> = pages
+            .iter()
+            .enumerate()
+            .flat_map(|(page_idx, page)| page.text.split('\n').map(move |line| (page_idx, line)))
+            .collect();
+        let prepared: Vec<(usize, String, bool)> = lines
+            .par_iter()
+            .map(|(page_idx, raw_line)| {
+                let normalized = hebrew_query::normalize_pdf_text_for_indexing(raw_line);
+                let is_garbage = hebrew_query::is_probably_garbage_pdf_text(&normalized);
+                (*page_idx, normalized, is_garbage)
+            })
+            .collect();
+        let prepare_time = prepare_started.elapsed();
+
+        let enqueue_started = Instant::now();
+        let mut ordinal: u64 = 0;
+        let mut garbage_lines: u64 = 0;
+        for (page_idx, normalized, is_garbage) in prepared {
+            if is_garbage {
+                garbage_lines += 1;
+                continue;
+            }
+            let page = &pages[page_idx];
+            writer.add_document(doc!(
+                title_f        => title.as_str(),
+                reference_f    => page.reference.as_str(),
+                text_f         => normalized,
+                id_f           => id_base + ordinal + 1,
+                segment_f      => u64::from(page.page_index),
+                is_pdf_f       => true,
+                file_path_f    => file_path.as_str(),
+                topics_f       => topics_facet.clone(),
+                content_hash_f => 0u64
+            ))?;
+            ordinal += 1;
+        }
+        let enqueue_time = enqueue_started.elapsed();
+        info!(
+            "add_pdf_book '{title}': {ordinal} docs from {page_count} pages \
+             ({garbage_lines} garbage lines), {text_bytes} bytes in {:?} \
+             (prepare {prepare_time:?}, enqueue {enqueue_time:?})",
+            started.elapsed()
+        );
         Ok(ordinal as u32)
     }
 
@@ -1046,10 +1307,37 @@ impl SearchEngine {
         Ok(())
     }
 
+    /// Bulk-indexing mode: while enabled, the live writer skips background
+    /// segment merges (`NoMergePolicy`). During a full-library build the
+    /// default `LogMergePolicy` repeatedly merges intermediate segments —
+    /// CPU and IO that are thrown away, because the caller runs `optimize`
+    /// (merge-all) once at the end anyway. Call with `true` before a bulk
+    /// build and `false` when done — `optimize` does NOT reset the flag, and
+    /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
+    /// default; incremental indexing keeps normal merging.
+    pub fn set_bulk_indexing(&mut self, enabled: bool) -> Result<()> {
+        self.bulk_indexing = enabled;
+        let writer = self.writer_mut()?;
+        if enabled {
+            writer.set_merge_policy(Box::new(NoMergePolicy));
+        } else {
+            writer.set_merge_policy(Box::<tantivy::indexer::LogMergePolicy>::default());
+        }
+        debug!("bulk_indexing={enabled}");
+        Ok(())
+    }
+
     /// Flush pending writes to disk and refresh the reader.
     pub fn commit(&mut self) -> Result<()> {
+        let started = Instant::now();
         self.writer_mut()?.commit()?;
+        let commit_elapsed = started.elapsed();
+        let reload_started = Instant::now();
         self.index_reader.reload()?;
+        info!(
+            "commit: {commit_elapsed:?} (reader reload {:?})",
+            reload_started.elapsed()
+        );
         Ok(())
     }
 
@@ -1072,9 +1360,16 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
-        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(query, |_| Ok(None), limit, offset, &order, &hl)
+        self.run_search(
+            query,
+            |_| Ok(HighlightPlan::none()),
+            limit,
+            offset,
+            &order,
+            &hl,
+        )
     }
 
     /// Search and return total hit count alongside paged results in one call.
@@ -1090,9 +1385,16 @@ impl SearchEngine {
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
     ) -> Result<SearchPageResult> {
-        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_and_count(query, |_| Ok(None), limit, offset, &order, &hl)
+        self.run_search_and_count(
+            query,
+            |_| Ok(HighlightPlan::none()),
+            limit,
+            offset,
+            &order,
+            &hl,
+        )
     }
 
     pub fn count(
@@ -1102,7 +1404,7 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<u32> {
-        let query = self.build_query(regex_terms, facets.to_vec(), slop, max_expansions)?;
+        let (query, _) = self.build_query(regex_terms, facets.to_vec(), slop, max_expansions)?;
         self.run_count(query)
     }
 
@@ -1113,7 +1415,7 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<HashMap<String, u32>> {
-        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
         self.run_count_by_book(query)
     }
 
@@ -1126,7 +1428,7 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<Vec<FacetCount>> {
-        let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
+        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
         self.run_facet_counts(query, facet_prefix)
     }
 
@@ -1137,6 +1439,7 @@ impl SearchEngine {
     /// Pending (uncommitted) changes are committed first, since only committed
     /// segments participate in manual merge maintenance.
     pub fn optimize(&mut self) -> Result<()> {
+        let started = Instant::now();
         let before_count = self.index.searchable_segment_ids()?.len();
         debug!("optimize: before={before_count}");
         if before_count <= 1 {
@@ -1166,7 +1469,10 @@ impl SearchEngine {
         maintenance_result?;
         self.index_reader.reload()?;
         let after_count = self.index.searchable_segment_ids()?.len();
-        debug!("optimize: after={after_count}");
+        info!(
+            "optimize: {before_count} → {after_count} segments in {:?}",
+            started.elapsed()
+        );
         Ok(())
     }
 
@@ -1283,7 +1589,7 @@ impl SearchEngine {
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search(
             query,
-            |s| Ok(self.build_fuzzy_highlight(s, &terms, max_distance).ok()),
+            |s| self.fuzzy_highlight_plan(s, &terms, max_distance),
             limit,
             offset,
             &order,
@@ -1314,11 +1620,11 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
-            let query = self.build_query(regex_terms, facets, slop, max_expansions)?;
+            let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
             let hl = highlight.unwrap_or_else(HighlightConfig::default);
             self.run_search_stream(
                 query,
-                |_| Ok(None),
+                |_| Ok(HighlightPlan::none()),
                 limit,
                 offset,
                 &order,
@@ -1351,7 +1657,7 @@ impl SearchEngine {
         let q = self.build_exact_query(&query, &facets)?;
         self.run_search(
             q,
-            |_| Ok(None),
+            |_| self.exact_highlight_plan(&query),
             limit,
             offset,
             &order,
@@ -1370,7 +1676,7 @@ impl SearchEngine {
         let q = self.build_exact_query(&query, &facets)?;
         self.run_search_and_count(
             q,
-            |_| Ok(None),
+            |_| self.exact_highlight_plan(&query),
             limit,
             offset,
             &order,
@@ -1392,7 +1698,7 @@ impl SearchEngine {
             let q = self.build_exact_query(&query, &facets)?;
             self.run_search_stream(
                 q,
-                |_| Ok(None),
+                |_| self.exact_highlight_plan(&query),
                 limit,
                 offset,
                 &order,
@@ -1422,12 +1728,14 @@ impl SearchEngine {
             let q = self.build_exact_query(&query, &facets)?;
             self.run_search_stream_with_counts(
                 q,
-                |_| Ok(None),
+                |_| self.exact_highlight_plan(&query),
                 limit,
                 offset,
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
+                // The exact path never degrades under a collection budget.
+                false,
                 &sink,
             )
         })();
@@ -1472,7 +1780,7 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
     ) -> Result<Vec<SearchResult>> {
-        let (q, regex_terms) = self.build_advanced_query(
+        let (q, regex_terms, slop, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1482,7 +1790,7 @@ impl SearchEngine {
         )?;
         self.run_search(
             q,
-            |s| self.advanced_highlight_query(s, &regex_terms),
+            |s| self.advanced_highlight_plan(s, &regex_terms, slop),
             limit,
             offset,
             &order,
@@ -1502,7 +1810,7 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
     ) -> Result<SearchPageResult> {
-        let (q, regex_terms) = self.build_advanced_query(
+        let (q, regex_terms, slop, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1512,7 +1820,7 @@ impl SearchEngine {
         )?;
         self.run_search_and_count(
             q,
-            |s| self.advanced_highlight_query(s, &regex_terms),
+            |s| self.advanced_highlight_plan(s, &regex_terms, slop),
             limit,
             offset,
             &order,
@@ -1535,7 +1843,7 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
-            let (q, regex_terms) = self.build_advanced_query(
+            let (q, regex_terms, slop, _) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
@@ -1545,7 +1853,7 @@ impl SearchEngine {
             )?;
             self.run_search_stream(
                 q,
-                |s| self.advanced_highlight_query(s, &regex_terms),
+                |s| self.advanced_highlight_plan(s, &regex_terms, slop),
                 limit,
                 offset,
                 &order,
@@ -1577,7 +1885,7 @@ impl SearchEngine {
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
-            let (q, regex_terms) = self.build_advanced_query(
+            let (q, regex_terms, slop, truncated) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
@@ -1587,12 +1895,13 @@ impl SearchEngine {
             )?;
             self.run_search_stream_with_counts(
                 q,
-                |s| self.advanced_highlight_query(s, &regex_terms),
+                |s| self.advanced_highlight_plan(s, &regex_terms, slop),
                 limit,
                 offset,
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
+                truncated,
                 &sink,
             )
         })();
@@ -1608,7 +1917,7 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<u32> {
-        let (q, _) = self.build_advanced_query(
+        let (q, _, _, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1628,7 +1937,7 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<HashMap<String, u32>> {
-        let (q, _) = self.build_advanced_query(
+        let (q, _, _, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1649,7 +1958,7 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
     ) -> Result<Vec<FacetCount>> {
-        let (q, _) = self.build_advanced_query(
+        let (q, _, _, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -1676,11 +1985,7 @@ impl SearchEngine {
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
         self.run_search(
             q,
-            |s| {
-                Ok(self
-                    .build_fuzzy_highlight(s, &token_texts, max_distance)
-                    .ok())
-            },
+            |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
             limit,
             offset,
             &order,
@@ -1702,11 +2007,7 @@ impl SearchEngine {
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
         self.run_search_and_count(
             q,
-            |s| {
-                Ok(self
-                    .build_fuzzy_highlight(s, &token_texts, max_distance)
-                    .ok())
-            },
+            |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
             limit,
             offset,
             &order,
@@ -1731,11 +2032,7 @@ impl SearchEngine {
             let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
             self.run_search_stream(
                 q,
-                |s| {
-                    Ok(self
-                        .build_fuzzy_highlight(s, &token_texts, max_distance)
-                        .ok())
-                },
+                |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
                 limit,
                 offset,
                 &order,
@@ -1769,16 +2066,15 @@ impl SearchEngine {
             let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
             self.run_search_stream_with_counts(
                 q,
-                |s| {
-                    Ok(self
-                        .build_fuzzy_highlight(s, &token_texts, max_distance)
-                        .ok())
-                },
+                |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
                 limit,
                 offset,
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
+                // The fuzzy path uses its own automaton budgets, not the
+                // single-word degrade mechanism.
+                false,
                 &sink,
             )
         })();
@@ -1850,7 +2146,11 @@ impl SearchEngine {
     }
 
     fn open_writer(&self) -> Result<IndexWriter> {
-        Ok(self.index.writer(self.writer_heap_size)?)
+        let writer = self.index.writer(self.writer_heap_size)?;
+        if self.bulk_indexing {
+            writer.set_merge_policy(Box::new(NoMergePolicy));
+        }
+        Ok(writer)
     }
 
     fn open_writer_no_merge(&self) -> Result<IndexWriter> {
@@ -1890,7 +2190,7 @@ impl SearchEngine {
         facets: Vec<String>,
         slop: u32,
         max_expansions: u32,
-    ) -> Result<Box<dyn Query>> {
+    ) -> Result<(Box<dyn Query>, bool)> {
         let patterns = regex_terms
             .iter()
             .map(|t| hebrew_query::WordPattern::parse(t))
@@ -1905,13 +2205,16 @@ impl SearchEngine {
         facets: Vec<String>,
         slop: u32,
         max_expansions: u32,
-    ) -> Result<Box<dyn Query>> {
+    ) -> Result<(Box<dyn Query>, bool)> {
         let schema = self.index.schema();
         let text_field = schema.get_field("text")?;
         let topics_field = schema.get_field("topics")?;
 
-        let main_query: Box<dyn Query> = match regex_terms.len() {
-            0 => Box::new(EmptyQuery),
+        // Only the single-word path degrades under its collection budget; the
+        // empty and phrase branches either match nothing or carry their own
+        // in-DFA caps, so neither reports truncation.
+        let (main_query, truncated): (Box<dyn Query>, bool) = match regex_terms.len() {
+            0 => (Box::new(EmptyQuery), false),
             1 => self.single_regex_term_query(
                 regex_terms[0].branches(),
                 typo_tokens,
@@ -1931,12 +2234,12 @@ impl SearchEngine {
                 let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
                 phrase_query.set_slop(slop);
                 phrase_query.set_max_expansions(max_expansions);
-                Box::new(phrase_query)
+                (Box::new(phrase_query), false)
             }
         };
 
         if facets.is_empty() {
-            return Ok(main_query);
+            return Ok((main_query, truncated));
         }
         let facet_terms: Vec<Term> = facets
             .iter()
@@ -1944,10 +2247,13 @@ impl SearchEngine {
             .collect::<Result<Vec<_>>>()?;
         let facets_query = TermSetQuery::new(facet_terms);
 
-        Ok(Box::new(BooleanQuery::new(vec![
-            (Occur::Must, main_query),
-            (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
-        ])))
+        Ok((
+            Box::new(BooleanQuery::new(vec![
+                (Occur::Must, main_query),
+                (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
+            ])),
+            truncated,
+        ))
     }
 
     /// Single regex term: materialize the matching index terms into a
@@ -1975,7 +2281,7 @@ impl SearchEngine {
         typo_tokens: &[String],
         text_field: Field,
         max_expansions: u32,
-    ) -> Result<Box<dyn Query>> {
+    ) -> Result<(Box<dyn Query>, bool)> {
         let searcher = self.index_reader.searcher();
         // The materialization below (per-branch DFA compile + one FST scan
         // per branch per segment) is the expensive part of a search, and one
@@ -1988,8 +2294,11 @@ impl SearchEngine {
             typo_tokens: typo_tokens.to_vec(),
             max_expansions,
         };
-        if let Some(terms) = self.term_cache.lock().unwrap().get(&cache_key) {
-            return Ok(Box::new(TermSetQuery::new(terms.iter().cloned())));
+        if let Some(entry) = self.term_cache.lock().unwrap().get(&cache_key) {
+            return Ok((
+                Box::new(TermSetQuery::new(entry.terms.iter().cloned())),
+                entry.truncated,
+            ));
         }
 
         let regexes: Vec<tantivy_fst::Regex> = branches
@@ -2085,11 +2394,17 @@ impl SearchEngine {
                 .map(|t| Term::from_field_text(text_field, &t))
                 .collect(),
         );
-        self.term_cache
-            .lock()
-            .unwrap()
-            .put(cache_key, terms.clone());
-        Ok(Box::new(TermSetQuery::new(terms.iter().cloned())))
+        self.term_cache.lock().unwrap().put(
+            cache_key,
+            CachedTermSet {
+                terms: terms.clone(),
+                truncated,
+            },
+        );
+        Ok((
+            Box::new(TermSetQuery::new(terms.iter().cloned())),
+            truncated,
+        ))
     }
 
     /// Streams every term `automaton` matches in one segment's dictionary
@@ -2551,7 +2866,7 @@ impl SearchEngine {
         alternative_words: &HashMap<u32, Vec<String>>,
         search_options: &HashMap<String, HashMap<String, bool>>,
         facets: Vec<String>,
-    ) -> Result<(Box<dyn Query>, Vec<String>)> {
+    ) -> Result<AdvancedQueryBuild> {
         let prepared = hebrew_query::prepare_advanced_query(
             query,
             distance,
@@ -2559,6 +2874,11 @@ impl SearchEngine {
             alternative_words,
             search_options,
         );
+        // `slop` already folds `custom_spacing` in (max per-pair value, else
+        // `distance`) — the phrase filter's gap allowance must use it, not the
+        // raw `distance`, or a spacing-permitted match would be rejected and
+        // fall back to the broad term highlight.
+        let slop = prepared.slop;
         // The highlight builders want one pattern string per word; the query
         // builder gets the structured patterns so a single word compiles per
         // branch instead of as one state-limited DFA.
@@ -2567,14 +2887,14 @@ impl SearchEngine {
             .iter()
             .map(hebrew_query::WordPattern::joined)
             .collect();
-        let query = self.build_query_from_patterns(
+        let (query, truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
             &prepared.typo_tokens,
             facets,
-            prepared.slop,
+            slop,
             prepared.max_expansions,
         )?;
-        Ok((query, regex_terms))
+        Ok((query, regex_terms, slop, truncated))
     }
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
@@ -2589,16 +2909,23 @@ impl SearchEngine {
         hl: &HighlightConfig,
     ) -> Result<Vec<SearchResult>>
     where
-        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+        F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
         if addresses.is_empty() {
             return Ok(Vec::new());
         }
-        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
-        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
-        Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)
+        let plan = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
+        Self::build_results(
+            &self.schema,
+            &searcher,
+            hl_q,
+            addresses,
+            hl,
+            plan.phrase.as_ref(),
+        )
     }
 
     fn run_search_and_count<F>(
@@ -2611,7 +2938,7 @@ impl SearchEngine {
         hl: &HighlightConfig,
     ) -> Result<SearchPageResult>
     where
-        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+        F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
         // Tuple collector: single index pass for both count and top-docs.
@@ -2642,9 +2969,16 @@ impl SearchEngine {
                 results: Vec::new(),
             });
         }
-        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
-        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
-        let results = Self::build_results(&self.schema, &searcher, hl_q, addresses, hl)?;
+        let plan = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
+        let results = Self::build_results(
+            &self.schema,
+            &searcher,
+            hl_q,
+            addresses,
+            hl,
+            plan.phrase.as_ref(),
+        )?;
         Ok(SearchPageResult {
             total_count,
             results,
@@ -2714,7 +3048,7 @@ impl SearchEngine {
         sink: &StreamSink<Vec<SearchResult>>,
     ) -> Result<()>
     where
-        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+        F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
@@ -2722,8 +3056,9 @@ impl SearchEngine {
         if addresses.is_empty() {
             return Ok(());
         }
-        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
-        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
+        let plan = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
+        let phrase = plan.phrase.as_ref();
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
         let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
@@ -2734,6 +3069,7 @@ impl SearchEngine {
                 &snippet_generator,
                 chunk.to_vec(),
                 hl,
+                phrase,
             )?;
             // If the Dart side cancelled the stream, stop early.
             if sink.add(results).is_err() {
@@ -2758,10 +3094,11 @@ impl SearchEngine {
         order: &ResultsOrder,
         hl: &HighlightConfig,
         chunk_size: u32,
+        truncated: bool,
         sink: &StreamSink<SearchStreamUpdate>,
     ) -> Result<()>
     where
-        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+        F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
@@ -2795,6 +3132,7 @@ impl SearchEngine {
                 total_count: Some(total_count),
                 book_counts: Some(book_counts),
                 results: Vec::new(),
+                truncated,
             })
             .is_err()
         {
@@ -2804,8 +3142,9 @@ impl SearchEngine {
             return Ok(());
         }
 
-        let hl_query = Self::resolve_highlight(&searcher, make_highlight);
-        let hl_q: &dyn Query = hl_query.as_deref().unwrap_or(query.as_ref());
+        let plan = Self::resolve_highlight(&searcher, make_highlight);
+        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
+        let phrase = plan.phrase.as_ref();
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
         let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
@@ -2816,6 +3155,7 @@ impl SearchEngine {
                 &snippet_generator,
                 chunk.to_vec(),
                 hl,
+                phrase,
             )?;
             // If the Dart side cancelled the stream, stop early.
             if sink
@@ -2823,6 +3163,7 @@ impl SearchEngine {
                     total_count: None,
                     book_counts: None,
                     results,
+                    truncated: false,
                 })
                 .is_err()
             {
@@ -2833,14 +3174,15 @@ impl SearchEngine {
     }
 
     /// Invokes a highlight-query builder against the search's `searcher`,
-    /// degrading a build failure to `None` (no highlight) instead of failing the
-    /// whole search. `None` makes the caller fall back to the main query, which
-    /// already exposes its terms when it is a Term/Phrase/TermSet query.
-    fn resolve_highlight<F>(searcher: &Searcher, make_highlight: F) -> Option<Box<dyn Query>>
+    /// degrading a build failure to an empty plan (no highlight query, no
+    /// phrase filter) instead of failing the whole search. An empty plan makes
+    /// the caller fall back to the main query, which already exposes its terms
+    /// when it is a Term/Phrase/TermSet query.
+    fn resolve_highlight<F>(searcher: &Searcher, make_highlight: F) -> HighlightPlan
     where
-        F: FnOnce(&Searcher) -> Result<Option<Box<dyn Query>>>,
+        F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
-        make_highlight(searcher).ok().flatten()
+        make_highlight(searcher).unwrap_or_else(|_| HighlightPlan::none())
     }
 
     fn collect_addresses(
@@ -3031,55 +3373,163 @@ impl SearchEngine {
         }))
     }
 
-    /// Materializes the concrete `text` terms that the advanced-mode regex
-    /// patterns actually match in the index dictionary, returning them as a
-    /// `TermSetQuery` for use as the highlight query.
-    ///
-    /// Regex/automaton queries (`RegexQuery`, `RegexPhraseQuery`) expose no
-    /// static terms to `SnippetGenerator`, so without this their results would
-    /// render with no highlighting. By streaming the term dictionary through the
-    /// same FST automaton the search itself uses, we highlight every morphological
-    /// variant that genuinely matched (prefixes, suffixes, alternatives), not just
-    /// the literal words the user typed.
-    fn build_regex_highlight_query(
+    /// One index-term set per query word (in phrase order), each materialized by
+    /// streaming the term dictionary through that word's regex automaton — the
+    /// same FST scan the search uses, so the sets contain exactly the
+    /// morphological variants (prefixes, suffixes, alternatives) that genuinely
+    /// matched. The per-word budget split mirrors
+    /// [`Self::automaton_highlight_terms`], so their union equals the merged
+    /// highlight term set the flat query paints with.
+    fn phrase_per_word_terms(
         &self,
         searcher: &Searcher,
         regex_terms: &[String],
-    ) -> Result<Box<dyn Query>> {
-        let automatons: Vec<tantivy_fst::Regex> = regex_terms
+    ) -> Result<Vec<HashSet<String>>> {
+        let cap = (MAX_HIGHLIGHT_TERMS / regex_terms.len().max(1)).max(1);
+        regex_terms
             .iter()
             .map(|pattern| {
-                tantivy_fst::Regex::new(pattern)
-                    .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))
+                let re = tantivy_fst::Regex::new(pattern)
+                    .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
+                Ok(self
+                    .automaton_terms(searcher, &re, cap)?
+                    .into_iter()
+                    .collect())
             })
-            .collect::<Result<Vec<_>>>()?;
-        self.build_automaton_highlight_query(searcher, &automatons)
+            .collect()
     }
 
-    /// Highlight query for an advanced (regex) search, or `None` when the main
-    /// query already highlights itself.
+    /// Flattens per-word term sets into the `TermSetQuery` that drives
+    /// `SnippetGenerator`'s fragment selection and highlighting — `RegexPhraseQuery`
+    /// exposes no static terms of its own. `None` when nothing matched (the
+    /// caller then falls back to the main query).
+    fn terms_query_from_word_sets(
+        &self,
+        per_word_terms: &[HashSet<String>],
+    ) -> Result<Option<Box<dyn Query>>> {
+        let text_f = self.schema.get_field("text")?;
+        let terms: Vec<Term> = per_word_terms
+            .iter()
+            .flat_map(|set| set.iter())
+            .map(|t| Term::from_field_text(text_f, t))
+            .collect();
+        Ok((!terms.is_empty()).then(|| Box::new(TermSetQuery::new(terms)) as Box<dyn Query>))
+    }
+
+    /// Highlight plan for an advanced (regex) search.
     ///
-    /// A single regex term is executed as a `TermSetQuery` (see
+    /// A single regex term runs as a `TermSetQuery` (see
     /// [`Self::single_regex_term_query`]) whose materialized terms ARE the terms
-    /// that matched — so the main query exposes them to `SnippetGenerator`
-    /// directly and no second term-dictionary scan is needed. Only the
-    /// multi-term `RegexPhraseQuery`, which exposes no static terms, requires a
-    /// separately-materialized highlight query.
-    fn advanced_highlight_query(
+    /// that matched, so the main query already exposes them to `SnippetGenerator`
+    /// — no highlight query, no phrase filter. The multi-term `RegexPhraseQuery`
+    /// exposes no static terms, so it needs a separately-materialized flat
+    /// highlight query AND — being a phrase — the per-word filter that keeps only
+    /// in-order, within-`slop` occurrences painted (parity with the search).
+    ///
+    /// `slop` is the query's resolved phrase slop, which already folds
+    /// `custom_spacing` in (the max per-pair gap, else the global `distance`) —
+    /// passing the raw `distance` would reject a spacing-permitted match and
+    /// fall back to the broad term highlight.
+    fn advanced_highlight_plan(
         &self,
         searcher: &Searcher,
         regex_terms: &[String],
-    ) -> Result<Option<Box<dyn Query>>> {
-        if regex_terms.len() >= 2 {
-            Ok(Some(
-                self.build_regex_highlight_query(searcher, regex_terms)?,
-            ))
-        } else {
-            Ok(None)
+        slop: u32,
+    ) -> Result<HighlightPlan> {
+        if regex_terms.len() < 2 {
+            return Ok(HighlightPlan::none());
         }
+        let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms)?;
+        let query = self.terms_query_from_word_sets(&per_word_terms)?;
+        Ok(HighlightPlan {
+            query,
+            phrase: Some(PhraseHighlight {
+                per_word_terms,
+                max_gap: slop,
+            }),
+        })
     }
 
-    /// Fuzzy-mode counterpart of [`Self::build_regex_highlight_query`]:
+    /// Highlight plan for an exact (`Term`/`PhraseQuery`) search. A single term
+    /// needs nothing — the `TermQuery` highlights itself. A multi-word
+    /// `PhraseQuery` already exposes its terms to `SnippetGenerator`, so it needs
+    /// no separate highlight query, but it is a strict-adjacency phrase, so it
+    /// gets a `max_gap = 0` filter that drops every non-adjacent occurrence.
+    fn exact_highlight_plan(&self, query_str: &str) -> Result<HighlightPlan> {
+        let tokens = self.index_token_texts(query_str)?;
+        if tokens.len() < 2 {
+            return Ok(HighlightPlan::none());
+        }
+        let per_word_terms = tokens.into_iter().map(|t| HashSet::from([t])).collect();
+        Ok(HighlightPlan {
+            query: None,
+            phrase: Some(PhraseHighlight {
+                per_word_terms,
+                max_gap: 0,
+            }),
+        })
+    }
+
+    /// Highlight plan for the approximate (`fuzzy`) search. Always builds the
+    /// flat highlight query (fuzzy/lexical automatons expose no static terms).
+    /// Adds a phrase filter only for the lexical multi-word path — the sole
+    /// fuzzy path that builds a `RegexPhraseQuery`. Plain fuzzy multi-word is a
+    /// per-token AND, where every occurrence of every word is a real hit and
+    /// must stay highlighted, so it carries no filter.
+    fn fuzzy_highlight_plan(
+        &self,
+        searcher: &Searcher,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<HighlightPlan> {
+        let query = self
+            .build_fuzzy_highlight(searcher, term_texts, max_distance)
+            .ok();
+        let phrase = if term_texts.len() >= 2 && self.magic_dict.is_some() && max_distance > 0 {
+            let per_word_terms =
+                self.lexical_phrase_per_word_terms(searcher, term_texts, max_distance)?;
+            Some(PhraseHighlight {
+                per_word_terms,
+                max_gap: LEXICAL_FUZZY_PHRASE_SLOP,
+            })
+        } else {
+            None
+        };
+        Ok(HighlightPlan { query, phrase })
+    }
+
+    /// Per-word term sets for the lexical fuzzy *phrase* path: each word's
+    /// edit-distance matches plus its blacklist-filtered dictionary forms and
+    /// quote-free spelling — mirroring
+    /// [`Self::generate_index_fuzzy_highlight_pattern`] so the results snippet
+    /// and an opened book paint the same fuzzy variants.
+    fn lexical_phrase_per_word_terms(
+        &self,
+        searcher: &Searcher,
+        tokens: &[String],
+        max_distance: u8,
+    ) -> Result<Vec<HashSet<String>>> {
+        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
+        tokens
+            .iter()
+            .map(|token| {
+                let mut matched = self
+                    .automaton_highlight_terms(searcher, &[DfaWrapper(builder.build_dfa(token))])?;
+                matched.insert(token.clone());
+                if let Some(clean) = Self::quoteless_variant(token) {
+                    matched.insert(clean);
+                }
+                if let Some(dict) = self.magic_dict.as_ref() {
+                    for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
+                        matched.insert(form);
+                    }
+                }
+                Ok(matched)
+            })
+            .collect()
+    }
+
+    /// Fuzzy-mode counterpart of [`Self::phrase_per_word_terms`]'s scan:
     /// materializes the `text` terms each query term matches within
     /// `max_distance` edits. `FuzzyTermQuery` is automaton-based like the regex
     /// queries and exposes no static terms to `SnippetGenerator`, so without
@@ -3259,15 +3709,148 @@ impl SearchEngine {
         Ok(snippet_generator)
     }
 
+    /// Re-derives a snippet's highlight markup so only complete, in-order
+    /// phrase occurrences stay painted (see [`PhraseHighlight`]).
+    ///
+    /// Tokenizes the fragment with the same `text`-field analyzer the index and
+    /// `SnippetGenerator` use, tags each token with the query words it can fill,
+    /// then keeps the byte ranges of tokens forming an occurrence
+    /// `w0 … w1 … w_{k-1}` where each adjacent pair is at most `max_gap`
+    /// intermediate tokens apart — the greedy, leftmost, non-overlapping match
+    /// `display_highlight`'s combined pattern performs in an opened book.
+    ///
+    /// Returns `None` when the fragment holds no complete occurrence, so the
+    /// caller falls back to the plain term highlight instead of painting
+    /// nothing (never less context than before).
+    fn phrase_filtered_snippet_html(
+        searcher: &Searcher,
+        fragment: &str,
+        phrase: &PhraseHighlight,
+        hl: &HighlightConfig,
+    ) -> Option<String> {
+        let word_count = phrase.per_word_terms.len();
+        if word_count < 2 {
+            return None;
+        }
+        let mut analyzer = searcher.index().tokenizers().get("hebrew")?;
+
+        // Candidate = a fragment token that can fill at least one query word.
+        // `order` is a dense 0,1,2,… token index (independent of the tokenizer's
+        // own `position`), so the gap between two candidates is
+        // `order_b - order_a - 1` intermediate tokens.
+        struct Candidate {
+            order: usize,
+            from: usize,
+            to: usize,
+            words: Vec<usize>,
+        }
+        let mut candidates: Vec<Candidate> = Vec::new();
+        let mut order = 0usize;
+        let mut stream = analyzer.token_stream(fragment);
+        while let Some(token) = stream.next() {
+            let words: Vec<usize> = phrase
+                .per_word_terms
+                .iter()
+                .enumerate()
+                .filter_map(|(w, set)| set.contains(token.text.as_str()).then_some(w))
+                .collect();
+            if !words.is_empty() {
+                candidates.push(Candidate {
+                    order,
+                    from: token.offset_from,
+                    to: token.offset_to,
+                    words,
+                });
+            }
+            order += 1;
+        }
+
+        // Greedy leftmost, non-overlapping scan.
+        let max_gap = phrase.max_gap as usize;
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut ci = 0usize;
+        while ci < candidates.len() {
+            if candidates[ci].words.contains(&0) {
+                let mut chosen = vec![ci];
+                let mut cur = ci;
+                let mut ok = true;
+                for w in 1..word_count {
+                    let mut m = cur + 1;
+                    let mut found = None;
+                    while m < candidates.len() {
+                        // The gap grows monotonically with m, so once it exceeds
+                        // the allowance no later candidate can match this word.
+                        if candidates[m].order - candidates[cur].order - 1 > max_gap {
+                            break;
+                        }
+                        if candidates[m].words.contains(&w) {
+                            found = Some(m);
+                            break;
+                        }
+                        m += 1;
+                    }
+                    match found {
+                        Some(m) => {
+                            chosen.push(m);
+                            cur = m;
+                        }
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    for &c in &chosen {
+                        ranges.push((candidates[c].from, candidates[c].to));
+                    }
+                    ci = cur + 1;
+                    continue;
+                }
+            }
+            ci += 1;
+        }
+
+        if ranges.is_empty() {
+            return None;
+        }
+
+        // Same escaping as tantivy's `Snippet::to_html`. Ranges are built in
+        // increasing, non-overlapping order; the guard is defensive.
+        ranges.sort_by_key(|&(s, _)| s);
+        let mut html = String::new();
+        let mut start_from = 0usize;
+        for (s, e) in ranges {
+            if s < start_from {
+                continue;
+            }
+            html.push_str(&htmlescape::encode_minimal(&fragment[start_from..s]));
+            html.push_str(&hl.highlight_prefix);
+            html.push_str(&htmlescape::encode_minimal(&fragment[s..e]));
+            html.push_str(&hl.highlight_postfix);
+            start_from = e;
+        }
+        html.push_str(&htmlescape::encode_minimal(&fragment[start_from..]));
+        Some(html)
+    }
+
     fn build_results(
         schema: &Schema,
         searcher: &Searcher,
         query: &dyn Query,
         addresses: Vec<DocAddress>,
         hl: &HighlightConfig,
+        phrase: Option<&PhraseHighlight>,
     ) -> Result<Vec<SearchResult>> {
         let snippet_generator = Self::make_snippet_generator(schema, searcher, query, hl)?;
-        Self::build_results_with_generator(schema, searcher, &snippet_generator, addresses, hl)
+        Self::build_results_with_generator(
+            schema,
+            searcher,
+            &snippet_generator,
+            addresses,
+            hl,
+            phrase,
+        )
     }
 
     fn build_results_with_generator(
@@ -3276,6 +3859,7 @@ impl SearchEngine {
         snippet_generator: &SnippetGenerator,
         addresses: Vec<DocAddress>,
         hl: &HighlightConfig,
+        phrase: Option<&PhraseHighlight>,
     ) -> Result<Vec<SearchResult>> {
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
@@ -3339,7 +3923,19 @@ impl SearchEngine {
 
             let mut snippet = snippet_generator.snippet(&text);
             snippet.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
-            let snippet_html = snippet.to_html();
+            // For multi-word phrase queries, tantivy's term-based highlighter
+            // paints every occurrence of every query term; re-derive the
+            // highlights so only in-order, within-gap phrase occurrences stay
+            // painted. Falls back to the plain term highlight when the chosen
+            // fragment holds no complete phrase occurrence (never paints less
+            // context than before).
+            let snippet_html = match phrase {
+                Some(pf) => {
+                    Self::phrase_filtered_snippet_html(searcher, snippet.fragment(), pf, hl)
+                        .unwrap_or_else(|| snippet.to_html())
+                }
+                None => snippet.to_html(),
+            };
             let result_text = if snippet_html.is_empty() {
                 text
             } else {
@@ -3831,6 +4427,39 @@ mod tests {
     }
 
     #[test]
+    fn add_text_book_bytes_matches_string_path() {
+        // מסלול הבייטים (SQLite BLOB → Uint8List) חייב לייצר בדיוק את אותם
+        // מסמכים ואותה טביעת אצבע כמו מסלול ה-String.
+        let text =
+            "<h1>ספר בראשית</h1>\n<h2>פרק א</h2>\nבְּרֵאשִׁית ברא אלהים\n<h2>פרק ב</h2>\nויכלו השמים";
+        let (mut engine, _dir) = make_engine();
+        let added = engine
+            .add_text_book_bytes(
+                "בראשית".to_string(),
+                "/root".to_string(),
+                "/books/bereshit.txt".to_string(),
+                5,
+                text.as_bytes().to_vec(),
+            )
+            .unwrap();
+        assert_eq!(added, 5);
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact("ויכלו".to_string(), vec![], 10, 0, ResultsOrder::Catalogue)
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].reference, "ספר בראשית, פרק ב");
+        assert_eq!(results[0].id, ((5u64 + 1) << 32) + 5);
+
+        let fingerprints = engine.get_book_fingerprints().unwrap();
+        assert_eq!(
+            fingerprints.get("/books/bereshit.txt"),
+            Some(&compute_content_fingerprint(text.to_string()))
+        );
+    }
+
+    #[test]
     fn add_text_book_empty_text_adds_nothing() {
         let (mut engine, _dir) = make_engine();
         let added = engine
@@ -3840,6 +4469,95 @@ mod tests {
                 "/books/empty.txt".to_string(),
                 1,
                 String::new(),
+            )
+            .unwrap();
+        assert_eq!(added, 0);
+        engine.commit().unwrap();
+        assert_eq!(engine.get_document_count(), 0);
+    }
+
+    #[test]
+    fn add_pdf_book_filters_garbage_and_encodes_ids() {
+        let (mut engine, _dir) = make_engine();
+        let pages = vec![
+            PdfPageInput {
+                reference: "ספר, עמוד 1".to_string(),
+                text: "שורה ראשונה בעמוד\n\n≡≡≡ ∴∴∴ ⊕⊗⊘".to_string(),
+                page_index: 0,
+            },
+            PdfPageInput {
+                reference: "ספר, עמוד 2".to_string(),
+                text: "בְּרֵאשִׁית ברא אלהים".to_string(),
+                page_index: 1,
+            },
+        ];
+        let added = engine
+            .add_pdf_book(
+                "ספר".to_string(),
+                "/root".to_string(),
+                "C:/books/sefer.pdf".to_string(),
+                5,
+                pages,
+            )
+            .unwrap();
+        // השורה הריקה ושורת הסימנים סוננו כזבל — נותרו שתי שורות תוכן.
+        assert_eq!(added, 2);
+        engine.commit().unwrap();
+
+        // הטקסט מנורמל לפני האינדוקס — שאילתה ללא ניקוד מוצאת אותו.
+        let results = engine
+            .search_exact(
+                "בראשית ברא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        let hit = &results[0];
+        assert_eq!(hit.reference, "ספר, עמוד 2");
+        // segment = אינדקס העמוד; ordinal רץ על שורות התוכן בלבד.
+        assert_eq!(hit.segment, 1);
+        assert_eq!(hit.id, ((5u64 + 1) << 32) + 2);
+        assert!(hit.is_pdf);
+
+        // ל-PDF אין טביעת אצבע — contentHash נחתם כ-0 (לא נרשם).
+        let fingerprints = engine.get_book_fingerprints().unwrap();
+        assert_eq!(fingerprints.get("C:/books/sefer.pdf"), Some(&0u64));
+    }
+
+    #[test]
+    fn bulk_indexing_skips_merges_and_optimize_still_collapses() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        // כמה commit-ים ⇒ כמה סגמנטים; ב-bulk אין מיזוג רקע שמאחד אותם.
+        for i in 0..3u64 {
+            add(&mut engine, i + 1, "שלום עולם", "/books/a.txt");
+            engine.commit().unwrap();
+        }
+        assert!(engine.index.searchable_segment_ids().unwrap().len() > 1);
+
+        engine.set_bulk_indexing(false).unwrap();
+        engine.optimize().unwrap();
+        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 1);
+        assert_eq!(engine.get_document_count(), 3);
+    }
+
+    #[test]
+    fn add_pdf_book_all_garbage_adds_nothing() {
+        let (mut engine, _dir) = make_engine();
+        let added = engine
+            .add_pdf_book(
+                "סרוק".to_string(),
+                "/root".to_string(),
+                "C:/books/scanned.pdf".to_string(),
+                1,
+                vec![PdfPageInput {
+                    reference: "סרוק, עמוד 1".to_string(),
+                    text: "\n≡≡≡≡≡\n∴ ⊕ ⊗ ⊘ ∴".to_string(),
+                    page_index: 0,
+                }],
             )
             .unwrap();
         assert_eq!(added, 0);
@@ -4107,6 +4825,149 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    // ── Snippet phrase-highlight filtering (results view ↔ search parity) ─
+
+    /// Counts highlight spans (the `<font color=red>` opening tag the default
+    /// `HighlightConfig` emits and the app's snippet parser expects).
+    fn highlight_count(text: &str) -> usize {
+        text.matches("<font color=red>").count()
+    }
+
+    #[test]
+    fn advanced_phrase_snippet_highlights_only_adjacent_occurrence() {
+        // The reported bug: searching the phrase "משה ואהרן" (no spacing) must
+        // NOT light up a lone "משה" that is not followed by "ואהרן". tantivy's
+        // term-based SnippetGenerator paints all three occurrences; the phrase
+        // filter keeps only the adjacent pair.
+        let (mut engine, _dir) = make_engine();
+        add(
+            &mut engine,
+            1,
+            "משה ואהרן אמרו שלום ואחר כך משה כהן הלך",
+            "/books/a.txt",
+        );
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_advanced(
+                "משה ואהרן".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        let text = &results[0].text;
+        // Exactly the two words of the one adjacent phrase — not the lone משה.
+        assert_eq!(highlight_count(text), 2, "snippet: {text}");
+        assert!(text.contains("<font color=red>משה</font>"));
+        assert!(text.contains("<font color=red>ואהרן</font>"));
+        // The stray occurrence stays plain.
+        assert!(text.contains("כך משה כהן"), "snippet: {text}");
+    }
+
+    #[test]
+    fn advanced_single_word_snippet_still_highlights_every_occurrence() {
+        // A single word is not a phrase: every occurrence is a real hit and must
+        // stay highlighted — the filter only constrains multi-word phrases.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "משה דיבר ואחר כך משה שתק", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_advanced(
+                "משה".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            highlight_count(&results[0].text),
+            2,
+            "snippet: {}",
+            results[0].text
+        );
+    }
+
+    #[test]
+    fn exact_phrase_snippet_highlights_only_adjacent_occurrence() {
+        // The exact (PhraseQuery) path has the same term-based over-painting; a
+        // strict-adjacency (max_gap 0) filter drops the lone occurrence too.
+        let (mut engine, _dir) = make_engine();
+        add(
+            &mut engine,
+            1,
+            "משה ואהרן אמרו שלום ואחר כך משה כהן הלך",
+            "/books/a.txt",
+        );
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact(
+                "משה ואהרן".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        let text = &results[0].text;
+        assert_eq!(highlight_count(text), 2, "snippet: {text}");
+        assert!(text.contains("כך משה כהן"), "snippet: {text}");
+    }
+
+    #[test]
+    fn advanced_phrase_custom_spacing_gap_is_highlighted_not_dropped() {
+        // `distance` is 0 but `custom_spacing` permits one intermediate word, so
+        // the search matches "משה <word> ואהרן". The filter's gap allowance must
+        // come from the resolved slop (= the custom spacing), NOT the raw
+        // `distance`: with `distance` it would find no occurrence, fall back to
+        // the plain term highlight, and re-paint the lone trailing "משה" (3
+        // spans). With slop it paints exactly the gapped phrase (2 spans).
+        let (mut engine, _dir) = make_engine();
+        add(
+            &mut engine,
+            1,
+            "משה רבנו ואהרן אמר ואחר כך משה לבדו הלך",
+            "/books/a.txt",
+        );
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_advanced(
+                "משה ואהרן".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,                                                     // distance 0 …
+                HashMap::from([("0-1".to_string(), "1".to_string())]), // … but spacing allows 1
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        let text = &results[0].text;
+        assert_eq!(highlight_count(text), 2, "snippet: {text}");
+        assert!(text.contains("<font color=red>משה</font>"));
+        assert!(text.contains("<font color=red>ואהרן</font>"));
+        // The stray trailing occurrence stays plain.
+        assert!(text.contains("כך משה לבדו"), "snippet: {text}");
     }
 
     // ── Index-aware display highlight (parity with search, R5) ───────────
@@ -5587,6 +6448,34 @@ mod tests {
             )
             .unwrap());
         assert_eq!(ok, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_single_term_truncation_flag_surfaces() {
+        // The degrade path must report itself so the stream can flag partial
+        // results to the UI, instead of silently serving a subset.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספר", "/books/a.txt");
+        add(&mut engine, 2, "הספר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        // Two terms match `.*ספר`; a cap of 1 stops collection early.
+        let (_, truncated) = engine
+            .build_query(vec![".*ספר".to_string()], vec![], 0, 1)
+            .unwrap();
+        assert!(
+            truncated,
+            "a cap of 1 over two matching terms must report truncation"
+        );
+
+        // A generous cap collects everything — no degrade, no flag.
+        let (_, not_truncated) = engine
+            .build_query(vec![".*ספר".to_string()], vec![], 0, 100)
+            .unwrap();
+        assert!(
+            !not_truncated,
+            "a cap that fits every term must not report truncation"
+        );
     }
 
     #[test]

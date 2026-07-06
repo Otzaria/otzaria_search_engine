@@ -171,6 +171,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<PdfIndexLine> dco_decode_list_pdf_index_line(dynamic raw);
 
   @protected
+  List<PdfPageInput> dco_decode_list_pdf_page_input(dynamic raw);
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -226,6 +232,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PdfIndexLine dco_decode_pdf_index_line(dynamic raw);
+
+  @protected
+  PdfPageInput dco_decode_pdf_page_input(dynamic raw);
 
   @protected
   (String, bool) dco_decode_record_string_bool(dynamic raw);
@@ -445,6 +454,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<PdfPageInput> sse_decode_list_pdf_page_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -522,6 +539,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PdfIndexLine sse_decode_pdf_index_line(SseDeserializer deserializer);
+
+  @protected
+  PdfPageInput sse_decode_pdf_page_input(SseDeserializer deserializer);
 
   @protected
   (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
@@ -791,6 +811,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_pdf_page_input(
+    List<PdfPageInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -882,6 +911,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_pdf_index_line(PdfIndexLine self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_pdf_page_input(PdfPageInput self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_string_bool(
