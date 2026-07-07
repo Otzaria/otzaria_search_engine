@@ -20,8 +20,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare-release:
+    name: Prepare release
+    runs-on: ubuntu-24.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+
+      - name: Install build tool dependencies
+        working-directory: cargokit/build_tool
+        run: dart pub get
+
+      - name: Ensure precompiled-binaries release exists
+        working-directory: cargokit/build_tool
+        run: |
+          dart run bin/build_tool.dart prepare-release \
+            --repository "${{ github.repository }}" \
+            --manifest-dir ../../rust
+
   publish-apple-and-android:
     name: Publish Apple + Android
+    needs: prepare-release
     runs-on: macos-15
     env:
       # Pin the iOS deployment target so cc-rs (C deps like zstd-sys) and rustc
@@ -96,6 +118,7 @@ jobs:
 
   publish-linux:
     name: Publish Linux (${{ matrix.target }})
+    needs: prepare-release
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
@@ -129,6 +152,7 @@ jobs:
 
   publish-windows:
     name: Publish Windows
+    needs: prepare-release
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4

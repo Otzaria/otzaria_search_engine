@@ -76,6 +76,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Map<String, int> dco_decode_Map_String_u_32_None(dynamic raw);
 
   @protected
+  Map<String, BigInt> dco_decode_Map_String_u_64_None(dynamic raw);
+
+  @protected
   Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw);
 
   @protected
@@ -95,6 +98,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_StreamSink_list_search_result_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<SearchStreamUpdate>
+  dco_decode_StreamSink_search_stream_update_Sse(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -102,6 +109,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BenchmarkSuite dco_decode_benchmark_suite(dynamic raw);
+
+  @protected
+  BookCountResult dco_decode_book_count_result(dynamic raw);
 
   @protected
   bool dco_decode_bool(dynamic raw);
@@ -113,10 +123,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig dco_decode_box_autoadd_highlight_config(dynamic raw);
 
   @protected
+  HighlightPattern dco_decode_box_autoadd_highlight_pattern(dynamic raw);
+
+  @protected
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw);
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  CountResult dco_decode_count_result(dynamic raw);
 
   @protected
   DocumentInput dco_decode_document_input(dynamic raw);
@@ -128,7 +147,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FacetCount dco_decode_facet_count(dynamic raw);
 
   @protected
+  FacetCountsResult dco_decode_facet_counts_result(dynamic raw);
+
+  @protected
   HighlightConfig dco_decode_highlight_config(dynamic raw);
+
+  @protected
+  HighlightPattern dco_decode_highlight_pattern(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -143,10 +168,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BenchmarkResult> dco_decode_list_benchmark_result(dynamic raw);
 
   @protected
+  List<bool> dco_decode_list_bool(dynamic raw);
+
+  @protected
   List<DocumentInput> dco_decode_list_document_input(dynamic raw);
 
   @protected
   List<FacetCount> dco_decode_list_facet_count(dynamic raw);
+
+  @protected
+  List<PdfIndexLine> dco_decode_list_pdf_index_line(dynamic raw);
+
+  @protected
+  List<PdfPageInput> dco_decode_list_pdf_page_input(dynamic raw);
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -165,6 +202,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<(String, int)> dco_decode_list_record_string_u_32(dynamic raw);
 
   @protected
+  List<(String, BigInt)> dco_decode_list_record_string_u_64(dynamic raw);
+
+  @protected
   List<(int, List<String>)> dco_decode_list_record_u_32_list_string(
     dynamic raw,
   );
@@ -176,6 +216,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
+  Map<String, int>? dco_decode_opt_Map_String_u_32_None(dynamic raw);
+
+  @protected
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
@@ -185,10 +228,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw);
 
   @protected
+  HighlightPattern? dco_decode_opt_box_autoadd_highlight_pattern(dynamic raw);
+
+  @protected
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  PdfIndexLine dco_decode_pdf_index_line(dynamic raw);
+
+  @protected
+  PdfPageInput dco_decode_pdf_page_input(dynamic raw);
 
   @protected
   (String, bool) dco_decode_record_string_bool(dynamic raw);
@@ -205,6 +260,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   (String, int) dco_decode_record_string_u_32(dynamic raw);
 
   @protected
+  (String, BigInt) dco_decode_record_string_u_64(dynamic raw);
+
+  @protected
   (int, List<String>) dco_decode_record_u_32_list_string(dynamic raw);
 
   @protected
@@ -215,6 +273,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult dco_decode_search_result(dynamic raw);
+
+  @protected
+  SearchScope dco_decode_search_scope(dynamic raw);
+
+  @protected
+  SearchStreamUpdate dco_decode_search_stream_update(dynamic raw);
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
@@ -287,6 +351,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Map<String, BigInt> sse_decode_Map_String_u_64_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Map<int, List<String>> sse_decode_Map_u_32_list_String_None(
     SseDeserializer deserializer,
   );
@@ -308,6 +377,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_StreamSink_list_search_result_Sse(SseDeserializer deserializer);
 
   @protected
+  RustStreamSink<SearchStreamUpdate>
+  sse_decode_StreamSink_search_stream_update_Sse(SseDeserializer deserializer);
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
@@ -315,6 +388,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BenchmarkSuite sse_decode_benchmark_suite(SseDeserializer deserializer);
+
+  @protected
+  BookCountResult sse_decode_book_count_result(SseDeserializer deserializer);
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
@@ -330,12 +406,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  HighlightPattern sse_decode_box_autoadd_highlight_pattern(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SearchResult sse_decode_box_autoadd_search_result(
     SseDeserializer deserializer,
   );
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  CountResult sse_decode_count_result(SseDeserializer deserializer);
 
   @protected
   DocumentInput sse_decode_document_input(SseDeserializer deserializer);
@@ -347,7 +434,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FacetCount sse_decode_facet_count(SseDeserializer deserializer);
 
   @protected
+  FacetCountsResult sse_decode_facet_counts_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   HighlightConfig sse_decode_highlight_config(SseDeserializer deserializer);
+
+  @protected
+  HighlightPattern sse_decode_highlight_pattern(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -366,12 +461,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<bool> sse_decode_list_bool(SseDeserializer deserializer);
+
+  @protected
   List<DocumentInput> sse_decode_list_document_input(
     SseDeserializer deserializer,
   );
 
   @protected
   List<FacetCount> sse_decode_list_facet_count(SseDeserializer deserializer);
+
+  @protected
+  List<PdfIndexLine> sse_decode_list_pdf_index_line(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PdfPageInput> sse_decode_list_pdf_page_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -398,6 +509,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<(String, BigInt)> sse_decode_list_record_string_u_64(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(int, List<String>)> sse_decode_list_record_u_32_list_string(
     SseDeserializer deserializer,
   );
@@ -409,6 +525,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
+
+  @protected
+  Map<String, int>? sse_decode_opt_Map_String_u_32_None(
+    SseDeserializer deserializer,
+  );
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -424,12 +545,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  HighlightPattern? sse_decode_opt_box_autoadd_highlight_pattern(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SearchResult? sse_decode_opt_box_autoadd_search_result(
     SseDeserializer deserializer,
   );
 
   @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  PdfIndexLine sse_decode_pdf_index_line(SseDeserializer deserializer);
+
+  @protected
+  PdfPageInput sse_decode_pdf_page_input(SseDeserializer deserializer);
 
   @protected
   (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
@@ -448,6 +583,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   (String, int) sse_decode_record_string_u_32(SseDeserializer deserializer);
 
   @protected
+  (String, BigInt) sse_decode_record_string_u_64(SseDeserializer deserializer);
+
+  @protected
   (int, List<String>) sse_decode_record_u_32_list_string(
     SseDeserializer deserializer,
   );
@@ -460,6 +598,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult sse_decode_search_result(SseDeserializer deserializer);
+
+  @protected
+  SearchScope sse_decode_search_scope(SseDeserializer deserializer);
+
+  @protected
+  SearchStreamUpdate sse_decode_search_stream_update(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
@@ -545,6 +691,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_Map_String_u_64_None(
+    Map<String, BigInt> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_Map_u_32_list_String_None(
     Map<int, List<String>> self,
     SseSerializer serializer,
@@ -571,6 +723,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_search_stream_update_Sse(
+    RustStreamSink<SearchStreamUpdate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
@@ -582,6 +740,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_benchmark_suite(
     BenchmarkSuite self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_book_count_result(
+    BookCountResult self,
     SseSerializer serializer,
   );
 
@@ -601,6 +765,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_highlight_pattern(
+    HighlightPattern self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_search_result(
     SearchResult self,
     SseSerializer serializer,
@@ -608,6 +778,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_count_result(CountResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_document_input(DocumentInput self, SseSerializer serializer);
@@ -619,8 +795,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_facet_count(FacetCount self, SseSerializer serializer);
 
   @protected
+  void sse_encode_facet_counts_result(
+    FacetCountsResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_highlight_config(
     HighlightConfig self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_highlight_pattern(
+    HighlightPattern self,
     SseSerializer serializer,
   );
 
@@ -643,6 +831,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bool(List<bool> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_document_input(
     List<DocumentInput> self,
     SseSerializer serializer,
@@ -653,6 +844,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<FacetCount> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_list_pdf_index_line(
+    List<PdfIndexLine> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_pdf_page_input(
+    List<PdfPageInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -685,6 +891,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_record_string_u_64(
+    List<(String, BigInt)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_u_32_list_string(
     List<(int, List<String>)> self,
     SseSerializer serializer,
@@ -698,6 +910,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_Map_String_u_32_None(
+    Map<String, int>? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
@@ -715,6 +933,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_highlight_pattern(
+    HighlightPattern? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_search_result(
     SearchResult? self,
     SseSerializer serializer,
@@ -722,6 +946,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_pdf_index_line(PdfIndexLine self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_pdf_page_input(PdfPageInput self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_string_bool(
@@ -748,6 +981,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_record_string_u_64(
+    (String, BigInt) self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_record_u_32_list_string(
     (int, List<String>) self,
     SseSerializer serializer,
@@ -764,6 +1003,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_search_result(SearchResult self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_search_scope(SearchScope self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_search_stream_update(
+    SearchStreamUpdate self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_test_case(TestCase self, SseSerializer serializer);

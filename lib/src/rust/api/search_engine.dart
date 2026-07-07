@@ -6,18 +6,143 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_fields`, `automaton_highlight_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query`, `build_regex_highlight_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `compatibility`, `current_index_metadata`, `current_schema`, `default_token_texts`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `facet_filter_query`, `index_metadata_path`, `inferred_legacy_schema_version`, `make_snippet_generator`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream`, `run_search`, `single_regex_term_query`, `take_writer`, `tantivy_schema_matches_current_version`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `DfaWrapper`, `IndexMetadata`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `can_match`, `clone`, `clone`, `collect`, `for_segment`, `harvest`, `is_match`, `merge_fruits`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
     .api
     .crateApiSearchEngineCheckIndexCompatibility(path: path);
 
+/// Builds display-highlight regex patterns for a search query, so the app can
+/// mark matches inside an opened book exactly the way the engine matched them.
+///
+/// Pure string computation (no index access) — safe to call synchronously.
+/// Parameters mirror [`SearchEngine::search_advanced`]: `distance` is the
+/// default intermediate-word allowance, `custom_spacing` is keyed
+/// `"i-(i+1)"`, `alternative_words` is keyed by word position, and
+/// `search_options` is keyed `"{word}_{index}"` using the same tokenization
+/// as engine queries.
+///
+/// Returns `None` when the query contains no highlightable words.
+HighlightPattern? generateHighlightPattern({
+  required String query,
+  required int distance,
+  required Map<String, String> customSpacing,
+  required Map<int, List<String>> alternativeWords,
+  required Map<String, Map<String, bool>> searchOptions,
+}) => RustLib.instance.api.crateApiSearchEngineGenerateHighlightPattern(
+  query: query,
+  distance: distance,
+  customSpacing: customSpacing,
+  alternativeWords: alternativeWords,
+  searchOptions: searchOptions,
+);
+
+/// Builds the regex for highlighting *literal* in-book search matches (the
+/// simple/exact mode that scans an open book locally): the phrase as typed,
+/// whitespace-joined, nikud-tolerant, geresh/gershayim matching both ASCII and
+/// Hebrew forms, with word-boundary lookarounds. The Dart side compiles the
+/// returned string with `RegExp(pattern, caseSensitive: false, unicode: true)`
+/// and performs no pattern construction of its own.
+///
+/// Pure string computation — safe to call synchronously. Returns `None` for a
+/// whitespace-only query.
+String? generateLiteralHighlightPattern({required String query}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineGenerateLiteralHighlightPattern(query: query);
+
+/// Normalises a search query exactly like the engine does internally, so the
+/// app can build option keys / UI state from the same tokens the engine sees.
+///
+/// `״→"`, `׳→'`, `־`/`-`→space; strips `,;!?:*()[]{}^$|\+.~\``; collapses
+/// whitespace; trims. Pure string computation — safe to call synchronously.
+/// This is the single source of truth; the Dart `SearchQueryBuilder.sanitizeQuery`
+/// delegates here so index-time and query-time normalisation cannot drift apart.
+String sanitizeQuery({required String query}) =>
+    RustLib.instance.api.crateApiSearchEngineSanitizeQuery(query: query);
+
+/// Splits a query into word tokens the same way the engine tokenizes the
+/// indexed `text` field (see [`generate_highlight_pattern`] for the key format
+/// that consumes these). A `"` or `'` *between* word characters stays inside
+/// the token (`רמב"ם`, `ד'אש`), and a trailing `'` is absorbed (`תוס'`); a
+/// quote at a word edge separates. See [`hebrew_query::split_query_words`] for
+/// the exact rules.
+///
+/// Pure string computation — safe to call synchronously. Single source of
+/// truth for `SearchQueryBuilder.splitQueryWords`.
+List<String> splitQueryWords({required String query}) =>
+    RustLib.instance.api.crateApiSearchEngineSplitQueryWords(query: query);
+
+/// Normalises a text-book line for indexing exactly the way the engine expects
+/// stored text to look: strip HTML, decompose presentation forms and strip
+/// nikud/cantillation — keeping punctuation, which search results display.
+/// Single source of truth for the Dart
+/// `IndexingDocumentBuilder.normalizeTextForIndexing`.
+///
+/// Pure string computation — safe to call synchronously (including from the
+/// indexing isolate).
+String normalizeTextForIndexing({required String input}) => RustLib.instance.api
+    .crateApiSearchEngineNormalizeTextForIndexing(input: input);
+
+/// Like [`normalize_text_for_indexing`] but for PDF page text: also drops bidi
+/// and zero-width invisibles and collapses whitespace first. Single source of
+/// truth for the Dart `IndexingDocumentBuilder.normalizePdfTextForIndexing`.
+String normalizePdfTextForIndexing({required String input}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineNormalizePdfTextForIndexing(input: input);
+
+/// Batch form of [`normalize_text_for_indexing`]: one FFI round-trip per line
+/// *batch* instead of one per line. The per-call bridge overhead (string
+/// encode/decode + call dispatch) dominates the normalisation itself for
+/// short lines, and a full library is millions of lines — the indexing
+/// isolate should always prefer this over the single-line form.
+List<String> normalizeTextsForIndexing({required List<String> inputs}) =>
+    RustLib.instance.api.crateApiSearchEngineNormalizeTextsForIndexing(
+      inputs: inputs,
+    );
+
+/// Batch form of [`normalize_pdf_text_for_indexing`] +
+/// [`is_probably_garbage_pdf_text`]: normalises each line and evaluates the
+/// garbage heuristic on the result — replacing the two-FFI-calls-per-line
+/// pattern with one call per batch.
+List<PdfIndexLine> normalizePdfTextsForIndexing({
+  required List<String> inputs,
+}) => RustLib.instance.api.crateApiSearchEngineNormalizePdfTextsForIndexing(
+  inputs: inputs,
+);
+
+/// Whether a normalised PDF page looks like garbage (OCR noise) and should be
+/// skipped. Single source of truth for the Dart
+/// `IndexingDocumentBuilder.isProbablyGarbagePdfText`.
+bool isProbablyGarbagePdfText({required String normalizedText}) =>
+    RustLib.instance.api.crateApiSearchEngineIsProbablyGarbagePdfText(
+      normalizedText: normalizedText,
+    );
+
+/// 64-bit content fingerprint (FNV-1a over UTF-8 bytes) of a book's raw
+/// source text. Stamp it on every [`DocumentInput`] of the book at indexing
+/// time; recompute it from the current library source and compare against
+/// [`SearchEngine::get_book_fingerprints`] to detect books whose content
+/// changed without reindexing everything.
+///
+/// Never returns 0 — that value is reserved for "no fingerprint recorded".
+/// Deliberately hashes the *raw* text (before normalization/tokenization) so
+/// the fingerprint does not shift when text-processing internals change.
+///
+/// Pure string computation — safe to call synchronously (including from the
+/// indexing isolate).
+BigInt computeContentFingerprint({required String text}) => RustLib.instance.api
+    .crateApiSearchEngineComputeContentFingerprint(text: text);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
   /// Add a single document. Does not commit.
+  /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
+  /// [`Self::add_documents_batch`] is the fingerprint-aware path.
   Future<void> addDocument({
     required BigInt id,
     required String title,
@@ -27,11 +152,76 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   });
 
   /// Add many documents in a single FFI call. Does not commit.
   /// For initial bulk loads – no duplicate checking.
   Future<void> addDocumentsBatch({required List<DocumentInput> docs});
+
+  /// Indexes a whole PDF book in ONE FFI call. Does not commit.
+  ///
+  /// The whole-book replacement for the app's per-page PDF pipeline (Dart
+  /// isolate → per-window FFI normalize → SendPort copy → batch add), which
+  /// copied the extracted text four-five times per book. Each page's text is
+  /// split into lines; every line is normalised
+  /// ([`normalize_pdf_text_for_indexing`]) and dropped when the garbage
+  /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
+  /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
+  /// added per surviving line, with `segment` = the page's `page_index` and
+  /// ids encoding catalogue order like [`Self::add_text_book`]. PDFs record
+  /// no content fingerprint (`contentHash` = 0, their text is not in the
+  /// library DB).
+  ///
+  /// Returns the number of documents added; 0 means the PDF yielded no
+  /// usable text (scanned/garbage) — the caller falls back to a sidecar or
+  /// writes its empty-book marker.
+  Future<int> addPdfBook({
+    required String title,
+    required String topics,
+    required String filePath,
+    required int catalogueOrder,
+    required int generationOrder,
+    required List<PdfPageInput> pages,
+  });
+
+  /// Indexes a whole text book in ONE FFI call. Does not commit.
+  ///
+  /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
+  /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
+  /// book's raw-text content fingerprint on every document, and adds one
+  /// document per line. Returns the number of documents added (0 for empty
+  /// text — the caller writes its empty-book marker in that case).
+  ///
+  /// This is the whole-book replacement for the app's per-line pipeline
+  /// (Dart isolate → per-batch FFI normalize → SendPort copy → batch add):
+  /// the raw text crosses the bridge exactly once and only a count comes
+  /// back. Document ids encode catalogue order exactly like the Dart
+  /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+  Future<int> addTextBook({
+    required String title,
+    required String topics,
+    required String filePath,
+    required int catalogueOrder,
+    required int generationOrder,
+    required String text,
+  });
+
+  /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
+  /// content from SQLite, which stores UTF-8 — passing the bytes through
+  /// (SQLite BLOB → `Uint8List` → here) skips the UTF-8→UTF-16→UTF-8
+  /// round-trip a Dart `String` costs on the bridge (~180ms/MB measured).
+  /// Invalid UTF-8 is replaced (lossy), never an error — matching what the
+  /// Dart decode would have produced.
+  Future<int> addTextBookBytes({
+    required String title,
+    required String topics,
+    required String filePath,
+    required int catalogueOrder,
+    required int generationOrder,
+    required List<int> text,
+  });
 
   /// Delete all documents. Does not commit.
   Future<void> clear();
@@ -39,6 +229,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 
+  /// Bare hit count. Drops the single-word truncation flag: a broad query
+  /// (e.g. `.*ספר`) that overflows its collection budget returns a partial
+  /// count with no signal. Not suitable for UI that must tell the user the
+  /// result is partial — use [`Self::count_with_status`], the combined
+  /// stream, or [`SearchPageResult::truncated`] there instead.
   Future<int> count({
     required List<String> regexTerms,
     required List<String> facets,
@@ -46,15 +241,47 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  /// Advanced-query hit count. Drops the single-word truncation flag — see
+  /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
   Future<int> countAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
+  /// Like [`Self::count_advanced`] but also reports single-word truncation.
+  Future<CountResult> countAdvancedWithStatus({
+    required String query,
+    required String negativeQuery,
+    required List<String> facets,
+    required int distance,
+    required int negativeDistance,
+    required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
+  });
+
+  /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
+  /// use [`Self::count_by_book_with_status`] when partiality must surface.
   Future<Map<String, int>> countByBook({
     required List<String> regexTerms,
     required List<String> facets,
@@ -62,24 +289,89 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  /// Advanced-query per-book counts. Drops the truncation flag — see
+  /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
   Future<Map<String, int>> countByBookAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
+  /// Like [`Self::count_by_book_advanced`] but also reports truncation.
+  Future<BookCountResult> countByBookAdvancedWithStatus({
+    required String query,
+    required String negativeQuery,
+    required List<String> facets,
+    required int distance,
+    required int negativeDistance,
+    required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
+  });
+
+  /// Exact-mode per-book counts. Drops the truncation flag — see
+  /// [`Self::count_exact`]; use [`Self::count_by_book_exact_with_status`].
   Future<Map<String, int>> countByBookExact({
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
+  /// Like [`Self::count_by_book_exact`] but also reports whether the
+  /// vocalized single-word term collection truncated.
+  Future<BookCountResult> countByBookExactWithStatus({
+    required String query,
+    required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Fuzzy-mode per-book counts. Drops the truncation flag — see
+  /// [`Self::count_fuzzy`]; use [`Self::count_by_book_fuzzy_with_status`].
   Future<Map<String, int>> countByBookFuzzy({
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::count_by_book_fuzzy`] but also reports whether the
+  /// vocalized term collection truncated.
+  Future<BookCountResult> countByBookFuzzyWithStatus({
+    required String query,
+    required List<String> facets,
+    required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::count_by_book`] but also reports single-word truncation.
+  Future<BookCountResult> countByBookWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
   });
 
   /// Number of live (committed, non-deleted) documents per distinct
@@ -91,16 +383,113 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// index built elsewhere — and compare it against the current library.
   Future<Map<String, int>> countDocumentsByFilePath();
 
-  Future<int> countExact({required String query, required List<String> facets});
+  /// Exact-mode hit count. Drops the truncation flag: the mark-free path
+  /// never truncates, but the vocalized single-word path can (its term set
+  /// is materialized like an advanced word) — use
+  /// [`Self::count_exact_with_status`] when partiality must surface.
+  Future<int> countExact({
+    required String query,
+    required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
 
+  /// Like [`Self::count_exact`] but also reports whether the vocalized
+  /// single-word term collection truncated.
+  Future<CountResult> countExactWithStatus({
+    required String query,
+    required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Fuzzy-mode hit count. Drops the truncation flag: the mark-free path
+  /// never truncates, but the vocalized path can (its term set is
+  /// materialized like an advanced word) — use
+  /// [`Self::count_fuzzy_with_status`] when partiality must surface.
   Future<int> countFuzzy({
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::count_fuzzy`] but also reports whether the vocalized
+  /// term collection truncated.
+  Future<CountResult> countFuzzyWithStatus({
+    required String query,
+    required List<String> facets,
+    required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::count`] but also reports whether single-word collection
+  /// truncated, so a UI consumer can flag a partial count.
+  Future<CountResult> countWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required int slop,
+    required int maxExpansions,
   });
 
   /// Delete a document by its numeric id. Does not commit.
   Future<void> deleteDocumentById({required BigInt id});
+
+  /// Delete every document of one book, addressed by its `filePath` value —
+  /// the stable book key the app stamps on all of a book's documents at
+  /// indexing time. `filePath` is a raw STRING field, so this is a single
+  /// exact `delete_term` and cannot touch other books (unlike
+  /// [`Self::remove_documents_by_title`], which matches any book sharing the
+  /// title). Does not commit.
+  Future<void> deleteDocumentsByFilePath({required String filePath});
+
+  /// Batch form of [`Self::delete_documents_by_file_path`] — one FFI call
+  /// for e.g. removing a whole custom folder of personal books. Does not
+  /// commit.
+  Future<void> deleteDocumentsByFilePaths({required List<String> filePaths});
+
+  /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
+  /// paints the index terms within `max_distance` edits of each query token,
+  /// plus the dictionary morphological forms when a magic dictionary is
+  /// loaded — mirroring [`Self::build_fuzzy_highlight`]'s term collection,
+  /// so an opened book highlights exactly what the fuzzy search matched.
+  Future<HighlightPattern?> generateIndexFuzzyHighlightPattern({
+    required String query,
+    required int maxDistance,
+  });
+
+  /// Builds display-highlight patterns from the index terms this query
+  /// actually matches — the same automaton scan the search and the snippet
+  /// highlighter run — so a document found via any variant (typo,
+  /// morphological affix, partial word) highlights exactly that variant in
+  /// an opened book. Full parity with search by construction: the automatons
+  /// are the very `regex_terms` branches `prepare_advanced_query` builds for
+  /// the search query.
+  ///
+  /// A word whose branches match nothing in this index (or fail to compile)
+  /// falls back to the query-shape pattern of [`generate_highlight_pattern`],
+  /// so the result is never worse than the pure-string one. Runs FST scans
+  /// against the term dictionary — async, unlike the sync pure-string
+  /// fallback; the app fetches it once per search-parameter change and
+  /// caches the compiled `RegExp`s.
+  Future<HighlightPattern?> generateIndexHighlightPattern({
+    required String query,
+    required int distance,
+    required Map<String, String> customSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+  });
+
+  /// Content fingerprint per distinct `filePath`, read columnar from the
+  /// live documents (like [`Self::count_documents_by_file_path`], no stored
+  /// fields are touched).
+  ///
+  /// A value of 0 means "unverifiable": either the book was indexed without
+  /// a fingerprint (e.g. PDF), or its live documents disagree (partial
+  /// reindex) — callers should treat such books as changed or skip them.
+  Future<Map<String, BigInt>> getBookFingerprints();
 
   /// Fetch a single document by its numeric id. Returns None if not found.
   /// The `text` field contains the raw stored text (no snippet/highlight).
@@ -108,7 +497,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<BigInt> getDocumentCount();
 
-  /// Return per-child facet counts for a given prefix (e.g. "/").
+  /// Return per-child facet counts for a given prefix (e.g. "/"). Drops the
+  /// truncation flag — see [`Self::count`]; use
+  /// [`Self::get_facet_counts_with_status`] when partiality must surface.
   Future<List<FacetCount>> getFacetCounts({
     required List<String> regexTerms,
     required List<String> facets,
@@ -117,27 +508,96 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxExpansions,
   });
 
+  /// Advanced-query facet counts. Drops the truncation flag — see
+  /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
   Future<List<FacetCount>> getFacetCountsAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
+  /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
+  Future<FacetCountsResult> getFacetCountsAdvancedWithStatus({
+    required String query,
+    required String negativeQuery,
+    required List<String> facets,
+    required String facetPrefix,
+    required int distance,
+    required int negativeDistance,
+    required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
+  });
+
+  /// Exact-mode facet counts. Drops the truncation flag — see
+  /// [`Self::count_exact`]; use [`Self::get_facet_counts_exact_with_status`].
   Future<List<FacetCount>> getFacetCountsExact({
     required String query,
     required List<String> facets,
     required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
+  /// Like [`Self::get_facet_counts_exact`] but also reports whether the
+  /// vocalized single-word term collection truncated.
+  Future<FacetCountsResult> getFacetCountsExactWithStatus({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Fuzzy-mode facet counts. Drops the truncation flag — see
+  /// [`Self::count_fuzzy`]; use [`Self::get_facet_counts_fuzzy_with_status`].
   Future<List<FacetCount>> getFacetCountsFuzzy({
     required String query,
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::get_facet_counts_fuzzy`] but also reports whether the
+  /// vocalized term collection truncated.
+  Future<FacetCountsResult> getFacetCountsFuzzyWithStatus({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
+  Future<FacetCountsResult> getFacetCountsWithStatus({
+    required List<String> regexTerms,
+    required List<String> facets,
+    required String facetPrefix,
+    required int slop,
+    required int maxExpansions,
   });
 
   /// Distinct `filePath` values present in the index — i.e. which books have
@@ -147,9 +607,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<int> getSegmentCount();
 
+  /// האם מילון ראשי-תיבות טעון כרגע.
+  bool hasAcronymsDictionary();
+
   /// Whether a lexical dictionary is currently loaded (i.e. approximate search
   /// will use morphological expansion).
   bool hasMagicDictionary();
+
+  /// האם מילון תרגום ארמי-עברי טעון כרגע.
+  bool hasTranslationDictionary();
 
   factory SearchEngine({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
@@ -167,6 +633,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Discard all pending writes since the last commit.
   Future<void> rollback();
 
+  /// Paged regex search. Drops the single-word truncation flag: a broad
+  /// query (e.g. `.*ספר`) that overflows its collection budget serves
+  /// partial results with no signal. Not suitable for UI that must tell the
+  /// user the result is partial — use [`Self::search_and_count`]
+  /// ([`SearchPageResult::truncated`]) instead.
   Future<List<SearchResult>> search({
     required List<String> regexTerms,
     required List<String> facets,
@@ -180,26 +651,74 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<List<SearchResult>> searchAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
+  /// Advanced-query result stream. Drops the single-word truncation flag —
+  /// see [`Self::search`]; use [`Self::search_advanced_stream_with_counts`]
+  /// (its first [`SearchStreamUpdate`] carries `truncated`) when the UI
+  /// must flag partial results.
   Stream<List<SearchResult>> searchAdvancedStream({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
+    required int chunkSize,
+  });
+
+  /// Like [`Self::search_advanced_stream`] but the first event also carries
+  /// the total hit count and per-book counts from the same index pass —
+  /// replacing the separate `count_advanced` + `count_by_book_advanced`
+  /// calls a search screen would otherwise issue for the same query.
+  Stream<SearchStreamUpdate> searchAdvancedStreamWithCounts({
+    required String query,
+    required String negativeQuery,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int distance,
+    required int negativeDistance,
+    required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
+    required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
+    required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   });
 
@@ -218,14 +737,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<SearchPageResult> searchAndCountAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<SearchPageResult> searchAndCountExact({
@@ -234,6 +762,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<SearchPageResult> searchAndCountFuzzy({
@@ -243,6 +773,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<List<SearchResult>> searchExact({
@@ -251,6 +783,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Stream<List<SearchResult>> searchExactStream({
@@ -259,6 +793,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required int chunkSize,
+  });
+
+  /// Like [`Self::search_exact_stream`] but the first event also carries
+  /// the total hit count and per-book counts from the same index pass —
+  /// replacing the separate `count_exact` + `count_by_book_exact` calls a
+  /// search screen would otherwise issue for the same query.
+  Stream<SearchStreamUpdate> searchExactStreamWithCounts({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -269,6 +820,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Stream<List<SearchResult>> searchFuzzyStream({
@@ -278,6 +831,24 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required int chunkSize,
+  });
+
+  /// Like [`Self::search_fuzzy_stream`] but the first event also carries
+  /// the total hit count and per-book counts from the same index pass —
+  /// replacing the separate `count_fuzzy` + `count_by_book_fuzzy` calls a
+  /// search screen would otherwise issue for the same query.
+  Stream<SearchStreamUpdate> searchFuzzyStreamWithCounts({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required int maxDistance,
+    required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -305,6 +876,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// as soon as those are ready, without waiting for all snippets to be built.
   /// This is useful when `limit` is large and snippet generation is the
   /// bottleneck. For typical limits (≤ 200) the difference is negligible.
+  ///
+  /// Drops the single-word truncation flag — see [`Self::search`]; use
+  /// [`Self::search_and_count`] ([`SearchPageResult::truncated`]) when
+  /// partiality must surface.
   Stream<List<SearchResult>> searchStream({
     required List<String> regexTerms,
     required List<String> facets,
@@ -317,6 +892,22 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int chunkSize,
   });
 
+  /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
+  /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
+  /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
+  /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
+  bool setAcronymsDictionaryPath({required String path});
+
+  /// Bulk-indexing mode: while enabled, the live writer skips background
+  /// segment merges (`NoMergePolicy`). During a full-library build the
+  /// default `LogMergePolicy` repeatedly merges intermediate segments —
+  /// CPU and IO that are thrown away, because the caller runs `optimize`
+  /// (merge-all) once at the end anyway. Call with `true` before a bulk
+  /// build and `false` when done — `optimize` does NOT reset the flag, and
+  /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
+  /// default; incremental indexing keeps normal merging.
+  Future<void> setBulkIndexing({required bool enabled});
+
   /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
   /// search path. Returns `true` if the file opened and has the expected
   /// schema, `false` if it is missing or unusable — in which case the engine
@@ -324,6 +915,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// call this unconditionally at startup). Does **not** affect exact or
   /// advanced search.
   bool setMagicDictionaryPath({required String path});
+
+  /// טוען את מילון התרגום הארמי-עברי (ה-`dictionary.json` של האפליקציה)
+  /// עבור אפשרות "תרגום ארמי" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
+  /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
+  /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
+  bool setTranslationDictionaryPath({required String path});
 
   /// Delete then re-insert a single document by id. Does not commit.
   Future<void> upsertDocument({
@@ -335,10 +932,57 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   });
 
   /// Upsert many documents in a single FFI call. Does not commit.
   Future<void> upsertDocumentsBatch({required List<DocumentInput> docs});
+}
+
+/// Per-`filePath` live-document counts paired with the truncation flag — the
+/// status-bearing return of [`SearchEngine::count_by_book_with_status`] and
+/// its advanced/exact/fuzzy variants. When `truncated`, the per-book counts
+/// are partial.
+class BookCountResult {
+  final Map<String, int> counts;
+  final bool truncated;
+
+  const BookCountResult({required this.counts, required this.truncated});
+
+  @override
+  int get hashCode => counts.hashCode ^ truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BookCountResult &&
+          runtimeType == other.runtimeType &&
+          counts == other.counts &&
+          truncated == other.truncated;
+}
+
+/// A total hit count paired with the single-word truncation flag — the
+/// status-bearing return of [`SearchEngine::count_with_status`] and its
+/// advanced/exact/fuzzy variants. `truncated` carries the same meaning as
+/// [`SearchStreamUpdate::truncated`]: `true` when a broad single-word query
+/// overflowed its collection budget, so `count` undercounts the true total.
+class CountResult {
+  final int count;
+  final bool truncated;
+
+  const CountResult({required this.count, required this.truncated});
+
+  @override
+  int get hashCode => count.hashCode ^ truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CountResult &&
+          runtimeType == other.runtimeType &&
+          count == other.count &&
+          truncated == other.truncated;
 }
 
 class DocumentInput {
@@ -351,6 +995,27 @@ class DocumentInput {
   final bool isPdf;
   final String filePath;
 
+  /// Book-level content fingerprint (see [`compute_content_fingerprint`]).
+  /// The same value is stamped on every document of a book, so
+  /// [`SearchEngine::get_book_fingerprints`] can compare an index against the
+  /// current library source. `None`/`0` means "no fingerprint recorded"
+  /// (e.g. PDF books).
+  final BigInt? contentHash;
+
+  /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
+  /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
+  /// פשוט לא תשתתף בחיפוש מנוקד. מסלול [`SearchEngine::add_text_book`]
+  /// מחשב זאת בעצמו; השדה קיים לצינורות שמוסיפים מסמכים מוכנים.
+  final String? textVocalized;
+
+  /// מזהה הסעיף (בלוק הכותרת) של השורה — ראו השדה `sectionId` בסכימה.
+  /// `None` = השורה סעיף לעצמה (`id` משמש כמזהה), כך שחיפוש "תחת אותה
+  /// כותרת" מתנהג כמו "באותה פסקה" עבור מסמכים שהוזנו בלי מזהה סעיף.
+  final BigInt? sectionId;
+
+  /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
+  final int? generationOrder;
+
   const DocumentInput({
     required this.id,
     required this.title,
@@ -360,6 +1025,10 @@ class DocumentInput {
     required this.segment,
     required this.isPdf,
     required this.filePath,
+    this.contentHash,
+    this.textVocalized,
+    this.sectionId,
+    this.generationOrder,
   });
 
   @override
@@ -371,7 +1040,11 @@ class DocumentInput {
       text.hashCode ^
       segment.hashCode ^
       isPdf.hashCode ^
-      filePath.hashCode;
+      filePath.hashCode ^
+      contentHash.hashCode ^
+      textVocalized.hashCode ^
+      sectionId.hashCode ^
+      generationOrder.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -385,7 +1058,11 @@ class DocumentInput {
           text == other.text &&
           segment == other.segment &&
           isPdf == other.isPdf &&
-          filePath == other.filePath;
+          filePath == other.filePath &&
+          contentHash == other.contentHash &&
+          textVocalized == other.textVocalized &&
+          sectionId == other.sectionId &&
+          generationOrder == other.generationOrder;
 }
 
 class FacetCount {
@@ -404,6 +1081,28 @@ class FacetCount {
           runtimeType == other.runtimeType &&
           path == other.path &&
           count == other.count;
+}
+
+/// Per-child facet counts paired with the truncation flag — the status-bearing
+/// return of [`SearchEngine::get_facet_counts_with_status`] and its
+/// advanced/exact/fuzzy variants. When `truncated`, the facet counts are
+/// partial.
+class FacetCountsResult {
+  final List<FacetCount> counts;
+  final bool truncated;
+
+  const FacetCountsResult({required this.counts, required this.truncated});
+
+  @override
+  int get hashCode => counts.hashCode ^ truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FacetCountsResult &&
+          runtimeType == other.runtimeType &&
+          counts == other.counts &&
+          truncated == other.truncated;
 }
 
 class HighlightConfig {
@@ -429,6 +1128,44 @@ class HighlightConfig {
           highlightPrefix == other.highlightPrefix &&
           highlightPostfix == other.highlightPostfix &&
           maxChars == other.maxChars;
+}
+
+/// Regex patterns for highlighting query matches in *displayed* book text
+/// (which, unlike index terms, still carries nikud and HTML). All patterns
+/// are ECMAScript-dialect strings; the Dart layer compiles them with
+/// `RegExp(pattern, caseSensitive: false)` and performs no pattern
+/// construction of its own.
+class HighlightPattern {
+  /// One regex matching the full query phrase (words + separators).
+  final String combinedPattern;
+
+  /// Per-word regex, used to locate each word inside a combined match.
+  final List<String> wordPatterns;
+
+  /// Per-word: `true` when the word has no morphological expansion option,
+  /// so the UI may require token boundaries around its match.
+  final List<bool> wordBoundaryEligible;
+
+  const HighlightPattern({
+    required this.combinedPattern,
+    required this.wordPatterns,
+    required this.wordBoundaryEligible,
+  });
+
+  @override
+  int get hashCode =>
+      combinedPattern.hashCode ^
+      wordPatterns.hashCode ^
+      wordBoundaryEligible.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HighlightPattern &&
+          runtimeType == other.runtimeType &&
+          combinedPattern == other.combinedPattern &&
+          wordPatterns == other.wordPatterns &&
+          wordBoundaryEligible == other.wordBoundaryEligible;
 }
 
 class IndexCompatibility {
@@ -474,16 +1211,79 @@ class IndexCompatibility {
           reason == other.reason;
 }
 
-enum ResultsOrder { catalogue, relevance }
+/// A PDF line prepared for indexing: the normalised text together with its
+/// garbage verdict, so the batch API answers both questions the indexing
+/// isolate asks per line in one round-trip.
+class PdfIndexLine {
+  final String text;
+  final bool isGarbage;
+
+  const PdfIndexLine({required this.text, required this.isGarbage});
+
+  @override
+  int get hashCode => text.hashCode ^ isGarbage.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PdfIndexLine &&
+          runtimeType == other.runtimeType &&
+          text == other.text &&
+          isGarbage == other.isGarbage;
+}
+
+/// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
+/// display reference (built by the app from the PDF outline), the raw
+/// extracted page text, and the zero-based page index (stored as the
+/// document `segment`).
+class PdfPageInput {
+  final String reference;
+  final String text;
+  final int pageIndex;
+
+  const PdfPageInput({
+    required this.reference,
+    required this.text,
+    required this.pageIndex,
+  });
+
+  @override
+  int get hashCode => reference.hashCode ^ text.hashCode ^ pageIndex.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PdfPageInput &&
+          runtimeType == other.runtimeType &&
+          reference == other.reference &&
+          text == other.text &&
+          pageIndex == other.pageIndex;
+}
+
+enum ResultsOrder { catalogue, relevance, generation }
 
 class SearchPageResult {
   final int totalCount;
   final List<SearchResult> results;
 
-  const SearchPageResult({required this.totalCount, required this.results});
+  /// `true` when a broad single-word query overflowed its collection budget
+  /// and only the highest-priority term expansions were served, so both
+  /// `total_count` and `results` are partial (see
+  /// [`SearchEngine::single_regex_term_query`]). The regex, advanced and
+  /// *vocalized* exact/fuzzy paths can degrade this way (a vocalized word
+  /// materializes a term set like an advanced word); the mark-free
+  /// exact/fuzzy paths never do and always report `false`.
+  final bool truncated;
+
+  const SearchPageResult({
+    required this.totalCount,
+    required this.results,
+    required this.truncated,
+  });
 
   @override
-  int get hashCode => totalCount.hashCode ^ results.hashCode;
+  int get hashCode =>
+      totalCount.hashCode ^ results.hashCode ^ truncated.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -491,7 +1291,8 @@ class SearchPageResult {
       other is SearchPageResult &&
           runtimeType == other.runtimeType &&
           totalCount == other.totalCount &&
-          results == other.results;
+          results == other.results &&
+          truncated == other.truncated;
 }
 
 class SearchResult {
@@ -535,4 +1336,73 @@ class SearchResult {
           segment == other.segment &&
           isPdf == other.isPdf &&
           filePath == other.filePath;
+}
+
+/// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
+enum SearchScope {
+  /// ההתנהגות הקיימת: המילים מופיעות לפי סדר השאילתה, עם מגבלת
+  /// מילים-ביניים לכל זוג סמוך (`distance` / `custom_spacing`).
+  wordDistance,
+
+  /// כל המילים באותה פסקה (מסמך אינדקס אחד = שורת ספר), בכל סדר ובכל
+  /// מרחק. `distance`/`custom_spacing` אינם רלוונטיים במצב זה.
+  sameParagraph,
+
+  /// כל המילים תחת אותה כותרת (אותו בלוק `reference` — סעיף/פרק), גם
+  /// כשהן פזורות על פני שורות שונות. התוצאות הן השורות שבתוך סעיף
+  /// חותך שמכילות מילה מהשאילתה.
+  sameSection,
+}
+
+/// One event of a combined stream search (`search_*_stream_with_counts`).
+///
+/// The first event carries the counts computed in the *same* index pass as
+/// the ranked results (`total_count` + `book_counts`, with empty `results`);
+/// every following event is a snippet-built results chunk (`None` counts).
+/// One user search previously cost three full query executions — stream,
+/// total count, and count-by-book — this collapses them into one.
+class SearchStreamUpdate {
+  /// Full hit count of the query; `Some` only on the first event.
+  final int? totalCount;
+
+  /// Live-document count per distinct `filePath`; `Some` only on the first
+  /// event. Sums to `total_count`.
+  final Map<String, int>? bookCounts;
+
+  /// The results chunk (empty on the first, counts-bearing event).
+  final List<SearchResult> results;
+
+  /// `true` when a broad single-word query overflowed its collection budget
+  /// and only the highest-priority term expansions were served, so both the
+  /// counts and the results are partial (see [`SearchEngine::single_regex_term_query`]).
+  /// Meaningful only on the first, counts-bearing event; always `false` on
+  /// result chunks and on the mark-free exact/fuzzy paths, which never
+  /// degrade this way (the vocalized exact/fuzzy paths can, like the
+  /// advanced path). The UI surfaces this as a "results may be partial —
+  /// narrow the search" warning.
+  final bool truncated;
+
+  const SearchStreamUpdate({
+    this.totalCount,
+    this.bookCounts,
+    required this.results,
+    required this.truncated,
+  });
+
+  @override
+  int get hashCode =>
+      totalCount.hashCode ^
+      bookCounts.hashCode ^
+      results.hashCode ^
+      truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SearchStreamUpdate &&
+          runtimeType == other.runtimeType &&
+          totalCount == other.totalCount &&
+          bookCounts == other.bookCounts &&
+          results == other.results &&
+          truncated == other.truncated;
 }

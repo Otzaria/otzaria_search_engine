@@ -51,6 +51,10 @@ mod tests {
         assert!(is_blacklisted("לחתוך", "כנ"));
         // final-letter folding makes the medial spelling match too.
         assert!(is_blacklisted("לחתוכ", "כן"));
+        // ASCII quotes inside a token (as the index tokenizer emits them)
+        // must not break the lookup.
+        assert!(is_blacklisted("לחתו\"ך", "כנ"));
+        assert!(is_blacklisted("לחתו'ך", "כנ"));
     }
 
     #[test]

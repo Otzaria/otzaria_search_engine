@@ -13,6 +13,8 @@ import 'android_environment.dart';
 import 'build_cmake.dart';
 import 'build_gradle.dart';
 import 'build_pod.dart';
+import 'cargo.dart';
+import 'crate_hash.dart';
 import 'logging.dart';
 import 'options.dart';
 import 'precompile_binaries.dart';
@@ -204,6 +206,63 @@ class PrecompileBinariesCommand extends Command {
   }
 }
 
+class PrepareReleaseCommand extends Command {
+  PrepareReleaseCommand() {
+    argParser
+      ..addOption(
+        'repository',
+        mandatory: true,
+        help: 'Github repository slug in format owner/name',
+      )
+      ..addOption(
+        'manifest-dir',
+        mandatory: true,
+        help: 'Directory containing Cargo.toml',
+      );
+  }
+
+  @override
+  final name = 'prepare-release';
+
+  @override
+  final description =
+      'Compute the crate hash and ensure the precompiled-binaries '
+      'GitHub Release exists.\n'
+      'Run this once before fanning out parallel publish jobs to avoid '
+      'race conditions creating the release.\n'
+      'GITHUB_TOKEN environment variable is required.';
+
+  @override
+  Future<void> run() async {
+    final githubToken = Platform.environment['GITHUB_TOKEN'];
+    if (githubToken == null) {
+      throw ArgumentError('Missing GITHUB_TOKEN environment variable');
+    }
+    final manifestDir = argResults!['manifest-dir'] as String;
+    if (!Directory(manifestDir).existsSync()) {
+      throw ArgumentError('Manifest directory does not exist: $manifestDir');
+    }
+    final repositorySlug =
+        RepositorySlug.full(argResults!['repository'] as String);
+
+    final crateInfo = CrateInfo.load(manifestDir);
+    final hash = CrateHash.compute(manifestDir);
+    final tagName = 'precompiled_$hash';
+    log.info('Crate hash: $hash');
+    log.info('Tag: $tagName');
+
+    final github = GitHub(auth: Authentication.withToken(githubToken));
+    await PrecompileBinaries.getOrCreateRelease(
+      repo: github.repositories,
+      repositorySlug: repositorySlug,
+      tagName: tagName,
+      packageName: crateInfo.packageName,
+      hash: hash,
+    );
+    log.info('Release ready');
+  }
+}
+
 class VerifyBinariesCommand extends Command {
   VerifyBinariesCommand() {
     argParser.addOption(
@@ -246,6 +305,7 @@ Future<void> runMain(List<String> args) async {
       ..addCommand(BuildCMakeCommand())
       ..addCommand(GenKeyCommand())
       ..addCommand(PrecompileBinariesCommand())
+      ..addCommand(PrepareReleaseCommand())
       ..addCommand(VerifyBinariesCommand());
 
     await runner.run(args);

@@ -61,15 +61,18 @@ fn finalize_word(word: &str) -> String {
 }
 
 /// Normalizes a token to the **`lexical.db` lookup key** shape: strips
-/// nikud/teamim, drops gershayim/geresh, turns maqaf into a space, folds final
-/// letters, and collapses whitespace.
+/// nikud/teamim, drops gershayim/geresh — both the Hebrew forms and the
+/// ASCII `"`/`'` the index tokenizer folds them to; without the ASCII pair,
+/// every quote-bearing token (`רמב"ם`, `ג'ורג'`) would miss the DB *and*
+/// the blacklist — turns maqaf into a space, folds final letters, and
+/// collapses whitespace.
 pub fn normalize_hebrew(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.trim().chars() {
         match c {
-            _ if is_removed_point(c) => {} // nikud / teamim
-            '\u{05F4}' | '\u{05F3}' => {}  // gershayim / geresh
-            '\u{05BE}' => out.push(' '),   // maqaf → space
+            _ if is_removed_point(c) => {}             // nikud / teamim
+            '\u{05F4}' | '\u{05F3}' | '"' | '\'' => {} // gershayim / geresh
+            '\u{05BE}' => out.push(' '),               // maqaf → space
             _ => out.push(fold_final(c)),
         }
     }
@@ -121,6 +124,16 @@ mod tests {
     fn normalize_hebrew_handles_maqaf_and_gershayim() {
         assert_eq!(normalize_hebrew("בית\u{05BE}הכנסת"), "בית הכנסת");
         assert_eq!(normalize_hebrew("רמב\u{05F4}ם"), "רמבמ");
+    }
+
+    #[test]
+    fn normalize_hebrew_drops_ascii_quotes_like_the_index_folds() {
+        // הטוקנייזר מקפל ׳/״ ל-'/" ASCII בטרם — מפתח ה-lookup חייב למחוק
+        // גם אותם, אחרת כל טוקן-גרשיים מחטיא את lexical.db ואת ה-blacklist.
+        assert_eq!(normalize_hebrew("רמב\"ם"), "רמבמ");
+        assert_eq!(normalize_hebrew("ז\"ל"), "זל");
+        assert_eq!(normalize_hebrew("ג'ורג'"), "גורג");
+        assert_eq!(normalize_hebrew("תוס'"), "תוס");
     }
 
     #[test]
