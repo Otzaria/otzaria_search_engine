@@ -104,6 +104,8 @@ abstract class RustLibApi extends BaseApi {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   });
 
   Future<void> crateApiSearchEngineSearchEngineAddDocumentsBatch({
@@ -117,6 +119,7 @@ abstract class RustLibApi extends BaseApi {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<PdfPageInput> pages,
   });
 
@@ -126,6 +129,7 @@ abstract class RustLibApi extends BaseApi {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required String text,
   });
 
@@ -135,6 +139,7 @@ abstract class RustLibApi extends BaseApi {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<int> text,
   });
 
@@ -157,21 +162,39 @@ abstract class RustLibApi extends BaseApi {
   Future<int> crateApiSearchEngineSearchEngineCountAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountAdvancedWithStatus({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBook({
@@ -185,28 +208,48 @@ abstract class RustLibApi extends BaseApi {
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<BookCountResult>
   crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookExact({
     required SearchEngine that,
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookFuzzy({
@@ -214,6 +257,8 @@ abstract class RustLibApi extends BaseApi {
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<BookCountResult>
@@ -234,6 +279,8 @@ abstract class RustLibApi extends BaseApi {
     required SearchEngine that,
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<int> crateApiSearchEngineSearchEngineCountFuzzy({
@@ -241,6 +288,8 @@ abstract class RustLibApi extends BaseApi {
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountWithStatus({
@@ -310,24 +359,42 @@ abstract class RustLibApi extends BaseApi {
   crateApiSearchEngineSearchEngineGetFacetCountsAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<FacetCountsResult>
   crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<List<FacetCount>> crateApiSearchEngineSearchEngineGetFacetCountsExact({
@@ -335,6 +402,8 @@ abstract class RustLibApi extends BaseApi {
     required String query,
     required List<String> facets,
     required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<List<FacetCount>> crateApiSearchEngineSearchEngineGetFacetCountsFuzzy({
@@ -343,6 +412,8 @@ abstract class RustLibApi extends BaseApi {
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<FacetCountsResult>
@@ -397,28 +468,46 @@ abstract class RustLibApi extends BaseApi {
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Stream<List<SearchResult>>
   crateApiSearchEngineSearchEngineSearchAdvancedStream({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   });
 
@@ -426,14 +515,23 @@ abstract class RustLibApi extends BaseApi {
   crateApiSearchEngineSearchEngineSearchAdvancedStreamWithCounts({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   });
 
@@ -453,14 +551,23 @@ abstract class RustLibApi extends BaseApi {
   crateApiSearchEngineSearchEngineSearchAndCountAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCountExact({
@@ -470,6 +577,8 @@ abstract class RustLibApi extends BaseApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCountFuzzy({
@@ -480,6 +589,8 @@ abstract class RustLibApi extends BaseApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchExact({
@@ -489,6 +600,8 @@ abstract class RustLibApi extends BaseApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchExactStream({
@@ -498,6 +611,8 @@ abstract class RustLibApi extends BaseApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -509,6 +624,8 @@ abstract class RustLibApi extends BaseApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -520,6 +637,8 @@ abstract class RustLibApi extends BaseApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchFuzzyStream({
@@ -530,6 +649,8 @@ abstract class RustLibApi extends BaseApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -542,6 +663,8 @@ abstract class RustLibApi extends BaseApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -589,6 +712,8 @@ abstract class RustLibApi extends BaseApi {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   });
 
   Future<void> crateApiSearchEngineSearchEngineUpsertDocumentsBatch({
@@ -791,6 +916,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -808,6 +935,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(segment, serializer);
           sse_encode_bool(isPdf, serializer);
           sse_encode_String(filePath, serializer);
+          sse_encode_opt_box_autoadd_u_64(sectionId, serializer);
+          sse_encode_opt_box_autoadd_u_32(generationOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -830,6 +959,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           segment,
           isPdf,
           filePath,
+          sectionId,
+          generationOrder,
         ],
         apiImpl: this,
       ),
@@ -849,6 +980,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "segment",
           "isPdf",
           "filePath",
+          "sectionId",
+          "generationOrder",
         ],
       );
 
@@ -898,6 +1031,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<PdfPageInput> pages,
   }) {
     return handler.executeNormal(
@@ -912,6 +1046,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(topics, serializer);
           sse_encode_String(filePath, serializer);
           sse_encode_u_32(catalogueOrder, serializer);
+          sse_encode_u_32(generationOrder, serializer);
           sse_encode_list_pdf_page_input(pages, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -925,7 +1060,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineAddPdfBookConstMeta,
-        argValues: [that, title, topics, filePath, catalogueOrder, pages],
+        argValues: [
+          that,
+          title,
+          topics,
+          filePath,
+          catalogueOrder,
+          generationOrder,
+          pages,
+        ],
         apiImpl: this,
       ),
     );
@@ -940,6 +1083,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "topics",
           "filePath",
           "catalogueOrder",
+          "generationOrder",
           "pages",
         ],
       );
@@ -951,6 +1095,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required String text,
   }) {
     return handler.executeNormal(
@@ -965,6 +1110,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(topics, serializer);
           sse_encode_String(filePath, serializer);
           sse_encode_u_32(catalogueOrder, serializer);
+          sse_encode_u_32(generationOrder, serializer);
           sse_encode_String(text, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -978,7 +1124,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineAddTextBookConstMeta,
-        argValues: [that, title, topics, filePath, catalogueOrder, text],
+        argValues: [
+          that,
+          title,
+          topics,
+          filePath,
+          catalogueOrder,
+          generationOrder,
+          text,
+        ],
         apiImpl: this,
       ),
     );
@@ -993,6 +1147,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "topics",
           "filePath",
           "catalogueOrder",
+          "generationOrder",
           "text",
         ],
       );
@@ -1004,6 +1159,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<int> text,
   }) {
     return handler.executeNormal(
@@ -1018,6 +1174,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(topics, serializer);
           sse_encode_String(filePath, serializer);
           sse_encode_u_32(catalogueOrder, serializer);
+          sse_encode_u_32(generationOrder, serializer);
           sse_encode_list_prim_u_8_loose(text, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -1031,7 +1188,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineAddTextBookBytesConstMeta,
-        argValues: [that, title, topics, filePath, catalogueOrder, text],
+        argValues: [
+          that,
+          title,
+          topics,
+          filePath,
+          catalogueOrder,
+          generationOrder,
+          text,
+        ],
         apiImpl: this,
       ),
     );
@@ -1047,6 +1212,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "topics",
           "filePath",
           "catalogueOrder",
+          "generationOrder",
           "text",
         ],
       );
@@ -1165,11 +1331,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<int> crateApiSearchEngineSearchEngineCountAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1180,14 +1355,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1203,11 +1393,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -1220,11 +1419,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -1232,11 +1440,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<CountResult> crateApiSearchEngineSearchEngineCountAdvancedWithStatus({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1247,14 +1464,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1271,11 +1503,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -1289,11 +1530,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -1345,11 +1595,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1360,14 +1619,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1384,11 +1658,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -1402,11 +1685,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -1415,11 +1707,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1430,14 +1731,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1454,11 +1770,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -1472,11 +1797,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -1485,6 +1819,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchEngine that,
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1496,6 +1832,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_String(query, serializer);
           sse_encode_list_String(facets, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1508,7 +1846,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountByBookExactConstMeta,
-        argValues: [that, query, facets],
+        argValues: [that, query, facets, matchNikud, matchTaamim],
         apiImpl: this,
       ),
     );
@@ -1518,7 +1856,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineCountByBookExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_by_book_exact",
-        argNames: ["that", "query", "facets"],
+        argNames: ["that", "query", "facets", "matchNikud", "matchTaamim"],
       );
 
   @override
@@ -1527,6 +1865,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1539,6 +1879,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(query, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_8(maxDistance, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1551,7 +1893,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountByBookFuzzyConstMeta,
-        argValues: [that, query, facets, maxDistance],
+        argValues: [that, query, facets, maxDistance, matchNikud, matchTaamim],
         apiImpl: this,
       ),
     );
@@ -1561,7 +1903,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineCountByBookFuzzyConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_by_book_fuzzy",
-        argNames: ["that", "query", "facets", "maxDistance"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "maxDistance",
+          "matchNikud",
+          "matchTaamim",
+        ],
       );
 
   @override
@@ -1655,6 +2004,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchEngine that,
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1666,6 +2017,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_String(query, serializer);
           sse_encode_list_String(facets, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1678,7 +2031,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountExactConstMeta,
-        argValues: [that, query, facets],
+        argValues: [that, query, facets, matchNikud, matchTaamim],
         apiImpl: this,
       ),
     );
@@ -1687,7 +2040,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_exact",
-        argNames: ["that", "query", "facets"],
+        argNames: ["that", "query", "facets", "matchNikud", "matchTaamim"],
       );
 
   @override
@@ -1696,6 +2049,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1708,6 +2063,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(query, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_8(maxDistance, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1720,7 +2077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountFuzzyConstMeta,
-        argValues: [that, query, facets, maxDistance],
+        argValues: [that, query, facets, maxDistance, matchNikud, matchTaamim],
         apiImpl: this,
       ),
     );
@@ -1729,7 +2086,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountFuzzyConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_fuzzy",
-        argNames: ["that", "query", "facets", "maxDistance"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "maxDistance",
+          "matchNikud",
+          "matchTaamim",
+        ],
       );
 
   @override
@@ -2176,12 +2540,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiSearchEngineSearchEngineGetFacetCountsAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2192,15 +2565,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_String(facetPrefix, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2217,12 +2605,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           facetPrefix,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -2236,12 +2633,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "facetPrefix",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -2250,12 +2656,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2266,15 +2681,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_String(facetPrefix, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2291,12 +2721,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           facetPrefix,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -2310,12 +2749,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "facetPrefix",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -2325,6 +2773,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String query,
     required List<String> facets,
     required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2337,6 +2787,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(query, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_String(facetPrefix, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2350,7 +2802,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineGetFacetCountsExactConstMeta,
-        argValues: [that, query, facets, facetPrefix],
+        argValues: [that, query, facets, facetPrefix, matchNikud, matchTaamim],
         apiImpl: this,
       ),
     );
@@ -2360,7 +2812,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineGetFacetCountsExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_get_facet_counts_exact",
-        argNames: ["that", "query", "facets", "facetPrefix"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "facetPrefix",
+          "matchNikud",
+          "matchTaamim",
+        ],
       );
 
   @override
@@ -2370,6 +2829,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2383,6 +2844,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_String(facets, serializer);
           sse_encode_String(facetPrefix, serializer);
           sse_encode_u_8(maxDistance, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2396,7 +2859,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineGetFacetCountsFuzzyConstMeta,
-        argValues: [that, query, facets, facetPrefix, maxDistance],
+        argValues: [
+          that,
+          query,
+          facets,
+          facetPrefix,
+          maxDistance,
+          matchNikud,
+          matchTaamim,
+        ],
         apiImpl: this,
       ),
     );
@@ -2406,7 +2877,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineGetFacetCountsFuzzyConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_get_facet_counts_fuzzy",
-        argNames: ["that", "query", "facets", "facetPrefix", "maxDistance"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "facetPrefix",
+          "maxDistance",
+          "matchNikud",
+          "matchTaamim",
+        ],
       );
 
   @override
@@ -2783,14 +3262,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2801,17 +3289,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_32(limit, serializer);
           sse_encode_u_32(offset, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
           sse_encode_results_order(order, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2827,14 +3330,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           limit,
           offset,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
           order,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -2847,14 +3359,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "limit",
           "offset",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
           "order",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -2863,14 +3384,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiSearchEngineSearchEngineSearchAdvancedStream({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
@@ -2884,17 +3414,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               serializer,
             );
             sse_encode_String(query, serializer);
+            sse_encode_String(negativeQuery, serializer);
             sse_encode_list_String(facets, serializer);
             sse_encode_u_32(limit, serializer);
             sse_encode_u_32(offset, serializer);
             sse_encode_u_32(distance, serializer);
+            sse_encode_u_32(negativeDistance, serializer);
             sse_encode_Map_String_String_None(customSpacing, serializer);
+            sse_encode_Map_String_String_None(
+              negativeCustomSpacing,
+              serializer,
+            );
             sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+            sse_encode_Map_u_32_list_String_None(
+              negativeAlternativeWords,
+              serializer,
+            );
             sse_encode_Map_String_Map_String_bool_None_None(
               searchOptions,
               serializer,
             );
+            sse_encode_Map_String_Map_String_bool_None_None(
+              negativeSearchOptions,
+              serializer,
+            );
             sse_encode_results_order(order, serializer);
+            sse_encode_bool(matchNikud, serializer);
+            sse_encode_bool(matchTaamim, serializer);
+            sse_encode_search_scope(scope, serializer);
+            sse_encode_search_scope(negativeScope, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
@@ -2913,14 +3461,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           argValues: [
             that,
             query,
+            negativeQuery,
             facets,
             limit,
             offset,
             distance,
+            negativeDistance,
             customSpacing,
+            negativeCustomSpacing,
             alternativeWords,
+            negativeAlternativeWords,
             searchOptions,
+            negativeSearchOptions,
             order,
+            matchNikud,
+            matchTaamim,
+            scope,
+            negativeScope,
             chunkSize,
             sink,
           ],
@@ -2938,14 +3495,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "limit",
           "offset",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
           "order",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
           "chunkSize",
           "sink",
         ],
@@ -2956,14 +3522,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiSearchEngineSearchEngineSearchAdvancedStreamWithCounts({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
@@ -2977,17 +3552,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               serializer,
             );
             sse_encode_String(query, serializer);
+            sse_encode_String(negativeQuery, serializer);
             sse_encode_list_String(facets, serializer);
             sse_encode_u_32(limit, serializer);
             sse_encode_u_32(offset, serializer);
             sse_encode_u_32(distance, serializer);
+            sse_encode_u_32(negativeDistance, serializer);
             sse_encode_Map_String_String_None(customSpacing, serializer);
+            sse_encode_Map_String_String_None(
+              negativeCustomSpacing,
+              serializer,
+            );
             sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+            sse_encode_Map_u_32_list_String_None(
+              negativeAlternativeWords,
+              serializer,
+            );
             sse_encode_Map_String_Map_String_bool_None_None(
               searchOptions,
               serializer,
             );
+            sse_encode_Map_String_Map_String_bool_None_None(
+              negativeSearchOptions,
+              serializer,
+            );
             sse_encode_results_order(order, serializer);
+            sse_encode_bool(matchNikud, serializer);
+            sse_encode_bool(matchTaamim, serializer);
+            sse_encode_search_scope(scope, serializer);
+            sse_encode_search_scope(negativeScope, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
@@ -3006,14 +3599,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           argValues: [
             that,
             query,
+            negativeQuery,
             facets,
             limit,
             offset,
             distance,
+            negativeDistance,
             customSpacing,
+            negativeCustomSpacing,
             alternativeWords,
+            negativeAlternativeWords,
             searchOptions,
+            negativeSearchOptions,
             order,
+            matchNikud,
+            matchTaamim,
+            scope,
+            negativeScope,
             chunkSize,
             sink,
           ],
@@ -3031,14 +3633,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "limit",
           "offset",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
           "order",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
           "chunkSize",
           "sink",
         ],
@@ -3121,14 +3732,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiSearchEngineSearchEngineSearchAndCountAdvanced({
     required SearchEngine that,
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3139,17 +3759,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(query, serializer);
+          sse_encode_String(negativeQuery, serializer);
           sse_encode_list_String(facets, serializer);
           sse_encode_u_32(limit, serializer);
           sse_encode_u_32(offset, serializer);
           sse_encode_u_32(distance, serializer);
+          sse_encode_u_32(negativeDistance, serializer);
           sse_encode_Map_String_String_None(customSpacing, serializer);
+          sse_encode_Map_String_String_None(negativeCustomSpacing, serializer);
           sse_encode_Map_u_32_list_String_None(alternativeWords, serializer);
+          sse_encode_Map_u_32_list_String_None(
+            negativeAlternativeWords,
+            serializer,
+          );
           sse_encode_Map_String_Map_String_bool_None_None(
             searchOptions,
             serializer,
           );
+          sse_encode_Map_String_Map_String_bool_None_None(
+            negativeSearchOptions,
+            serializer,
+          );
           sse_encode_results_order(order, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
+          sse_encode_search_scope(scope, serializer);
+          sse_encode_search_scope(negativeScope, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3166,14 +3801,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           that,
           query,
+          negativeQuery,
           facets,
           limit,
           offset,
           distance,
+          negativeDistance,
           customSpacing,
+          negativeCustomSpacing,
           alternativeWords,
+          negativeAlternativeWords,
           searchOptions,
+          negativeSearchOptions,
           order,
+          matchNikud,
+          matchTaamim,
+          scope,
+          negativeScope,
         ],
         apiImpl: this,
       ),
@@ -3187,14 +3831,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "that",
           "query",
+          "negativeQuery",
           "facets",
           "limit",
           "offset",
           "distance",
+          "negativeDistance",
           "customSpacing",
+          "negativeCustomSpacing",
           "alternativeWords",
+          "negativeAlternativeWords",
           "searchOptions",
+          "negativeSearchOptions",
           "order",
+          "matchNikud",
+          "matchTaamim",
+          "scope",
+          "negativeScope",
         ],
       );
 
@@ -3206,6 +3859,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3220,6 +3875,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(limit, serializer);
           sse_encode_u_32(offset, serializer);
           sse_encode_results_order(order, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3233,7 +3890,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineSearchAndCountExactConstMeta,
-        argValues: [that, query, facets, limit, offset, order],
+        argValues: [
+          that,
+          query,
+          facets,
+          limit,
+          offset,
+          order,
+          matchNikud,
+          matchTaamim,
+        ],
         apiImpl: this,
       ),
     );
@@ -3243,7 +3909,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineSearchAndCountExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_search_and_count_exact",
-        argNames: ["that", "query", "facets", "limit", "offset", "order"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "limit",
+          "offset",
+          "order",
+          "matchNikud",
+          "matchTaamim",
+        ],
       );
 
   @override
@@ -3255,6 +3930,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3270,6 +3947,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(offset, serializer);
           sse_encode_u_8(maxDistance, serializer);
           sse_encode_results_order(order, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3283,7 +3962,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineSearchAndCountFuzzyConstMeta,
-        argValues: [that, query, facets, limit, offset, maxDistance, order],
+        argValues: [
+          that,
+          query,
+          facets,
+          limit,
+          offset,
+          maxDistance,
+          order,
+          matchNikud,
+          matchTaamim,
+        ],
         apiImpl: this,
       ),
     );
@@ -3301,6 +3990,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "offset",
           "maxDistance",
           "order",
+          "matchNikud",
+          "matchTaamim",
         ],
       );
 
@@ -3312,6 +4003,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3326,6 +4019,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(limit, serializer);
           sse_encode_u_32(offset, serializer);
           sse_encode_results_order(order, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3338,7 +4033,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineSearchExactConstMeta,
-        argValues: [that, query, facets, limit, offset, order],
+        argValues: [
+          that,
+          query,
+          facets,
+          limit,
+          offset,
+          order,
+          matchNikud,
+          matchTaamim,
+        ],
         apiImpl: this,
       ),
     );
@@ -3347,7 +4051,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_search_exact",
-        argNames: ["that", "query", "facets", "limit", "offset", "order"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "limit",
+          "offset",
+          "order",
+          "matchNikud",
+          "matchTaamim",
+        ],
       );
 
   @override
@@ -3358,6 +4071,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
@@ -3375,6 +4090,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_u_32(limit, serializer);
             sse_encode_u_32(offset, serializer);
             sse_encode_results_order(order, serializer);
+            sse_encode_bool(matchNikud, serializer);
+            sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
@@ -3397,6 +4114,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             limit,
             offset,
             order,
+            matchNikud,
+            matchTaamim,
             chunkSize,
             sink,
           ],
@@ -3418,6 +4137,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "limit",
           "offset",
           "order",
+          "matchNikud",
+          "matchTaamim",
           "chunkSize",
           "sink",
         ],
@@ -3432,6 +4153,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
@@ -3449,6 +4172,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_u_32(limit, serializer);
             sse_encode_u_32(offset, serializer);
             sse_encode_results_order(order, serializer);
+            sse_encode_bool(matchNikud, serializer);
+            sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
@@ -3471,6 +4196,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             limit,
             offset,
             order,
+            matchNikud,
+            matchTaamim,
             chunkSize,
             sink,
           ],
@@ -3492,6 +4219,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "limit",
           "offset",
           "order",
+          "matchNikud",
+          "matchTaamim",
           "chunkSize",
           "sink",
         ],
@@ -3506,6 +4235,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3521,6 +4252,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(offset, serializer);
           sse_encode_u_8(maxDistance, serializer);
           sse_encode_results_order(order, serializer);
+          sse_encode_bool(matchNikud, serializer);
+          sse_encode_bool(matchTaamim, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3533,7 +4266,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineSearchFuzzyConstMeta,
-        argValues: [that, query, facets, limit, offset, maxDistance, order],
+        argValues: [
+          that,
+          query,
+          facets,
+          limit,
+          offset,
+          maxDistance,
+          order,
+          matchNikud,
+          matchTaamim,
+        ],
         apiImpl: this,
       ),
     );
@@ -3550,6 +4293,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "offset",
           "maxDistance",
           "order",
+          "matchNikud",
+          "matchTaamim",
         ],
       );
 
@@ -3562,6 +4307,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
@@ -3580,6 +4327,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_u_32(offset, serializer);
             sse_encode_u_8(maxDistance, serializer);
             sse_encode_results_order(order, serializer);
+            sse_encode_bool(matchNikud, serializer);
+            sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
@@ -3603,6 +4352,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             offset,
             maxDistance,
             order,
+            matchNikud,
+            matchTaamim,
             chunkSize,
             sink,
           ],
@@ -3625,6 +4376,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "offset",
           "maxDistance",
           "order",
+          "matchNikud",
+          "matchTaamim",
           "chunkSize",
           "sink",
         ],
@@ -3640,6 +4393,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
@@ -3658,6 +4413,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_u_32(offset, serializer);
             sse_encode_u_8(maxDistance, serializer);
             sse_encode_results_order(order, serializer);
+            sse_encode_bool(matchNikud, serializer);
+            sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
@@ -3681,6 +4438,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             offset,
             maxDistance,
             order,
+            matchNikud,
+            matchTaamim,
             chunkSize,
             sink,
           ],
@@ -3703,6 +4462,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "offset",
           "maxDistance",
           "order",
+          "matchNikud",
+          "matchTaamim",
           "chunkSize",
           "sink",
         ],
@@ -3944,6 +4705,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3961,6 +4724,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(segment, serializer);
           sse_encode_bool(isPdf, serializer);
           sse_encode_String(filePath, serializer);
+          sse_encode_opt_box_autoadd_u_64(sectionId, serializer);
+          sse_encode_opt_box_autoadd_u_32(generationOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3983,6 +4748,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           segment,
           isPdf,
           filePath,
+          sectionId,
+          generationOrder,
         ],
         apiImpl: this,
       ),
@@ -4002,6 +4769,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "segment",
           "isPdf",
           "filePath",
+          "sectionId",
+          "generationOrder",
         ],
       );
 
@@ -4683,8 +5452,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DocumentInput dco_decode_document_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return DocumentInput(
       id: dco_decode_u_64(arr[0]),
       title: dco_decode_String(arr[1]),
@@ -4695,6 +5464,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       isPdf: dco_decode_bool(arr[6]),
       filePath: dco_decode_String(arr[7]),
       contentHash: dco_decode_opt_box_autoadd_u_64(arr[8]),
+      textVocalized: dco_decode_opt_String(arr[9]),
+      sectionId: dco_decode_opt_box_autoadd_u_64(arr[10]),
+      generationOrder: dco_decode_opt_box_autoadd_u_32(arr[11]),
     );
   }
 
@@ -5058,6 +5830,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SearchScope dco_decode_search_scope(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SearchScope.values[raw as int];
+  }
+
+  @protected
   SearchStreamUpdate dco_decode_search_stream_update(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -5409,6 +6187,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_isPdf = sse_decode_bool(deserializer);
     var var_filePath = sse_decode_String(deserializer);
     var var_contentHash = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_textVocalized = sse_decode_opt_String(deserializer);
+    var var_sectionId = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_generationOrder = sse_decode_opt_box_autoadd_u_32(deserializer);
     return DocumentInput(
       id: var_id,
       title: var_title,
@@ -5419,6 +6200,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       isPdf: var_isPdf,
       filePath: var_filePath,
       contentHash: var_contentHash,
+      textVocalized: var_textVocalized,
+      sectionId: var_sectionId,
+      generationOrder: var_generationOrder,
     );
   }
 
@@ -5933,6 +6717,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SearchScope sse_decode_search_scope(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SearchScope.values[inner];
+  }
+
+  @protected
   SearchStreamUpdate sse_decode_search_stream_update(
     SseDeserializer deserializer,
   ) {
@@ -6320,6 +7111,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.isPdf, serializer);
     sse_encode_String(self.filePath, serializer);
     sse_encode_opt_box_autoadd_u_64(self.contentHash, serializer);
+    sse_encode_opt_String(self.textVocalized, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.sectionId, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.generationOrder, serializer);
   }
 
   @protected
@@ -6784,6 +7578,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_search_scope(SearchScope self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_search_stream_update(
     SearchStreamUpdate self,
     SseSerializer serializer,
@@ -6903,6 +7703,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddDocument(
     that: this,
     id: id,
@@ -6913,6 +7715,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     segment: segment,
     isPdf: isPdf,
     filePath: filePath,
+    sectionId: sectionId,
+    generationOrder: generationOrder,
   );
 
   /// Add many documents in a single FFI call. Does not commit.
@@ -6945,6 +7749,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<PdfPageInput> pages,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddPdfBook(
     that: this,
@@ -6952,6 +7757,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     topics: topics,
     filePath: filePath,
     catalogueOrder: catalogueOrder,
+    generationOrder: generationOrder,
     pages: pages,
   );
 
@@ -6973,6 +7779,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required String text,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddTextBook(
     that: this,
@@ -6980,6 +7787,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     topics: topics,
     filePath: filePath,
     catalogueOrder: catalogueOrder,
+    generationOrder: generationOrder,
     text: text,
   );
 
@@ -6994,6 +7802,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<int> text,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddTextBookBytes(
     that: this,
@@ -7001,6 +7810,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     topics: topics,
     filePath: filePath,
     catalogueOrder: catalogueOrder,
+    generationOrder: generationOrder,
     text: text,
   );
 
@@ -7034,38 +7844,74 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
   Future<int> countAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountAdvanced(
     that: this,
     query: query,
+    negativeQuery: negativeQuery,
     facets: facets,
     distance: distance,
+    negativeDistance: negativeDistance,
     customSpacing: customSpacing,
+    negativeCustomSpacing: negativeCustomSpacing,
     alternativeWords: alternativeWords,
+    negativeAlternativeWords: negativeAlternativeWords,
     searchOptions: searchOptions,
+    negativeSearchOptions: negativeSearchOptions,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
+    scope: scope,
+    negativeScope: negativeScope,
   );
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
   Future<CountResult> countAdvancedWithStatus({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountAdvancedWithStatus(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
       );
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -7087,59 +7933,103 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
   Future<Map<String, int>> countByBookAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookAdvanced(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
       );
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
   Future<BookCountResult> countByBookAdvancedWithStatus({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
       );
 
   Future<Map<String, int>> countByBookExact({
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookExact(
     that: this,
     query: query,
     facets: facets,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
   );
 
   Future<Map<String, int>> countByBookFuzzy({
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookFuzzy(
     that: this,
     query: query,
     facets: facets,
     maxDistance: maxDistance,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
   );
 
   /// Like [`Self::count_by_book`] but also reports single-word truncation.
@@ -7170,21 +8060,29 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<int> countExact({
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountExact(
     that: this,
     query: query,
     facets: facets,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
   );
 
   Future<int> countFuzzy({
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountFuzzy(
     that: this,
     query: query,
     facets: facets,
     maxDistance: maxDistance,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
   );
 
   /// Like [`Self::count`] but also reports whether single-word collection
@@ -7317,55 +8215,95 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
   Future<List<FacetCount>> getFacetCountsAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvanced(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         facetPrefix: facetPrefix,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
       );
 
   /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
   Future<FacetCountsResult> getFacetCountsAdvancedWithStatus({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         facetPrefix: facetPrefix,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
       );
 
   Future<List<FacetCount>> getFacetCountsExact({
     required String query,
     required List<String> facets,
     required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineGetFacetCountsExact(
         that: this,
         query: query,
         facets: facets,
         facetPrefix: facetPrefix,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
       );
 
   Future<List<FacetCount>> getFacetCountsFuzzy({
@@ -7373,6 +8311,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineGetFacetCountsFuzzy(
         that: this,
@@ -7380,6 +8320,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         facets: facets,
         facetPrefix: facetPrefix,
         maxDistance: maxDistance,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
       );
 
   /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
@@ -7457,50 +8399,86 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   Future<List<SearchResult>> searchAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvanced(
     that: this,
     query: query,
+    negativeQuery: negativeQuery,
     facets: facets,
     limit: limit,
     offset: offset,
     distance: distance,
+    negativeDistance: negativeDistance,
     customSpacing: customSpacing,
+    negativeCustomSpacing: negativeCustomSpacing,
     alternativeWords: alternativeWords,
+    negativeAlternativeWords: negativeAlternativeWords,
     searchOptions: searchOptions,
+    negativeSearchOptions: negativeSearchOptions,
     order: order,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
+    scope: scope,
+    negativeScope: negativeScope,
   );
 
   Stream<List<SearchResult>> searchAdvancedStream({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvancedStream(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         limit: limit,
         offset: offset,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
         chunkSize: chunkSize,
       );
 
@@ -7510,27 +8488,45 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// calls a search screen would otherwise issue for the same query.
   Stream<SearchStreamUpdate> searchAdvancedStreamWithCounts({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAdvancedStreamWithCounts(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         limit: limit,
         offset: offset,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
         chunkSize: chunkSize,
       );
 
@@ -7559,26 +8555,44 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   Future<SearchPageResult> searchAndCountAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAndCountAdvanced(
         that: this,
         query: query,
+        negativeQuery: negativeQuery,
         facets: facets,
         limit: limit,
         offset: offset,
         distance: distance,
+        negativeDistance: negativeDistance,
         customSpacing: customSpacing,
+        negativeCustomSpacing: negativeCustomSpacing,
         alternativeWords: alternativeWords,
+        negativeAlternativeWords: negativeAlternativeWords,
         searchOptions: searchOptions,
+        negativeSearchOptions: negativeSearchOptions,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        scope: scope,
+        negativeScope: negativeScope,
       );
 
   Future<SearchPageResult> searchAndCountExact({
@@ -7587,6 +8601,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAndCountExact(
         that: this,
@@ -7595,6 +8611,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         limit: limit,
         offset: offset,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
       );
 
   Future<SearchPageResult> searchAndCountFuzzy({
@@ -7604,6 +8622,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAndCountFuzzy(
         that: this,
@@ -7613,6 +8633,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         offset: offset,
         maxDistance: maxDistance,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
       );
 
   Future<List<SearchResult>> searchExact({
@@ -7621,6 +8643,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchExact(
     that: this,
     query: query,
@@ -7628,6 +8652,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     limit: limit,
     offset: offset,
     order: order,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
   );
 
   Stream<List<SearchResult>> searchExactStream({
@@ -7636,6 +8662,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchExactStream(
     that: this,
@@ -7644,6 +8672,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     limit: limit,
     offset: offset,
     order: order,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
     chunkSize: chunkSize,
   );
 
@@ -7657,6 +8687,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchExactStreamWithCounts(
@@ -7666,6 +8698,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         limit: limit,
         offset: offset,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
         chunkSize: chunkSize,
       );
 
@@ -7676,6 +8710,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchFuzzy(
     that: this,
     query: query,
@@ -7684,6 +8720,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     offset: offset,
     maxDistance: maxDistance,
     order: order,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
   );
 
   Stream<List<SearchResult>> searchFuzzyStream({
@@ -7693,6 +8731,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchFuzzyStream(
     that: this,
@@ -7702,6 +8742,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     offset: offset,
     maxDistance: maxDistance,
     order: order,
+    matchNikud: matchNikud,
+    matchTaamim: matchTaamim,
     chunkSize: chunkSize,
   );
 
@@ -7716,6 +8758,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchFuzzyStreamWithCounts(
@@ -7726,6 +8770,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         offset: offset,
         maxDistance: maxDistance,
         order: order,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
         chunkSize: chunkSize,
       );
 
@@ -7821,6 +8867,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineUpsertDocument(
     that: this,
     id: id,
@@ -7831,6 +8879,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     segment: segment,
     isPdf: isPdf,
     filePath: filePath,
+    sectionId: sectionId,
+    generationOrder: generationOrder,
   );
 
   /// Upsert many documents in a single FFI call. Does not commit.

@@ -30,9 +30,12 @@ use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
 use crate::display_highlight;
+use crate::gap_phrase::GapVerifiedPhraseQuery;
 use crate::hebrew_query;
-use crate::hebrew_tokenizer::HebrewTokenizer;
+use crate::hebrew_query::VocalizedFlags;
+use crate::hebrew_tokenizer::{HebrewTokenizer, VocalizedHebrewTokenizer};
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
+use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -62,6 +65,17 @@ pub struct DocumentInput {
     /// current library source. `None`/`0` means "no fingerprint recorded"
     /// (e.g. PDF books).
     pub content_hash: Option<u64>,
+    /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
+    /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
+    /// פשוט לא תשתתף בחיפוש מנוקד. מסלול [`SearchEngine::add_text_book`]
+    /// מחשב זאת בעצמו; השדה קיים לצינורות שמוסיפים מסמכים מוכנים.
+    pub text_vocalized: Option<String>,
+    /// מזהה הסעיף (בלוק הכותרת) של השורה — ראו השדה `sectionId` בסכימה.
+    /// `None` = השורה סעיף לעצמה (`id` משמש כמזהה), כך שחיפוש "תחת אותה
+    /// כותרת" מתנהג כמו "באותה פסקה" עבור מסמכים שהוזנו בלי מזהה סעיף.
+    pub section_id: Option<u64>,
+    /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
+    pub generation_order: Option<u32>,
 }
 
 /// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
@@ -158,9 +172,24 @@ pub struct IndexCompatibility {
     pub reason: Option<String>,
 }
 
+/// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
+pub enum SearchScope {
+    /// ההתנהגות הקיימת: המילים מופיעות לפי סדר השאילתה, עם מגבלת
+    /// מילים-ביניים לכל זוג סמוך (`distance` / `custom_spacing`).
+    WordDistance,
+    /// כל המילים באותה פסקה (מסמך אינדקס אחד = שורת ספר), בכל סדר ובכל
+    /// מרחק. `distance`/`custom_spacing` אינם רלוונטיים במצב זה.
+    SameParagraph,
+    /// כל המילים תחת אותה כותרת (אותו בלוק `reference` — סעיף/פרק), גם
+    /// כשהן פזורות על פני שורות שונות. התוצאות הן השורות שבתוך סעיף
+    /// חותך שמכילות מילה מהשאילתה.
+    SameSection,
+}
+
 pub enum ResultsOrder {
     Catalogue,
     Relevance,
+    Generation,
 }
 
 /// Per-word index-term sets plus the intermediate-word allowance, used by the
@@ -174,14 +203,19 @@ pub enum ResultsOrder {
 /// search matched only the adjacent phrase "משה ואהרן". This filter drops such
 /// stray highlights so the snippet paints exactly what the search matched.
 ///
-/// `max_gap` is the maximum number of intermediate index tokens allowed
-/// between two adjacent query words — the same intermediate-word model
-/// `display_highlight` uses for an opened book, so the results snippet and the
-/// book agree.
+/// `gaps[i]` is the maximum number of intermediate index tokens allowed
+/// between query words `i` and `i+1` — the same per-pair intermediate-word
+/// model `display_highlight` and the engine's phrase verification use, so the
+/// results snippet, the search, and the book agree.
 struct PhraseHighlight {
     /// One index-term set per query word, in query (= phrase) order.
     per_word_terms: Vec<HashSet<String>>,
-    max_gap: u32,
+    /// Per adjacent pair; length `per_word_terms.len() - 1`.
+    gaps: Vec<u32>,
+    /// The analyzer that tokenizes snippet fragments for re-highlighting —
+    /// must match the field the terms came from (`"hebrew"` for `text`,
+    /// `"hebrew_vocalized"` for `textVocalized`).
+    analyzer: &'static str,
 }
 
 /// What a highlight-query builder resolves to: the flat term query that drives
@@ -207,9 +241,10 @@ impl HighlightPlan {
 
 /// What [`SearchEngine::build_advanced_query`] returns: the executable query,
 /// one joined regex pattern per word (for highlight-term materialization), the
-/// resolved phrase `slop` (folds `custom_spacing` in — the phrase highlight
-/// filter's gap allowance), and whether single-word collection truncated.
-type AdvancedQueryBuild = (Box<dyn Query>, Vec<String>, u32, bool);
+/// resolved per-pair gap allowances (fold `custom_spacing`/`distance` in — the
+/// phrase highlight filter's gap allowances), and whether single-word
+/// collection truncated.
+type AdvancedQueryBuild = (Box<dyn Query>, Vec<String>, Vec<u32>, bool);
 
 /// Regex patterns for highlighting query matches in *displayed* book text
 /// (which, unlike index terms, still carries nikud and HTML). All patterns
@@ -240,11 +275,20 @@ const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
 const DEFAULT_WRITER_HEAP_SIZE: usize = 300_000_000;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
-// גרסה 3: המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים בטוקנים) משנה את
-// מילון הטרמים, והוסר ה-fast field מ-`text` (עותק columnar של כל הקורפוס
-// שאיש לא קרא) — הסכימה בדיסק שונה, אינדקסים ישנים חייבים בנייה מחדש.
+// גרסה 3 (טרם פורסמה): המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים
+// בטוקנים) משנה את מילון הטרמים, הוסר ה-fast field מ-`text` (עותק columnar
+// של כל הקורפוס שאיש לא קרא), ונוסף השדה `textVocalized` (אינדקס + אחסון
+// של שורות מנוקדות, טוקנייזר ששומר ניקוד/טעמים) עבור חיפוש מנוקד —
+// הסכימה בדיסק שונה מגרסה 2, אינדקסים ישנים חייבים בנייה מחדש.
+//
+// שים לב: נוסף השדה `sectionId` (FAST) עבור חיפוש "תחת אותה כותרת" —
+// שינוי סכימה שמחייב העלאת גרסה לפני פרסום (בדיקת התאימות משווה גם את
+// סכימת ה-tantivy בפועל, כך שאינדקס ישן ידווח rebuild_required גם בלעדיה).
 const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
+const DEFAULT_GENERATION_ORDER: u32 = 5;
+const GENERATION_SORT_SHIFT: u32 = 56;
+const GENERATION_SORT_ID_MASK: u64 = (1u64 << GENERATION_SORT_SHIFT) - 1;
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
@@ -281,8 +325,9 @@ const FUZZY_BOOST_EXACT_REL: Score = 1.0;
 const FUZZY_BOOST_LEXICAL: Score = 30.0;
 const FUZZY_BOOST_FUZZY: Score = 1.0;
 
-/// The nine schema fields resolved together by [`SearchEngine::all_fields`]:
-/// `(title, reference, text, id, segment, isPdf, filePath, topics, contentHash)`.
+/// The schema fields resolved together by [`SearchEngine::all_fields`]:
+/// `(title, reference, text, id, segment, isPdf, filePath, topics,
+/// contentHash, textVocalized, sectionId, generationSort)`.
 type SchemaFields = (
     Field,
     Field,
@@ -293,7 +338,14 @@ type SchemaFields = (
     Field,
     Field,
     Field,
+    Field,
+    Field,
+    Field,
 );
+
+fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
+    (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
+}
 
 #[derive(Serialize, Deserialize)]
 struct IndexMetadata {
@@ -792,6 +844,20 @@ fn current_schema() -> Schema {
             )
             .set_stored(),
     );
+    // השדה המנוקד: מאוכלס רק בשורות שנושאות ניקוד/טעמים (שאר השורות פשוט
+    // אינן קיימות בו — tantivy מטפל בשדה חסר בחינם). מאונדקס בטוקנייזר
+    // ששומר את הסימנים, ומאוחסן כדי שתוצאות חיפוש מנוקד יציגו את הטקסט
+    // המנוקד. חיפוש רגיל אינו נוגע בשדה הזה כלל.
+    schema_builder.add_text_field(
+        "textVocalized",
+        TextOptions::default()
+            .set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer("hebrew_vocalized")
+                    .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+            )
+            .set_stored(),
+    );
     schema_builder.add_text_field("reference", STORED);
     schema_builder.add_text_field(
         "title",
@@ -812,6 +878,13 @@ fn current_schema() -> Schema {
     // a book. FAST-only: read columnar by get_book_fingerprints, never searched
     // or returned. 0 = no fingerprint recorded.
     schema_builder.add_u64_field("contentHash", FAST);
+    // מזהה סעיף: כל השורות שתחת אותה כותרת (אותו בלוק reference) נושאות
+    // אותו ערך, ייחודי גלובלית — id_base של הספר + אינדקס בלוק הכותרת
+    // (ב-PDF: מספר העמוד). FAST בלבד: מסלול "תחת אותה כותרת"
+    // (SearchScope::SameSection) קורא אותו עמודתית לחיתוך סעיפים; אינו
+    // מאוחסן ואינו מחופש ישירות.
+    schema_builder.add_u64_field("sectionId", FAST);
+    schema_builder.add_u64_field("generationSort", FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
     schema_builder.build()
 }
@@ -822,6 +895,10 @@ fn current_schema() -> Schema {
 #[derive(Hash, PartialEq, Eq)]
 struct TermCacheKey {
     generation: u64,
+    /// The dictionary the branches were scanned against (`text` vs
+    /// `textVocalized`) — identical branch strings on different fields
+    /// materialize different term sets.
+    field: Field,
     branches: Vec<String>,
     /// Tokens expanded via Levenshtein-1 automaton scans (single-word typo
     /// path); part of the key because the same branches with different typo
@@ -855,6 +932,23 @@ struct CachedTermSet {
 /// `Vec<Term>`. Initial value pending empirical calibration via
 /// `benchmark_cli` (VARIATION_CEILING_RESEARCH.md §3.א).
 const SINGLE_WORD_POSTINGS_BUDGET: u64 = 1_000_000;
+
+// ── Vocalized-path expansion ceilings ──────────────────────────────────────
+// Vocalized patterns are always expansions (free-mark runs match every
+// vocalization of the word), so even "exact" vocalized search materializes a
+// term set. The postings budget above remains the true cost guard; these
+// only bound the materialized `Vec<Term>` / phrase-expansion memory.
+
+/// Term ceiling for one exact vocalized word (`TermSetQuery` path).
+const VOC_EXACT_SINGLE_MAX_EXPANSIONS: u32 = 4_096;
+/// Cumulative expansion ceiling for a vocalized phrase (`RegexPhraseQuery`).
+const VOC_PHRASE_MAX_EXPANSIONS: u32 = 8_192;
+/// Term ceiling for one fuzzy vocalized word (exact + lexical + edit-distance
+/// branches share it; overflow degrades like the advanced single-word path).
+const VOC_FUZZY_MAX_EXPANSIONS: u32 = 20_000;
+/// Cap on plain-dictionary variants collected per token by the vocalized
+/// fuzzy/typo expansion (the Levenshtein scan runs on mark-free bases).
+const VOC_VARIANTS_PER_TOKEN: usize = 128;
 
 pub struct SearchEngine {
     schema: Schema,
@@ -909,6 +1003,12 @@ impl SearchEngine {
         index.tokenizers().register(
             "hebrew",
             TextAnalyzer::builder(HebrewTokenizer)
+                .filter(LowerCaser)
+                .build(),
+        );
+        index.tokenizers().register(
+            "hebrew_vocalized",
+            TextAnalyzer::builder(VocalizedHebrewTokenizer)
                 .filter(LowerCaser)
                 .build(),
         );
@@ -989,6 +1089,8 @@ impl SearchEngine {
         _segment: u64,
         _is_pdf: bool,
         _file_path: &str,
+        _section_id: Option<u64>,
+        _generation_order: Option<u32>,
     ) -> Result<()> {
         let (
             title_f,
@@ -1000,9 +1102,12 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_vocalized_f,
+            section_id_f,
+            generation_sort_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(_topics)?;
-        self.writer_mut()?.add_document(doc!(
+        let mut document = doc!(
             title_f        => _title,
             reference_f    => _reference,
             text_f         => _text,
@@ -1011,8 +1116,22 @@ impl SearchEngine {
             is_pdf_f       => _is_pdf,
             file_path_f    => _file_path,
             topics_f       => topics_facet,
-            content_hash_f => 0u64
-        ))?;
+            content_hash_f => 0u64,
+            section_id_f   => _section_id.unwrap_or(_id),
+            generation_sort_f => generation_sort_key(
+                _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
+                _id
+            )
+        );
+        // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; `_text` מגיע בדרך
+        // כלל מנורמל (נטול סימנים) ואז אין תוספת.
+        if hebrew_query::contains_attached_marks(_text) {
+            document.add_text(
+                text_vocalized_f,
+                hebrew_query::normalize_vocalized_text_for_indexing(_text),
+            );
+        }
+        self.writer_mut()?.add_document(document)?;
         Ok(())
     }
 
@@ -1029,11 +1148,14 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_vocalized_f,
+            section_id_f,
+            generation_sort_f,
         ) = self.all_fields()?;
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
-            writer.add_document(doc!(
+            let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
                 text_f         => doc.text,
@@ -1042,8 +1164,19 @@ impl SearchEngine {
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                content_hash_f => doc.content_hash.unwrap_or(0)
-            ))?;
+                content_hash_f => doc.content_hash.unwrap_or(0),
+                section_id_f   => doc.section_id.unwrap_or(doc.id),
+                generation_sort_f => generation_sort_key(
+                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
+                    doc.id
+                )
+            );
+            if let Some(vocalized) = doc.text_vocalized {
+                if !vocalized.is_empty() {
+                    document.add_text(text_vocalized_f, vocalized);
+                }
+            }
+            writer.add_document(document)?;
         }
         Ok(())
     }
@@ -1067,9 +1200,17 @@ impl SearchEngine {
         topics: String,
         file_path: String,
         catalogue_order: u32,
+        generation_order: u32,
         text: String,
     ) -> Result<u32> {
-        self.add_text_book_impl(title, topics, file_path, catalogue_order, &text)
+        self.add_text_book_impl(
+            title,
+            topics,
+            file_path,
+            catalogue_order,
+            generation_order,
+            &text,
+        )
     }
 
     /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
@@ -1084,6 +1225,7 @@ impl SearchEngine {
         topics: String,
         file_path: String,
         catalogue_order: u32,
+        generation_order: u32,
         text: Vec<u8>,
     ) -> Result<u32> {
         let text = match String::from_utf8_lossy(&text) {
@@ -1093,7 +1235,14 @@ impl SearchEngine {
             }
             std::borrow::Cow::Owned(fixed) => fixed,
         };
-        self.add_text_book_impl(title, topics, file_path, catalogue_order, &text)
+        self.add_text_book_impl(
+            title,
+            topics,
+            file_path,
+            catalogue_order,
+            generation_order,
+            &text,
+        )
     }
 
     fn add_text_book_impl(
@@ -1102,6 +1251,7 @@ impl SearchEngine {
         topics: String,
         file_path: String,
         catalogue_order: u32,
+        generation_order: u32,
         text: &str,
     ) -> Result<u32> {
         if text.is_empty() {
@@ -1119,6 +1269,9 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_vocalized_f,
+            section_id_f,
+            generation_sort_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(&topics)?;
         let content_hash = content_fingerprint(text);
@@ -1146,29 +1299,46 @@ impl SearchEngine {
         }
 
         // The expensive pass — normalization is order-independent across
-        // lines, so it fans out over all cores.
+        // lines, so it fans out over all cores. A line carrying nikud/taamim
+        // also gets its vocalized rendering, for the `textVocalized` field
+        // (the mark check is cheap and almost always short-circuits false).
         use rayon::prelude::*;
-        let normalized: Vec<String> = lines
+        let normalized: Vec<(String, Option<String>)> = lines
             .par_iter()
-            .map(|raw_line| hebrew_query::normalize_text_for_indexing(raw_line))
+            .map(|raw_line| {
+                let plain = hebrew_query::normalize_text_for_indexing(raw_line);
+                let vocalized = hebrew_query::contains_attached_marks(raw_line)
+                    .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
+                    .filter(|v| !v.is_empty());
+                (plain, vocalized)
+            })
             .collect();
         let prepare_time = prepare_started.elapsed();
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        for (segment, normalized_line) in normalized.into_iter().enumerate() {
+        for (segment, (normalized_line, vocalized_line)) in normalized.into_iter().enumerate() {
             let reference = references[reference_of_line[segment] as usize].as_str();
-            writer.add_document(doc!(
+            let id = id_base + ordinal + 1;
+            let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => reference,
                 text_f         => normalized_line,
-                id_f           => id_base + ordinal + 1,
+                id_f           => id,
                 segment_f      => segment as u64,
                 is_pdf_f       => false,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
-                content_hash_f => content_hash
-            ))?;
+                content_hash_f => content_hash,
+                // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
+                // בין ספרים, אז המזהה ייחודי גלובלית.
+                section_id_f   => id_base + u64::from(reference_of_line[segment]),
+                generation_sort_f => generation_sort_key(generation_order, id)
+            );
+            if let Some(vocalized) = vocalized_line {
+                document.add_text(text_vocalized_f, vocalized);
+            }
+            writer.add_document(document)?;
             ordinal += 1;
         }
         let enqueue_time = enqueue_started.elapsed();
@@ -1203,6 +1373,7 @@ impl SearchEngine {
         topics: String,
         file_path: String,
         catalogue_order: u32,
+        generation_order: u32,
         pages: Vec<PdfPageInput>,
     ) -> Result<u32> {
         if pages.is_empty() {
@@ -1221,6 +1392,11 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            // PDF אינו משתתף בחיפוש מנוקד: ניקוד שמגיע מ-OCR אינו אמין,
+            // והנרמול של PDF ממילא מוחק אותו.
+            _text_vocalized_f,
+            section_id_f,
+            generation_sort_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(&topics)?;
         let id_base = (u64::from(catalogue_order) + 1) << 32;
@@ -1254,16 +1430,20 @@ impl SearchEngine {
                 continue;
             }
             let page = &pages[page_idx];
+            let id = id_base + ordinal + 1;
             writer.add_document(doc!(
                 title_f        => title.as_str(),
                 reference_f    => page.reference.as_str(),
                 text_f         => normalized,
-                id_f           => id_base + ordinal + 1,
+                id_f           => id,
                 segment_f      => u64::from(page.page_index),
                 is_pdf_f       => true,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
-                content_hash_f => 0u64
+                content_hash_f => 0u64,
+                // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
+                section_id_f   => id_base + u64::from(page.page_index),
+                generation_sort_f => generation_sort_key(generation_order, id)
             ))?;
             ordinal += 1;
         }
@@ -1288,10 +1468,21 @@ impl SearchEngine {
         _segment: u64,
         _is_pdf: bool,
         _file_path: &str,
+        _section_id: Option<u64>,
+        _generation_order: Option<u32>,
     ) -> Result<()> {
         self.delete_document_by_id(_id)?;
         self.add_document(
-            _id, _title, _reference, _topics, _text, _segment, _is_pdf, _file_path,
+            _id,
+            _title,
+            _reference,
+            _topics,
+            _text,
+            _segment,
+            _is_pdf,
+            _file_path,
+            _section_id,
+            _generation_order,
         )
     }
 
@@ -1307,12 +1498,15 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_vocalized_f,
+            section_id_f,
+            generation_sort_f,
         ) = self.all_fields()?;
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
-            writer.add_document(doc!(
+            let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
                 text_f         => doc.text,
@@ -1321,8 +1515,19 @@ impl SearchEngine {
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                content_hash_f => doc.content_hash.unwrap_or(0)
-            ))?;
+                content_hash_f => doc.content_hash.unwrap_or(0),
+                section_id_f   => doc.section_id.unwrap_or(doc.id),
+                generation_sort_f => generation_sort_key(
+                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
+                    doc.id
+                )
+            );
+            if let Some(vocalized) = doc.text_vocalized {
+                if !vocalized.is_empty() {
+                    document.add_text(text_vocalized_f, vocalized);
+                }
+            }
+            writer.add_document(document)?;
         }
         Ok(())
     }
@@ -1433,6 +1638,7 @@ impl SearchEngine {
         self.run_search(
             query,
             |_| Ok(HighlightPlan::none()),
+            self.schema.get_field("text")?,
             limit,
             offset,
             &order,
@@ -1458,6 +1664,7 @@ impl SearchEngine {
         self.run_search_and_count(
             query,
             |_| Ok(HighlightPlan::none()),
+            self.schema.get_field("text")?,
             limit,
             offset,
             &order,
@@ -1719,6 +1926,7 @@ impl SearchEngine {
         self.run_search(
             query,
             |s| self.fuzzy_highlight_plan(s, &terms, max_distance),
+            self.schema.get_field("text")?,
             limit,
             offset,
             &order,
@@ -1754,6 +1962,7 @@ impl SearchEngine {
             self.run_search_stream(
                 query,
                 |_| Ok(HighlightPlan::none()),
+                self.schema.get_field("text")?,
                 limit,
                 offset,
                 &order,
@@ -1782,11 +1991,15 @@ impl SearchEngine {
         limit: u32,
         offset: u32,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<Vec<SearchResult>> {
-        let q = self.build_exact_query(&query, &facets)?;
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
         self.run_search(
             q,
-            |_| self.exact_highlight_plan(&query),
+            |s| self.exact_highlight_plan(s, &query, &voc),
+            self.search_text_field(&voc)?,
             limit,
             offset,
             &order,
@@ -1794,6 +2007,7 @@ impl SearchEngine {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_and_count_exact(
         &self,
         query: String,
@@ -1801,19 +2015,24 @@ impl SearchEngine {
         limit: u32,
         offset: u32,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<SearchPageResult> {
-        let q = self.build_exact_query(&query, &facets)?;
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
         self.run_search_and_count(
             q,
-            |_| self.exact_highlight_plan(&query),
+            |s| self.exact_highlight_plan(s, &query, &voc),
+            self.search_text_field(&voc)?,
             limit,
             offset,
             &order,
             &HighlightConfig::default(),
-            false,
+            truncated,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_exact_stream(
         &self,
         query: String,
@@ -1821,14 +2040,18 @@ impl SearchEngine {
         limit: u32,
         offset: u32,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
-            let q = self.build_exact_query(&query, &facets)?;
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
             self.run_search_stream(
                 q,
-                |_| self.exact_highlight_plan(&query),
+                |s| self.exact_highlight_plan(s, &query, &voc),
+                self.search_text_field(&voc)?,
                 limit,
                 offset,
                 &order,
@@ -1844,6 +2067,7 @@ impl SearchEngine {
     /// the total hit count and per-book counts from the same index pass —
     /// replacing the separate `count_exact` + `count_by_book_exact` calls a
     /// search screen would otherwise issue for the same query.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_exact_stream_with_counts(
         &self,
         query: String,
@@ -1851,29 +2075,42 @@ impl SearchEngine {
         limit: u32,
         offset: u32,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
         chunk_size: u32,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
-            let q = self.build_exact_query(&query, &facets)?;
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            // The mark-free exact path never degrades under a collection
+            // budget; the vocalized single-word path can (its term set is
+            // materialized like an advanced word).
+            let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
             self.run_search_stream_with_counts(
                 q,
-                |_| self.exact_highlight_plan(&query),
+                |s| self.exact_highlight_plan(s, &query, &voc),
+                self.search_text_field(&voc)?,
                 limit,
                 offset,
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
-                // The exact path never degrades under a collection budget.
-                false,
+                truncated,
                 &sink,
             )
         })();
         Self::surface_stream_error(&sink, result)
     }
 
-    pub fn count_exact(&self, query: String, facets: Vec<String>) -> Result<u32> {
-        let q = self.build_exact_query(&query, &facets)?;
+    pub fn count_exact(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<u32> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
         self.run_count(q)
     }
 
@@ -1881,8 +2118,11 @@ impl SearchEngine {
         &self,
         query: String,
         facets: Vec<String>,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<HashMap<String, u32>> {
-        let q = self.build_exact_query(&query, &facets)?;
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
         self.run_count_by_book(q)
     }
 
@@ -1891,8 +2131,11 @@ impl SearchEngine {
         query: String,
         facets: Vec<String>,
         facet_prefix: String,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<Vec<FacetCount>> {
-        let q = self.build_exact_query(&query, &facets)?;
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
         self.run_facet_counts(q, facet_prefix)
     }
 
@@ -1901,26 +2144,54 @@ impl SearchEngine {
     pub fn search_advanced(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         limit: u32,
         offset: u32,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<Vec<SearchResult>> {
-        let (q, regex_terms, slop, _) = self.build_advanced_query(
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        // מצב-שדה: הדגלים הגלובליים או אפשרות "ניקוד"/"טעמים" פר-מילה —
+        // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
+        // בתוך בניית השאילתה.
+        let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
+        let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
             &alternative_words,
             &search_options,
             facets,
+            &voc,
+            &scope,
+        )?;
+        let (q, _) = self.apply_advanced_negative_query(
+            q,
+            truncated,
+            &negative_query,
+            negative_distance,
+            &negative_custom_spacing,
+            &negative_alternative_words,
+            &negative_search_options,
+            &voc,
+            &negative_scope,
         )?;
         self.run_search(
             q,
-            |s| self.advanced_highlight_plan(s, &regex_terms, slop),
+            |s| self.advanced_highlight_plan_for_scope(s, &regex_terms, &gaps, &voc_mode, &scope),
+            self.search_text_field(&voc_mode)?,
             limit,
             offset,
             &order,
@@ -1931,26 +2202,51 @@ impl SearchEngine {
     pub fn search_and_count_advanced(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         limit: u32,
         offset: u32,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<SearchPageResult> {
-        let (q, regex_terms, slop, truncated) = self.build_advanced_query(
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
+        let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
             &alternative_words,
             &search_options,
             facets,
+            &voc,
+            &scope,
+        )?;
+        let (q, truncated) = self.apply_advanced_negative_query(
+            q,
+            truncated,
+            &negative_query,
+            negative_distance,
+            &negative_custom_spacing,
+            &negative_alternative_words,
+            &negative_search_options,
+            &voc,
+            &negative_scope,
         )?;
         self.run_search_and_count(
             q,
-            |s| self.advanced_highlight_plan(s, &regex_terms, slop),
+            |s| self.advanced_highlight_plan_for_scope(s, &regex_terms, &gaps, &voc_mode, &scope),
+            self.search_text_field(&voc_mode)?,
             limit,
             offset,
             &order,
@@ -1962,29 +2258,62 @@ impl SearchEngine {
     pub fn search_advanced_stream(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         limit: u32,
         offset: u32,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
-            let (q, regex_terms, slop, _) = self.build_advanced_query(
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
+            let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
                 &alternative_words,
                 &search_options,
                 facets,
+                &voc,
+                &scope,
+            )?;
+            let (q, _) = self.apply_advanced_negative_query(
+                q,
+                truncated,
+                &negative_query,
+                negative_distance,
+                &negative_custom_spacing,
+                &negative_alternative_words,
+                &negative_search_options,
+                &voc,
+                &negative_scope,
             )?;
             self.run_search_stream(
                 q,
-                |s| self.advanced_highlight_plan(s, &regex_terms, slop),
+                |s| {
+                    self.advanced_highlight_plan_for_scope(
+                        s,
+                        &regex_terms,
+                        &gaps,
+                        &voc_mode,
+                        &scope,
+                    )
+                },
+                self.search_text_field(&voc_mode)?,
                 limit,
                 offset,
                 &order,
@@ -2004,29 +2333,62 @@ impl SearchEngine {
     pub fn search_advanced_stream_with_counts(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         limit: u32,
         offset: u32,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
         chunk_size: u32,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
-            let (q, regex_terms, slop, truncated) = self.build_advanced_query(
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
+            let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
                 &alternative_words,
                 &search_options,
                 facets,
+                &voc,
+                &scope,
+            )?;
+            let (q, truncated) = self.apply_advanced_negative_query(
+                q,
+                truncated,
+                &negative_query,
+                negative_distance,
+                &negative_custom_spacing,
+                &negative_alternative_words,
+                &negative_search_options,
+                &voc,
+                &negative_scope,
             )?;
             self.run_search_stream_with_counts(
                 q,
-                |s| self.advanced_highlight_plan(s, &regex_terms, slop),
+                |s| {
+                    self.advanced_highlight_plan_for_scope(
+                        s,
+                        &regex_terms,
+                        &gaps,
+                        &voc_mode,
+                        &scope,
+                    )
+                },
+                self.search_text_field(&voc_mode)?,
                 limit,
                 offset,
                 &order,
@@ -2041,23 +2403,42 @@ impl SearchEngine {
 
     /// Advanced-query hit count. Drops the single-word truncation flag — see
     /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
+    #[allow(clippy::too_many_arguments)]
     pub fn count_advanced(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<u32> {
         Ok(self
             .count_advanced_with_status(
                 query,
+                negative_query,
                 facets,
                 distance,
+                negative_distance,
                 custom_spacing,
+                negative_custom_spacing,
                 alternative_words,
+                negative_alternative_words,
                 search_options,
+                negative_search_options,
+                match_nikud,
+                match_taamim,
+                scope,
+                negative_scope,
             )?
             .count)
     }
@@ -2067,12 +2448,22 @@ impl SearchEngine {
     pub fn count_advanced_with_status(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<CountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated) = self.build_advanced_query(
             &query,
             distance,
@@ -2080,6 +2471,19 @@ impl SearchEngine {
             &alternative_words,
             &search_options,
             facets,
+            &voc,
+            &scope,
+        )?;
+        let (q, truncated) = self.apply_advanced_negative_query(
+            q,
+            truncated,
+            &negative_query,
+            negative_distance,
+            &negative_custom_spacing,
+            &negative_alternative_words,
+            &negative_search_options,
+            &voc,
+            &negative_scope,
         )?;
         Ok(CountResult {
             count: self.run_count(q)?,
@@ -2089,23 +2493,42 @@ impl SearchEngine {
 
     /// Advanced-query per-book counts. Drops the truncation flag — see
     /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
+    #[allow(clippy::too_many_arguments)]
     pub fn count_by_book_advanced(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_advanced_with_status(
                 query,
+                negative_query,
                 facets,
                 distance,
+                negative_distance,
                 custom_spacing,
+                negative_custom_spacing,
                 alternative_words,
+                negative_alternative_words,
                 search_options,
+                negative_search_options,
+                match_nikud,
+                match_taamim,
+                scope,
+                negative_scope,
             )?
             .counts)
     }
@@ -2115,12 +2538,22 @@ impl SearchEngine {
     pub fn count_by_book_advanced_with_status(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<BookCountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated) = self.build_advanced_query(
             &query,
             distance,
@@ -2128,6 +2561,19 @@ impl SearchEngine {
             &alternative_words,
             &search_options,
             facets,
+            &voc,
+            &scope,
+        )?;
+        let (q, truncated) = self.apply_advanced_negative_query(
+            q,
+            truncated,
+            &negative_query,
+            negative_distance,
+            &negative_custom_spacing,
+            &negative_alternative_words,
+            &negative_search_options,
+            &voc,
+            &negative_scope,
         )?;
         Ok(BookCountResult {
             counts: self.run_count_by_book(q)?,
@@ -2137,25 +2583,44 @@ impl SearchEngine {
 
     /// Advanced-query facet counts. Drops the truncation flag — see
     /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
+    #[allow(clippy::too_many_arguments)]
     pub fn get_facet_counts_advanced(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         facet_prefix: String,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<Vec<FacetCount>> {
         Ok(self
             .get_facet_counts_advanced_with_status(
                 query,
+                negative_query,
                 facets,
                 facet_prefix,
                 distance,
+                negative_distance,
                 custom_spacing,
+                negative_custom_spacing,
                 alternative_words,
+                negative_alternative_words,
                 search_options,
+                negative_search_options,
+                match_nikud,
+                match_taamim,
+                scope,
+                negative_scope,
             )?
             .counts)
     }
@@ -2165,13 +2630,23 @@ impl SearchEngine {
     pub fn get_facet_counts_advanced_with_status(
         &self,
         query: String,
+        negative_query: String,
         facets: Vec<String>,
         facet_prefix: String,
         distance: u32,
+        negative_distance: u32,
         custom_spacing: HashMap<String, String>,
+        negative_custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
+        negative_alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        negative_search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+        negative_scope: SearchScope,
     ) -> Result<FacetCountsResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated) = self.build_advanced_query(
             &query,
             distance,
@@ -2179,6 +2654,19 @@ impl SearchEngine {
             &alternative_words,
             &search_options,
             facets,
+            &voc,
+            &scope,
+        )?;
+        let (q, truncated) = self.apply_advanced_negative_query(
+            q,
+            truncated,
+            &negative_query,
+            negative_distance,
+            &negative_custom_spacing,
+            &negative_alternative_words,
+            &negative_search_options,
+            &voc,
+            &negative_scope,
         )?;
         Ok(FacetCountsResult {
             counts: self.run_facet_counts(q, facet_prefix)?,
@@ -2188,6 +2676,7 @@ impl SearchEngine {
 
     // -- Fuzzy -------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_fuzzy(
         &self,
         query: String,
@@ -2196,13 +2685,31 @@ impl SearchEngine {
         offset: u32,
         max_distance: u8,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<Vec<SearchResult>> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        if voc.any() {
+            // The vocalized query is a materialized TermSetQuery per token —
+            // it exposes its terms to the snippet generator by itself.
+            let (q, _) = self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
+            return self.run_search(
+                q,
+                |_| Ok(HighlightPlan::none()),
+                self.search_text_field(&voc)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+            );
+        }
         let token_texts = self.index_token_texts(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
         self.run_search(
             q,
             |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+            self.schema.get_field("text")?,
             limit,
             offset,
             &order,
@@ -2210,6 +2717,7 @@ impl SearchEngine {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_and_count_fuzzy(
         &self,
         query: String,
@@ -2218,13 +2726,31 @@ impl SearchEngine {
         offset: u32,
         max_distance: u8,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<SearchPageResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        if voc.any() {
+            let (q, truncated) =
+                self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
+            return self.run_search_and_count(
+                q,
+                |_| Ok(HighlightPlan::none()),
+                self.search_text_field(&voc)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                truncated,
+            );
+        }
         let token_texts = self.index_token_texts(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
         let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
         self.run_search_and_count(
             q,
             |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+            self.schema.get_field("text")?,
             limit,
             offset,
             &order,
@@ -2233,6 +2759,7 @@ impl SearchEngine {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_fuzzy_stream(
         &self,
         query: String,
@@ -2241,16 +2768,35 @@ impl SearchEngine {
         offset: u32,
         max_distance: u8,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
         chunk_size: u32,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            if voc.any() {
+                let (q, _) =
+                    self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
+                return self.run_search_stream(
+                    q,
+                    |_| Ok(HighlightPlan::none()),
+                    self.search_text_field(&voc)?,
+                    limit,
+                    offset,
+                    &order,
+                    &HighlightConfig::default(),
+                    chunk_size,
+                    &sink,
+                );
+            }
             let token_texts = self.index_token_texts(&query)?;
             let rank = matches!(order, ResultsOrder::Relevance);
             let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
             self.run_search_stream(
                 q,
                 |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+                self.schema.get_field("text")?,
                 limit,
                 offset,
                 &order,
@@ -2275,16 +2821,36 @@ impl SearchEngine {
         offset: u32,
         max_distance: u8,
         order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
         chunk_size: u32,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            if voc.any() {
+                let (q, truncated) =
+                    self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
+                return self.run_search_stream_with_counts(
+                    q,
+                    |_| Ok(HighlightPlan::none()),
+                    self.search_text_field(&voc)?,
+                    limit,
+                    offset,
+                    &order,
+                    &HighlightConfig::default(),
+                    chunk_size,
+                    truncated,
+                    &sink,
+                );
+            }
             let token_texts = self.index_token_texts(&query)?;
             let rank = matches!(order, ResultsOrder::Relevance);
             let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
             self.run_search_stream_with_counts(
                 q,
                 |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+                self.schema.get_field("text")?,
                 limit,
                 offset,
                 &order,
@@ -2299,8 +2865,21 @@ impl SearchEngine {
         Self::surface_stream_error(&sink, result)
     }
 
-    pub fn count_fuzzy(&self, query: String, facets: Vec<String>, max_distance: u8) -> Result<u32> {
-        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+    pub fn count_fuzzy(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<u32> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let q = if voc.any() {
+            self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?
+                .0
+        } else {
+            self.build_fuzzy_query(&query, &facets, max_distance)?
+        };
         self.run_count(q)
     }
 
@@ -2309,8 +2888,16 @@ impl SearchEngine {
         query: String,
         facets: Vec<String>,
         max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<HashMap<String, u32>> {
-        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let q = if voc.any() {
+            self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?
+                .0
+        } else {
+            self.build_fuzzy_query(&query, &facets, max_distance)?
+        };
         self.run_count_by_book(q)
     }
 
@@ -2320,8 +2907,16 @@ impl SearchEngine {
         facets: Vec<String>,
         facet_prefix: String,
         max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
     ) -> Result<Vec<FacetCount>> {
-        let q = self.build_fuzzy_query(&query, &facets, max_distance)?;
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let q = if voc.any() {
+            self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?
+                .0
+        } else {
+            self.build_fuzzy_query(&query, &facets, max_distance)?
+        };
         self.run_facet_counts(q, facet_prefix)
     }
 
@@ -2338,6 +2933,9 @@ impl SearchEngine {
             self.schema.get_field("filePath")?,
             self.schema.get_field("topics")?,
             self.schema.get_field("contentHash")?,
+            self.schema.get_field("textVocalized")?,
+            self.schema.get_field("sectionId")?,
+            self.schema.get_field("generationSort")?,
         ))
     }
 
@@ -2402,6 +3000,9 @@ impl SearchEngine {
     /// String-API entry: terms arriving as raw regex strings (the public
     /// `search`/`count` family) are split on their top-level alternation so a
     /// single-word query compiles per branch, exactly like the advanced path.
+    /// `slop` here means what it means everywhere in this engine: the
+    /// intermediate-word allowance between *each* adjacent pair (uniform, in
+    /// order) — not tantivy's cumulative unordered budget.
     fn build_query(
         &self,
         regex_terms: Vec<String>,
@@ -2409,28 +3010,101 @@ impl SearchEngine {
         slop: u32,
         max_expansions: u32,
     ) -> Result<(Box<dyn Query>, bool)> {
-        let patterns = regex_terms
+        let patterns: Vec<hebrew_query::WordPattern> = regex_terms
             .iter()
             .map(|t| hebrew_query::WordPattern::parse(t))
             .collect();
-        self.build_query_from_patterns(patterns, &[], facets, slop, max_expansions)
+        let gaps = vec![slop; patterns.len().saturating_sub(1)];
+        let text_field = self.schema.get_field("text")?;
+        self.build_query_from_patterns(
+            patterns,
+            &[],
+            facets,
+            &gaps,
+            max_expansions,
+            text_field,
+            &SearchScope::WordDistance,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn apply_advanced_negative_query(
+        &self,
+        positive_query: Box<dyn Query>,
+        positive_truncated: bool,
+        negative_query: &str,
+        negative_distance: u32,
+        negative_custom_spacing: &HashMap<String, String>,
+        negative_alternative_words: &HashMap<u32, Vec<String>>,
+        negative_search_options: &HashMap<String, HashMap<String, bool>>,
+        voc: &VocalizedFlags,
+        negative_scope: &SearchScope,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        if hebrew_query::split_query_words(negative_query).is_empty() {
+            return Ok((positive_query, positive_truncated));
+        }
+
+        let (negative, _, _, negative_truncated) = self.build_advanced_query(
+            negative_query,
+            negative_distance,
+            negative_custom_spacing,
+            negative_alternative_words,
+            negative_search_options,
+            Vec::new(),
+            voc,
+            negative_scope,
+        )?;
+
+        Ok((
+            Box::new(BooleanQuery::new(vec![
+                (Occur::Must, positive_query),
+                (Occur::MustNot, negative),
+            ])),
+            positive_truncated || negative_truncated,
+        ))
+    }
+
+    /// `text_field` selects the dictionary the patterns run against: the
+    /// plain `text` field, or `textVocalized` on the vocalized paths (whose
+    /// patterns carry free-mark runs and must never hit the plain field).
+    ///
+    /// `gaps` is the per-pair intermediate-word allowance (`gaps[i]` between
+    /// words `i` and `i+1`). The phrase branch hands tantivy the *sum* as its
+    /// slop — tantivy spends slop cumulatively across the phrase, so the max
+    /// would reject a match using its allowance in two different gaps — and
+    /// then wraps the query in [`GapVerifiedPhraseQuery`], which re-checks
+    /// candidates against the positional postings so only in-order,
+    /// per-pair-within-allowance occurrences survive.
+    #[allow(clippy::too_many_arguments)]
     fn build_query_from_patterns(
         &self,
         regex_terms: Vec<hebrew_query::WordPattern>,
         typo_tokens: &[String],
         facets: Vec<String>,
-        slop: u32,
+        gaps: &[u32],
         max_expansions: u32,
+        text_field: Field,
+        scope: &SearchScope,
     ) -> Result<(Box<dyn Query>, bool)> {
-        let schema = self.index.schema();
-        let text_field = schema.get_field("text")?;
-        let topics_field = schema.get_field("topics")?;
+        let topics_field = self.schema.get_field("topics")?;
 
-        // Only the single-word path degrades under its collection budget; the
-        // empty and phrase branches either match nothing or carry their own
-        // in-DFA caps, so neither reports truncation.
+        // Resolved up front: the same facet filter both narrows the section
+        // pre-pass (fewer candidate sections to intersect) and gates the
+        // final result set.
+        let facets_query: Option<TermSetQuery> = if facets.is_empty() {
+            None
+        } else {
+            let facet_terms: Vec<Term> = facets
+                .iter()
+                .map(|f| Ok(Term::from_facet(topics_field, &Facet::from_text(f)?)))
+                .collect::<Result<Vec<_>>>()?;
+            Some(TermSetQuery::new(facet_terms))
+        };
+
+        // Only the word-materialization paths (single word / paragraph /
+        // section scopes) degrade under their collection budgets; the empty
+        // and phrase branches either match nothing or carry their own in-DFA
+        // caps, so neither reports truncation.
         let (main_query, truncated): (Box<dyn Query>, bool) = match regex_terms.len() {
             0 => (Box::new(EmptyQuery), false),
             1 => self.single_regex_term_query(
@@ -2439,37 +3113,140 @@ impl SearchEngine {
                 text_field,
                 max_expansions,
             )?,
-            _ => {
-                // The phrase path needs one pattern string per word position:
-                // `RegexPhraseQuery` compiles each as a single DFA (branch
-                // splitting cannot help here — phrase matching intersects
-                // positional postings, so the per-word budget caps in
-                // `hebrew_query` remain load-bearing for this path).
-                let joined: Vec<String> = regex_terms
-                    .iter()
-                    .map(hebrew_query::WordPattern::joined)
-                    .collect();
-                let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
-                phrase_query.set_slop(slop);
-                phrase_query.set_max_expansions(max_expansions);
-                (Box::new(phrase_query), false)
-            }
+            _ => match scope {
+                // הטווחים "פסקה"/"כותרת" מוותרים על סדר ומרווח — כל מילה
+                // מתממשת ל-TermSetQuery משלה והצירוף נעשה בין מסמכים
+                // (פסקה) או בין סעיפים (כותרת).
+                SearchScope::SameParagraph | SearchScope::SameSection => self.scoped_words_query(
+                    &regex_terms,
+                    text_field,
+                    max_expansions,
+                    scope,
+                    facets_query.as_ref(),
+                )?,
+                SearchScope::WordDistance => {
+                    debug_assert_eq!(gaps.len() + 1, regex_terms.len());
+                    // The phrase path needs one pattern string per word position:
+                    // `RegexPhraseQuery` compiles each as a single DFA (branch
+                    // splitting cannot help here — phrase matching intersects
+                    // positional postings, so the per-word budget caps in
+                    // `hebrew_query` remain load-bearing for this path).
+                    let joined: Vec<String> = regex_terms
+                        .iter()
+                        .map(hebrew_query::WordPattern::joined)
+                        .collect();
+                    let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
+                    let mut phrase_query = RegexPhraseQuery::new(text_field, joined.clone());
+                    phrase_query.set_slop(slop_budget);
+                    phrase_query.set_max_expansions(max_expansions);
+                    if slop_budget == 0 {
+                        // Slop 0 is already strict in-order adjacency — nothing
+                        // for the position verifier to trim.
+                        (Box::new(phrase_query), false)
+                    } else {
+                        (
+                            Box::new(GapVerifiedPhraseQuery::new(
+                                phrase_query,
+                                text_field,
+                                joined,
+                                gaps.to_vec(),
+                            )),
+                            false,
+                        )
+                    }
+                }
+            },
         };
 
-        if facets.is_empty() {
+        let Some(facets_query) = facets_query else {
             return Ok((main_query, truncated));
-        }
-        let facet_terms: Vec<Term> = facets
-            .iter()
-            .map(|f| Ok(Term::from_facet(topics_field, &Facet::from_text(f)?)))
-            .collect::<Result<Vec<_>>>()?;
-        let facets_query = TermSetQuery::new(facet_terms);
+        };
 
         Ok((
             Box::new(BooleanQuery::new(vec![
                 (Occur::Must, main_query),
                 (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
             ])),
+            truncated,
+        ))
+    }
+
+    /// Multi-word query for the paragraph/section scopes: every word is
+    /// materialized into its own `TermSetQuery` (same budgets and cache as
+    /// the single-word path — each word executes exactly like it would
+    /// alone), then combined:
+    ///
+    /// - **Paragraph** — a boolean AND: all words must occur in the same
+    ///   document (= book line), in any order, at any distance.
+    /// - **Section** — a two-pass plan (see the `section_scope` module):
+    ///   intersect the per-word `sectionId` sets, then serve the lines that
+    ///   carry any query word inside a fully-matching section. The facet
+    ///   filter narrows the pre-pass so a facet-excluded book cannot bloat
+    ///   the intersection sets (correctness never depends on it — section
+    ///   ids are unique per book).
+    ///
+    /// `truncated` is the OR over the per-word collection truncations.
+    fn scoped_words_query(
+        &self,
+        regex_terms: &[hebrew_query::WordPattern],
+        text_field: Field,
+        max_expansions: u32,
+        scope: &SearchScope,
+        facets_query: Option<&TermSetQuery>,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let mut truncated = false;
+        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(regex_terms.len());
+        for pattern in regex_terms {
+            let (word_query, word_truncated) =
+                self.single_regex_term_query(pattern.branches(), &[], text_field, max_expansions)?;
+            truncated |= word_truncated;
+            word_queries.push(word_query);
+        }
+
+        if matches!(scope, SearchScope::SameParagraph) {
+            let clauses: Vec<(Occur, Box<dyn Query>)> =
+                word_queries.into_iter().map(|q| (Occur::Must, q)).collect();
+            return Ok((Box::new(BooleanQuery::new(clauses)), truncated));
+        }
+
+        // Section scope — pass 1: the sections every word appears in.
+        let searcher = self.index_reader.searcher();
+        let mut allowed: Option<HashSet<u64>> = None;
+        for word_query in &word_queries {
+            let sections = match facets_query {
+                Some(fq) => searcher.search(
+                    &BooleanQuery::new(vec![
+                        (Occur::Must, word_query.box_clone()),
+                        (Occur::Must, Box::new(fq.clone()) as Box<dyn Query>),
+                    ]),
+                    &SectionIdsCollector,
+                )?,
+                None => searcher.search(word_query.as_ref(), &SectionIdsCollector)?,
+            };
+            allowed = Some(match allowed {
+                None => sections,
+                Some(prev) => prev.intersection(&sections).copied().collect(),
+            });
+            if allowed.as_ref().is_some_and(HashSet::is_empty) {
+                // A word with no section in common — no section can ever
+                // contain all the words.
+                return Ok((Box::new(EmptyQuery), truncated));
+            }
+        }
+
+        // Pass 2: the lines that carry any query word, gated to the
+        // intersected sections.
+        let union = BooleanQuery::new(
+            word_queries
+                .into_iter()
+                .map(|q| (Occur::Should, q))
+                .collect::<Vec<_>>(),
+        );
+        Ok((
+            Box::new(SectionFilteredQuery::new(
+                Box::new(union),
+                Arc::new(allowed.unwrap_or_default()),
+            )),
             truncated,
         ))
     }
@@ -2508,6 +3285,7 @@ impl SearchEngine {
         // generation in the key invalidates entries on reader reload.
         let cache_key = TermCacheKey {
             generation: searcher.generation().generation_id(),
+            field: text_field,
             branches: branches.to_vec(),
             typo_tokens: typo_tokens.to_vec(),
             max_expansions,
@@ -2670,17 +3448,34 @@ impl SearchEngine {
     /// marks and folds presentation forms, and a `strip_nikud` pass here would
     /// also delete maqaf/sof-pasuq, gluing `"אשר־שמע"` into one bogus term.
     fn index_token_texts(&self, text: &str) -> Result<Vec<String>> {
+        self.index_token_texts_with("hebrew", text)
+    }
+
+    /// [`Self::index_token_texts`] with an explicit analyzer —
+    /// `"hebrew_vocalized"` tokenizes a vocalized query exactly like the
+    /// `textVocalized` field (marks kept inside tokens).
+    fn index_token_texts_with(&self, analyzer_name: &str, text: &str) -> Result<Vec<String>> {
         let mut analyzer = self
             .index
             .tokenizers()
-            .get("hebrew")
-            .context("hebrew tokenizer not registered")?;
+            .get(analyzer_name)
+            .with_context(|| format!("{analyzer_name} tokenizer not registered"))?;
         let mut stream = analyzer.token_stream(text);
         let mut out = Vec::new();
         while let Some(token) = stream.next() {
             out.push(token.text.clone());
         }
         Ok(out)
+    }
+
+    /// The stored/indexed text field a search reads: `textVocalized` when a
+    /// vocalized flag is on, the plain `text` field otherwise.
+    fn search_text_field(&self, voc: &VocalizedFlags) -> Result<Field> {
+        if voc.any() {
+            Ok(self.schema.get_field("textVocalized")?)
+        } else {
+            Ok(self.schema.get_field("text")?)
+        }
     }
 
     /// Facet filter sub-query (a `TermSetQuery` over the `topics` facet field).
@@ -2694,8 +3489,21 @@ impl SearchEngine {
     }
 
     /// Exact mode: a `TermQuery` (one token) or `PhraseQuery` (several), filtered
-    /// by facets. No regex — fastest path.
-    fn build_exact_query(&self, query_str: &str, facets: &[String]) -> Result<Box<dyn Query>> {
+    /// by facets. No regex — fastest path. With a vocalized flag on, the query
+    /// runs against the `textVocalized` dictionary instead: each token becomes
+    /// a required-marks regex ([`hebrew_query::vocalized_token_pattern`]), a
+    /// single word materializes via [`Self::single_regex_term_query`] (which
+    /// may truncate — the returned flag), a phrase becomes a
+    /// `RegexPhraseQuery`.
+    fn build_exact_query(
+        &self,
+        query_str: &str,
+        facets: &[String],
+        voc: &VocalizedFlags,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        if voc.any() {
+            return self.build_exact_query_vocalized(query_str, facets, voc);
+        }
         let text_f = self.schema.get_field("text")?;
         let token_texts = self.index_token_texts(query_str)?;
         let mut terms: Vec<Term> = token_texts
@@ -2711,13 +3519,168 @@ impl SearchEngine {
             _ => Box::new(PhraseQuery::new(terms)),
         };
         if facets.is_empty() {
-            Ok(main_query)
+            Ok((main_query, false))
         } else {
-            Ok(Box::new(BooleanQuery::new(vec![
-                (Occur::Must, main_query),
-                (Occur::Must, self.facet_filter_query(facets)?),
-            ])))
+            Ok((
+                Box::new(BooleanQuery::new(vec![
+                    (Occur::Must, main_query),
+                    (Occur::Must, self.facet_filter_query(facets)?),
+                ])),
+                false,
+            ))
         }
+    }
+
+    /// The vocalized arm of [`Self::build_exact_query`].
+    fn build_exact_query_vocalized(
+        &self,
+        query_str: &str,
+        facets: &[String],
+        voc: &VocalizedFlags,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let voc_field = self.schema.get_field("textVocalized")?;
+        let tokens = self.index_token_texts_with("hebrew_vocalized", query_str)?;
+        let patterns: Vec<String> = tokens
+            .iter()
+            .map(|t| hebrew_query::vocalized_token_pattern(t, voc))
+            .collect();
+        let (main_query, truncated): (Box<dyn Query>, bool) = match patterns.len() {
+            0 => (Box::new(EmptyQuery), false),
+            1 => self.single_regex_term_query(
+                &patterns,
+                &[],
+                voc_field,
+                VOC_EXACT_SINGLE_MAX_EXPANSIONS,
+            )?,
+            _ => {
+                let mut phrase_query = RegexPhraseQuery::new(voc_field, patterns);
+                phrase_query.set_slop(0);
+                phrase_query.set_max_expansions(VOC_PHRASE_MAX_EXPANSIONS);
+                (Box::new(phrase_query), false)
+            }
+        };
+        if facets.is_empty() {
+            Ok((main_query, truncated))
+        } else {
+            Ok((
+                Box::new(BooleanQuery::new(vec![
+                    (Occur::Must, main_query),
+                    (Occur::Must, self.facet_filter_query(facets)?),
+                ])),
+                truncated,
+            ))
+        }
+    }
+
+    /// Expands vocalized typo/fuzzy tokens: scans the PLAIN dictionary with a
+    /// Levenshtein automaton over each mark-free base (edit distance over
+    /// marked terms would count every mark as an edit), and returns one
+    /// free-mark branch per *existing* variant, re-projected onto the
+    /// vocalized dictionary. The base itself is skipped — the caller already
+    /// carries it as the required-marks exact branch, and a free duplicate
+    /// would silently erase the typed-marks constraint.
+    fn vocalized_variant_branches(
+        &self,
+        searcher: &Searcher,
+        bases: &[String],
+        distance: u8,
+        seen: &mut HashSet<String>,
+    ) -> Result<Vec<String>> {
+        if bases.is_empty() || distance == 0 {
+            return Ok(Vec::new());
+        }
+        let plain_field = self.schema.get_field("text")?;
+        let builder = LevenshteinAutomatonBuilder::new(distance, true);
+        let mut branches = Vec::new();
+        for base in bases {
+            let automaton = DfaWrapper(builder.build_dfa(base));
+            for variant in self.automaton_terms_in_field(
+                searcher,
+                plain_field,
+                &automaton,
+                VOC_VARIANTS_PER_TOKEN,
+            )? {
+                if &variant == base || !seen.insert(variant.clone()) {
+                    continue;
+                }
+                branches.push(hebrew_query::vocalized_free_pattern(&variant));
+                if branches.len() >= VOC_VARIANTS_PER_TOKEN {
+                    return Ok(branches);
+                }
+            }
+        }
+        Ok(branches)
+    }
+
+    /// The vocalized arm of the approximate (`fuzzy`) mode. Per token, the
+    /// branch list runs highest-priority-first (the collection contract of
+    /// [`Self::single_regex_term_query`]): the exact form with its typed
+    /// marks REQUIRED, then the quote-free spelling, then the lexicon's
+    /// morphological relatives, then existing edit-distance variants — the
+    /// last three mark-free (their letters differ from what was typed, so
+    /// the typed marks have no positions to attach to). Each token
+    /// materializes into a `TermSetQuery` over `textVocalized`; multi-word
+    /// queries AND the tokens like the plain fuzzy path (documents holding
+    /// all words anywhere — no phrase constraint). No relevance tiers: the
+    /// vocalized paths order by catalogue, and an unranked recall query pays
+    /// nothing for scoring it never uses.
+    fn build_fuzzy_query_vocalized(
+        &self,
+        query_str: &str,
+        facets: &[String],
+        max_distance: u8,
+        voc: &VocalizedFlags,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy distance is limited to 2, got {max_distance}"
+        );
+        let tokens = self.index_token_texts_with("hebrew_vocalized", query_str)?;
+        if tokens.is_empty() {
+            return Ok((Box::new(EmptyQuery), false));
+        }
+        let voc_field = self.schema.get_field("textVocalized")?;
+        let searcher = self.index_reader.searcher();
+        let mut truncated = false;
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(tokens.len() + 1);
+        for token in &tokens {
+            let base = hebrew_query::strip_attached_marks(token);
+            let mut branches: Vec<String> = vec![hebrew_query::vocalized_token_pattern(token, voc)];
+            let mut seen: HashSet<String> = HashSet::from([base.clone()]);
+            if let Some(clean) = Self::quoteless_variant(&base) {
+                if seen.insert(clean.clone()) {
+                    branches.push(hebrew_query::vocalized_free_pattern(&clean));
+                }
+            }
+            if max_distance > 0 {
+                if let Some(dict) = self.magic_dict.as_ref() {
+                    for form in dict.recall_forms(&base, MAX_LEXICAL_FORMS) {
+                        if seen.insert(form.clone()) {
+                            branches.push(hebrew_query::vocalized_free_pattern(&form));
+                        }
+                    }
+                }
+                branches.extend(self.vocalized_variant_branches(
+                    &searcher,
+                    std::slice::from_ref(&base),
+                    max_distance,
+                    &mut seen,
+                )?);
+            }
+            let (token_query, token_truncated) =
+                self.single_regex_term_query(&branches, &[], voc_field, VOC_FUZZY_MAX_EXPANSIONS)?;
+            truncated |= token_truncated;
+            clauses.push((Occur::Must, token_query));
+        }
+        if !facets.is_empty() {
+            clauses.push((Occur::Must, self.facet_filter_query(facets)?));
+        }
+        let query: Box<dyn Query> = if clauses.len() == 1 {
+            clauses.pop().expect("one clause").1
+        } else {
+            Box::new(BooleanQuery::new(clauses))
+        };
+        Ok((query, truncated))
     }
 
     /// The quote-free spelling of a token that carries gershayim/geresh
@@ -3084,19 +4047,53 @@ impl SearchEngine {
         alternative_words: &HashMap<u32, Vec<String>>,
         search_options: &HashMap<String, HashMap<String, bool>>,
         facets: Vec<String>,
+        voc: &VocalizedFlags,
+        scope: &SearchScope,
     ) -> Result<AdvancedQueryBuild> {
-        let prepared = hebrew_query::prepare_advanced_query(
-            query,
-            distance,
-            custom_spacing,
-            alternative_words,
-            search_options,
-        );
-        // `slop` already folds `custom_spacing` in (max per-pair value, else
-        // `distance`) — the phrase filter's gap allowance must use it, not the
-        // raw `distance`, or a spacing-permitted match would be rejected and
-        // fall back to the broad term highlight.
-        let slop = prepared.slop;
+        // The vocalized mode is requested either by the global API flags or
+        // by a per-word "ניקוד"/"טעמים" option; the per-word requirement
+        // derivation happens inside `prepare_advanced_query_vocalized`, which
+        // receives the GLOBAL flags only (folding options into them would
+        // bind every word's typed marks).
+        let voc_mode = voc.or(hebrew_query::options_vocalized_flags(search_options));
+        let mut prepared = if voc_mode.any() {
+            hebrew_query::prepare_advanced_query_vocalized(
+                query,
+                distance,
+                custom_spacing,
+                alternative_words,
+                search_options,
+                voc,
+            )
+        } else {
+            hebrew_query::prepare_advanced_query(
+                query,
+                distance,
+                custom_spacing,
+                alternative_words,
+                search_options,
+            )
+        };
+        let text_field = self.search_text_field(&voc_mode)?;
+        // Vocalized typo tokens cannot ride the in-collection Levenshtein
+        // scan (it would run on the vocalized dictionary, counting every mark
+        // as an edit): expand them against the PLAIN dictionary here and
+        // append the variants as lowest-priority free-mark branches.
+        if voc_mode.any() && !prepared.typo_tokens.is_empty() {
+            let searcher = self.index_reader.searcher();
+            let mut seen: HashSet<String> = prepared.typo_tokens.iter().cloned().collect();
+            let extra =
+                self.vocalized_variant_branches(&searcher, &prepared.typo_tokens, 1, &mut seen)?;
+            prepared.typo_tokens = Vec::new();
+            if let Some(first) = prepared.regex_terms.pop() {
+                prepared.regex_terms.push(first.with_extra_branches(extra));
+            }
+        }
+        // `gaps` already folds `custom_spacing` in (per-pair values, else
+        // `distance` for every pair) — the phrase filter's gap allowances
+        // must use it, not the raw `distance`, or a spacing-permitted match
+        // would be rejected and fall back to the broad term highlight.
+        let gaps = prepared.gaps.clone();
         // The highlight builders want one pattern string per word; the query
         // builder gets the structured patterns so a single word compiles per
         // branch instead of as one state-limited DFA.
@@ -3109,10 +4106,12 @@ impl SearchEngine {
             prepared.regex_terms,
             &prepared.typo_tokens,
             facets,
-            slop,
+            &gaps,
             prepared.max_expansions,
+            text_field,
+            scope,
         )?;
-        Ok((query, regex_terms, slop, truncated))
+        Ok((query, regex_terms, gaps, truncated))
     }
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
@@ -3121,6 +4120,7 @@ impl SearchEngine {
         &self,
         query: Box<dyn Query>,
         make_highlight: F,
+        text_field: Field,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -3140,6 +4140,7 @@ impl SearchEngine {
             &self.schema,
             &searcher,
             hl_q,
+            text_field,
             addresses,
             hl,
             plan.phrase.as_ref(),
@@ -3151,6 +4152,7 @@ impl SearchEngine {
         &self,
         query: Box<dyn Query>,
         make_highlight: F,
+        text_field: Field,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -3167,6 +4169,14 @@ impl SearchEngine {
                 let top_collector = TopDocs::with_limit(limit as usize)
                     .and_offset(offset as usize)
                     .order_by_fast_field::<u64>("id", Order::Asc);
+                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
+                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
+                (addrs, count as u32)
+            }
+            ResultsOrder::Generation => {
+                let top_collector = TopDocs::with_limit(limit as usize)
+                    .and_offset(offset as usize)
+                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
                 let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
                 let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
                 (addrs, count as u32)
@@ -3196,6 +4206,7 @@ impl SearchEngine {
             &self.schema,
             &searcher,
             hl_q,
+            text_field,
             addresses,
             hl,
             plan.phrase.as_ref(),
@@ -3258,10 +4269,12 @@ impl SearchEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_search_stream<F>(
         &self,
         query: Box<dyn Query>,
         make_highlight: F,
+        text_field: Field,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -3283,12 +4296,13 @@ impl SearchEngine {
         let phrase = plan.phrase.as_ref();
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
-        let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
+        let snippet_generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
         for chunk in addresses.chunks(chunk_size) {
             let results = Self::build_results_with_generator(
                 &self.schema,
                 &searcher,
                 &snippet_generator,
+                text_field,
                 chunk.to_vec(),
                 hl,
                 phrase,
@@ -3311,6 +4325,7 @@ impl SearchEngine {
         &self,
         query: Box<dyn Query>,
         make_highlight: F,
+        text_field: Field,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
@@ -3331,6 +4346,15 @@ impl SearchEngine {
                     let top_collector = TopDocs::with_limit(limit as usize)
                         .and_offset(offset as usize)
                         .order_by_fast_field::<u64>("id", Order::Asc);
+                    let (top_docs, count, by_book) =
+                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
+                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
+                    (addrs, count as u32, by_book)
+                }
+                ResultsOrder::Generation => {
+                    let top_collector = TopDocs::with_limit(limit as usize)
+                        .and_offset(offset as usize)
+                        .order_by_fast_field::<u64>("generationSort", Order::Asc);
                     let (top_docs, count, by_book) =
                         searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
                     let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
@@ -3369,12 +4393,13 @@ impl SearchEngine {
         let phrase = plan.phrase.as_ref();
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
-        let snippet_generator = Self::make_snippet_generator(&self.schema, &searcher, hl_q, hl)?;
+        let snippet_generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
         for chunk in addresses.chunks(chunk_size) {
             let results = Self::build_results_with_generator(
                 &self.schema,
                 &searcher,
                 &snippet_generator,
+                text_field,
                 chunk.to_vec(),
                 hl,
                 phrase,
@@ -3421,6 +4446,16 @@ impl SearchEngine {
                 let collector = TopDocs::with_limit(limit as usize)
                     .and_offset(offset as usize)
                     .order_by_fast_field::<u64>("id", Order::Asc);
+                searcher
+                    .search(query, &collector)?
+                    .into_iter()
+                    .map(|(_, addr)| addr)
+                    .collect()
+            }
+            ResultsOrder::Generation => {
+                let collector = TopDocs::with_limit(limit as usize)
+                    .and_offset(offset as usize)
+                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
                 searcher
                     .search(query, &collector)?
                     .into_iter()
@@ -3606,6 +4641,7 @@ impl SearchEngine {
         &self,
         searcher: &Searcher,
         regex_terms: &[String],
+        field: Field,
     ) -> Result<Vec<HashSet<String>>> {
         let cap = (MAX_HIGHLIGHT_TERMS / regex_terms.len().max(1)).max(1);
         regex_terms
@@ -3614,7 +4650,7 @@ impl SearchEngine {
                 let re = tantivy_fst::Regex::new(pattern)
                     .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
                 Ok(self
-                    .automaton_terms(searcher, &re, cap)?
+                    .automaton_terms_in_field(searcher, field, &re, cap)?
                     .into_iter()
                     .collect())
             })
@@ -3628,8 +4664,8 @@ impl SearchEngine {
     fn terms_query_from_word_sets(
         &self,
         per_word_terms: &[HashSet<String>],
+        text_f: Field,
     ) -> Result<Option<Box<dyn Query>>> {
-        let text_f = self.schema.get_field("text")?;
         let terms: Vec<Term> = per_word_terms
             .iter()
             .flat_map(|set| set.iter())
@@ -3646,28 +4682,69 @@ impl SearchEngine {
     /// — no highlight query, no phrase filter. The multi-term `RegexPhraseQuery`
     /// exposes no static terms, so it needs a separately-materialized flat
     /// highlight query AND — being a phrase — the per-word filter that keeps only
-    /// in-order, within-`slop` occurrences painted (parity with the search).
+    /// in-order, per-pair-within-allowance occurrences painted (parity with the
+    /// search's gap verification).
     ///
-    /// `slop` is the query's resolved phrase slop, which already folds
-    /// `custom_spacing` in (the max per-pair gap, else the global `distance`) —
+    /// `gaps` is the query's resolved per-pair allowance vector, which already
+    /// folds `custom_spacing` in (else the global `distance` for every pair) —
     /// passing the raw `distance` would reject a spacing-permitted match and
     /// fall back to the broad term highlight.
+    /// Scope-aware entry: the word-distance scope keeps the phrase filter
+    /// (order + per-pair allowance) of [`Self::advanced_highlight_plan`];
+    /// the paragraph/section scopes impose no order or distance inside a
+    /// line, so every occurrence of every word variant is a true match to
+    /// paint — flat term-union highlighting, no phrase filter.
+    fn advanced_highlight_plan_for_scope(
+        &self,
+        searcher: &Searcher,
+        regex_terms: &[String],
+        gaps: &[u32],
+        voc: &VocalizedFlags,
+        scope: &SearchScope,
+    ) -> Result<HighlightPlan> {
+        match scope {
+            SearchScope::WordDistance => {
+                self.advanced_highlight_plan(searcher, regex_terms, gaps, voc)
+            }
+            SearchScope::SameParagraph | SearchScope::SameSection => {
+                if regex_terms.len() < 2 {
+                    return Ok(HighlightPlan::none());
+                }
+                let field = self.search_text_field(voc)?;
+                let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
+                let query = self.terms_query_from_word_sets(&per_word_terms, field)?;
+                Ok(HighlightPlan {
+                    query,
+                    phrase: None,
+                })
+            }
+        }
+    }
+
     fn advanced_highlight_plan(
         &self,
         searcher: &Searcher,
         regex_terms: &[String],
-        slop: u32,
+        gaps: &[u32],
+        voc: &VocalizedFlags,
     ) -> Result<HighlightPlan> {
         if regex_terms.len() < 2 {
             return Ok(HighlightPlan::none());
         }
-        let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms)?;
-        let query = self.terms_query_from_word_sets(&per_word_terms)?;
+        let field = self.search_text_field(voc)?;
+        let analyzer = if voc.any() {
+            "hebrew_vocalized"
+        } else {
+            "hebrew"
+        };
+        let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
+        let query = self.terms_query_from_word_sets(&per_word_terms, field)?;
         Ok(HighlightPlan {
             query,
             phrase: Some(PhraseHighlight {
                 per_word_terms,
-                max_gap: slop,
+                gaps: gaps.to_vec(),
+                analyzer,
             }),
         })
     }
@@ -3676,18 +4753,53 @@ impl SearchEngine {
     /// needs nothing — the `TermQuery` highlights itself. A multi-word
     /// `PhraseQuery` already exposes its terms to `SnippetGenerator`, so it needs
     /// no separate highlight query, but it is a strict-adjacency phrase, so it
-    /// gets a `max_gap = 0` filter that drops every non-adjacent occurrence.
-    fn exact_highlight_plan(&self, query_str: &str) -> Result<HighlightPlan> {
+    /// gets an all-zero gaps filter that drops every non-adjacent occurrence.
+    ///
+    /// The vocalized arm mirrors the advanced plan instead: each token's
+    /// required-marks pattern is materialized against the vocalized
+    /// dictionary (the `RegexPhraseQuery` exposes no static terms), and the
+    /// phrase filter re-tokenizes fragments with the vocalized analyzer.
+    fn exact_highlight_plan(
+        &self,
+        searcher: &Searcher,
+        query_str: &str,
+        voc: &VocalizedFlags,
+    ) -> Result<HighlightPlan> {
+        if voc.any() {
+            let tokens = self.index_token_texts_with("hebrew_vocalized", query_str)?;
+            if tokens.len() < 2 {
+                return Ok(HighlightPlan::none());
+            }
+            let patterns: Vec<String> = tokens
+                .iter()
+                .map(|t| hebrew_query::vocalized_token_pattern(t, voc))
+                .collect();
+            let field = self.schema.get_field("textVocalized")?;
+            let per_word_terms = self.phrase_per_word_terms(searcher, &patterns, field)?;
+            let query = self.terms_query_from_word_sets(&per_word_terms, field)?;
+            let gaps = vec![0; per_word_terms.len().saturating_sub(1)];
+            return Ok(HighlightPlan {
+                query,
+                phrase: Some(PhraseHighlight {
+                    per_word_terms,
+                    gaps,
+                    analyzer: "hebrew_vocalized",
+                }),
+            });
+        }
         let tokens = self.index_token_texts(query_str)?;
         if tokens.len() < 2 {
             return Ok(HighlightPlan::none());
         }
-        let per_word_terms = tokens.into_iter().map(|t| HashSet::from([t])).collect();
+        let per_word_terms: Vec<HashSet<String>> =
+            tokens.into_iter().map(|t| HashSet::from([t])).collect();
+        let gaps = vec![0; per_word_terms.len().saturating_sub(1)];
         Ok(HighlightPlan {
             query: None,
             phrase: Some(PhraseHighlight {
                 per_word_terms,
-                max_gap: 0,
+                gaps,
+                analyzer: "hebrew",
             }),
         })
     }
@@ -3710,9 +4822,11 @@ impl SearchEngine {
         let phrase = if term_texts.len() >= 2 && self.magic_dict.is_some() && max_distance > 0 {
             let per_word_terms =
                 self.lexical_phrase_per_word_terms(searcher, term_texts, max_distance)?;
+            let gaps = vec![LEXICAL_FUZZY_PHRASE_SLOP; per_word_terms.len().saturating_sub(1)];
             Some(PhraseHighlight {
                 per_word_terms,
-                max_gap: LEXICAL_FUZZY_PHRASE_SLOP,
+                gaps,
+                analyzer: "hebrew",
             })
         } else {
             None
@@ -3894,6 +5008,21 @@ impl SearchEngine {
         A::State: Clone,
     {
         let text_f = self.schema.get_field("text")?;
+        self.automaton_terms_in_field(searcher, text_f, automaton, cap)
+    }
+
+    /// [`Self::automaton_terms`] against an explicit field's dictionary.
+    fn automaton_terms_in_field<A>(
+        &self,
+        searcher: &Searcher,
+        text_f: Field,
+        automaton: &A,
+        cap: usize,
+    ) -> Result<Vec<String>>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let mut matched = Vec::new();
         let mut seen = HashSet::new();
         'segments: for reader in searcher.segment_readers() {
@@ -3916,16 +5045,16 @@ impl SearchEngine {
         Ok(matched)
     }
 
-    /// Creates a `SnippetGenerator` for the `text` field, configured from `hl`.
+    /// Creates a `SnippetGenerator` for `text_field` (the plain `text` field,
+    /// or `textVocalized` on the vocalized paths), configured from `hl`.
     /// Creation resolves the doc-frequencies of every query term, so reuse one
     /// generator across chunks instead of recreating it per call.
     fn make_snippet_generator(
-        schema: &Schema,
         searcher: &Searcher,
         query: &dyn Query,
+        text_field: Field,
         hl: &HighlightConfig,
     ) -> Result<SnippetGenerator> {
-        let text_field = schema.get_field("text")?;
         let mut snippet_generator = SnippetGenerator::create(searcher, query, text_field)?;
         snippet_generator.set_max_num_chars(hl.max_chars as usize);
         Ok(snippet_generator)
@@ -3937,9 +5066,10 @@ impl SearchEngine {
     /// Tokenizes the fragment with the same `text`-field analyzer the index and
     /// `SnippetGenerator` use, tags each token with the query words it can fill,
     /// then keeps the byte ranges of tokens forming an occurrence
-    /// `w0 … w1 … w_{k-1}` where each adjacent pair is at most `max_gap`
-    /// intermediate tokens apart — the greedy, leftmost, non-overlapping match
-    /// `display_highlight`'s combined pattern performs in an opened book.
+    /// `w0 … w1 … w_{k-1}` where each adjacent pair `w-1, w` is at most
+    /// `gaps[w-1]` intermediate tokens apart — the greedy, leftmost,
+    /// non-overlapping match `display_highlight`'s combined pattern performs
+    /// in an opened book.
     ///
     /// Returns `None` when the fragment holds no complete occurrence, so the
     /// caller falls back to the plain term highlight instead of painting
@@ -3954,7 +5084,7 @@ impl SearchEngine {
         if word_count < 2 {
             return None;
         }
-        let mut analyzer = searcher.index().tokenizers().get("hebrew")?;
+        let mut analyzer = searcher.index().tokenizers().get(phrase.analyzer)?;
 
         // Candidate = a fragment token that can fill at least one query word.
         // `order` is a dense 0,1,2,… token index (independent of the tokenizer's
@@ -3988,7 +5118,6 @@ impl SearchEngine {
         }
 
         // Greedy leftmost, non-overlapping scan.
-        let max_gap = phrase.max_gap as usize;
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         let mut ci = 0usize;
         while ci < candidates.len() {
@@ -3997,6 +5126,7 @@ impl SearchEngine {
                 let mut cur = ci;
                 let mut ok = true;
                 for w in 1..word_count {
+                    let max_gap = phrase.gaps.get(w - 1).copied().unwrap_or(0) as usize;
                     let mut m = cur + 1;
                     let mut found = None;
                     while m < candidates.len() {
@@ -4060,32 +5190,39 @@ impl SearchEngine {
         schema: &Schema,
         searcher: &Searcher,
         query: &dyn Query,
+        text_field: Field,
         addresses: Vec<DocAddress>,
         hl: &HighlightConfig,
         phrase: Option<&PhraseHighlight>,
     ) -> Result<Vec<SearchResult>> {
-        let snippet_generator = Self::make_snippet_generator(schema, searcher, query, hl)?;
+        let snippet_generator = Self::make_snippet_generator(searcher, query, text_field, hl)?;
         Self::build_results_with_generator(
             schema,
             searcher,
             &snippet_generator,
+            text_field,
             addresses,
             hl,
             phrase,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_results_with_generator(
         schema: &Schema,
         searcher: &Searcher,
         snippet_generator: &SnippetGenerator,
+        text_field: Field,
         addresses: Vec<DocAddress>,
         hl: &HighlightConfig,
         phrase: Option<&PhraseHighlight>,
     ) -> Result<Vec<SearchResult>> {
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
-        let text_field = schema.get_field("text")?;
+        // המסלול המנוקד מציג את העותק המנוקד השמור; שדה `text` הרגיל נשאר
+        // fallback הגנתי (לא אמור לקרות — כל מסמך שנמצא דרך השדה המנוקד
+        // נכתב עם עותק שמור).
+        let plain_text_field = schema.get_field("text")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
@@ -4123,6 +5260,11 @@ impl SearchEngine {
             let text = retrieved_doc
                 .get_first(text_field)
                 .and_then(|v| v.as_str())
+                .or_else(|| {
+                    retrieved_doc
+                        .get_first(plain_text_field)
+                        .and_then(|v| v.as_str())
+                })
                 .unwrap_or_default()
                 .to_string();
             let id = retrieved_doc
@@ -4408,6 +5550,117 @@ mod tests {
         dir.path().to_str().unwrap().to_string()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn search_advanced_default(
+        engine: &SearchEngine,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+    ) -> Result<Vec<SearchResult>> {
+        let negative_scope = same_search_scope(&scope);
+        engine.search_advanced(
+            query,
+            String::new(),
+            facets,
+            limit,
+            offset,
+            distance,
+            distance,
+            custom_spacing,
+            HashMap::new(),
+            alternative_words,
+            HashMap::new(),
+            search_options,
+            HashMap::new(),
+            order,
+            match_nikud,
+            match_taamim,
+            scope,
+            negative_scope,
+        )
+    }
+
+    fn same_search_scope(scope: &SearchScope) -> SearchScope {
+        match scope {
+            SearchScope::WordDistance => SearchScope::WordDistance,
+            SearchScope::SameParagraph => SearchScope::SameParagraph,
+            SearchScope::SameSection => SearchScope::SameSection,
+        }
+    }
+
+    fn count_advanced_default(
+        engine: &SearchEngine,
+        query: String,
+        facets: Vec<String>,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+    ) -> Result<u32> {
+        let negative_scope = same_search_scope(&scope);
+        engine.count_advanced(
+            query,
+            String::new(),
+            facets,
+            distance,
+            distance,
+            custom_spacing,
+            HashMap::new(),
+            alternative_words,
+            HashMap::new(),
+            search_options,
+            HashMap::new(),
+            match_nikud,
+            match_taamim,
+            scope,
+            negative_scope,
+        )
+    }
+
+    fn count_by_book_advanced_default(
+        engine: &SearchEngine,
+        query: String,
+        facets: Vec<String>,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        alternative_words: HashMap<u32, Vec<String>>,
+        search_options: HashMap<String, HashMap<String, bool>>,
+        match_nikud: bool,
+        match_taamim: bool,
+        scope: SearchScope,
+    ) -> Result<HashMap<String, u32>> {
+        let negative_scope = same_search_scope(&scope);
+        engine.count_by_book_advanced(
+            query,
+            String::new(),
+            facets,
+            distance,
+            distance,
+            custom_spacing,
+            HashMap::new(),
+            alternative_words,
+            HashMap::new(),
+            search_options,
+            HashMap::new(),
+            match_nikud,
+            match_taamim,
+            scope,
+            negative_scope,
+        )
+    }
+
     /// Writes a tiny `lexical.db` into `dir`: lemma "הלכ" with surfaces
     /// "הלכתי"/"הולכ" (folded, as the real DB stores them) and returns its path.
     fn make_lexical_db(dir: &TempDir) -> String {
@@ -4634,7 +5887,9 @@ mod tests {
 
     fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {
         engine
-            .add_document(id, "title", "ref", "/root", text, 0, false, file_path)
+            .add_document(
+                id, "title", "ref", "/root", text, 0, false, file_path, None, None,
+            )
             .unwrap();
     }
 
@@ -4665,6 +5920,71 @@ mod tests {
     }
 
     #[test]
+    fn generation_order_can_prioritize_sources_before_commentaries() {
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_document(
+                10,
+                "פירוש מוקדם בקטלוג",
+                "ref",
+                "/root",
+                "שלום",
+                0,
+                false,
+                "/books/commentary.txt",
+                None,
+                Some(65),
+            )
+            .unwrap();
+        engine
+            .add_document(
+                30,
+                "מקור שני",
+                "ref",
+                "/root",
+                "שלום",
+                0,
+                false,
+                "/books/source-b.txt",
+                None,
+                Some(2),
+            )
+            .unwrap();
+        engine
+            .add_document(
+                20,
+                "מקור ראשון",
+                "ref",
+                "/root",
+                "שלום",
+                0,
+                false,
+                "/books/source-a.txt",
+                None,
+                Some(2),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let by_generation: Vec<u64> = engine
+            .search_exact(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                10,
+                0,
+                ResultsOrder::Generation,
+                false,
+                false,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|result| result.id)
+            .collect();
+
+        assert_eq!(by_generation, vec![20, 30, 10]);
+    }
+
+    #[test]
     fn add_text_book_builds_reference_trail_ids_and_fingerprint() {
         let (mut engine, _dir) = make_engine();
         let text =
@@ -4675,6 +5995,7 @@ mod tests {
                 "/root".to_string(),
                 "/books/bereshit.txt".to_string(),
                 5,
+                DEFAULT_GENERATION_ORDER,
                 text.to_string(),
             )
             .unwrap();
@@ -4682,7 +6003,15 @@ mod tests {
         engine.commit().unwrap();
 
         let results = engine
-            .search_exact("ויכלו".to_string(), vec![], 10, 0, ResultsOrder::Catalogue)
+            .search_exact(
+                "ויכלו".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(results.len(), 1);
         let hit = &results[0];
@@ -4702,6 +6031,8 @@ mod tests {
                 10,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(nikud_hit.len(), 1);
@@ -4727,6 +6058,7 @@ mod tests {
                 "/root".to_string(),
                 "/books/bereshit.txt".to_string(),
                 5,
+                DEFAULT_GENERATION_ORDER,
                 text.as_bytes().to_vec(),
             )
             .unwrap();
@@ -4734,7 +6066,15 @@ mod tests {
         engine.commit().unwrap();
 
         let results = engine
-            .search_exact("ויכלו".to_string(), vec![], 10, 0, ResultsOrder::Catalogue)
+            .search_exact(
+                "ויכלו".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].reference, "ספר בראשית, פרק ב");
@@ -4756,6 +6096,7 @@ mod tests {
                 "/root".to_string(),
                 "/books/empty.txt".to_string(),
                 1,
+                DEFAULT_GENERATION_ORDER,
                 String::new(),
             )
             .unwrap();
@@ -4785,6 +6126,7 @@ mod tests {
                 "/root".to_string(),
                 "C:/books/sefer.pdf".to_string(),
                 5,
+                DEFAULT_GENERATION_ORDER,
                 pages,
             )
             .unwrap();
@@ -4800,6 +6142,8 @@ mod tests {
                 10,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -4841,6 +6185,7 @@ mod tests {
                 "/root".to_string(),
                 "C:/books/scanned.pdf".to_string(),
                 1,
+                DEFAULT_GENERATION_ORDER,
                 vec![PdfPageInput {
                     reference: "סרוק, עמוד 1".to_string(),
                     text: "\n≡≡≡≡≡\n∴ ⊕ ⊗ ⊘ ∴".to_string(),
@@ -4869,6 +6214,8 @@ mod tests {
                 100,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap()
             .into_iter()
@@ -5036,22 +6383,25 @@ mod tests {
                 ("חלק ממילה".to_string(), true),
             ]),
         );
-        let ids: Vec<u64> = engine
-            .search_advanced(
-                "משה".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                options,
-                ResultsOrder::Catalogue,
-            )
-            .unwrap()
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
+        let ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
         assert_eq!(ids, vec![1]);
     }
 
@@ -5074,22 +6424,25 @@ mod tests {
             "ספר_0".to_string(),
             HashMap::from([("שגיאות כתיב".to_string(), true)]),
         );
-        let mut ids: Vec<u64> = engine
-            .search_advanced(
-                "ספר".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                options,
-                ResultsOrder::Catalogue,
-            )
-            .unwrap()
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
+        let mut ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "ספר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 2]);
     }
@@ -5138,19 +6491,22 @@ mod tests {
         );
         engine.commit().unwrap();
 
-        let results = engine
-            .search_advanced(
-                "משה ואהרן".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                HashMap::new(),
-                ResultsOrder::Catalogue,
-            )
-            .unwrap();
+        let results = search_advanced_default(
+            &engine,
+            "משה ואהרן".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         let text = &results[0].text;
         // Exactly the two words of the one adjacent phrase — not the lone משה.
@@ -5169,19 +6525,22 @@ mod tests {
         add(&mut engine, 1, "משה דיבר ואחר כך משה שתק", "/books/a.txt");
         engine.commit().unwrap();
 
-        let results = engine
-            .search_advanced(
-                "משה".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                HashMap::new(),
-                ResultsOrder::Catalogue,
-            )
-            .unwrap();
+        let results = search_advanced_default(
+            &engine,
+            "משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(
             highlight_count(&results[0].text),
@@ -5194,7 +6553,7 @@ mod tests {
     #[test]
     fn exact_phrase_snippet_highlights_only_adjacent_occurrence() {
         // The exact (PhraseQuery) path has the same term-based over-painting; a
-        // strict-adjacency (max_gap 0) filter drops the lone occurrence too.
+        // strict-adjacency (all-zero gaps) filter drops the lone occurrence too.
         let (mut engine, _dir) = make_engine();
         add(
             &mut engine,
@@ -5211,6 +6570,8 @@ mod tests {
                 100,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -5223,10 +6584,10 @@ mod tests {
     fn advanced_phrase_custom_spacing_gap_is_highlighted_not_dropped() {
         // `distance` is 0 but `custom_spacing` permits one intermediate word, so
         // the search matches "משה <word> ואהרן". The filter's gap allowance must
-        // come from the resolved slop (= the custom spacing), NOT the raw
+        // come from the resolved gaps (= the custom spacing), NOT the raw
         // `distance`: with `distance` it would find no occurrence, fall back to
         // the plain term highlight, and re-paint the lone trailing "משה" (3
-        // spans). With slop it paints exactly the gapped phrase (2 spans).
+        // spans). With the gaps it paints exactly the gapped phrase (2 spans).
         let (mut engine, _dir) = make_engine();
         add(
             &mut engine,
@@ -5236,19 +6597,22 @@ mod tests {
         );
         engine.commit().unwrap();
 
-        let results = engine
-            .search_advanced(
-                "משה ואהרן".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,                                                     // distance 0 …
-                HashMap::from([("0-1".to_string(), "1".to_string())]), // … but spacing allows 1
-                HashMap::new(),
-                HashMap::new(),
-                ResultsOrder::Catalogue,
-            )
-            .unwrap();
+        let results = search_advanced_default(
+            &engine,
+            "משה ואהרן".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,                                                     // distance 0 …
+            HashMap::from([("0-1".to_string(), "1".to_string())]), // … but spacing allows 1
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         let text = &results[0].text;
         assert_eq!(highlight_count(text), 2, "snippet: {text}");
@@ -5256,6 +6620,213 @@ mod tests {
         assert!(text.contains("<font color=red>ואהרן</font>"));
         // The stray trailing occurrence stays plain.
         assert!(text.contains("כך משה לבדו"), "snippet: {text}");
+    }
+
+    // ── Per-pair gap enforcement (GapVerifiedPhraseQuery) ─────────────────
+
+    #[test]
+    fn advanced_custom_spacing_is_enforced_per_pair() {
+        // spacing = {0-1: 2, 1-2: 0}: up to two words between ויאמר and אל,
+        // but אל and משה must be adjacent. Historically the engine collapsed
+        // this to one global slop, so doc 2 — where the allowance is "spent"
+        // in the wrong gap — also matched.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר ה' צבאות אל משה", "/books/a.txt");
+        add(&mut engine, 2, "ויאמר אל העם ואל משה", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let spacing = HashMap::from([
+            ("0-1".to_string(), "2".to_string()),
+            ("1-2".to_string(), "0".to_string()),
+        ]);
+        let ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "ויאמר אל משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            spacing.clone(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        assert_eq!(ids, vec![1]);
+
+        // The counting path runs through the same verified query.
+        let count = count_advanced_default(
+            &engine,
+            "ויאמר אל משה".to_string(),
+            vec!["/root".to_string()],
+            0,
+            spacing,
+            HashMap::new(),
+            HashMap::new(),
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn advanced_distance_allows_full_gap_in_every_pair() {
+        // distance = 2 means "up to two words between EACH adjacent pair".
+        // tantivy's slop is a cumulative budget, so passing the raw distance
+        // used to reject a match that uses its allowance in both gaps at once.
+        let (mut engine, _dir) = make_engine();
+        add(
+            &mut engine,
+            1,
+            "ויאמר ה' צבאות אל בני ישראל משה",
+            "/books/a.txt",
+        );
+        // One gap over the allowance must still be rejected.
+        add(
+            &mut engine,
+            2,
+            "ויאמר אל דוד המלך איש הבינים משה",
+            "/books/b.txt",
+        );
+        engine.commit().unwrap();
+
+        let ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "ויאמר אל משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            2,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn advanced_phrase_requires_query_word_order() {
+        // tantivy's sloppy phrase matches unordered (positions compare by
+        // abs_diff); the gap verifier restores the in-order semantics every
+        // comment, highlight filter, and display pattern already promise.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר להם משה", "/books/a.txt");
+        // Reversed within the slop budget: tantivy's phrase scorer accepts
+        // it, only the gap verifier rejects it.
+        add(&mut engine, 2, "אמר משה ויאמר", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "ויאמר משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            2,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn advanced_per_pair_gap_verifies_across_repeated_words() {
+        // The feasibility sweep must consider EVERY chain start, not just the
+        // earliest: here the first "אל" satisfies pair 0 but only the second
+        // one can reach "משה" within pair 1's allowance.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר אל העם ושוב אל משה", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let spacing = HashMap::from([
+            ("0-1".to_string(), "3".to_string()),
+            ("1-2".to_string(), "0".to_string()),
+        ]);
+        let ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "ויאמר אל משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            spacing,
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn advanced_per_pair_spacing_composes_with_word_options() {
+        // Per-pair enforcement must hold when a word expands through an
+        // option (grammatical prefixes): "ולמשה" matches the expanded word
+        // pattern, and the pair allowances still gate the match.
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ויאמר שוב אל ולמשה", "/books/a.txt");
+        add(&mut engine, 2, "ויאמר אל העם ולמשה", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let options: HashMap<String, HashMap<String, bool>> = HashMap::from([(
+            "משה_2".to_string(),
+            HashMap::from([("קידומות דקדוקיות".to_string(), true)]),
+        )]);
+        let spacing = HashMap::from([
+            ("0-1".to_string(), "1".to_string()),
+            ("1-2".to_string(), "0".to_string()),
+        ]);
+        let ids: Vec<u64> = search_advanced_default(
+            &engine,
+            "ויאמר אל משה".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            spacing,
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        assert_eq!(ids, vec![1]);
     }
 
     // ── Index-aware display highlight (parity with search, R5) ───────────
@@ -5642,6 +7213,8 @@ mod tests {
                 0,
                 false,
                 "/books/a.txt",
+                None,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -5689,6 +7262,9 @@ mod tests {
             is_pdf: false,
             file_path: file_path.to_string(),
             content_hash: hash,
+            text_vocalized: None,
+            section_id: None,
+            generation_order: None,
         }
     }
 
@@ -5926,6 +7502,8 @@ mod tests {
                 10,
                 0,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap();
         assert!(
@@ -5942,6 +7520,8 @@ mod tests {
                 0,
                 2,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap();
         assert!(
@@ -5963,6 +7543,8 @@ mod tests {
                 0,
                 2,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(fuzzy_lex.len(), 1, "lexical fuzzy must find the inflection");
@@ -5970,7 +7552,13 @@ mod tests {
 
         // count_fuzzy must agree with search_fuzzy (same matching logic).
         let count = engine
-            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 2)
+            .count_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                2,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -5990,6 +7578,8 @@ mod tests {
                 0,
                 0,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap();
         assert!(
@@ -5998,7 +7588,13 @@ mod tests {
         );
 
         let count = engine
-            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 0)
+            .count_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                0,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -6017,6 +7613,8 @@ mod tests {
                 0,
                 max_distance,
                 order,
+                false,
+                false,
             )
             .unwrap()
             .into_iter()
@@ -6035,7 +7633,13 @@ mod tests {
 
         // Boosting must not change recall: all three are still matched.
         let count = engine
-            .count_fuzzy("הלך".to_string(), vec!["/root".to_string()], 2)
+            .count_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                2,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(count, 3, "ranking boosts must not change the recall set");
 
@@ -6099,6 +7703,8 @@ mod tests {
                 0,
                 2,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap()
             .into_iter()
@@ -6156,6 +7762,8 @@ mod tests {
                 0,
                 2,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap());
         assert_eq!(
@@ -6165,7 +7773,13 @@ mod tests {
         );
 
         let count = engine
-            .count_fuzzy("הלכתי לישון".to_string(), vec!["/root".to_string()], 2)
+            .count_fuzzy(
+                "הלכתי לישון".to_string(),
+                vec!["/root".to_string()],
+                2,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(count, 2);
     }
@@ -6193,6 +7807,8 @@ mod tests {
                 0,
                 2,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap();
         let hit = results.iter().find(|result| result.id == 1).unwrap();
@@ -6227,6 +7843,8 @@ mod tests {
                 0,
                 1,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap());
         assert_eq!(got, vec![1]);
@@ -6439,6 +8057,8 @@ mod tests {
                 0,
                 false,
                 "/books/a.txt",
+                None,
+                None,
             )
             .unwrap();
         engine.delete_document_by_id(2).unwrap();
@@ -6476,7 +8096,18 @@ mod tests {
             engine.index.writer(DEFAULT_WRITER_HEAP_SIZE).unwrap();
 
         let err = engine
-            .add_document(1, "title", "ref", "/root", "שלום", 0, false, "/books/a.txt")
+            .add_document(
+                1,
+                "title",
+                "ref",
+                "/root",
+                "שלום",
+                0,
+                false,
+                "/books/a.txt",
+                None,
+                None,
+            )
             .unwrap_err();
         assert!(
             err.to_string().contains("Failed to acquire index lock")
@@ -6543,6 +8174,8 @@ mod tests {
                 100,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap());
         assert_eq!(got, vec![1, 2]);
@@ -6555,6 +8188,8 @@ mod tests {
                 100,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap());
         assert_eq!(got, vec![1]);
@@ -6574,6 +8209,8 @@ mod tests {
                 100,
                 0,
                 ResultsOrder::Catalogue,
+                false,
+                false,
             )
             .unwrap());
         assert_eq!(got, vec![1]);
@@ -6597,6 +8234,8 @@ mod tests {
                 0,
                 false,
                 "/books/a.txt",
+                None,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -6609,6 +8248,8 @@ mod tests {
                     100,
                     0,
                     ResultsOrder::Catalogue,
+                    false,
+                    false,
                 )
                 .unwrap();
             assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
@@ -6635,19 +8276,22 @@ mod tests {
         let mut options = HashMap::new();
         options.insert("ספר_0".to_string(), word_opts);
 
-        let got = ids(engine
-            .search_advanced(
-                "ספר".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                options,
-                ResultsOrder::Catalogue,
-            )
-            .unwrap());
+        let got = ids(search_advanced_default(
+            &engine,
+            "ספר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap());
         assert_eq!(
             got,
             vec![1, 2],
@@ -6672,7 +8316,8 @@ mod tests {
         let mut options = HashMap::new();
         options.insert("ספר_0".to_string(), word_opts);
 
-        let result = engine.search_advanced(
+        let result = search_advanced_default(
+            &engine,
             "ספר".to_string(),
             vec!["/root".to_string()],
             100,
@@ -6682,6 +8327,9 @@ mod tests {
             HashMap::new(),
             options,
             ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
         );
         let got = ids(result.expect("heavy option combo must compile and run"));
         assert!(
@@ -6848,19 +8496,22 @@ mod tests {
         engine.commit().unwrap();
 
         // Pasted vocalized text must still match the nikud-free index terms.
-        let got = ids(engine
-            .search_advanced(
-                "סֵפֶר".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                HashMap::new(),
-                ResultsOrder::Catalogue,
-            )
-            .unwrap());
+        let got = ids(search_advanced_default(
+            &engine,
+            "סֵפֶר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap());
         assert_eq!(got, vec![1], "vocalized advanced query should match");
     }
 
@@ -6873,19 +8524,22 @@ mod tests {
         // Empty and punctuation-only queries produce zero regex terms; they must
         // return no results instead of panicking inside RegexPhraseQuery.
         for query in ["", "?!"] {
-            let results = engine
-                .search_advanced(
-                    query.to_string(),
-                    vec!["/root".to_string()],
-                    100,
-                    0,
-                    0,
-                    HashMap::new(),
-                    HashMap::new(),
-                    HashMap::new(),
-                    ResultsOrder::Catalogue,
-                )
-                .unwrap();
+            let results = search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
             assert!(results.is_empty(), "query {query:?} should match nothing");
         }
     }
@@ -6942,19 +8596,22 @@ mod tests {
         let mut options = HashMap::new();
         options.insert("ספר_0".to_string(), word_opts);
 
-        let results = engine
-            .search_advanced(
-                "ספר".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                HashMap::new(),
-                options,
-                ResultsOrder::Catalogue,
-            )
-            .unwrap();
+        let results = search_advanced_default(
+            &engine,
+            "ספר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
 
         // The query matched the prefixed variant "הספר" via regex; highlighting
         // must wrap the variant that actually matched, not just the literal "ספר".
@@ -6978,19 +8635,22 @@ mod tests {
 
         let mut alts = HashMap::new();
         alts.insert(0u32, vec!["מלך".to_string()]);
-        let got = ids(engine
-            .search_advanced(
-                "שר".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                0,
-                HashMap::new(),
-                alts,
-                HashMap::new(),
-                ResultsOrder::Catalogue,
-            )
-            .unwrap());
+        let got = ids(search_advanced_default(
+            &engine,
+            "שר".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            alts,
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap());
         assert_eq!(got, vec![1, 2], "alternatives should OR שר with מלך");
     }
 
@@ -7009,19 +8669,22 @@ mod tests {
         engine.commit().unwrap();
 
         let advanced_ids = |engine: &mut SearchEngine, query: &str| {
-            ids(engine
-                .search_advanced(
-                    query.to_string(),
-                    vec!["/root".to_string()],
-                    100,
-                    0,
-                    0,
-                    HashMap::new(),
-                    HashMap::new(),
-                    HashMap::new(),
-                    ResultsOrder::Catalogue,
-                )
-                .unwrap())
+            ids(search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap())
         };
 
         assert_eq!(advanced_ids(&mut engine, "ז\"ל"), vec![1]);
@@ -7065,7 +8728,15 @@ mod tests {
 
         let exact_ids = |engine: &SearchEngine, query: &str| {
             ids(engine
-                .search_exact(query.to_string(), vec![], 100, 0, ResultsOrder::Catalogue)
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    100,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                )
                 .unwrap())
         };
 
@@ -7101,6 +8772,8 @@ mod tests {
                     0,
                     d,
                     ResultsOrder::Relevance,
+                    false,
+                    false,
                 )
                 .unwrap())
         };
@@ -7145,6 +8818,8 @@ mod tests {
                 0,
                 1,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap());
         assert!(
@@ -7164,6 +8839,8 @@ mod tests {
                 0,
                 1,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap());
         assert!(got.contains(&1), "got {got:?}");
@@ -7185,19 +8862,22 @@ mod tests {
             word_opts.insert(opt.to_string(), true);
             let mut options = HashMap::new();
             options.insert(format!("{query}_0"), word_opts);
-            ids(engine
-                .search_advanced(
-                    query.to_string(),
-                    vec!["/root".to_string()],
-                    100,
-                    0,
-                    0,
-                    HashMap::new(),
-                    HashMap::new(),
-                    options,
-                    ResultsOrder::Catalogue,
-                )
-                .unwrap())
+            ids(search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap())
         };
 
         // דגל typo: וריאנט-המחיקה של הגרפמה `"` מגשר למהדורות נקיות.
@@ -7224,6 +8904,8 @@ mod tests {
                 0,
                 1,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap()
             .into_iter()
@@ -7252,10 +8934,18 @@ mod tests {
             0,
             3,
             ResultsOrder::Relevance,
+            false,
+            false,
         );
         assert!(result.is_err(), "distance > 2 should error, not panic");
 
-        let count = engine.count_fuzzy("שלום".to_string(), vec!["/root".to_string()], 3);
+        let count = engine.count_fuzzy(
+            "שלום".to_string(),
+            vec!["/root".to_string()],
+            3,
+            false,
+            false,
+        );
         assert!(count.is_err(), "distance > 2 should error, not panic");
     }
 
@@ -7273,6 +8963,8 @@ mod tests {
                 0,
                 1,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -7299,6 +8991,8 @@ mod tests {
                     0,
                     1,
                     ResultsOrder::Relevance,
+                    false,
+                    false,
                 )
                 .unwrap();
             assert!(results.is_empty(), "query {query:?} should match nothing");
@@ -7315,13 +9009,13 @@ mod tests {
 
         assert_eq!(
             engine
-                .count_exact("שלום".to_string(), vec!["/root".to_string()])
+                .count_exact("שלום".to_string(), vec!["/root".to_string()], false, false)
                 .unwrap(),
             2
         );
 
         let by_book = engine
-            .count_by_book_exact("שלום".to_string(), vec!["/root".to_string()])
+            .count_by_book_exact("שלום".to_string(), vec!["/root".to_string()], false, false)
             .unwrap();
         assert_eq!(by_book.get("/books/a.txt").copied(), Some(2));
 
@@ -7332,9 +9026,451 @@ mod tests {
                 1,
                 0,
                 ResultsOrder::Relevance,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(page.total_count, 2);
         assert_eq!(page.results.len(), 1);
+    }
+
+    // ── חיפוש מנוקד (textVocalized) ─────────────────────────────────────
+
+    /// ספר קטן: שורה מנוקדת, שורה נטולת ניקוד עם אותן מילים, שורה עם
+    /// ניקוד+טעמים, ושורה מנוקדת עם קידומת.
+    fn make_vocalized_engine() -> (SearchEngine, TempDir) {
+        let (mut engine, dir) = make_engine();
+        let text = "<h1>בראשית</h1>\n\
+                    בְּרֵאשִׁית בָּרָא אֱלֹהִים\n\
+                    ובראשית ברא אלהים בלי ניקוד\n\
+                    וַיֹּ\u{05A3}אמֶר אֱלֹהִים יְהִי אוֹר\n\
+                    וּבָרָא עוֹלָם";
+        engine
+            .add_text_book(
+                "בראשית".to_string(),
+                "/tanakh".to_string(),
+                "/books/b.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                text.to_string(),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        (engine, dir)
+    }
+
+    #[test]
+    fn vocalized_exact_requires_typed_marks_frees_untyped() {
+        let (engine, _dir) = make_vocalized_engine();
+        // קמץ שהוקלד חייב; הדגש שלא הוקלד חופשי — בָרָא מוצא את בָּרָא.
+        let hits = engine
+            .search_exact(
+                "בָרָא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        // התוצאה מציגה את העותק המנוקד השמור.
+        assert!(hits[0].text.contains("בָּרָא"), "text: {}", hits[0].text);
+
+        // תנועה שגויה במקום קמץ — נפסל.
+        let miss = engine
+            .search_exact(
+                "בֵרָא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert!(miss.is_empty());
+    }
+
+    #[test]
+    fn vocalized_flag_off_keeps_plain_behaviour() {
+        let (engine, _dir) = make_vocalized_engine();
+        // בלי דגלים: הניקוד מנורמל החוצה והחיפוש מוצא את שתי השורות.
+        let plain = engine
+            .search_exact(
+                "ברא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(plain.len(), 2);
+        // עם דגל ניקוד ושאילתה לא מנוקדת: כל סימן חופשי, אך רק שורות
+        // מנוקדות קיימות בשדה — השורה הנקייה לא נמצאת.
+        let voc = engine
+            .search_exact(
+                "ברא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(voc.len(), 1);
+    }
+
+    #[test]
+    fn vocalized_taamim_flag_splits_classes() {
+        let (engine, _dir) = make_vocalized_engine();
+        // שאילתה מנוקדת בלי טעמים מוצאת טקסט עם טעם (הטעם חופשי).
+        let nikud_only = engine
+            .search_exact(
+                "וַיֹּאמֶר".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(nikud_only.len(), 1);
+        // שאילתה עם הטעם שהוקלד ושני הדגלים — עדיין נמצא (הטעם קיים בטקסט).
+        let with_taam = engine
+            .search_exact(
+                "וַיֹּ\u{05A3}אמֶר".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(with_taam.len(), 1);
+        // טעם שגוי (זקף-קטן במקום מונח) עם דגל טעמים — נפסל.
+        let wrong_taam = engine
+            .search_exact(
+                "וַיֹּ\u{0594}אמֶר".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                true,
+            )
+            .unwrap();
+        assert!(wrong_taam.is_empty());
+    }
+
+    #[test]
+    fn vocalized_exact_phrase_matches_and_counts() {
+        let (engine, _dir) = make_vocalized_engine();
+        let page = engine
+            .search_and_count_exact(
+                "בָּרָא אֱלֹהִים".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.results.len(), 1);
+
+        let by_book = engine
+            .count_by_book_exact("בָּרָא".to_string(), vec![], true, false)
+            .unwrap();
+        assert_eq!(by_book.get("/books/b.txt"), Some(&1));
+    }
+
+    #[test]
+    fn vocalized_advanced_prefix_option_matches_prefixed_word() {
+        let (engine, _dir) = make_vocalized_engine();
+        let options = HashMap::from([(
+            "בָרָא_0".to_string(),
+            HashMap::from([("קידומות".to_string(), true)]),
+        )]);
+        let hits = search_advanced_default(
+            &engine,
+            "בָרָא".to_string(),
+            vec![],
+            10,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            true,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
+        // גם בָּרָא וגם וּבָרָא (הקידומת המנוקדת בתוך חלון ה-prefix).
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn per_word_nikud_option_routes_to_vocalized_field() {
+        let (engine, _dir) = make_vocalized_engine();
+        let search = |query: &str, options: HashMap<String, HashMap<String, bool>>| {
+            search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec![],
+                10,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                // הדגלים הגלובליים כבויים — הבקשה מגיעה מהאפשרות הפר-מילה.
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap()
+        };
+        // בלי האפשרות: מסלול רגיל, הניקוד נבלע בנרמול — מוצא את שתי השורות
+        // (המנוקדת והלא-מנוקדת).
+        assert_eq!(search("בָרָא", HashMap::new()).len(), 2);
+        // עם "ניקוד" על המילה: רץ על השדה המנוקד ודורש את הקמץ שהוקלד —
+        // רק השורה המנוקדת.
+        let options = HashMap::from([(
+            "בָרָא_0".to_string(),
+            HashMap::from([(hebrew_query::OPT_MATCH_NIKUD.to_string(), true)]),
+        )]);
+        let hits = search("בָרָא", options);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("בָּרָא"), "text: {}", hits[0].text);
+        // תנועה שגויה עם האפשרות — נפסל.
+        let options = HashMap::from([(
+            "בֻרָא_0".to_string(),
+            HashMap::from([(hebrew_query::OPT_MATCH_NIKUD.to_string(), true)]),
+        )]);
+        assert!(search("בֻרָא", options).is_empty());
+    }
+
+    #[test]
+    fn per_word_nikud_option_leaves_other_words_free() {
+        let (engine, _dir) = make_vocalized_engine();
+        // "ניקוד" מסומן רק על המילה הראשונה; השנייה מוקלדת בניקוד "שגוי"
+        // בכוונה — הסימנים שלה חופשיים ולכן ההתאמה שורדת.
+        let options = HashMap::from([(
+            "בָּרָא_0".to_string(),
+            HashMap::from([(hebrew_query::OPT_MATCH_NIKUD.to_string(), true)]),
+        )]);
+        let hits = search_advanced_default(
+            &engine,
+            "בָּרָא אֱלֹהִֻים".to_string(),
+            vec![],
+            10,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("בְּרֵאשִׁית"), "text: {}", hits[0].text);
+    }
+
+    #[test]
+    fn vocalized_fuzzy_finds_edit_distance_variants() {
+        let (engine, _dir) = make_vocalized_engine();
+        // ברח במרחק עריכה 1 מ-ברא; הווריאנט חופשי-סימנים מוצא את בָּרָא.
+        let hits = engine
+            .search_fuzzy(
+                "בָּרַח".to_string(),
+                vec![],
+                10,
+                0,
+                1,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert!(!hits.is_empty());
+        // מרחק 0: רק הצורה המדויקת (עם הסימנים שהוקלדו) — ברח לא קיים.
+        let exact_only = engine
+            .search_fuzzy(
+                "בָּרַח".to_string(),
+                vec![],
+                10,
+                0,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+            )
+            .unwrap();
+        assert!(exact_only.is_empty());
+    }
+
+    // ── SearchScope: "באותה פסקה" / "תחת אותה כותרת" ─────────────────────
+
+    /// ספר עם שתי כותרות משנה: תחת "סימן א" המילים "מתכוין" ו"מתעסק"
+    /// מפוזרות על שורות שונות; תחת "סימן ב" שורה אחת מכילה את שתיהן —
+    /// בסדר הפוך לסדר השאילתה.
+    fn scope_engine() -> (SearchEngine, TempDir, u64) {
+        let (mut engine, dir) = make_engine();
+        let text = "<h1>ספר הבדיקה</h1>\n\
+                    <h2>סימן א</h2>\n\
+                    דין אינו מתכוין בשבת\n\
+                    ודין מתעסק בחלבים ועריות\n\
+                    <h2>סימן ב</h2>\n\
+                    כאן נדון רק במלאכת שבת\n\
+                    מתעסק וגם אינו מתכוין באותה שורה";
+        engine
+            .add_text_book(
+                "ספר הבדיקה".to_string(),
+                "/root".to_string(),
+                "/books/scope.txt".to_string(),
+                7,
+                0,
+                text.to_string(),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        // ids: ((catalogue_order+1) << 32) + ordinal + 1
+        let id_base = (7u64 + 1) << 32;
+        (engine, dir, id_base)
+    }
+
+    fn scope_search(engine: &SearchEngine, query: &str, scope: SearchScope) -> Vec<u64> {
+        search_advanced_default(
+            &engine,
+            query.to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            scope,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
+    }
+
+    #[test]
+    fn same_paragraph_scope_matches_unordered_within_line() {
+        let (engine, _dir, id_base) = scope_engine();
+        // בסדר השאילתה אין התאמה בשום שורה — מסלול המרחק (סדר + צמידות)
+        // לא מוצא דבר.
+        assert_eq!(
+            scope_search(&engine, "מתכוין מתעסק", SearchScope::WordDistance),
+            Vec::<u64>::new()
+        );
+        // באותה פסקה: רק השורה שמכילה את שתי המילים, למרות הסדר ההפוך.
+        assert_eq!(
+            scope_search(&engine, "מתכוין מתעסק", SearchScope::SameParagraph),
+            vec![id_base + 7]
+        );
+    }
+
+    #[test]
+    fn same_section_scope_matches_across_lines_under_one_heading() {
+        let (engine, _dir, id_base) = scope_engine();
+        // "מתכוין" ו"מתעסק" בשורות שונות תחת "סימן א", ובאותה שורה תחת
+        // "סימן ב" — חוזרות כל השורות שנושאות מילה מהשאילתה בתוך סעיף
+        // שמכיל את כל המילים.
+        assert_eq!(
+            scope_search(&engine, "מתכוין מתעסק", SearchScope::SameSection),
+            vec![id_base + 3, id_base + 4, id_base + 7]
+        );
+        // "בשבת" (סימן א) ו"נדון" (סימן ב) — אף סעיף לא מכיל את שתיהן.
+        assert_eq!(
+            scope_search(&engine, "בשבת נדון", SearchScope::SameSection),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn same_section_scope_count_matches_search() {
+        let (engine, _dir, _id_base) = scope_engine();
+        let count = count_advanced_default(
+            &engine,
+            "מתכוין מתעסק".to_string(),
+            vec!["/root".to_string()],
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            false,
+            false,
+            SearchScope::SameSection,
+        )
+        .unwrap();
+        assert_eq!(count, 3);
+
+        let by_book = count_by_book_advanced_default(
+            &engine,
+            "מתכוין מתעסק".to_string(),
+            vec!["/root".to_string()],
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            false,
+            false,
+            SearchScope::SameSection,
+        )
+        .unwrap();
+        assert_eq!(by_book.get("/books/scope.txt"), Some(&3));
+    }
+
+    #[test]
+    fn same_paragraph_scope_snippet_highlights_every_word() {
+        let (engine, _dir, _id_base) = scope_engine();
+        let results = search_advanced_default(
+            &engine,
+            "מתכוין מתעסק".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::SameParagraph,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        let text = &results[0].text;
+        // שתי המילים מודגשות, בלי מסנן סדר/מרחק.
+        assert!(
+            text.contains("<font color=red>מתעסק</font>"),
+            "snippet: {text}"
+        );
+        assert!(
+            text.contains("<font color=red>מתכוין</font>"),
+            "snippet: {text}"
+        );
     }
 }

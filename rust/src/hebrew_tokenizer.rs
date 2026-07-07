@@ -20,11 +20,19 @@ use crate::hebrew_query::{fold_presentation_form, is_attached_mark};
 #[derive(Clone, Default)]
 pub struct HebrewTokenizer;
 
+/// כמו [`HebrewTokenizer`] אך *שומר* ניקוד וטעמים בטקסט הטוקן — הטוקנייזר
+/// של השדה המנוקד (`textVocalized`). גבולות הטוקנים ומיקומיהם זהים
+/// אחד-לאחד לטוקנייזר הרגיל (סימן צמוד הוא תו-מילה בשניהם), כך ששני
+/// השדות של אותה שורה מטוקננים לאותן עמדות; רק טקסט הטרם שונה.
+#[derive(Clone, Default)]
+pub struct VocalizedHebrewTokenizer;
+
 pub struct HebrewTokenStream<'a> {
     text: &'a str,
     token: Token,
     byte_pos: usize,
     token_count: usize,
+    keep_marks: bool,
 }
 
 impl Tokenizer for HebrewTokenizer {
@@ -36,6 +44,21 @@ impl Tokenizer for HebrewTokenizer {
             token: Token::default(),
             byte_pos: 0,
             token_count: 0,
+            keep_marks: false,
+        }
+    }
+}
+
+impl Tokenizer for VocalizedHebrewTokenizer {
+    type TokenStream<'a> = HebrewTokenStream<'a>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        HebrewTokenStream {
+            text,
+            token: Token::default(),
+            byte_pos: 0,
+            token_count: 0,
+            keep_marks: true,
         }
     }
 }
@@ -167,7 +190,13 @@ impl<'a> TokenStream for HebrewTokenStream<'a> {
                 // הרוב המכריע — העתקה ישירה.
                 if tok_text.chars().any(needs_normalising) {
                     for c in tok_text.chars() {
-                        if is_attached_mark(c) || is_transparent(c) {
+                        if (!self.keep_marks && is_attached_mark(c)) || is_transparent(c) {
+                            continue;
+                        }
+                        if self.keep_marks && is_attached_mark(c) {
+                            // מצב מנוקד: הסימן נשמר כמות שהוא (הוא לעולם לא
+                            // גרש/גרשיים/Presentation Form).
+                            self.token.text.push(c);
                             continue;
                         }
                         if is_geresh(c) {
@@ -183,9 +212,12 @@ impl<'a> TokenStream for HebrewTokenStream<'a> {
                         } else if c == '\u{05F4}' {
                             self.token.text.push('"');
                         } else if let Some(folded) = fold_presentation_form(c) {
-                            self.token
-                                .text
-                                .extend(folded.chars().filter(|f| !is_attached_mark(*f)));
+                            let keep_marks = self.keep_marks;
+                            self.token.text.extend(
+                                folded
+                                    .chars()
+                                    .filter(|f| keep_marks || !is_attached_mark(*f)),
+                            );
                         } else {
                             self.token.text.push(c);
                         }
@@ -436,5 +468,60 @@ mod tests {
     #[test]
     fn test_standalone_word_no_geresh() {
         assert_eq!(tokenize("תוס"), vec!["תוס"]);
+    }
+
+    // ── הטוקנייזר המנוקד ─────────────────────────────────────────────────
+
+    fn tokenize_vocalized(text: &str) -> Vec<String> {
+        let mut tokenizer = VocalizedHebrewTokenizer;
+        let mut stream = tokenizer.token_stream(text);
+        let mut tokens = Vec::new();
+        while stream.advance() {
+            tokens.push(stream.token().text.clone());
+        }
+        tokens
+    }
+
+    #[test]
+    fn vocalized_keeps_marks_in_tokens() {
+        assert_eq!(tokenize_vocalized("בְּרֵאשִׁית בָּרָא"), vec!["בְּרֵאשִׁית", "בָּרָא"]);
+        // טעמי מקרא נשמרים גם הם.
+        assert_eq!(tokenize_vocalized("שָׁמַ֣ע"), vec!["שָׁמַ֣ע"]);
+    }
+
+    #[test]
+    fn vocalized_boundaries_match_plain_tokenizer() {
+        // גבולות ועמדות זהים לטוקנייזר הרגיל — רק טקסט הטרם שונה.
+        let samples = [
+            "אֲשֶׁר־שָׁמַע",
+            "וַיֹּאמֶר אֱלֹהִים: יְהִי אוֹר!",
+            "רמב\"ם תוס' ד'אש",
+            "הָאָרֶץ\u{05C3} וְהָאָרֶץ",
+            "מ\u{FB1D}ם גנובים",
+        ];
+        for s in samples {
+            let plain = spans(s);
+            let mut tokenizer = VocalizedHebrewTokenizer;
+            let mut stream = tokenizer.token_stream(s);
+            let mut voc = Vec::new();
+            while stream.advance() {
+                voc.push((stream.token().offset_from, stream.token().offset_to));
+            }
+            assert_eq!(plain, voc, "boundaries diverged for {s:?}");
+        }
+    }
+
+    #[test]
+    fn vocalized_still_folds_quotes_and_presentation_forms() {
+        // גרש/גרשיים מקופלים ל-ASCII כמו ברגיל; Presentation Form מתפרק
+        // והסימן שלו נשמר.
+        assert_eq!(tokenize_vocalized("רמב\u{05F4}ם"), vec!["רמב\"ם"]);
+        assert_eq!(tokenize_vocalized("מ\u{FB1D}ם"), vec!["מ\u{05D9}\u{05B4}ם"]);
+    }
+
+    #[test]
+    fn vocalized_transparent_still_dropped() {
+        // פיסוק שקוף מושמט מהטוקן גם במצב מנוקד.
+        assert_eq!(tokenize_vocalized("בָּרָא."), vec!["בָּרָא"]);
     }
 }

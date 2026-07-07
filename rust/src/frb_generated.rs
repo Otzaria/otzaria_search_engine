@@ -227,6 +227,8 @@ fn wire__crate__api__search_engine__SearchEngine_add_document_impl(
             let api__segment = <u64>::sse_decode(&mut deserializer);
             let api__is_pdf = <bool>::sse_decode(&mut deserializer);
             let api__file_path = <String>::sse_decode(&mut deserializer);
+            let api__section_id = <Option<u64>>::sse_decode(&mut deserializer);
+            let api__generation_order = <Option<u32>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -255,6 +257,8 @@ fn wire__crate__api__search_engine__SearchEngine_add_document_impl(
                             api__segment,
                             api__is_pdf,
                             &api__file_path,
+                            api__section_id,
+                            api__generation_order,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -349,6 +353,7 @@ fn wire__crate__api__search_engine__SearchEngine_add_pdf_book_impl(
             let api_topics = <String>::sse_decode(&mut deserializer);
             let api_file_path = <String>::sse_decode(&mut deserializer);
             let api_catalogue_order = <u32>::sse_decode(&mut deserializer);
+            let api_generation_order = <u32>::sse_decode(&mut deserializer);
             let api_pages =
                 <Vec<crate::api::search_engine::PdfPageInput>>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -375,6 +380,7 @@ fn wire__crate__api__search_engine__SearchEngine_add_pdf_book_impl(
                             api_topics,
                             api_file_path,
                             api_catalogue_order,
+                            api_generation_order,
                             api_pages,
                         )?;
                         Ok(output_ok)
@@ -413,6 +419,7 @@ fn wire__crate__api__search_engine__SearchEngine_add_text_book_impl(
             let api_topics = <String>::sse_decode(&mut deserializer);
             let api_file_path = <String>::sse_decode(&mut deserializer);
             let api_catalogue_order = <u32>::sse_decode(&mut deserializer);
+            let api_generation_order = <u32>::sse_decode(&mut deserializer);
             let api_text = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -438,6 +445,7 @@ fn wire__crate__api__search_engine__SearchEngine_add_text_book_impl(
                             api_topics,
                             api_file_path,
                             api_catalogue_order,
+                            api_generation_order,
                             api_text,
                         )?;
                         Ok(output_ok)
@@ -476,6 +484,7 @@ fn wire__crate__api__search_engine__SearchEngine_add_text_book_bytes_impl(
             let api_topics = <String>::sse_decode(&mut deserializer);
             let api_file_path = <String>::sse_decode(&mut deserializer);
             let api_catalogue_order = <u32>::sse_decode(&mut deserializer);
+            let api_generation_order = <u32>::sse_decode(&mut deserializer);
             let api_text = <Vec<u8>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -502,6 +511,7 @@ fn wire__crate__api__search_engine__SearchEngine_add_text_book_bytes_impl(
                                 api_topics,
                                 api_file_path,
                                 api_catalogue_order,
+                                api_generation_order,
                                 api_text,
                             )?;
                         Ok(output_ok)
@@ -702,16 +712,31 @@ fn wire__crate__api__search_engine__SearchEngine_count_advanced_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -733,11 +758,20 @@ fn wire__crate__api__search_engine__SearchEngine_count_advanced_impl(
                         let output_ok = crate::api::search_engine::SearchEngine::count_advanced(
                             &*api_that_guard,
                             api_query,
+                            api_negative_query,
                             api_facets,
                             api_distance,
+                            api_negative_distance,
                             api_custom_spacing,
+                            api_negative_custom_spacing,
                             api_alternative_words,
+                            api_negative_alternative_words,
                             api_search_options,
+                            api_negative_search_options,
+                            api_match_nikud,
+                            api_match_taamim,
+                            api_scope,
+                            api_negative_scope,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -772,16 +806,31 @@ fn wire__crate__api__search_engine__SearchEngine_count_advanced_with_status_impl
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -804,11 +853,20 @@ fn wire__crate__api__search_engine__SearchEngine_count_advanced_with_status_impl
                             crate::api::search_engine::SearchEngine::count_advanced_with_status(
                                 &*api_that_guard,
                                 api_query,
+                                api_negative_query,
                                 api_facets,
                                 api_distance,
+                                api_negative_distance,
                                 api_custom_spacing,
+                                api_negative_custom_spacing,
                                 api_alternative_words,
+                                api_negative_alternative_words,
                                 api_search_options,
+                                api_negative_search_options,
+                                api_match_nikud,
+                                api_match_taamim,
+                                api_scope,
+                                api_negative_scope,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -904,16 +962,31 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -936,11 +1009,20 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(
                             crate::api::search_engine::SearchEngine::count_by_book_advanced(
                                 &*api_that_guard,
                                 api_query,
+                                api_negative_query,
                                 api_facets,
                                 api_distance,
+                                api_negative_distance,
                                 api_custom_spacing,
+                                api_negative_custom_spacing,
                                 api_alternative_words,
+                                api_negative_alternative_words,
                                 api_search_options,
+                                api_negative_search_options,
+                                api_match_nikud,
+                                api_match_taamim,
+                                api_scope,
+                                api_negative_scope,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -960,11 +1042,20 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_with_sta
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
 let api_query = <String>::sse_decode(&mut deserializer);
+let api_negative_query = <String>::sse_decode(&mut deserializer);
 let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
 let api_distance = <u32>::sse_decode(&mut deserializer);
+let api_negative_distance = <u32>::sse_decode(&mut deserializer);
 let api_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+let api_negative_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
 let api_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
-let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+let api_negative_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);
+let api_negative_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);
+let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+let api_negative_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
                         let mut api_that_guard = None;
 let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false)]);
@@ -975,7 +1066,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::search_engine::SearchEngine::count_by_book_advanced_with_status(&*api_that_guard, api_query, api_facets, api_distance, api_custom_spacing, api_alternative_words, api_search_options)?;   Ok(output_ok)
+ let output_ok = crate::api::search_engine::SearchEngine::count_by_book_advanced_with_status(&*api_that_guard, api_query, api_negative_query, api_facets, api_distance, api_negative_distance, api_custom_spacing, api_negative_custom_spacing, api_alternative_words, api_negative_alternative_words, api_search_options, api_negative_search_options, api_match_nikud, api_match_taamim, api_scope, api_negative_scope)?;   Ok(output_ok)
                     })())
                 } })
 }
@@ -1006,6 +1097,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -1029,6 +1122,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(
                                 &*api_that_guard,
                                 api_query,
                                 api_facets,
+                                api_match_nikud,
+                                api_match_taamim,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -1065,6 +1160,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(
             let api_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_max_distance = <u8>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -1089,6 +1186,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(
                                 api_query,
                                 api_facets,
                                 api_max_distance,
+                                api_match_nikud,
+                                api_match_taamim,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -1240,6 +1339,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_exact_impl(
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -1262,6 +1363,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_exact_impl(
                             &*api_that_guard,
                             api_query,
                             api_facets,
+                            api_match_nikud,
+                            api_match_taamim,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -1298,6 +1401,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(
             let api_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_max_distance = <u8>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -1321,6 +1426,8 @@ fn wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(
                             api_query,
                             api_facets,
                             api_max_distance,
+                            api_match_nikud,
+                            api_match_taamim,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -1834,17 +1941,32 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_facet_prefix = <String>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -1867,12 +1989,21 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(
                             crate::api::search_engine::SearchEngine::get_facet_counts_advanced(
                                 &*api_that_guard,
                                 api_query,
+                                api_negative_query,
                                 api_facets,
                                 api_facet_prefix,
                                 api_distance,
+                                api_negative_distance,
                                 api_custom_spacing,
+                                api_negative_custom_spacing,
                                 api_alternative_words,
+                                api_negative_alternative_words,
                                 api_search_options,
+                                api_negative_search_options,
+                                api_match_nikud,
+                                api_match_taamim,
+                                api_scope,
+                                api_negative_scope,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -1892,12 +2023,21 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_with_
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
 let api_query = <String>::sse_decode(&mut deserializer);
+let api_negative_query = <String>::sse_decode(&mut deserializer);
 let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
 let api_facet_prefix = <String>::sse_decode(&mut deserializer);
 let api_distance = <u32>::sse_decode(&mut deserializer);
+let api_negative_distance = <u32>::sse_decode(&mut deserializer);
 let api_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+let api_negative_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
 let api_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
-let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+let api_negative_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);
+let api_negative_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);
+let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+let api_negative_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
                         let mut api_that_guard = None;
 let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false)]);
@@ -1908,7 +2048,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::search_engine::SearchEngine::get_facet_counts_advanced_with_status(&*api_that_guard, api_query, api_facets, api_facet_prefix, api_distance, api_custom_spacing, api_alternative_words, api_search_options)?;   Ok(output_ok)
+ let output_ok = crate::api::search_engine::SearchEngine::get_facet_counts_advanced_with_status(&*api_that_guard, api_query, api_negative_query, api_facets, api_facet_prefix, api_distance, api_negative_distance, api_custom_spacing, api_negative_custom_spacing, api_alternative_words, api_negative_alternative_words, api_search_options, api_negative_search_options, api_match_nikud, api_match_taamim, api_scope, api_negative_scope)?;   Ok(output_ok)
                     })())
                 } })
 }
@@ -1940,6 +2080,8 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(
             let api_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_facet_prefix = <String>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -1964,6 +2106,8 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(
                                 api_query,
                                 api_facets,
                                 api_facet_prefix,
+                                api_match_nikud,
+                                api_match_taamim,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -2001,6 +2145,8 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_facet_prefix = <String>::sse_decode(&mut deserializer);
             let api_max_distance = <u8>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -2026,6 +2172,8 @@ fn wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(
                                 api_facets,
                                 api_facet_prefix,
                                 api_max_distance,
+                                api_match_nikud,
+                                api_match_taamim,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -2543,20 +2691,35 @@ fn wire__crate__api__search_engine__SearchEngine_search_advanced_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_offset = <u32>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -2578,14 +2741,23 @@ fn wire__crate__api__search_engine__SearchEngine_search_advanced_impl(
                         let output_ok = crate::api::search_engine::SearchEngine::search_advanced(
                             &*api_that_guard,
                             api_query,
+                            api_negative_query,
                             api_facets,
                             api_limit,
                             api_offset,
                             api_distance,
+                            api_negative_distance,
                             api_custom_spacing,
+                            api_negative_custom_spacing,
                             api_alternative_words,
+                            api_negative_alternative_words,
                             api_search_options,
+                            api_negative_search_options,
                             api_order,
+                            api_match_nikud,
+                            api_match_taamim,
+                            api_scope,
+                            api_negative_scope,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -2620,20 +2792,35 @@ fn wire__crate__api__search_engine__SearchEngine_search_advanced_stream_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_offset = <u32>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             let api_chunk_size = <u32>::sse_decode(&mut deserializer);
             let api_sink = <StreamSink<
                 Vec<crate::api::search_engine::SearchResult>,
@@ -2661,14 +2848,23 @@ fn wire__crate__api__search_engine__SearchEngine_search_advanced_stream_impl(
                             crate::api::search_engine::SearchEngine::search_advanced_stream(
                                 &*api_that_guard,
                                 api_query,
+                                api_negative_query,
                                 api_facets,
                                 api_limit,
                                 api_offset,
                                 api_distance,
+                                api_negative_distance,
                                 api_custom_spacing,
+                                api_negative_custom_spacing,
                                 api_alternative_words,
+                                api_negative_alternative_words,
                                 api_search_options,
+                                api_negative_search_options,
                                 api_order,
+                                api_match_nikud,
+                                api_match_taamim,
+                                api_scope,
+                                api_negative_scope,
                                 api_chunk_size,
                                 api_sink,
                             )?;
@@ -2690,14 +2886,23 @@ fn wire__crate__api__search_engine__SearchEngine_search_advanced_stream_with_cou
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
 let api_query = <String>::sse_decode(&mut deserializer);
+let api_negative_query = <String>::sse_decode(&mut deserializer);
 let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
 let api_limit = <u32>::sse_decode(&mut deserializer);
 let api_offset = <u32>::sse_decode(&mut deserializer);
 let api_distance = <u32>::sse_decode(&mut deserializer);
+let api_negative_distance = <u32>::sse_decode(&mut deserializer);
 let api_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+let api_negative_custom_spacing = <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
 let api_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+let api_negative_alternative_words = <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
 let api_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);
+let api_negative_search_options = <std::collections::HashMap<String, std::collections::HashMap<String, bool>>>::sse_decode(&mut deserializer);
 let api_order = <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+let api_negative_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
 let api_chunk_size = <u32>::sse_decode(&mut deserializer);
 let api_sink = <StreamSink<crate::api::search_engine::SearchStreamUpdate,flutter_rust_bridge::for_generated::SseCodec>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
@@ -2710,7 +2915,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::search_engine::SearchEngine::search_advanced_stream_with_counts(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_distance, api_custom_spacing, api_alternative_words, api_search_options, api_order, api_chunk_size, api_sink)?;   Ok(output_ok)
+ let output_ok = crate::api::search_engine::SearchEngine::search_advanced_stream_with_counts(&*api_that_guard, api_query, api_negative_query, api_facets, api_limit, api_offset, api_distance, api_negative_distance, api_custom_spacing, api_negative_custom_spacing, api_alternative_words, api_negative_alternative_words, api_search_options, api_negative_search_options, api_order, api_match_nikud, api_match_taamim, api_scope, api_negative_scope, api_chunk_size, api_sink)?;   Ok(output_ok)
                     })())
                 } })
 }
@@ -2811,20 +3016,35 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_advanced_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             let api_query = <String>::sse_decode(&mut deserializer);
+            let api_negative_query = <String>::sse_decode(&mut deserializer);
             let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_offset = <u32>::sse_decode(&mut deserializer);
             let api_distance = <u32>::sse_decode(&mut deserializer);
+            let api_negative_distance = <u32>::sse_decode(&mut deserializer);
             let api_custom_spacing =
                 <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            let api_negative_custom_spacing =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
             let api_alternative_words =
+                <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
+            let api_negative_alternative_words =
                 <std::collections::HashMap<u32, Vec<String>>>::sse_decode(&mut deserializer);
             let api_search_options = <std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, bool>,
             >>::sse_decode(&mut deserializer);
+            let api_negative_search_options = <std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, bool>,
+            >>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_scope = <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
+            let api_negative_scope =
+                <crate::api::search_engine::SearchScope>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -2847,14 +3067,23 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_advanced_impl(
                             crate::api::search_engine::SearchEngine::search_and_count_advanced(
                                 &*api_that_guard,
                                 api_query,
+                                api_negative_query,
                                 api_facets,
                                 api_limit,
                                 api_offset,
                                 api_distance,
+                                api_negative_distance,
                                 api_custom_spacing,
+                                api_negative_custom_spacing,
                                 api_alternative_words,
+                                api_negative_alternative_words,
                                 api_search_options,
+                                api_negative_search_options,
                                 api_order,
+                                api_match_nikud,
+                                api_match_taamim,
+                                api_scope,
+                                api_negative_scope,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -2894,6 +3123,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_exact_impl(
             let api_offset = <u32>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -2920,6 +3151,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_exact_impl(
                                 api_limit,
                                 api_offset,
                                 api_order,
+                                api_match_nikud,
+                                api_match_taamim,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -2960,6 +3193,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_fuzzy_impl(
             let api_max_distance = <u8>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -2987,6 +3222,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_and_count_fuzzy_impl(
                                 api_offset,
                                 api_max_distance,
                                 api_order,
+                                api_match_nikud,
+                                api_match_taamim,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -3026,6 +3263,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_exact_impl(
             let api_offset = <u32>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -3051,6 +3290,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_exact_impl(
                             api_limit,
                             api_offset,
                             api_order,
+                            api_match_nikud,
+                            api_match_taamim,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -3090,6 +3331,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_exact_stream_impl(
             let api_offset = <u32>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             let api_chunk_size = <u32>::sse_decode(&mut deserializer);
             let api_sink = <StreamSink<
                 Vec<crate::api::search_engine::SearchResult>,
@@ -3121,6 +3364,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_exact_stream_impl(
                                 api_limit,
                                 api_offset,
                                 api_order,
+                                api_match_nikud,
+                                api_match_taamim,
                                 api_chunk_size,
                                 api_sink,
                             )?;
@@ -3146,6 +3391,8 @@ let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
 let api_limit = <u32>::sse_decode(&mut deserializer);
 let api_offset = <u32>::sse_decode(&mut deserializer);
 let api_order = <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+let api_match_taamim = <bool>::sse_decode(&mut deserializer);
 let api_chunk_size = <u32>::sse_decode(&mut deserializer);
 let api_sink = <StreamSink<crate::api::search_engine::SearchStreamUpdate,flutter_rust_bridge::for_generated::SseCodec>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
@@ -3158,7 +3405,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::search_engine::SearchEngine::search_exact_stream_with_counts(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_order, api_chunk_size, api_sink)?;   Ok(output_ok)
+ let output_ok = crate::api::search_engine::SearchEngine::search_exact_stream_with_counts(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_order, api_match_nikud, api_match_taamim, api_chunk_size, api_sink)?;   Ok(output_ok)
                     })())
                 } })
 }
@@ -3194,6 +3441,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_impl(
             let api_max_distance = <u8>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -3220,6 +3469,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_impl(
                             api_offset,
                             api_max_distance,
                             api_order,
+                            api_match_nikud,
+                            api_match_taamim,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -3260,6 +3511,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(
             let api_max_distance = <u8>::sse_decode(&mut deserializer);
             let api_order =
                 <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             let api_chunk_size = <u32>::sse_decode(&mut deserializer);
             let api_sink = <StreamSink<
                 Vec<crate::api::search_engine::SearchResult>,
@@ -3292,6 +3545,8 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(
                                 api_offset,
                                 api_max_distance,
                                 api_order,
+                                api_match_nikud,
+                                api_match_taamim,
                                 api_chunk_size,
                                 api_sink,
                             )?;
@@ -3318,6 +3573,8 @@ let api_limit = <u32>::sse_decode(&mut deserializer);
 let api_offset = <u32>::sse_decode(&mut deserializer);
 let api_max_distance = <u8>::sse_decode(&mut deserializer);
 let api_order = <crate::api::search_engine::ResultsOrder>::sse_decode(&mut deserializer);
+let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+let api_match_taamim = <bool>::sse_decode(&mut deserializer);
 let api_chunk_size = <u32>::sse_decode(&mut deserializer);
 let api_sink = <StreamSink<crate::api::search_engine::SearchStreamUpdate,flutter_rust_bridge::for_generated::SseCodec>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move ||  {
@@ -3330,7 +3587,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::search_engine::SearchEngine::search_fuzzy_stream_with_counts(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_max_distance, api_order, api_chunk_size, api_sink)?;   Ok(output_ok)
+ let output_ok = crate::api::search_engine::SearchEngine::search_fuzzy_stream_with_counts(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_max_distance, api_order, api_match_nikud, api_match_taamim, api_chunk_size, api_sink)?;   Ok(output_ok)
                     })())
                 } })
 }
@@ -3622,6 +3879,8 @@ fn wire__crate__api__search_engine__SearchEngine_upsert_document_impl(
             let api__segment = <u64>::sse_decode(&mut deserializer);
             let api__is_pdf = <bool>::sse_decode(&mut deserializer);
             let api__file_path = <String>::sse_decode(&mut deserializer);
+            let api__section_id = <Option<u64>>::sse_decode(&mut deserializer);
+            let api__generation_order = <Option<u32>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
@@ -3650,6 +3909,8 @@ fn wire__crate__api__search_engine__SearchEngine_upsert_document_impl(
                             api__segment,
                             api__is_pdf,
                             &api__file_path,
+                            api__section_id,
+                            api__generation_order,
                         )?;
                         Ok(output_ok)
                     })(),
@@ -4380,6 +4641,9 @@ impl SseDecode for crate::api::search_engine::DocumentInput {
         let mut var_isPdf = <bool>::sse_decode(deserializer);
         let mut var_filePath = <String>::sse_decode(deserializer);
         let mut var_contentHash = <Option<u64>>::sse_decode(deserializer);
+        let mut var_textVocalized = <Option<String>>::sse_decode(deserializer);
+        let mut var_sectionId = <Option<u64>>::sse_decode(deserializer);
+        let mut var_generationOrder = <Option<u32>>::sse_decode(deserializer);
         return crate::api::search_engine::DocumentInput {
             id: var_id,
             title: var_title,
@@ -4390,6 +4654,9 @@ impl SseDecode for crate::api::search_engine::DocumentInput {
             is_pdf: var_isPdf,
             file_path: var_filePath,
             content_hash: var_contentHash,
+            text_vocalized: var_textVocalized,
+            section_id: var_sectionId,
+            generation_order: var_generationOrder,
         };
     }
 }
@@ -4873,6 +5140,7 @@ impl SseDecode for crate::api::search_engine::ResultsOrder {
         return match inner {
             0 => crate::api::search_engine::ResultsOrder::Catalogue,
             1 => crate::api::search_engine::ResultsOrder::Relevance,
+            2 => crate::api::search_engine::ResultsOrder::Generation,
             _ => unreachable!("Invalid variant for ResultsOrder: {}", inner),
         };
     }
@@ -4911,6 +5179,19 @@ impl SseDecode for crate::api::search_engine::SearchResult {
             segment: var_segment,
             is_pdf: var_isPdf,
             file_path: var_filePath,
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::SearchScope {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::search_engine::SearchScope::WordDistance,
+            1 => crate::api::search_engine::SearchScope::SameParagraph,
+            2 => crate::api::search_engine::SearchScope::SameSection,
+            _ => unreachable!("Invalid variant for SearchScope: {}", inner),
         };
     }
 }
@@ -5269,6 +5550,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::DocumentInput 
             self.is_pdf.into_into_dart().into_dart(),
             self.file_path.into_into_dart().into_dart(),
             self.content_hash.into_into_dart().into_dart(),
+            self.text_vocalized.into_into_dart().into_dart(),
+            self.section_id.into_into_dart().into_dart(),
+            self.generation_order.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -5445,6 +5729,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::ResultsOrder {
         match self {
             Self::Catalogue => 0.into_dart(),
             Self::Relevance => 1.into_dart(),
+            Self::Generation => 2.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -5505,6 +5790,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SearchResult>
     for crate::api::search_engine::SearchResult
 {
     fn into_into_dart(self) -> crate::api::search_engine::SearchResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SearchScope {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::WordDistance => 0.into_dart(),
+            Self::SameParagraph => 1.into_dart(),
+            Self::SameSection => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SearchScope
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SearchScope>
+    for crate::api::search_engine::SearchScope
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SearchScope {
         self
     }
 }
@@ -5742,6 +6049,9 @@ impl SseEncode for crate::api::search_engine::DocumentInput {
         <bool>::sse_encode(self.is_pdf, serializer);
         <String>::sse_encode(self.file_path, serializer);
         <Option<u64>>::sse_encode(self.content_hash, serializer);
+        <Option<String>>::sse_encode(self.text_vocalized, serializer);
+        <Option<u64>>::sse_encode(self.section_id, serializer);
+        <Option<u32>>::sse_encode(self.generation_order, serializer);
     }
 }
 
@@ -6118,6 +6428,7 @@ impl SseEncode for crate::api::search_engine::ResultsOrder {
             match self {
                 crate::api::search_engine::ResultsOrder::Catalogue => 0,
                 crate::api::search_engine::ResultsOrder::Relevance => 1,
+                crate::api::search_engine::ResultsOrder::Generation => 2,
                 _ => {
                     unimplemented!("");
                 }
@@ -6146,6 +6457,23 @@ impl SseEncode for crate::api::search_engine::SearchResult {
         <u64>::sse_encode(self.segment, serializer);
         <bool>::sse_encode(self.is_pdf, serializer);
         <String>::sse_encode(self.file_path, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SearchScope {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::search_engine::SearchScope::WordDistance => 0,
+                crate::api::search_engine::SearchScope::SameParagraph => 1,
+                crate::api::search_engine::SearchScope::SameSection => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

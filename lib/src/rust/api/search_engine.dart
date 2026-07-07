@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `add_text_book_impl`, `advanced_highlight_plan`, `all_fields`, `automaton_highlight_terms`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `index_metadata_path`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `update_reference_trail`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
@@ -152,6 +152,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   });
 
   /// Add many documents in a single FFI call. Does not commit.
@@ -180,6 +182,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<PdfPageInput> pages,
   });
 
@@ -201,6 +204,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required String text,
   });
 
@@ -215,6 +219,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String topics,
     required String filePath,
     required int catalogueOrder,
+    required int generationOrder,
     required List<int> text,
   });
 
@@ -240,21 +245,39 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// [`Self::count`]; use [`Self::count_advanced_with_status`] for UI.
   Future<int> countAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
   Future<CountResult> countAdvancedWithStatus({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -270,32 +293,54 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// [`Self::count`]; use [`Self::count_by_book_advanced_with_status`].
   Future<Map<String, int>> countByBookAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
   Future<BookCountResult> countByBookAdvancedWithStatus({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<Map<String, int>> countByBookExact({
     required String query,
     required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<Map<String, int>> countByBookFuzzy({
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   /// Like [`Self::count_by_book`] but also reports single-word truncation.
@@ -315,12 +360,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// index built elsewhere — and compare it against the current library.
   Future<Map<String, int>> countDocumentsByFilePath();
 
-  Future<int> countExact({required String query, required List<String> facets});
+  Future<int> countExact({
+    required String query,
+    required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
 
   Future<int> countFuzzy({
     required String query,
     required List<String> facets,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   /// Like [`Self::count`] but also reports whether single-word collection
@@ -410,29 +462,49 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
   Future<List<FacetCount>> getFacetCountsAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
   Future<FacetCountsResult> getFacetCountsAdvancedWithStatus({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required String facetPrefix,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<List<FacetCount>> getFacetCountsExact({
     required String query,
     required List<String> facets,
     required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<List<FacetCount>> getFacetCountsFuzzy({
@@ -440,6 +512,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required String facetPrefix,
     required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
@@ -491,26 +565,44 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<List<SearchResult>> searchAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Stream<List<SearchResult>> searchAdvancedStream({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   });
 
@@ -520,14 +612,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// calls a search screen would otherwise issue for the same query.
   Stream<SearchStreamUpdate> searchAdvancedStreamWithCounts({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
     required int chunkSize,
   });
 
@@ -546,14 +647,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<SearchPageResult> searchAndCountAdvanced({
     required String query,
+    required String negativeQuery,
     required List<String> facets,
     required int limit,
     required int offset,
     required int distance,
+    required int negativeDistance,
     required Map<String, String> customSpacing,
+    required Map<String, String> negativeCustomSpacing,
     required Map<int, List<String>> alternativeWords,
+    required Map<int, List<String>> negativeAlternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    required Map<String, Map<String, bool>> negativeSearchOptions,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
+    required SearchScope scope,
+    required SearchScope negativeScope,
   });
 
   Future<SearchPageResult> searchAndCountExact({
@@ -562,6 +672,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<SearchPageResult> searchAndCountFuzzy({
@@ -571,6 +683,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Future<List<SearchResult>> searchExact({
@@ -579,6 +693,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Stream<List<SearchResult>> searchExactStream({
@@ -587,6 +703,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -600,6 +718,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int limit,
     required int offset,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -610,6 +730,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
   });
 
   Stream<List<SearchResult>> searchFuzzyStream({
@@ -619,6 +741,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -633,6 +757,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int offset,
     required int maxDistance,
     required ResultsOrder order,
+    required bool matchNikud,
+    required bool matchTaamim,
     required int chunkSize,
   });
 
@@ -700,6 +826,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
+    BigInt? sectionId,
+    int? generationOrder,
   });
 
   /// Upsert many documents in a single FFI call. Does not commit.
@@ -767,6 +895,20 @@ class DocumentInput {
   /// (e.g. PDF books).
   final BigInt? contentHash;
 
+  /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
+  /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
+  /// פשוט לא תשתתף בחיפוש מנוקד. מסלול [`SearchEngine::add_text_book`]
+  /// מחשב זאת בעצמו; השדה קיים לצינורות שמוסיפים מסמכים מוכנים.
+  final String? textVocalized;
+
+  /// מזהה הסעיף (בלוק הכותרת) של השורה — ראו השדה `sectionId` בסכימה.
+  /// `None` = השורה סעיף לעצמה (`id` משמש כמזהה), כך שחיפוש "תחת אותה
+  /// כותרת" מתנהג כמו "באותה פסקה" עבור מסמכים שהוזנו בלי מזהה סעיף.
+  final BigInt? sectionId;
+
+  /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
+  final int? generationOrder;
+
   const DocumentInput({
     required this.id,
     required this.title,
@@ -777,6 +919,9 @@ class DocumentInput {
     required this.isPdf,
     required this.filePath,
     this.contentHash,
+    this.textVocalized,
+    this.sectionId,
+    this.generationOrder,
   });
 
   @override
@@ -789,7 +934,10 @@ class DocumentInput {
       segment.hashCode ^
       isPdf.hashCode ^
       filePath.hashCode ^
-      contentHash.hashCode;
+      contentHash.hashCode ^
+      textVocalized.hashCode ^
+      sectionId.hashCode ^
+      generationOrder.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -804,7 +952,10 @@ class DocumentInput {
           segment == other.segment &&
           isPdf == other.isPdf &&
           filePath == other.filePath &&
-          contentHash == other.contentHash;
+          contentHash == other.contentHash &&
+          textVocalized == other.textVocalized &&
+          sectionId == other.sectionId &&
+          generationOrder == other.generationOrder;
 }
 
 class FacetCount {
@@ -1001,7 +1152,7 @@ class PdfPageInput {
           pageIndex == other.pageIndex;
 }
 
-enum ResultsOrder { catalogue, relevance }
+enum ResultsOrder { catalogue, relevance, generation }
 
 class SearchPageResult {
   final int totalCount;
@@ -1075,6 +1226,22 @@ class SearchResult {
           segment == other.segment &&
           isPdf == other.isPdf &&
           filePath == other.filePath;
+}
+
+/// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
+enum SearchScope {
+  /// ההתנהגות הקיימת: המילים מופיעות לפי סדר השאילתה, עם מגבלת
+  /// מילים-ביניים לכל זוג סמוך (`distance` / `custom_spacing`).
+  wordDistance,
+
+  /// כל המילים באותה פסקה (מסמך אינדקס אחד = שורת ספר), בכל סדר ובכל
+  /// מרחק. `distance`/`custom_spacing` אינם רלוונטיים במצב זה.
+  sameParagraph,
+
+  /// כל המילים תחת אותה כותרת (אותו בלוק `reference` — סעיף/פרק), גם
+  /// כשהן פזורות על פני שורות שונות. התוצאות הן השורות שבתוך סעיף
+  /// חותך שמכילות מילה מהשאילתה.
+  sameSection,
 }
 
 /// One event of a combined stream search (`search_*_stream_with_counts`).

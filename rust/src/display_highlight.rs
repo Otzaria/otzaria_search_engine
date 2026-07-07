@@ -90,39 +90,16 @@ fn separator_with_spacing(max_intermediate_words: u32) -> String {
 
 // ── Spacing resolution ─────────────────────────────────────────────────────
 
-/// Resolves the allowed intermediate-word count for the gap after word `i`.
-///
-/// Custom per-pair values (keyed `"i-(i+1)"`) win; a missing or unparseable
-/// entry falls back to the maximum custom value (mirroring the historical
-/// Dart `_highlightSeparatorForIndex`). When no custom spacing is set at all,
-/// every gap gets the global `distance`.
+/// Resolves the allowed intermediate-word count for the gap after word `i` —
+/// the shared [`hebrew_query::resolve_gaps`] (mirroring the historical Dart
+/// `_highlightSeparatorForIndex`), so the book highlight and the engine's
+/// per-pair phrase verification agree gap-by-gap.
 fn spacing_for_gaps(
     custom_spacing: &HashMap<String, String>,
     distance: u32,
     word_count: usize,
 ) -> Vec<u32> {
-    let gaps = word_count.saturating_sub(1);
-    if custom_spacing.is_empty() {
-        return vec![distance; gaps];
-    }
-
-    let parse = |s: &String| -> Option<u32> {
-        s.trim()
-            .parse::<i64>()
-            .ok()
-            .map(|n| n.clamp(0, u32::MAX as i64) as u32)
-    };
-    let max_custom = custom_spacing.values().filter_map(parse).max().unwrap_or(0);
-
-    (0..gaps)
-        .map(|i| {
-            let key = format!("{}-{}", i, i + 1);
-            custom_spacing
-                .get(&key)
-                .and_then(parse)
-                .unwrap_or(max_custom)
-        })
-        .collect()
+    crate::hebrew_query::resolve_gaps(custom_spacing, distance, word_count)
 }
 
 // ── Per-word pattern building ──────────────────────────────────────────────

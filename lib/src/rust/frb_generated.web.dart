@@ -277,6 +277,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchResult dco_decode_search_result(dynamic raw);
 
   @protected
+  SearchScope dco_decode_search_scope(dynamic raw);
+
+  @protected
   SearchStreamUpdate dco_decode_search_stream_update(dynamic raw);
 
   @protected
@@ -597,6 +600,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult sse_decode_search_result(SseDeserializer deserializer);
+
+  @protected
+  SearchScope sse_decode_search_scope(SseDeserializer deserializer);
 
   @protected
   SearchStreamUpdate sse_decode_search_stream_update(
@@ -999,6 +1005,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_search_result(SearchResult self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_search_scope(SearchScope self, SseSerializer serializer);
 
   @protected
   void sse_encode_search_stream_update(

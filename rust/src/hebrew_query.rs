@@ -44,6 +44,12 @@ use unicode_segmentation::UnicodeSegmentation;
 // ── Search-option UI keys (must match the Dart layer exactly) ──────────────
 
 pub const OPT_TYPO: &str = "שגיאות כתיב";
+/// מפתחות "ניקוד"/"טעמים" הפר-מילה: כשמסומנים למילה, סימנים שהוקלדו בה
+/// (מהמחלקה המסומנת) נדרשים להופיע בטרם — בעוד מילים לא-מסומנות נשארות
+/// חופשיות-סימנים. עצם נוכחות מפתח דלוק באחת המילים מעבירה את השאילתה
+/// כולה לשדה המנוקד (`textVocalized`), שמאונדקסות בו רק שורות מנוקדות.
+pub const OPT_MATCH_NIKUD: &str = "ניקוד";
+pub const OPT_MATCH_TAAMIM: &str = "טעמים";
 const OPT_PREFIX: &str = "קידומות";
 const OPT_SUFFIX: &str = "סיומות";
 const OPT_GRAM_PREFIX: &str = "קידומות דקדוקיות";
@@ -148,6 +154,13 @@ pub(crate) const MAX_SPELLING_BRANCHES: usize = 16;
 /// (unlike the single-word path, which degrades instead of erroring).
 const PHRASE_MAX_EXPANSIONS: u32 = 8_192;
 
+/// Term-count ceiling for a single vocalized word with no expansion options.
+/// Free-mark runs make even a "plain" vocalized pattern an expansion (every
+/// vocalization of the word matches), so the mark-free literal ceiling (10)
+/// is far too tight; the postings budget in `single_regex_term_query`
+/// remains the true cost guard.
+const VOC_SINGLE_WORD_MAX_EXPANSIONS: u32 = 4_096;
+
 // ── Public result type ─────────────────────────────────────────────────────
 
 /// Everything the Tantivy layer needs to execute an advanced search.
@@ -156,8 +169,13 @@ pub struct AdvancedQuery {
     /// whole-term regex with its top-level alternation kept structured, so the
     /// single-word path can compile every branch as its own small DFA.
     pub regex_terms: Vec<WordPattern>,
-    /// Maximum allowed word-position gap between adjacent terms (phrase slop).
-    pub slop: u32,
+    /// Per-pair intermediate-word allowance: `gaps[i]` is how many words may
+    /// separate query words `i` and `i+1` (length `words-1`; empty for a
+    /// single word). Resolved from `custom_spacing`/`distance` by
+    /// [`resolve_gaps`], the same resolution the display-highlight builder
+    /// uses — so what the engine matches and what an opened book highlights
+    /// agree pair-by-pair.
+    pub gaps: Vec<u32>,
     /// Term-dictionary expansion limit passed to `RegexPhraseQuery`.
     pub max_expansions: u32,
     /// Tokens to expand through a Levenshtein-1 automaton scan (single word
@@ -209,6 +227,21 @@ impl WordPattern {
             WordPattern::Literal(pattern) => pattern.clone(),
             WordPattern::Alternation(branches) => format!("(?:{})", branches.join("|")),
         }
+    }
+
+    /// Appends extra standalone branches (lowest priority — the collection
+    /// budgets truncate from the back). Used by the vocalized typo path to
+    /// ride plain-dictionary Levenshtein variants onto a word's branch list.
+    pub fn with_extra_branches(self, extra: Vec<String>) -> WordPattern {
+        if extra.is_empty() {
+            return self;
+        }
+        let mut branches = match self {
+            WordPattern::Literal(pattern) => vec![pattern],
+            WordPattern::Alternation(branches) => branches,
+        };
+        branches.extend(extra);
+        WordPattern::Alternation(branches)
     }
 
     /// Parses a raw regex string (a term arriving through the public string
@@ -379,6 +412,11 @@ pub struct WordFlags {
     pub gram_suffix: bool,
     pub spelling: bool,
     pub partial: bool,
+    /// התאמת ניקוד פר-מילה ([`OPT_MATCH_NIKUD`]) — נגזרת ל-[`VocalizedFlags`]
+    /// של המילה, לא אפשרות הרחבה (ולכן לא חלק מ-[`Self::expands_beyond_typo`]).
+    pub nikud: bool,
+    /// כמו [`Self::nikud`] עבור טעמי המקרא ([`OPT_MATCH_TAAMIM`]).
+    pub taamim: bool,
 }
 
 impl WordFlags {
@@ -393,6 +431,8 @@ impl WordFlags {
             gram_suffix: get(OPT_GRAM_SUFFIX),
             spelling: get(OPT_SPELLING),
             partial: get(OPT_PARTIAL),
+            nikud: get(OPT_MATCH_NIKUD),
+            taamim: get(OPT_MATCH_TAAMIM),
         }
     }
 
@@ -553,6 +593,84 @@ pub fn strip_attached_marks(text: &str) -> String {
     text.chars().filter(|c| !is_attached_mark(*c)).collect()
 }
 
+// ── Vocalized (nikud/te'amim) mark classes ─────────────────────────────────
+
+/// ניקוד במובן הצר: תנועות (U+05B0–U+05BB), דגש/מפיק (U+05BC), רפה
+/// (U+05BF), נקודות שי"ן/שׂי"ן (U+05C1/U+05C2) וקמץ קטן (U+05C7).
+#[inline]
+pub(crate) fn is_nikud_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{05B0}'..='\u{05BC}' | '\u{05BF}' | '\u{05C1}' | '\u{05C2}' | '\u{05C7}'
+    )
+}
+
+/// טעמי המקרא + מתג (U+05BD) + הנקודות העליונות/תחתונות (U+05C4/U+05C5) —
+/// כל סימן צמוד שאינו ניקוד. המתג מסווג כאן בכוונה: הוא מגיע כמעט תמיד
+/// מהדבקת פסוק מטקסט-מקור (לא מהקלדה מכוונת), ולכן דגל הניקוד לבדו לא
+/// יהפוך אותו לדרישה שתפסול טקסטים מנוקדים ללא מתג.
+#[inline]
+pub(crate) fn is_taam_mark(c: char) -> bool {
+    is_attached_mark(c) && !is_nikud_mark(c)
+}
+
+/// האם השורה נושאת סימן צמוד כלשהו — בדיקת-הכניסה הזולה של צינור האינדוקס
+/// (רק שורות כאלה נכתבות לשדה `textVocalized`).
+pub fn contains_attached_marks(text: &str) -> bool {
+    text.chars().any(is_attached_mark)
+}
+
+/// אילו מחלקות סימנים "נחשבות" בחיפוש מנוקד — נגזר מדגלי
+/// `match_nikud`/`match_taamim` של ה-API. סימן שהוקלד ממחלקה דלוקה נדרש
+/// להופיע בטרם; סימן ממחלקה כבויה נמחק מהשאילתה (ולעולם אינו דרישה);
+/// סימנים שלא הוקלדו חופשיים תמיד.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct VocalizedFlags {
+    pub nikud: bool,
+    pub taamim: bool,
+}
+
+impl VocalizedFlags {
+    pub fn new(nikud: bool, taamim: bool) -> Self {
+        Self { nikud, taamim }
+    }
+
+    /// האם חיפוש מנוקד בכלל פעיל (אחרת מסלול השאילתה הרגיל רץ כרגיל).
+    pub fn any(&self) -> bool {
+        self.nikud || self.taamim
+    }
+
+    /// האם סימן שהוקלד הוא דרישת-התאמה תחת הדגלים האלה.
+    pub(crate) fn requires(&self, c: char) -> bool {
+        (self.nikud && is_nikud_mark(c)) || (self.taamim && is_taam_mark(c))
+    }
+
+    /// איחוד (OR) — ממזג את הדגלים הגלובליים של ה-API עם דגלים שנגזרו
+    /// מאפשרויות פר-מילה.
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            nikud: self.nikud || other.nikud,
+            taamim: self.taamim || other.taamim,
+        }
+    }
+}
+
+/// אילו מחלקות סימנים מבקשות אפשרויות ה-UI הפר-מילה (איחוד על כל המילים).
+/// קובע האם שאילתה מתקדמת רצה על השדה המנוקד; הדרישה פר-תו נגזרת פר-מילה
+/// בנפרד בתוך [`prepare_advanced_query_vocalized`]. הסריקה עוברת על כל
+/// מפות האפשרויות בלי לאמת את מפתחות `"{word}_{index}"` — מפתח תקול ממילא
+/// נופל בשקט בשלב בניית התבניות, אבל בקשת-ניקוד לא צריכה להיעלם איתו.
+pub fn options_vocalized_flags(
+    search_options: &HashMap<String, HashMap<String, bool>>,
+) -> VocalizedFlags {
+    let mut flags = VocalizedFlags::default();
+    for map in search_options.values() {
+        flags.nikud |= map.get(OPT_MATCH_NIKUD).copied().unwrap_or(false);
+        flags.taamim |= map.get(OPT_MATCH_TAAMIM).copied().unwrap_or(false);
+    }
+    flags
+}
+
 /// הפירוק הקנוני (NFKD) של Hebrew Presentation Forms — U+FB1D–U+FB4F.
 /// גופנים רבים חסרים את הגליפים האלה (יִ הוצגה כ"?") ומילון הטרמים לעולם
 /// אינו מכיל אותם, ולכן גם התצוגה וגם הטוקנים מפרקים אותם לאות + סימן.
@@ -697,14 +815,15 @@ pub fn strip_html_for_indexing(text: &str) -> String {
 /// identical to `collapse_whitespace(&strip_attached_marks(
 /// &fold_presentation_forms(s)))` (verified by the ingestion parity tests) —
 /// fusing matters because this runs on every line of the corpus. `drop`
-/// filters extra characters before folding (the PDF path drops invisibles).
-fn fold_strip_collapse(s: &str, drop: impl Fn(char) -> bool) -> String {
+/// filters extra characters before folding (the PDF path drops invisibles);
+/// `strip_marks: false` keeps nikud/cantillation (the vocalized field).
+fn fold_strip_collapse(s: &str, strip_marks: bool, drop: impl Fn(char) -> bool) -> String {
     let mut out = String::with_capacity(s.len());
     // Collapse+trim in one go: a whitespace run becomes a single pending
     // space, emitted only when more content follows (never leading/trailing).
     let mut pending_space = false;
     let mut emit = |out: &mut String, c: char| {
-        if is_attached_mark(c) {
+        if strip_marks && is_attached_mark(c) {
             return;
         }
         if c.is_whitespace() {
@@ -739,7 +858,16 @@ fn fold_strip_collapse(s: &str, drop: impl Fn(char) -> bool) -> String {
 /// presentation forms, strip attached nikud/cantillation, collapse whitespace.
 /// Punctuation is intentionally preserved — it is shown in search results.
 pub fn normalize_text_for_indexing(input: &str) -> String {
-    fold_strip_collapse(&strip_html_for_indexing(input), |_| false)
+    fold_strip_collapse(&strip_html_for_indexing(input), true, |_| false)
+}
+
+/// Ingestion normalisation for the vocalized field (`textVocalized`): like
+/// [`normalize_text_for_indexing`] but KEEPS attached nikud/cantillation.
+/// Applied only to lines that carry at least one mark
+/// ([`contains_attached_marks`]); the stored copy is what vocalized search
+/// results display.
+pub fn normalize_vocalized_text_for_indexing(input: &str) -> String {
+    fold_strip_collapse(&strip_html_for_indexing(input), false, |_| false)
 }
 
 const PDF_INVISIBLE: &[char] = &[
@@ -751,7 +879,7 @@ const PDF_INVISIBLE: &[char] = &[
 /// Ingestion normalisation for PDF text: like [`normalize_text_for_indexing`]
 /// but also drops bidi/zero-width invisibles OCR tends to leave behind.
 pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
-    fold_strip_collapse(&strip_html_for_indexing(input), |c| {
+    fold_strip_collapse(&strip_html_for_indexing(input), true, |c| {
         PDF_INVISIBLE.contains(&c)
     })
 }
@@ -800,15 +928,20 @@ pub fn is_probably_garbage_pdf_text(normalized_text: &str) -> bool {
 pub(crate) fn escape_regex(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
-        if matches!(
-            ch,
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-        ) {
-            out.push('\\');
-        }
-        out.push(ch);
+        push_escaped(&mut out, ch);
     }
     out
+}
+
+/// Single-char form of [`escape_regex`], for builders that walk chars.
+fn push_escaped(out: &mut String, ch: char) {
+    if matches!(
+        ch,
+        '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+    ) {
+        out.push('\\');
+    }
+    out.push(ch);
 }
 
 // ── Insertion-ordered dedup helper ─────────────────────────────────────────
@@ -1084,6 +1217,371 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
     }
 }
 
+// ── Vocalized (nikud/te'amim) query patterns ───────────────────────────────
+//
+// The vocalized field (`textVocalized`) indexes surface forms WITH their
+// attached marks, so a vocalized query compiles to a whole-term regex over
+// that dictionary. The matching contract is "הוקלד → חייב; לא הוקלד →
+// חופשי": every typed mark of an enabled class must appear, in order; any
+// other attached mark in the term is free. A base letter therefore becomes
+// `X[marks]*` and a required mark `m[marks]*` — the free class overlaps the
+// required mark, which is harmless under DFA acceptance.
+
+/// Free-marks regex atom: any run of attached marks. The class range also
+/// covers the separator punctuation inside U+0591–U+05C7 (maqaf, paseq, sof
+/// pasuq, nun hafukha), which can never appear inside a token — the
+/// tokenizer breaks on them — so the wider class costs nothing.
+pub(crate) const VOC_FREE_MARKS: &str = "[\u{0591}-\u{05C7}]*";
+
+/// Whole-term pattern for one vocalized query token: typed marks of an
+/// enabled class are required in order, everything else is free.
+pub(crate) fn vocalized_token_pattern(token: &str, voc: &VocalizedFlags) -> String {
+    let mut out = String::with_capacity(token.len() * 4);
+    for c in token.chars() {
+        if is_attached_mark(c) {
+            if voc.requires(c) {
+                // Marks are never regex metacharacters — pushed verbatim.
+                out.push(c);
+                out.push_str(VOC_FREE_MARKS);
+            }
+            // A typed mark of a disabled class is dropped: the free run
+            // already emitted after its base letter covers it.
+        } else {
+            push_escaped(&mut out, c);
+            out.push_str(VOC_FREE_MARKS);
+        }
+    }
+    out
+}
+
+/// Mark-free core: matches `base` under ANY vocalization. Used for expansion
+/// variants (typo/spelling/lexical forms) whose letters differ from what the
+/// user typed — the typed marks no longer have positions to attach to.
+pub(crate) fn vocalized_free_pattern(base: &str) -> String {
+    vocalized_token_pattern(base, &VocalizedFlags::default())
+}
+
+/// Bounded window of `n` letter-units on the vocalized dictionary. Each unit
+/// is one char plus its attached marks — a bare `.{{0,n}}` would spend the
+/// window on marks (three vocalized letters are 6–9 chars). The unit's `.`
+/// can itself consume a mark, over-accepting slightly; the term dictionary
+/// constrains what actually matches.
+fn voc_window(n: usize) -> String {
+    format!("(?:.{VOC_FREE_MARKS}){{0,{n}}}")
+}
+
+/// A vocalized root ready for affix composition: its whole-term pattern
+/// (marks required or free) plus the mark-free letter count that sizes the
+/// affix windows exactly like the plain path sizes them from `root`.
+struct VocCore {
+    pattern: String,
+    base_len: usize,
+}
+
+fn voc_user_prefix(core: &VocCore) -> String {
+    let window = match core.base_len {
+        0 => return String::new(),
+        1 => 5,
+        2 => 4,
+        _ => 3,
+    };
+    format!("{}{}", voc_window(window), core.pattern)
+}
+
+fn voc_user_suffix(core: &VocCore) -> String {
+    let window = match core.base_len {
+        0 => return String::new(),
+        1 => 7,
+        2 => 6,
+        _ => 5,
+    };
+    format!("{}{}", core.pattern, voc_window(window))
+}
+
+fn voc_partial(core: &VocCore) -> String {
+    if core.base_len == 0 {
+        return String::new();
+    }
+    let w = if core.base_len <= 3 { 3 } else { 2 };
+    format!("{}{}{}", voc_window(w), core.pattern, voc_window(w))
+}
+
+// The grammatical affix groups, as alternative lists. The plain-path string
+// constants above stay the source of truth for the mark-free field; these
+// arrays exist so the vocalized builders can interleave free-mark runs into
+// every alternative, and parity tests assert the mark-free rendering of each
+// array equals its string constant — the two forms cannot drift apart.
+const GRAM_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "א", "כש", "כ", "ב", "ש", "ל", "ה", "ד"];
+const GRAM_PREFIX_ALTS_B: &[&str] = &["כ", "ב", "ש", "ל", "ה", "ד"];
+const PREFIX_ALTS_A: &[&str] = &["ו", "מ", "כ", "ב", "ש", "ל", "ה", "ד"];
+const HE_ALTS: &[&str] = &["ה"];
+const SUFFIX_ALTS: &[&str] = &[
+    "ותי",
+    "ותיך",
+    "ותיו",
+    "ותיה",
+    "ותינו",
+    "ותיכם",
+    "ותיכן",
+    "ותיהם",
+    "ותיהן",
+    "יי",
+    "יך",
+    "יו",
+    "יה",
+    "ינו",
+    "יכם",
+    "יכן",
+    "יהם",
+    "יהן",
+    "י",
+    "ך",
+    "ו",
+    "ה",
+    "נו",
+    "כם",
+    "כן",
+    "ם",
+    "ן",
+    "ים",
+    "ות",
+];
+const FULL_SUFFIX_ALTS: &[&str] = &[
+    "ותי",
+    "ותיך",
+    "ותיו",
+    "ותיה",
+    "ותינו",
+    "ותיכם",
+    "ותיכן",
+    "ותיהם",
+    "ותיהן",
+    "יות",
+    "יי",
+    "יך",
+    "יו",
+    "יה",
+    "יא",
+    "תא",
+    "ינו",
+    "יכם",
+    "יכן",
+    "יהם",
+    "יהן",
+    "י",
+    "ך",
+    "ו",
+    "ה",
+    "נו",
+    "כם",
+    "כן",
+    "ם",
+    "ן",
+    "ים",
+    "ות",
+];
+
+/// `(?:a|b|…)?` over the alternatives; `voc` interleaves free-mark runs so a
+/// vocalized affix (וּ, בְּ…) still matches.
+fn optional_alts_group(alts: &[&str], voc: bool) -> String {
+    let inner: Vec<String> = alts
+        .iter()
+        .map(|a| {
+            if voc {
+                vocalized_free_pattern(a)
+            } else {
+                (*a).to_string()
+            }
+        })
+        .collect();
+    format!("(?:{})?", inner.join("|"))
+}
+
+fn voc_gram_prefix_group() -> String {
+    format!(
+        "{}{}{}",
+        optional_alts_group(GRAM_PREFIX_ALTS_A, true),
+        optional_alts_group(GRAM_PREFIX_ALTS_B, true),
+        optional_alts_group(HE_ALTS, true)
+    )
+}
+
+fn voc_prefix_group() -> String {
+    format!(
+        "{}{}{}",
+        optional_alts_group(PREFIX_ALTS_A, true),
+        optional_alts_group(GRAM_PREFIX_ALTS_B, true),
+        optional_alts_group(HE_ALTS, true)
+    )
+}
+
+/// Vocalized counterpart of [`word_to_pattern`]'s morphological decision
+/// tree. Spelling is intentionally absent: on the vocalized path spelling
+/// variants are generated on the mark-free base and fed through here as
+/// their own cores (see [`build_word_regex_vocalized`]).
+fn word_to_pattern_vocalized(core: &VocCore, flags: &WordFlags) -> String {
+    if core.base_len == 0 {
+        return String::new();
+    }
+    if flags.prefix && flags.suffix {
+        voc_partial(core)
+    } else if flags.gram_prefix && flags.gram_suffix {
+        format!(
+            "{}{}{}",
+            voc_prefix_group(),
+            core.pattern,
+            optional_alts_group(FULL_SUFFIX_ALTS, true)
+        )
+    } else if flags.prefix {
+        voc_user_prefix(core)
+    } else if flags.suffix {
+        voc_user_suffix(core)
+    } else if flags.gram_prefix {
+        format!("{}{}", voc_gram_prefix_group(), core.pattern)
+    } else if flags.gram_suffix {
+        format!("{}{}", core.pattern, optional_alts_group(SUFFIX_ALTS, true))
+    } else if flags.partial {
+        voc_partial(core)
+    } else {
+        core.pattern.clone()
+    }
+}
+
+/// Vocalized counterpart of [`build_word_regex`]: assembles the branch list
+/// for one query word on the vocalized field.
+///
+/// The branch-order contract carries over — exact candidate forms (typed
+/// marks REQUIRED) come first, then spelling variants, then typo variants —
+/// so budget truncation always drops approximations before typed intent.
+/// Variants are generated on the mark-free base and match under ANY
+/// vocalization: altering letters leaves the typed marks without positions.
+/// The identity variant is skipped in the variant passes — pass 0 already
+/// carries it with its marks required; re-adding it mark-free would silently
+/// erase the "הוקלד → חייב" constraint whenever an expansion option is on.
+fn build_word_regex_vocalized(
+    word: &str,
+    flags: &WordFlags,
+    alternatives: &[String],
+    voc: &VocalizedFlags,
+    budget: &VariationBudget,
+) -> WordPattern {
+    let candidates: Vec<String> = std::iter::once(word.to_string())
+        .chain(
+            alternatives
+                .iter()
+                .map(|a| normalize_for_index_vocalized(a)),
+        )
+        .filter(|c| !strip_attached_marks(c).trim().is_empty())
+        .collect();
+    let fallback = || WordPattern::Literal(vocalized_token_pattern(word, voc));
+    if candidates.is_empty() {
+        return fallback();
+    }
+
+    let max = flags.max_variations(budget);
+    let mut branches: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut full = false;
+    let push_core = |branches: &mut Vec<String>, seen: &mut HashSet<String>, core: VocCore| {
+        let pattern = word_to_pattern_vocalized(&core, flags);
+        push_unique(branches, seen, pattern);
+        branches.len() >= max
+    };
+
+    // Pass 0 — exact candidates, typed marks required.
+    'exact: for candidate in &candidates {
+        let base = strip_attached_marks(candidate);
+        let core = VocCore {
+            pattern: vocalized_token_pattern(candidate, voc),
+            base_len: base.chars().count(),
+        };
+        if push_core(&mut branches, &mut seen, core) {
+            full = true;
+            break 'exact;
+        }
+    }
+    // Pass 1 — spelling variants (mark-free).
+    if !full && flags.spelling {
+        'spelling: for candidate in &candidates {
+            let base = strip_attached_marks(candidate);
+            for variant in generate_spelling_variations(&base, MAX_SPELLING_BRANCHES) {
+                if variant == base {
+                    continue;
+                }
+                let core = VocCore {
+                    base_len: variant.chars().count(),
+                    pattern: vocalized_free_pattern(&variant),
+                };
+                if push_core(&mut branches, &mut seen, core) {
+                    full = true;
+                    break 'spelling;
+                }
+            }
+        }
+    }
+    // Pass 2 — typo variants (mark-free), lowest priority.
+    if !full && flags.typo {
+        'typo: for candidate in &candidates {
+            let base = strip_attached_marks(candidate);
+            for variant in generate_typo_variations(&base, budget.typo_variations) {
+                if variant == base {
+                    continue;
+                }
+                let core = VocCore {
+                    base_len: variant.chars().count(),
+                    pattern: vocalized_free_pattern(&variant),
+                };
+                if push_core(&mut branches, &mut seen, core) {
+                    break 'typo;
+                }
+            }
+        }
+    }
+
+    // Char budget (phrase path): identical policy to `build_word_regex`.
+    let mut kept: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for b in branches {
+        if b.trim().is_empty() {
+            continue;
+        }
+        let len = b.chars().count();
+        if let Some(max_chars) = budget.max_pattern_chars {
+            if !kept.is_empty() && total + len > max_chars {
+                break;
+            }
+        }
+        total += len;
+        kept.push(b);
+    }
+    if kept.is_empty() {
+        return fallback();
+    }
+    if let Some(max_chars) = budget.max_pattern_chars {
+        let joined_chars = kept.iter().map(|b| b.chars().count()).sum::<usize>()
+            + if kept.len() == 1 {
+                0
+            } else {
+                kept.len() - 1 + "(?:)".len()
+            };
+        if joined_chars > max_chars {
+            return fallback();
+        }
+    }
+    if kept.len() == 1 {
+        WordPattern::Literal(kept.into_iter().next().unwrap())
+    } else {
+        WordPattern::Alternation(kept)
+    }
+}
+
+/// Query-side normalisation for the vocalized field: folds presentation
+/// forms and lowercases but KEEPS attached marks — the vocalized analog of
+/// [`normalize_for_index`].
+pub(crate) fn normalize_for_index_vocalized(text: &str) -> String {
+    fold_presentation_forms(text).to_lowercase()
+}
+
 // ── Per-word regex assembly ────────────────────────────────────────────────
 
 /// Builds the final tantivy-fst regex term for one query word, taking into
@@ -1205,28 +1703,42 @@ pub(crate) fn word_flags_at(
         .unwrap_or_default()
 }
 
-/// Returns the per-pair custom spacing as a `Vec<u32>` indexed by the
-/// left-word position (position `i` → spacing between words `i` and `i+1`).
-/// Missing, unparseable, or non-positive entries are treated as zero; a
-/// positive value above `u32::MAX` saturates rather than wrapping or
-/// collapsing to zero (a huge slop is harmless; a silent zero would change
-/// the phrase semantics).
-fn parse_custom_spacing(raw: &HashMap<String, String>, word_count: usize) -> Vec<u32> {
-    (0..word_count.saturating_sub(1))
+/// Resolves the allowed intermediate-word count for every adjacent word pair
+/// (index `i` → the gap between words `i` and `i+1`).
+///
+/// When `custom_spacing` is empty, every gap gets the global `distance`.
+/// Otherwise the per-pair value (keyed `"i-(i+1)"`) wins; a missing or
+/// unparseable entry falls back to the maximum custom value, and negatives
+/// clamp to zero. This mirrors `display_highlight::spacing_for_gaps` (the
+/// historical Dart `_highlightSeparatorForIndex`) exactly, so the search
+/// admits precisely the occurrences an opened book would highlight.
+pub(crate) fn resolve_gaps(
+    custom_spacing: &HashMap<String, String>,
+    distance: u32,
+    word_count: usize,
+) -> Vec<u32> {
+    let gaps = word_count.saturating_sub(1);
+    if custom_spacing.is_empty() {
+        return vec![distance; gaps];
+    }
+
+    let parse = |s: &String| -> Option<u32> {
+        s.trim()
+            .parse::<i64>()
+            .ok()
+            .map(|n| n.clamp(0, u32::MAX as i64) as u32)
+    };
+    let max_custom = custom_spacing.values().filter_map(parse).max().unwrap_or(0);
+
+    (0..gaps)
         .map(|i| {
             let key = format!("{}-{}", i, i + 1);
-            raw.get(&key)
-                .and_then(|v| v.trim().parse::<i64>().ok())
-                .filter(|&n| n > 0)
-                .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
-                .unwrap_or(0)
+            custom_spacing
+                .get(&key)
+                .and_then(parse)
+                .unwrap_or(max_custom)
         })
         .collect()
-}
-
-/// The maximum value in a spacing slice (used as phrase slop).
-fn max_spacing(spacing: &[u32]) -> u32 {
-    spacing.iter().copied().max().unwrap_or(0)
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────
@@ -1238,7 +1750,8 @@ fn max_spacing(spacing: &[u32]) -> u32 {
 /// # Parameters
 ///
 /// - `query` — raw user query string (may contain nikud, mixed case, etc.)
-/// - `distance` — default phrase slop when `custom_spacing` is empty
+/// - `distance` — default per-pair intermediate-word allowance when
+///   `custom_spacing` is empty
 /// - `custom_spacing` — per-pair overrides keyed `"i-(i+1)"` → spacing value
 /// - `alternative_words` — extra synonyms per word position (0-indexed)
 /// - `search_options` — per-word option checkboxes from the UI, keyed
@@ -1250,7 +1763,58 @@ pub fn prepare_advanced_query(
     alternative_words: &HashMap<u32, Vec<String>>,
     search_options: &HashMap<String, HashMap<String, bool>>,
 ) -> AdvancedQuery {
-    let normalized = normalize_for_index(query);
+    prepare_advanced_query_impl(
+        query,
+        distance,
+        custom_spacing,
+        alternative_words,
+        search_options,
+        None,
+    )
+}
+
+/// Vocalized-field variant of [`prepare_advanced_query`]: the patterns
+/// target the `textVocalized` term dictionary — typed marks of the enabled
+/// classes are required, all other marks free. The enabled classes are
+/// per-word: the global `voc` flags OR-ed with the word's own
+/// [`OPT_MATCH_NIKUD`]/[`OPT_MATCH_TAAMIM`] options, so checking "ניקוד" on
+/// one word binds only that word's typed marks. `typo_tokens` come back as
+/// mark-free bases; the engine expands them against the PLAIN dictionary
+/// (edit distance over marked terms would count each mark as an edit) and
+/// re-projects the variants onto the vocalized dictionary.
+pub fn prepare_advanced_query_vocalized(
+    query: &str,
+    distance: u32,
+    custom_spacing: &HashMap<String, String>,
+    alternative_words: &HashMap<u32, Vec<String>>,
+    search_options: &HashMap<String, HashMap<String, bool>>,
+    voc: &VocalizedFlags,
+) -> AdvancedQuery {
+    prepare_advanced_query_impl(
+        query,
+        distance,
+        custom_spacing,
+        alternative_words,
+        search_options,
+        Some(voc),
+    )
+}
+
+fn prepare_advanced_query_impl(
+    query: &str,
+    distance: u32,
+    custom_spacing: &HashMap<String, String>,
+    alternative_words: &HashMap<u32, Vec<String>>,
+    search_options: &HashMap<String, HashMap<String, bool>>,
+    voc: Option<&VocalizedFlags>,
+) -> AdvancedQuery {
+    // Vocalized queries keep their marks through normalisation and word
+    // splitting, so option keys ("{word}_{index}") and per-word patterns are
+    // built from the same marked tokens the app derives from the raw query.
+    let normalized = match voc {
+        Some(_) => normalize_for_index_vocalized(query),
+        None => normalize_for_index(query),
+    };
     let words = split_query_words(&normalized);
 
     let has_options =
@@ -1261,20 +1825,24 @@ pub fn prepare_advanced_query(
     if !has_options && !has_alternatives {
         let terms: Vec<WordPattern> = words
             .iter()
-            .map(|w| WordPattern::Literal(escape_regex(w)))
+            .map(|w| match voc {
+                Some(v) => WordPattern::Literal(vocalized_token_pattern(w, v)),
+                None => WordPattern::Literal(escape_regex(w)),
+            })
             .collect();
-        let slop = if words.len() <= 1 {
-            0
-        } else if !custom_spacing.is_empty() {
-            let spacing = parse_custom_spacing(custom_spacing, words.len());
-            max_spacing(&spacing)
-        } else {
-            distance
+        // A plain vocalized pattern is still an expansion (free marks match
+        // every vocalization of the word), so the mark-free literal ceilings
+        // (10/100 — sized for ~1 term per word) would truncate legitimate
+        // vocalization variants of a common word.
+        let max_expansions = match (voc, words.len() > 1) {
+            (None, true) => 100,
+            (None, false) => 10,
+            (Some(_), true) => PHRASE_MAX_EXPANSIONS,
+            (Some(_), false) => VOC_SINGLE_WORD_MAX_EXPANSIONS,
         };
-        let max_expansions = if words.len() > 1 { 100 } else { 10 };
         return AdvancedQuery {
             regex_terms: terms,
-            slop,
+            gaps: resolve_gaps(custom_spacing, distance, words.len()),
             max_expansions,
             typo_tokens: Vec::new(),
         };
@@ -1306,16 +1874,23 @@ pub fn prepare_advanced_query(
         && word_flags_at(&words, 0, search_options).typo
         && !word_flags_at(&words, 0, search_options).expands_beyond_typo()
     {
-        std::iter::once(words[0].clone())
-            .chain(
-                alternative_words
-                    .get(&0)
-                    .into_iter()
-                    .flatten()
-                    .map(|a| normalize_for_index(a)),
-            )
-            .filter(|c| !c.trim().is_empty())
-            .collect()
+        // Vocalized mode hands the engine mark-free bases: the Levenshtein
+        // scan runs against the PLAIN dictionary (each mark would count as
+        // an edit against marked terms) and the variants are re-projected
+        // onto the vocalized dictionary as free-mark patterns.
+        std::iter::once(match voc {
+            Some(_) => strip_attached_marks(&words[0]),
+            None => words[0].clone(),
+        })
+        .chain(
+            alternative_words
+                .get(&0)
+                .into_iter()
+                .flatten()
+                .map(|a| normalize_for_index(a)),
+        )
+        .filter(|c| !c.trim().is_empty())
+        .collect()
     } else {
         Vec::new()
     };
@@ -1334,24 +1909,24 @@ pub fn prepare_advanced_query(
                 .get(&(i as u32))
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            build_word_regex(word, &flags, alts, budget)
+            match voc {
+                // דגלי המילה: הדגלים הגלובליים של ה-API מאוחדים עם אפשרויות
+                // ה"ניקוד"/"טעמים" שסומנו למילה הזו — כך שסימון פר-מילה מחייב
+                // רק את הסימנים שהוקלדו באותה מילה.
+                Some(v) => {
+                    let word_voc = v.or(VocalizedFlags::new(flags.nikud, flags.taamim));
+                    build_word_regex_vocalized(word, &flags, alts, &word_voc, budget)
+                }
+                None => build_word_regex(word, &flags, alts, budget),
+            }
         })
         .collect();
 
-    let slop = if words.len() <= 1 {
-        0
-    } else if !custom_spacing.is_empty() {
-        let spacing = parse_custom_spacing(custom_spacing, words.len());
-        max_spacing(&spacing)
-    } else {
-        distance
-    };
-
-    let max_expansions = compute_max_expansions(&words, search_options);
+    let max_expansions = compute_max_expansions(&words, search_options, voc.is_some());
 
     AdvancedQuery {
         regex_terms,
-        slop,
+        gaps: resolve_gaps(custom_spacing, distance, words.len()),
         max_expansions,
         typo_tokens,
     }
@@ -1373,6 +1948,25 @@ pub fn prepare_advanced_query(
 ///   cumulatively across positions, and overflow is an error — one flat
 ///   ceiling at half the tantivy default (see [`PHRASE_MAX_EXPANSIONS`]).
 fn compute_max_expansions(
+    words: &[String],
+    search_options: &HashMap<String, HashMap<String, bool>>,
+    vocalized: bool,
+) -> u32 {
+    // בשדה המנוקד כל תבנית היא הרחבה — ריצות הסימנים החופשיים מתאימות לכל
+    // ניקוד של המילה — ולכן תקרות המסלול הרגיל (שמכוילות ל"טרם אחד למילה",
+    // כמו 100/1024) היו חונקות וריאציות ניקוד לגיטימיות של מילה נפוצה.
+    // רצפת תקרות המסלול המנוקד חלה לפני החישוב הרגיל.
+    if vocalized {
+        return if words.len() == 1 {
+            plain_max_expansions(words, search_options).max(VOC_SINGLE_WORD_MAX_EXPANSIONS)
+        } else {
+            PHRASE_MAX_EXPANSIONS
+        };
+    }
+    plain_max_expansions(words, search_options)
+}
+
+fn plain_max_expansions(
     words: &[String],
     search_options: &HashMap<String, HashMap<String, bool>>,
 ) -> u32 {
@@ -1560,6 +2154,258 @@ mod tests {
         );
         assert_eq!(normalize_for_index("מ\u{FB1D}ם"), "מים");
         assert_eq!(normalize_for_index("Torah"), "torah");
+    }
+
+    // ── חיפוש מנוקד ─────────────────────────────────────────────────────
+
+    #[test]
+    fn mark_classes_partition_attached_marks() {
+        // כל סימן צמוד הוא או ניקוד או טעם — לעולם לא שניהם ולא אף אחד.
+        for cp in 0x0591u32..=0x05C7 {
+            let c = char::from_u32(cp).unwrap();
+            if is_attached_mark(c) {
+                assert!(
+                    is_nikud_mark(c) ^ is_taam_mark(c),
+                    "U+{cp:04X} must be exactly one class"
+                );
+            } else {
+                assert!(!is_nikud_mark(c) && !is_taam_mark(c));
+            }
+        }
+        // דוגמאות עוגן: קמץ=ניקוד, דגש=ניקוד, מונח=טעם, מתג=טעם.
+        assert!(is_nikud_mark('\u{05B8}'));
+        assert!(is_nikud_mark('\u{05BC}'));
+        assert!(is_taam_mark('\u{05A3}'));
+        assert!(is_taam_mark('\u{05BD}'));
+    }
+
+    #[test]
+    fn normalize_vocalized_keeps_marks_strips_html() {
+        assert_eq!(
+            normalize_vocalized_text_for_indexing("<b>בְּרֵאשִׁית</b>  בָּרָא"),
+            "בְּרֵאשִׁית בָּרָא"
+        );
+        // Presentation form מתפרק והסימן נשמר (בניגוד לנרמול הרגיל).
+        assert_eq!(
+            normalize_vocalized_text_for_indexing("מ\u{FB1D}ם"),
+            "מ\u{05D9}\u{05B4}ם"
+        );
+        assert!(contains_attached_marks("בָּרָא"));
+        assert!(!contains_attached_marks("ברא"));
+    }
+
+    #[test]
+    fn vocalized_token_pattern_requires_typed_frees_untyped() {
+        let nikud_only = VocalizedFlags::new(true, false);
+        // בָרָא: הקמצים נדרשים, אחרי כל אות ריצת-סימנים חופשית.
+        let pat = vocalized_token_pattern("בָרָא", &nikud_only);
+        assert_eq!(
+            pat,
+            format!("ב{m}\u{05B8}{m}ר{m}\u{05B8}{m}א{m}", m = VOC_FREE_MARKS)
+        );
+        let re = tantivy_fst::Regex::new(&pat).unwrap();
+        use tantivy_fst::Automaton;
+        let accepts = |re: &tantivy_fst::Regex, s: &str| {
+            let mut state = re.start();
+            for &b in s.as_bytes() {
+                state = re.accept(&state, b);
+            }
+            re.is_match(&state)
+        };
+        // דגש שלא הוקלד — חופשי; טעם שלא הוקלד — חופשי.
+        assert!(accepts(&re, "בָּרָא"));
+        assert!(accepts(&re, "בָּרָ\u{05A3}א"));
+        assert!(accepts(&re, "בָרָא"));
+        // תנועה אחרת במקום קמץ — נפסל; חסר סימן נדרש — נפסל.
+        assert!(!accepts(&re, "בְּרֹא"));
+        assert!(!accepts(&re, "ברא"));
+    }
+
+    #[test]
+    fn vocalized_token_pattern_taamim_class_split() {
+        // טעם שהוקלד כשדגל הטעמים כבוי — נמחק (חופשי); כשהוא דלוק — נדרש.
+        let word = "וַיֹּ\u{05A3}אמֶר";
+        let nikud_only = VocalizedFlags::new(true, false);
+        let both = VocalizedFlags::new(true, true);
+        assert!(!vocalized_token_pattern(word, &nikud_only).contains('\u{05A3}'));
+        assert!(vocalized_token_pattern(word, &both).contains('\u{05A3}'));
+    }
+
+    #[test]
+    fn alt_groups_match_plain_constants() {
+        // חוזה ה-parity: הרינדור נטול-הסימנים של מערכי החלופות חייב להיות
+        // זהה בייטים לקבועי המחרוזת של המסלול הרגיל.
+        assert_eq!(
+            format!(
+                "{}{}{}",
+                optional_alts_group(GRAM_PREFIX_ALTS_A, false),
+                optional_alts_group(GRAM_PREFIX_ALTS_B, false),
+                optional_alts_group(HE_ALTS, false)
+            ),
+            GRAM_PREFIX_GROUP
+        );
+        assert_eq!(
+            format!(
+                "{}{}{}",
+                optional_alts_group(PREFIX_ALTS_A, false),
+                optional_alts_group(GRAM_PREFIX_ALTS_B, false),
+                optional_alts_group(HE_ALTS, false)
+            ),
+            PREFIX_GROUP
+        );
+        assert_eq!(optional_alts_group(SUFFIX_ALTS, false), SUFFIX_PATTERN);
+        assert_eq!(
+            optional_alts_group(FULL_SUFFIX_ALTS, false),
+            FULL_SUFFIX_PATTERN
+        );
+    }
+
+    #[test]
+    fn prepare_vocalized_plain_path_builds_required_mark_patterns() {
+        let voc = VocalizedFlags::new(true, false);
+        let q = prepare_advanced_query_vocalized(
+            "בָּרָא אֱלֹהִים",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &voc,
+        );
+        assert_eq!(q.regex_terms.len(), 2);
+        for term in &q.regex_terms {
+            let joined = term.joined();
+            assert!(joined.contains(VOC_FREE_MARKS));
+            // כל branch חייב להתקמפל.
+            for b in term.branches() {
+                tantivy_fst::Regex::new(b).unwrap();
+            }
+        }
+        assert!(q.typo_tokens.is_empty());
+    }
+
+    #[test]
+    fn prepare_vocalized_single_typo_word_yields_stripped_typo_token() {
+        let voc = VocalizedFlags::new(true, false);
+        let options = make_options(&[("בָּרָא_0", &[(OPT_TYPO, true)])]);
+        let q = prepare_advanced_query_vocalized(
+            "בָּרָא",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options,
+            &voc,
+        );
+        // הטוקן לסריקת ה-Levenshtein חוזר נטול סימנים (נסרק מול המילון הרגיל).
+        assert_eq!(q.typo_tokens, vec!["ברא".to_string()]);
+        // וה-branch המדויק עדיין דורש את הסימנים שהוקלדו.
+        assert!(q.regex_terms[0].joined().contains('\u{05B8}'));
+    }
+
+    #[test]
+    fn vocalized_variant_passes_skip_identity() {
+        // עם כתיב מלא/חסר: branch ראשון דורש סימנים; אף branch חופשי לא
+        // חוזר על אותיות הבסיס עצמן (זה היה מרוקן את דרישת הסימנים).
+        let voc = VocalizedFlags::new(true, false);
+        let flags = WordFlags {
+            spelling: true,
+            ..WordFlags::default()
+        };
+        let pattern = build_word_regex_vocalized("שָׁלוֹם", &flags, &[], &voc, &SINGLE_WORD_BUDGET);
+        let branches = pattern.branches();
+        assert!(branches[0].contains('\u{05B8}'));
+        let identity_free = vocalized_free_pattern("שלום");
+        assert!(!branches[1..].contains(&identity_free));
+        for b in branches {
+            tantivy_fst::Regex::new(b).unwrap();
+        }
+    }
+
+    // ── אפשרויות "ניקוד"/"טעמים" פר-מילה ───────────────────────────────
+
+    #[test]
+    fn options_vocalized_flags_scans_all_words() {
+        assert_eq!(
+            options_vocalized_flags(&HashMap::new()),
+            VocalizedFlags::default()
+        );
+        let opts = make_options(&[
+            ("שלום_0", &[(OPT_TYPO, true)]),
+            ("עולם_1", &[(OPT_MATCH_TAAMIM, true)]),
+        ]);
+        assert_eq!(
+            options_vocalized_flags(&opts),
+            VocalizedFlags::new(false, true)
+        );
+        let opts = make_options(&[("שלום_0", &[(OPT_MATCH_NIKUD, true)])]);
+        assert_eq!(
+            options_vocalized_flags(&opts),
+            VocalizedFlags::new(true, false)
+        );
+    }
+
+    #[test]
+    fn per_word_nikud_option_binds_only_that_word() {
+        // "ניקוד" מסומן רק למילה הראשונה: הסימנים שהוקלדו בה נדרשים,
+        // ואילו סימני המילה השנייה נמחקים מהתבנית (חופשיים).
+        let opts = make_options(&[("בָּרָא_0", &[(OPT_MATCH_NIKUD, true)])]);
+        let q = prepare_advanced_query_vocalized(
+            "בָּרָא שָׁלוֹם",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &opts,
+            &VocalizedFlags::default(),
+        );
+        assert_eq!(q.regex_terms.len(), 2);
+        let w0 = q.regex_terms[0].joined();
+        assert!(
+            w0.contains('\u{05B8}'),
+            "typed kamatz must be required: {w0}"
+        );
+        let w1 = q.regex_terms[1].joined();
+        assert!(
+            !w1.contains('\u{05B8}') && !w1.contains('\u{05C1}'),
+            "unflagged word keeps its marks free: {w1}"
+        );
+        // מצב מנוקד ⇒ תקרת ההרחבה של מסלול הביטוי המנוקד, לא 1024 הרגילה.
+        assert_eq!(q.max_expansions, PHRASE_MAX_EXPANSIONS);
+    }
+
+    #[test]
+    fn per_word_option_unions_with_global_flags() {
+        // דגל גלובלי (ניקוד) + אפשרות פר-מילה (טעמים) על המילה הראשונה:
+        // במילה הראשונה שתי המחלקות מחייבות, בשנייה רק הגלובלית.
+        let word = "בְּרֵאשִׁ֖ית"; // שווא/צירה/חיריק + טעם (טיפחא U+0596)
+        let key = format!("{word}_0");
+        let opts = make_options(&[(key.as_str(), &[(OPT_MATCH_TAAMIM, true)])]);
+        let q = prepare_advanced_query_vocalized(
+            &format!("{word} בָּרָ֣א"),
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &opts,
+            &VocalizedFlags::new(true, false),
+        );
+        let w0 = q.regex_terms[0].joined();
+        assert!(w0.contains('\u{05B0}'), "global nikud binds word 0: {w0}");
+        assert!(
+            w0.contains('\u{0596}'),
+            "per-word taamim binds word 0: {w0}"
+        );
+        let w1 = q.regex_terms[1].joined();
+        assert!(
+            w1.contains('\u{05B8}'),
+            "global nikud still binds word 1: {w1}"
+        );
+        assert!(
+            !w1.contains('\u{05A3}'),
+            "munach stays free on word 1: {w1}"
+        );
+        for term in &q.regex_terms {
+            for b in term.branches() {
+                tantivy_fst::Regex::new(b).unwrap();
+            }
+        }
     }
 
     // ── שקילות מילון הטרמים: הצנרת הישנה מול המשמרת-פיסוק ──────────────
@@ -2056,22 +2902,32 @@ mod tests {
         assert_eq!(WordPattern::parse(&pattern.joined()), pattern);
     }
 
-    // ── parse_custom_spacing ─────────────────────────────────────────────
+    // ── resolve_gaps ─────────────────────────────────────────────────────
 
     #[test]
     fn custom_spacing_parsed_correctly() {
         let mut raw = HashMap::new();
         raw.insert("0-1".to_string(), "3".to_string());
         raw.insert("1-2".to_string(), "7".to_string());
-        let spacing = parse_custom_spacing(&raw, 3);
-        assert_eq!(spacing, vec![3, 7]);
+        let gaps = resolve_gaps(&raw, 9, 3);
+        assert_eq!(gaps, vec![3, 7]);
     }
 
     #[test]
-    fn custom_spacing_missing_entries_are_zero() {
+    fn empty_custom_spacing_falls_back_to_distance() {
         let raw = HashMap::new();
-        let spacing = parse_custom_spacing(&raw, 3);
-        assert_eq!(spacing, vec![0, 0]);
+        let gaps = resolve_gaps(&raw, 4, 3);
+        assert_eq!(gaps, vec![4, 4]);
+    }
+
+    #[test]
+    fn missing_custom_spacing_entry_gets_max_custom_value() {
+        // Mirrors display_highlight::spacing_for_gaps: a pair with no entry
+        // falls back to the widest custom value, not to `distance` or zero.
+        let mut raw = HashMap::new();
+        raw.insert("1-2".to_string(), "5".to_string());
+        let gaps = resolve_gaps(&raw, 3, 3);
+        assert_eq!(gaps, vec![5, 5]);
     }
 
     #[test]
@@ -2079,10 +2935,10 @@ mod tests {
         let mut raw = HashMap::new();
         raw.insert("0-1".to_string(), "5000000000".to_string()); // > u32::MAX
         raw.insert("1-2".to_string(), "-7".to_string()); // negative
-        let spacing = parse_custom_spacing(&raw, 3);
-        // Overflow saturates to u32::MAX rather than collapsing to 0; a
-        // negative value is treated as no spacing.
-        assert_eq!(spacing, vec![u32::MAX, 0]);
+        let gaps = resolve_gaps(&raw, 0, 3);
+        // Overflow clamps to u32::MAX rather than collapsing to 0; a
+        // negative value clamps to no spacing.
+        assert_eq!(gaps, vec![u32::MAX, 0]);
     }
 
     // ── prepare_advanced_query ───────────────────────────────────────────
@@ -2102,7 +2958,7 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(joined_terms(&q), vec!["שלום", "עולם"]);
-        assert_eq!(q.slop, 3);
+        assert_eq!(q.gaps, vec![3]);
         assert_eq!(q.max_expansions, 100);
     }
 
@@ -2111,7 +2967,22 @@ mod tests {
         let mut spacing = HashMap::new();
         spacing.insert("0-1".to_string(), "5".to_string());
         let q = prepare_advanced_query("שלום עולם", 3, &spacing, &HashMap::new(), &HashMap::new());
-        assert_eq!(q.slop, 5);
+        assert_eq!(q.gaps, vec![5]);
+    }
+
+    #[test]
+    fn per_pair_gaps_survive_into_the_query() {
+        let mut spacing = HashMap::new();
+        spacing.insert("0-1".to_string(), "3".to_string());
+        spacing.insert("1-2".to_string(), "5".to_string());
+        let q = prepare_advanced_query(
+            "ויאמר אל משה",
+            0,
+            &spacing,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(q.gaps, vec![3, 5]);
     }
 
     #[test]
@@ -2184,11 +3055,15 @@ mod tests {
     #[test]
     fn max_expansions_defaults() {
         assert_eq!(
-            compute_max_expansions(&["שלום".to_string()], &HashMap::new()),
+            compute_max_expansions(&["שלום".to_string()], &HashMap::new(), false),
             100
         );
         assert_eq!(
-            compute_max_expansions(&["שלום".to_string(), "עולם".to_string()], &HashMap::new()),
+            compute_max_expansions(
+                &["שלום".to_string(), "עולם".to_string()],
+                &HashMap::new(),
+                false
+            ),
             1_024
         );
     }
@@ -2196,15 +3071,21 @@ mod tests {
     #[test]
     fn max_expansions_grammatical_prefix_by_word_length() {
         let so = make_options(&[("ספר_0", &[(OPT_GRAM_PREFIX, true)])]);
-        assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 40_000);
+        assert_eq!(
+            compute_max_expansions(&["ספר".to_string()], &so, false),
+            40_000
+        );
     }
 
     #[test]
     fn max_expansions_typo_tolerance() {
         let so = make_options(&[("ספר_0", &[(OPT_TYPO, true)])]);
-        assert_eq!(compute_max_expansions(&["ספר".to_string()], &so), 500);
         assert_eq!(
-            compute_max_expansions(&["ספר".to_string(), "תורה".to_string()], &so),
+            compute_max_expansions(&["ספר".to_string()], &so, false),
+            500
+        );
+        assert_eq!(
+            compute_max_expansions(&["ספר".to_string(), "תורה".to_string()], &so, false),
             PHRASE_MAX_EXPANSIONS
         );
     }
@@ -2216,9 +3097,12 @@ mod tests {
         // truncate it far too early (R4). Multi-word takes the flat phrase
         // ceiling regardless of shape.
         let so = make_options(&[("משה_0", &[(OPT_TYPO, true), (OPT_PARTIAL, true)])]);
-        assert_eq!(compute_max_expansions(&["משה".to_string()], &so), 40_000);
         assert_eq!(
-            compute_max_expansions(&["משה".to_string(), "עם".to_string()], &so),
+            compute_max_expansions(&["משה".to_string()], &so, false),
+            40_000
+        );
+        assert_eq!(
+            compute_max_expansions(&["משה".to_string(), "עם".to_string()], &so, false),
             PHRASE_MAX_EXPANSIONS
         );
     }
