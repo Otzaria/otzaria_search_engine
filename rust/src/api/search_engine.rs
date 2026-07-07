@@ -34,6 +34,9 @@ use crate::gap_phrase::GapVerifiedPhraseQuery;
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::{HebrewTokenizer, VocalizedHebrewTokenizer};
+use crate::lexicons::{
+    AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
+};
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 
@@ -243,8 +246,17 @@ impl HighlightPlan {
 /// one joined regex pattern per word (for highlight-term materialization), the
 /// resolved per-pair gap allowances (fold `custom_spacing`/`distance` in — the
 /// phrase highlight filter's gap allowances), and whether single-word
-/// collection truncated.
-type AdvancedQueryBuild = (Box<dyn Query>, Vec<String>, Vec<u32>, bool);
+/// collection truncated. The fifth element carries the acronym-expansion
+/// alternatives ("ראשי תיבות") as per-word literal-pattern lists — the
+/// highlight builders materialize their terms so a document matched through
+/// an expansion (רמב"ם → "רבי משה בן מיימון") still gets its snippet painted.
+type AdvancedQueryBuild = (
+    Box<dyn Query>,
+    Vec<String>,
+    Vec<u32>,
+    bool,
+    Vec<Vec<String>>,
+);
 
 /// Regex patterns for highlighting query matches in *displayed* book text
 /// (which, unlike index terms, still carries nikud and HTML). All patterns
@@ -284,6 +296,12 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // שים לב: נוסף השדה `sectionId` (FAST) עבור חיפוש "תחת אותה כותרת" —
 // שינוי סכימה שמחייב העלאת גרסה לפני פרסום (בדיקת התאימות משווה גם את
 // סכימת ה-tantivy בפועל, כך שאינדקס ישן ידווח rebuild_required גם בלעדיה).
+//
+// שים לב: הטמעת הטוקן-התאום נטול-הגרשיים (emit_quote_free בטוקנייזרים)
+// משנה את *תוכן* מילון הטרמים בלי לשנות את סכימת ה-tantivy — בדיקת
+// ההתאימות לא תתפוס זאת מעצמה, ולכן חובה להעלות את הגרסה לפני פרסום
+// כדי שאינדקסים ישנים ייבנו מחדש (בלעדיהם חיפוש `רמבם` לא ימצא `רמב"ם`
+// ו"התעלם מגרשיים" לא יעבוד על ספרים שאונדקסו קודם).
 const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 const DEFAULT_GENERATION_ORDER: u32 = 5;
@@ -960,6 +978,14 @@ pub struct SearchEngine {
     /// `None` until [`SearchEngine::set_magic_dictionary_path`] loads a valid
     /// `lexical.db`; while `None`, fuzzy search behaves exactly as before.
     magic_dict: Option<MagicDictionary>,
+    /// מילון תרגום ארמי↔עברי לאפשרות "תרגום ארמי" של החיפוש המתקדם.
+    /// `None` עד ש-[`SearchEngine::set_translation_dictionary_path`] טוען
+    /// קובץ תקין; בהיעדרו האפשרות פשוט לא מרחיבה דבר.
+    translation_dict: Option<TranslationLexicon>,
+    /// מילון פענוח ראשי-תיבות לאפשרות "ראשי תיבות" של החיפוש המתקדם.
+    /// `None` עד ש-[`SearchEngine::set_acronyms_dictionary_path`] טוען קובץ
+    /// תקין; בהיעדרו האפשרות פשוט לא מרחיבה דבר.
+    acronym_dict: Option<AcronymLexicon>,
     /// Materialized-terms cache for the single-word regex path. One user
     /// search triggers several engine calls with identical parameters
     /// (stream + count + count-by-book + facet counts + pagination), and the
@@ -1000,17 +1026,41 @@ impl SearchEngine {
             ),
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
+        // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
+        // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
         index.tokenizers().register(
             "hebrew",
-            TextAnalyzer::builder(HebrewTokenizer)
-                .filter(LowerCaser)
-                .build(),
+            TextAnalyzer::builder(HebrewTokenizer {
+                emit_quote_free: true,
+            })
+            .filter(LowerCaser)
+            .build(),
         );
         index.tokenizers().register(
             "hebrew_vocalized",
-            TextAnalyzer::builder(VocalizedHebrewTokenizer)
-                .filter(LowerCaser)
-                .build(),
+            TextAnalyzer::builder(VocalizedHebrewTokenizer {
+                emit_quote_free: true,
+            })
+            .filter(LowerCaser)
+            .build(),
+        );
+        // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
+        // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
+        index.tokenizers().register(
+            "hebrew_query",
+            TextAnalyzer::builder(HebrewTokenizer {
+                emit_quote_free: false,
+            })
+            .filter(LowerCaser)
+            .build(),
+        );
+        index.tokenizers().register(
+            "hebrew_vocalized_query",
+            TextAnalyzer::builder(VocalizedHebrewTokenizer {
+                emit_quote_free: false,
+            })
+            .filter(LowerCaser)
+            .build(),
         );
         let index_reader = index
             .reader_builder()
@@ -1038,6 +1088,8 @@ impl SearchEngine {
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             index_reader,
             magic_dict: None,
+            translation_dict: None,
+            acronym_dict: None,
             term_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
@@ -1072,6 +1124,64 @@ impl SearchEngine {
     #[frb(sync)]
     pub fn has_magic_dictionary(&self) -> bool {
         self.magic_dict.is_some()
+    }
+
+    /// טוען את מילון התרגום הארמי-עברי (ה-`dictionary.json` של האפליקציה)
+    /// עבור אפשרות "תרגום ארמי" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
+    /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
+    /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
+    #[frb(sync)]
+    pub fn set_translation_dictionary_path(&mut self, path: String) -> bool {
+        match TranslationLexicon::load(Path::new(&path)) {
+            Ok(lexicon) => {
+                debug!(
+                    "translation dictionary loaded from {path} ({} headwords)",
+                    lexicon.len()
+                );
+                self.translation_dict = Some(lexicon);
+                true
+            }
+            Err(err) => {
+                warn!("translation dictionary unavailable at {path}: {err:#}");
+                self.translation_dict = None;
+                false
+            }
+        }
+    }
+
+    /// האם מילון תרגום ארמי-עברי טעון כרגע.
+    #[frb(sync)]
+    pub fn has_translation_dictionary(&self) -> bool {
+        self.translation_dict.is_some()
+    }
+
+    /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
+    /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
+    /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
+    /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
+    #[frb(sync)]
+    pub fn set_acronyms_dictionary_path(&mut self, path: String) -> bool {
+        match AcronymLexicon::load(Path::new(&path)) {
+            Ok(lexicon) => {
+                debug!(
+                    "acronyms dictionary loaded from {path} ({} acronyms)",
+                    lexicon.len()
+                );
+                self.acronym_dict = Some(lexicon);
+                true
+            }
+            Err(err) => {
+                warn!("acronyms dictionary unavailable at {path}: {err:#}");
+                self.acronym_dict = None;
+                false
+            }
+        }
+    }
+
+    /// האם מילון ראשי-תיבות טעון כרגע.
+    #[frb(sync)]
+    pub fn has_acronyms_dictionary(&self) -> bool {
+        self.acronym_dict.is_some()
     }
 
     // ── Write API ──────────────────────────────────────────────────────────────
@@ -1622,6 +1732,11 @@ impl SearchEngine {
 
     // ── Search API ─────────────────────────────────────────────────────────────
 
+    /// Paged regex search. Drops the single-word truncation flag: a broad
+    /// query (e.g. `.*ספר`) that overflows its collection budget serves
+    /// partial results with no signal. Not suitable for UI that must tell the
+    /// user the result is partial — use [`Self::search_and_count`]
+    /// ([`SearchPageResult::truncated`]) instead.
     pub fn search(
         &self,
         regex_terms: Vec<String>,
@@ -1943,6 +2058,10 @@ impl SearchEngine {
     /// as soon as those are ready, without waiting for all snippets to be built.
     /// This is useful when `limit` is large and snippet generation is the
     /// bottleneck. For typical limits (≤ 200) the difference is negligible.
+    ///
+    /// Drops the single-word truncation flag — see [`Self::search`]; use
+    /// [`Self::search_and_count`] ([`SearchPageResult::truncated`]) when
+    /// partiality must surface.
     pub fn search_stream(
         &self,
         regex_terms: Vec<String>,
@@ -2167,7 +2286,7 @@ impl SearchEngine {
         // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
         // בתוך בניית השאילתה.
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
+        let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -2190,7 +2309,16 @@ impl SearchEngine {
         )?;
         self.run_search(
             q,
-            |s| self.advanced_highlight_plan_for_scope(s, &regex_terms, &gaps, &voc_mode, &scope),
+            |s| {
+                self.advanced_highlight_plan_for_scope(
+                    s,
+                    &regex_terms,
+                    &gaps,
+                    &voc_mode,
+                    &scope,
+                    &acronym_alts,
+                )
+            },
             self.search_text_field(&voc_mode)?,
             limit,
             offset,
@@ -2222,7 +2350,7 @@ impl SearchEngine {
     ) -> Result<SearchPageResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
+        let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -2245,7 +2373,16 @@ impl SearchEngine {
         )?;
         self.run_search_and_count(
             q,
-            |s| self.advanced_highlight_plan_for_scope(s, &regex_terms, &gaps, &voc_mode, &scope),
+            |s| {
+                self.advanced_highlight_plan_for_scope(
+                    s,
+                    &regex_terms,
+                    &gaps,
+                    &voc_mode,
+                    &scope,
+                    &acronym_alts,
+                )
+            },
             self.search_text_field(&voc_mode)?,
             limit,
             offset,
@@ -2255,6 +2392,10 @@ impl SearchEngine {
         )
     }
 
+    /// Advanced-query result stream. Drops the single-word truncation flag —
+    /// see [`Self::search`]; use [`Self::search_advanced_stream_with_counts`]
+    /// (its first [`SearchStreamUpdate`] carries `truncated`) when the UI
+    /// must flag partial results.
     pub fn search_advanced_stream(
         &self,
         query: String,
@@ -2281,7 +2422,7 @@ impl SearchEngine {
         let result = (|| {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
+            let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
@@ -2311,6 +2452,7 @@ impl SearchEngine {
                         &gaps,
                         &voc_mode,
                         &scope,
+                        &acronym_alts,
                     )
                 },
                 self.search_text_field(&voc_mode)?,
@@ -2356,7 +2498,7 @@ impl SearchEngine {
         let result = (|| {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, gaps, truncated) = self.build_advanced_query(
+            let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
@@ -2386,6 +2528,7 @@ impl SearchEngine {
                         &gaps,
                         &voc_mode,
                         &scope,
+                        &acronym_alts,
                     )
                 },
                 self.search_text_field(&voc_mode)?,
@@ -2464,7 +2607,7 @@ impl SearchEngine {
         negative_scope: SearchScope,
     ) -> Result<CountResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _, _, truncated) = self.build_advanced_query(
+        let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -2554,7 +2697,7 @@ impl SearchEngine {
         negative_scope: SearchScope,
     ) -> Result<BookCountResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _, _, truncated) = self.build_advanced_query(
+        let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -2647,7 +2790,7 @@ impl SearchEngine {
         negative_scope: SearchScope,
     ) -> Result<FacetCountsResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _, _, truncated) = self.build_advanced_query(
+        let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
@@ -3044,7 +3187,7 @@ impl SearchEngine {
             return Ok((positive_query, positive_truncated));
         }
 
-        let (negative, _, _, negative_truncated) = self.build_advanced_query(
+        let (negative, _, _, negative_truncated, _) = self.build_advanced_query(
             negative_query,
             negative_distance,
             negative_custom_spacing,
@@ -3448,7 +3591,7 @@ impl SearchEngine {
     /// marks and folds presentation forms, and a `strip_nikud` pass here would
     /// also delete maqaf/sof-pasuq, gluing `"אשר־שמע"` into one bogus term.
     fn index_token_texts(&self, text: &str) -> Result<Vec<String>> {
-        self.index_token_texts_with("hebrew", text)
+        self.index_token_texts_with("hebrew_query", text)
     }
 
     /// [`Self::index_token_texts`] with an explicit analyzer —
@@ -3539,7 +3682,7 @@ impl SearchEngine {
         voc: &VocalizedFlags,
     ) -> Result<(Box<dyn Query>, bool)> {
         let voc_field = self.schema.get_field("textVocalized")?;
-        let tokens = self.index_token_texts_with("hebrew_vocalized", query_str)?;
+        let tokens = self.index_token_texts_with("hebrew_vocalized_query", query_str)?;
         let patterns: Vec<String> = tokens
             .iter()
             .map(|t| hebrew_query::vocalized_token_pattern(t, voc))
@@ -3635,7 +3778,7 @@ impl SearchEngine {
             max_distance <= 2,
             "fuzzy distance is limited to 2, got {max_distance}"
         );
-        let tokens = self.index_token_texts_with("hebrew_vocalized", query_str)?;
+        let tokens = self.index_token_texts_with("hebrew_vocalized_query", query_str)?;
         if tokens.is_empty() {
             return Ok((Box::new(EmptyQuery), false));
         }
@@ -4056,6 +4199,12 @@ impl SearchEngine {
         // receives the GLOBAL flags only (folding options into them would
         // bind every word's typed marks).
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(search_options));
+        // "תרגום ארמי": מילה שסומנה לה האפשרות מקבלת את תרגומיה מהמילון
+        // כמילים-חלופיות — ומשם הן זורמות בכל המסלולים הקיימים (ענפי
+        // תבנית, המסלול המנוקד, איסוף טרמים להדגשה).
+        let translated =
+            self.translation_alternatives(query, alternative_words, search_options, &voc_mode);
+        let alternative_words = translated.as_ref().unwrap_or(alternative_words);
         let mut prepared = if voc_mode.any() {
             hebrew_query::prepare_advanced_query_vocalized(
                 query,
@@ -4102,7 +4251,19 @@ impl SearchEngine {
             .iter()
             .map(hebrew_query::WordPattern::joined)
             .collect();
-        let (query, truncated) = self.build_query_from_patterns(
+        // "ראשי תיבות": תת-שאילתות פענוח ר"ת שיש ל-OR עם השאילתה הראשית.
+        // נבנות עכשיו — לפני ש-`query` (מחרוזת) מוצללת ע"י תוצאת בניית
+        // השאילתה — ובאותם facets/scope כדי שה-OR יישאר מפולטר נכון.
+        let acronym_alts = self.acronym_alternatives(
+            query,
+            search_options,
+            &voc_mode,
+            facets.clone(),
+            prepared.max_expansions,
+            text_field,
+            scope,
+        )?;
+        let (main_query, main_truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
             &prepared.typo_tokens,
             facets,
@@ -4111,7 +4272,165 @@ impl SearchEngine {
             text_field,
             scope,
         )?;
-        Ok((query, regex_terms, gaps, truncated))
+        let (query, truncated, acronym_patterns) = if acronym_alts.is_empty() {
+            (main_query, main_truncated, Vec::new())
+        } else {
+            let mut truncated = main_truncated;
+            let mut clauses: Vec<(Occur, Box<dyn Query>)> =
+                Vec::with_capacity(acronym_alts.len() + 1);
+            let mut alt_patterns = Vec::with_capacity(acronym_alts.len());
+            clauses.push((Occur::Should, main_query));
+            for (alt_query, alt_truncated, patterns) in acronym_alts {
+                clauses.push((Occur::Should, alt_query));
+                truncated |= alt_truncated;
+                alt_patterns.push(patterns);
+            }
+            (
+                Box::new(BooleanQuery::new(clauses)) as Box<dyn Query>,
+                truncated,
+                alt_patterns,
+            )
+        };
+        Ok((query, regex_terms, gaps, truncated, acronym_patterns))
+    }
+
+    /// בונה תת-שאילתות פענוח ראשי-תיבות (דו-כיווני) שיש ל-OR עם השאילתה
+    /// הראשית, כשאפשרות "ראשי תיבות" ([`hebrew_query::OPT_ACRONYM`]) דלוקה
+    /// על מילה כלשהי. מחזיר וקטור ריק כשאין מילון, אין אפשרות מסומנת, או
+    /// אין התאמה.
+    ///
+    /// הפענוח **רב-מילי**, ולכן אינו יכול לרכוב על ערוץ `alternative_words`
+    /// (החד-מילתי) כמו התרגום — כל חלופה נבנית כשאילתה שלמה ומצטרפת כ-OR.
+    /// הכיסוי מוגבל ל**שאילתה שהיא יחידה סמנטית אחת**: ר"ת בודד (כיוון
+    /// ר"ת→פענוח) או ביטוי שכולו פענוח ידוע (כיוון פענוח→ר"ת). ר"ת המשובץ
+    /// בתוך שאילתה ארוכה יותר, ומצב מנוקד, אינם נתמכים בשלב זה.
+    ///
+    /// כל פריט מוחזר כ-(שאילתה, truncated, תבניות-ליטרל פר-מילה) — התבניות
+    /// מוזנות לבוני ההדגשה כדי שמסמך שנמצא דרך החלופה ייצבע.
+    #[allow(clippy::too_many_arguments)]
+    fn acronym_alternatives(
+        &self,
+        query: &str,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        voc: &VocalizedFlags,
+        facets: Vec<String>,
+        max_expansions: u32,
+        text_field: Field,
+        scope: &SearchScope,
+    ) -> Result<Vec<(Box<dyn Query>, bool, Vec<String>)>> {
+        let Some(dict) = self.acronym_dict.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if search_options.is_empty() {
+            return Ok(Vec::new());
+        }
+        // פענוח בשילוב חיפוש מנוקד אינו נתמך עדיין: החלופות ליטרלים
+        // נטולי-סימנים ולא יתאימו למילון הטרמים המנוקד.
+        if voc.any() {
+            return Ok(Vec::new());
+        }
+        // אותה נורמליזציה/טוקניזציה שממנה נגזרים מפתחות האפשרויות ומפתחות
+        // המילון — כדי שהכול יתלכד.
+        let words = hebrew_query::split_query_words(&hebrew_query::normalize_for_index(query));
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let enabled = words.iter().enumerate().any(|(i, word)| {
+            search_options
+                .get(&format!("{word}_{i}"))
+                .and_then(|opts| opts.get(hebrew_query::OPT_ACRONYM))
+                .copied()
+                .unwrap_or(false)
+        });
+        if !enabled {
+            return Ok(Vec::new());
+        }
+
+        // אוסף החלופות כרשימות-מילים בצורת טרם-אינדקס.
+        let mut alternatives: Vec<Vec<String>> = Vec::new();
+        // כיוון א' (ר"ת→פענוח): רק כשהשאילתה כולה ר"ת בודד.
+        if words.len() == 1 {
+            alternatives.extend(dict.expand(&words[0], MAX_ACRONYM_EXPANSIONS));
+        }
+        // כיוון ב' (פענוח→ר"ת): כשכל השאילתה היא פענוח ידוע.
+        for acronym in dict.acronyms_for(&words, MAX_ACRONYM_EXPANSIONS) {
+            alternatives.push(vec![acronym]);
+        }
+        if alternatives.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::with_capacity(alternatives.len());
+        for alt in alternatives {
+            let literal_patterns: Vec<String> =
+                alt.iter().map(|w| hebrew_query::escape_regex(w)).collect();
+            let patterns: Vec<hebrew_query::WordPattern> = literal_patterns
+                .iter()
+                .map(|p| hebrew_query::WordPattern::Literal(p.clone()))
+                .collect();
+            // פענוח הוא ביטוי קנוני — מילים צמודות (slop 0, ללא GapVerified).
+            let gaps = vec![0u32; patterns.len().saturating_sub(1)];
+            let (alt_query, truncated) = self.build_query_from_patterns(
+                patterns,
+                &[],
+                facets.clone(),
+                &gaps,
+                max_expansions,
+                text_field,
+                scope,
+            )?;
+            out.push((alt_query, truncated, literal_patterns));
+        }
+        Ok(out)
+    }
+
+    /// בונה מפת מילים-חלופיות מורחבת בתרגומי המילון עבור מילים שסומנה
+    /// להן אפשרות "תרגום ארמי". מחזיר `None` כשאין מה להרחיב (אין מילון,
+    /// אין אפשרות מסומנת, או אין תרגומים) — והשאילתה ממשיכה עם המפה
+    /// המקורית ללא העתקה.
+    fn translation_alternatives(
+        &self,
+        query: &str,
+        alternative_words: &HashMap<u32, Vec<String>>,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        voc: &VocalizedFlags,
+    ) -> Option<HashMap<u32, Vec<String>>> {
+        let dict = self.translation_dict.as_ref()?;
+        if search_options.is_empty() {
+            return None;
+        }
+        // אותה נורמליזציה וטוקניזציה שממנה נגזרים מפתחות האפשרויות
+        // ("{word}_{index}") בהכנת השאילתה — כדי שהמפתחות יתלכדו.
+        let normalized = if voc.any() {
+            hebrew_query::normalize_for_index_vocalized(query)
+        } else {
+            hebrew_query::normalize_for_index(query)
+        };
+        let words = hebrew_query::split_query_words(&normalized);
+        let mut augmented: Option<HashMap<u32, Vec<String>>> = None;
+        for (i, word) in words.iter().enumerate() {
+            let enabled = search_options
+                .get(&format!("{word}_{i}"))
+                .and_then(|opts| opts.get(hebrew_query::OPT_TRANSLATION))
+                .copied()
+                .unwrap_or(false);
+            if !enabled {
+                continue;
+            }
+            // המילון ממופתח בצורת טרם נטולת-סימנים; במצב מנוקד המילה עוד
+            // נושאת את סימניה.
+            let base = hebrew_query::strip_attached_marks(word);
+            let expansions = dict.expansions(&base, MAX_TRANSLATION_EXPANSIONS);
+            if expansions.is_empty() {
+                continue;
+            }
+            augmented
+                .get_or_insert_with(|| alternative_words.clone())
+                .entry(i as u32)
+                .or_default()
+                .extend(expansions);
+        }
+        augmented
     }
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
@@ -4694,6 +5013,9 @@ impl SearchEngine {
     /// the paragraph/section scopes impose no order or distance inside a
     /// line, so every occurrence of every word variant is a true match to
     /// paint — flat term-union highlighting, no phrase filter.
+    /// `acronym_alts` — חלופות פענוח ר"ת (תבניות-ליטרל פר-מילה): מילות כל
+    /// חלופה מתממשות ומצטרפות לאיחוד ההדגשה השטוח, כך שמסמך שנמצא דרך
+    /// החלופה ייצבע (דרך נפילת מסנן-הביטוי לצביעת-הטרמים הרחבה).
     fn advanced_highlight_plan_for_scope(
         &self,
         searcher: &Searcher,
@@ -4701,18 +5023,22 @@ impl SearchEngine {
         gaps: &[u32],
         voc: &VocalizedFlags,
         scope: &SearchScope,
+        acronym_alts: &[Vec<String>],
     ) -> Result<HighlightPlan> {
         match scope {
             SearchScope::WordDistance => {
-                self.advanced_highlight_plan(searcher, regex_terms, gaps, voc)
+                self.advanced_highlight_plan(searcher, regex_terms, gaps, voc, acronym_alts)
             }
             SearchScope::SameParagraph | SearchScope::SameSection => {
-                if regex_terms.len() < 2 {
+                if regex_terms.len() < 2 && acronym_alts.is_empty() {
                     return Ok(HighlightPlan::none());
                 }
                 let field = self.search_text_field(voc)?;
-                let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
-                let query = self.terms_query_from_word_sets(&per_word_terms, field)?;
+                let mut word_sets = self.phrase_per_word_terms(searcher, regex_terms, field)?;
+                for alt in acronym_alts {
+                    word_sets.extend(self.phrase_per_word_terms(searcher, alt, field)?);
+                }
+                let query = self.terms_query_from_word_sets(&word_sets, field)?;
                 Ok(HighlightPlan {
                     query,
                     phrase: None,
@@ -4727,8 +5053,9 @@ impl SearchEngine {
         regex_terms: &[String],
         gaps: &[u32],
         voc: &VocalizedFlags,
+        acronym_alts: &[Vec<String>],
     ) -> Result<HighlightPlan> {
-        if regex_terms.len() < 2 {
+        if regex_terms.len() < 2 && acronym_alts.is_empty() {
             return Ok(HighlightPlan::none());
         }
         let field = self.search_text_field(voc)?;
@@ -4738,15 +5065,20 @@ impl SearchEngine {
             "hebrew"
         };
         let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
-        let query = self.terms_query_from_word_sets(&per_word_terms, field)?;
-        Ok(HighlightPlan {
-            query,
-            phrase: Some(PhraseHighlight {
-                per_word_terms,
-                gaps: gaps.to_vec(),
-                analyzer,
-            }),
-        })
+        // איחוד ההדגשה השטוח נושא גם את מילות חלופות הר"ת; מסנן-הביטוי
+        // נשאר של השאילתה הראשית בלבד (רק במסלול הרב-מילי) — פרגמנט
+        // שנמצא דרך חלופה נופל לצביעה הרחבה וכל מילות החלופה נצבעות.
+        let mut all_word_sets = per_word_terms.clone();
+        for alt in acronym_alts {
+            all_word_sets.extend(self.phrase_per_word_terms(searcher, alt, field)?);
+        }
+        let query = self.terms_query_from_word_sets(&all_word_sets, field)?;
+        let phrase = (per_word_terms.len() >= 2).then(|| PhraseHighlight {
+            per_word_terms,
+            gaps: gaps.to_vec(),
+            analyzer,
+        });
+        Ok(HighlightPlan { query, phrase })
     }
 
     /// Highlight plan for an exact (`Term`/`PhraseQuery`) search. A single term
@@ -4766,7 +5098,7 @@ impl SearchEngine {
         voc: &VocalizedFlags,
     ) -> Result<HighlightPlan> {
         if voc.any() {
-            let tokens = self.index_token_texts_with("hebrew_vocalized", query_str)?;
+            let tokens = self.index_token_texts_with("hebrew_vocalized_query", query_str)?;
             if tokens.len() < 2 {
                 return Ok(HighlightPlan::none());
             }
@@ -5087,9 +5419,10 @@ impl SearchEngine {
         let mut analyzer = searcher.index().tokenizers().get(phrase.analyzer)?;
 
         // Candidate = a fragment token that can fill at least one query word.
-        // `order` is a dense 0,1,2,… token index (independent of the tokenizer's
-        // own `position`), so the gap between two candidates is
-        // `order_b - order_a - 1` intermediate tokens.
+        // `order` is the tokenizer's `position` — one increment per *word*:
+        // the quote-free twin token an indexing analyzer emits (ראו
+        // `emit_quote_free`) shares its word's position, so it must not
+        // inflate the intermediate-word gap `order_b - order_a - 1`.
         struct Candidate {
             order: usize,
             from: usize,
@@ -5097,7 +5430,6 @@ impl SearchEngine {
             words: Vec<usize>,
         }
         let mut candidates: Vec<Candidate> = Vec::new();
-        let mut order = 0usize;
         let mut stream = analyzer.token_stream(fragment);
         while let Some(token) = stream.next() {
             let words: Vec<usize> = phrase
@@ -5108,13 +5440,12 @@ impl SearchEngine {
                 .collect();
             if !words.is_empty() {
                 candidates.push(Candidate {
-                    order,
+                    order: token.position,
                     from: token.offset_from,
                     to: token.offset_to,
                     words,
                 });
             }
-            order += 1;
         }
 
         // Greedy leftmost, non-overlapping scan.
@@ -5132,7 +5463,12 @@ impl SearchEngine {
                     while m < candidates.len() {
                         // The gap grows monotonically with m, so once it exceeds
                         // the allowance no later candidate can match this word.
-                        if candidates[m].order - candidates[cur].order - 1 > max_gap {
+                        // saturating: טוקן-תאום חולק עמדה עם מילתו (אין הפרש).
+                        if candidates[m]
+                            .order
+                            .saturating_sub(candidates[cur].order + 1)
+                            > max_gap
+                        {
                             break;
                         }
                         if candidates[m].words.contains(&w) {
@@ -6832,11 +7168,18 @@ mod tests {
     // ── Index-aware display highlight (parity with search, R5) ───────────
 
     /// Charwise display form of a nikud-free term, as the Dart layer receives
-    /// it (each Hebrew letter may carry attached marks in displayed text).
+    /// it (each Hebrew letter may carry attached marks in displayed text, and
+    /// between letters optional geresh/gershayim — the quote-free twin token).
     fn charwise(term: &str) -> String {
-        term.chars()
-            .map(|c| format!("{c}{}", crate::display_highlight::ATTACHED_MARKS_CLASS))
-            .collect()
+        let mut out = String::new();
+        for (i, c) in term.chars().enumerate() {
+            if i > 0 {
+                out.push_str(crate::display_highlight::OPTIONAL_QUOTES);
+            }
+            out.push(c);
+            out.push_str(crate::display_highlight::ATTACHED_MARKS_CLASS);
+        }
+        out
     }
 
     fn typo_options(word: &str) -> HashMap<String, HashMap<String, bool>> {
@@ -8476,17 +8819,206 @@ mod tests {
             .unwrap();
         assert!(books.truncated, "a cap of 1 must flag the per-book counts");
 
+        let facets = engine
+            .get_facet_counts_with_status(vec![".*ספר".to_string()], vec![], "/".to_string(), 0, 1)
+            .unwrap();
+        assert!(facets.truncated, "a cap of 1 must flag the facet counts");
+
         let uncapped = engine
             .count_with_status(vec![".*ספר".to_string()], &[], 0, 100)
             .unwrap();
         assert!(!uncapped.truncated, "an uncapped count must not flag");
         assert_eq!(uncapped.count, 2);
 
+        let facets = engine
+            .get_facet_counts_with_status(
+                vec![".*ספר".to_string()],
+                vec![],
+                "/".to_string(),
+                0,
+                100,
+            )
+            .unwrap();
+        assert!(!facets.truncated, "an uncapped facet count must not flag");
+        assert!(
+            facets
+                .counts
+                .iter()
+                .any(|f| f.path == "/root" && f.count == 2),
+            "facet counts should be exact when not truncated"
+        );
+
         // The bare API stays backward compatible: same count, flag dropped.
         let bare = engine
             .count(vec![".*ספר".to_string()], &[], 0, 100)
             .unwrap();
         assert_eq!(bare, uncapped.count);
+    }
+
+    #[test]
+    fn test_advanced_count_apis_with_status_surface_truncation() {
+        // The advanced *_with_status trio must propagate the degrade signal
+        // through build_advanced_query. "חלק ממילה" on a one-letter word gets
+        // the relaxed 20 000-term cap (plain_max_expansions), so an index
+        // with 20 812 matching terms overflows it.
+        let (mut engine, _dir) = make_engine();
+        let letters = [
+            'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ',
+            'צ', 'ק', 'ר', 'ש', 'ת',
+        ];
+        // 22³ words starting with א plus 21×22² with א second — all distinct,
+        // all inside the `.{0,3}א.{0,3}` partial window.
+        let mut words: Vec<String> = Vec::new();
+        for a in letters {
+            for b in letters {
+                for c in letters {
+                    words.push(format!("א{a}{b}{c}"));
+                    if a != 'א' {
+                        words.push(format!("{a}א{b}{c}"));
+                    }
+                }
+            }
+        }
+        for (i, chunk) in words.chunks(4_000).enumerate() {
+            add(&mut engine, i as u64 + 1, &chunk.join(" "), "/books/a.txt");
+        }
+        // Control docs for the under-cap path (no א anywhere).
+        add(&mut engine, 100, "שלום עולם", "/books/b.txt");
+        add(&mut engine, 101, "שלום", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let partial_on = |word: &str| -> HashMap<String, HashMap<String, bool>> {
+            HashMap::from([(
+                format!("{word}_0"),
+                HashMap::from([("חלק ממילה".to_string(), true)]),
+            )])
+        };
+
+        let count = engine
+            .count_advanced_with_status(
+                "א".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                partial_on("א"),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+        assert!(
+            count.truncated,
+            "20 812 matching terms over the 20 000 cap must flag the advanced count"
+        );
+
+        let books = engine
+            .count_by_book_advanced_with_status(
+                "א".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                partial_on("א"),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+        assert!(
+            books.truncated,
+            "the advanced per-book counts must carry the same flag"
+        );
+
+        let facets = engine
+            .get_facet_counts_advanced_with_status(
+                "א".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                "/".to_string(),
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                partial_on("א"),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+        assert!(
+            facets.truncated,
+            "the advanced facet counts must carry the same flag"
+        );
+
+        // A word matching a single term stays far under the cap: no flag,
+        // exact counts on every path.
+        let count = engine
+            .count_advanced_with_status(
+                "שלום".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                partial_on("שלום"),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+        assert!(!count.truncated, "under the cap the count must not flag");
+        assert_eq!(count.count, 2, "both control documents match");
+
+        let facets = engine
+            .get_facet_counts_advanced_with_status(
+                "שלום".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                "/".to_string(),
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                partial_on("שלום"),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+        assert!(!facets.truncated, "under the cap the facets must not flag");
+        assert!(
+            facets
+                .counts
+                .iter()
+                .any(|f| f.path == "/root" && f.count == 2),
+            "facet counts should be exact when not truncated"
+        );
     }
 
     #[test]
@@ -8743,10 +9275,13 @@ mod tests {
         for query in ["רמב\"ם", "רמב\u{05F4}ם", "רמב''ם"] {
             assert_eq!(exact_ids(&engine, query), vec![1], "query {query:?}");
         }
+        // המחיר ההיסטורי של אופציה A (מדויק רגיש-גרשיים) בוטל: האינדקס
+        // מטמיע לכל מילת-גרשיים גם טוקן-תאום נקי, כך ששאילתה נטולת-גרשיים
+        // מוצאת את המהדורה המנוקדת-בגרשיים גם בחיפוש מדויק.
         assert_eq!(
             exact_ids(&engine, "רמבם"),
-            Vec::<u64>::new(),
-            "המחיר המתועד של אופציה A: מדויק רגיש-גרשיים"
+            vec![1],
+            "הטוקן-התאום נטול-הגרשיים"
         );
         // ביטוי רב-מילים עם טוקן-גרש: PhraseQuery על הטרמים החדשים.
         add(&mut engine, 3, "דברי תוס' ד\"ה אמר שם", "/books/c.txt");
@@ -8789,11 +9324,13 @@ mod tests {
             got.contains(&1) && got.contains(&2),
             "הווריאנט הנקי מגשר גם במרחק 0, got {got:?}"
         );
-        // תקציב העריכה לא נבלע ע"י הגרשיים: רמכם רחוק מ-רמב"ם 2 עריכות.
+        // תקציב העריכה לא נבלע ע"י הגרשיים: רמכם→רמבם עריכה אחת — ומאז
+        // שהאינדקס מטמיע טוקן-תאום נקי, הטרם רמבם קיים גם במסמך הגרשיים,
+        // כך ששני המסמכים נתפסים כבר במרחק 1.
         let got = fuzzy_ids(&engine, "רמכם", 1);
         assert!(
-            got.contains(&2) && !got.contains(&1),
-            "got {got:?}: רמכם→רמבם עריכה אחת, רמכם→רמב\"ם שתיים"
+            got.contains(&1) && got.contains(&2),
+            "got {got:?}: רמכם→רמבם עריכה אחת, בשני המסמכים"
         );
         let got = fuzzy_ids(&engine, "רמכם", 2);
         assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
@@ -8828,9 +9365,9 @@ mod tests {
         );
         assert!(got.contains(&2), "הטרם המדויק עצמו, got {got:?}");
 
-        // הפער השיורי המתועד (§5.2): המילון פולט צורות נקיות בלבד, ולכן
-        // שאילתה נקייה לא מגיעה לטרם-אינדקס שנושא גרשיים כשהוא מחוץ
-        // לתקציב העריכה (אדמורים→אדמו"ר = 3 עריכות).
+        // הפער השיורי ההיסטורי (§5.2) נסגר: המילון פולט צורות נקיות בלבד,
+        // אבל האינדקס מטמיע כעת טוקן-תאום נקי (אדמור) לצד אדמו"ר — כך
+        // שהצורה הנקייה שהמילון מחזיר פוגעת בו ישירות.
         let got = ids(engine
             .search_fuzzy(
                 "אדמורים".to_string(),
@@ -8845,8 +9382,8 @@ mod tests {
             .unwrap());
         assert!(got.contains(&1), "got {got:?}");
         assert!(
-            !got.contains(&2),
-            "אם זה נתפס — הפער השיורי נסגר ואפשר לעדכן את התיעוד, got {got:?}"
+            got.contains(&2),
+            "הטוקן-התאום סוגר את הפער השיורי, got {got:?}"
         );
     }
 
@@ -8886,6 +9423,333 @@ mod tests {
         // קידומות דקדוקיות סביב שורש עם `"` literal.
         let got = search(&mut engine, "רמב\"ם", "קידומות דקדוקיות");
         assert!(got.contains(&2), "ה־רמב\"ם עם קידומת, got {got:?}");
+    }
+
+    #[test]
+    fn advanced_aramaic_option_matches_prefixes_and_final_swaps() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "מלכא קדישא", "/books/a.txt");
+        add(&mut engine, 2, "אמרו דמלכא הוא", "/books/b.txt");
+        add(&mut engine, 3, "כדמלכה בשעתו", "/books/c.txt");
+        add(&mut engine, 4, "מדמלכא נפק", "/books/d.txt");
+        add(&mut engine, 5, "אדמלכה קאי", "/books/e.txt");
+        add(&mut engine, 6, "חכמין אמרין", "/books/f.txt");
+        add(&mut engine, 7, "ספרא אחרינא", "/books/g.txt");
+        engine.commit().unwrap();
+
+        let search = |engine: &mut SearchEngine, query: &str, opts: &[&str]| {
+            let mut options = HashMap::new();
+            if !opts.is_empty() {
+                let word_opts: HashMap<String, bool> =
+                    opts.iter().map(|o| (o.to_string(), true)).collect();
+                options.insert(format!("{query}_0"), word_opts);
+            }
+            ids(search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap())
+        };
+
+        // שתי האפשרויות יחד — ההתנהגות ההיסטורית: שקילות סופית ה↔א +
+        // הקידומות ד/כד/מד/אד על שני הווריאנטים.
+        let got = search(&mut engine, "מלכה", &["קידומות ארמיות", "סיומות ארמיות"]);
+        for id in [1, 2, 3, 4, 5] {
+            assert!(got.contains(&id), "ארמית החמיצה את מסמך {id}, got {got:?}");
+        }
+        assert!(!got.contains(&7), "ארמית רחבה מדי, got {got:?}");
+
+        // סיומות בלבד: השקילות עובדת (מלכא, id 1) אבל אין קידומות (לא 2-5).
+        let got = search(&mut engine, "מלכה", &["סיומות ארמיות"]);
+        assert!(
+            got.contains(&1),
+            "סיומות ארמיות החמיצו את מלכא, got {got:?}"
+        );
+        for id in [2, 3, 4, 5] {
+            assert!(
+                !got.contains(&id),
+                "סיומות בלבד לא אמורות לתת קידומות (מסמך {id}), got {got:?}"
+            );
+        }
+
+        // קידומות בלבד: דמלכה עם קידומת נתפס דרך וריאנט? לא — אין שקילות
+        // סופית, אז רק צורות של "מלכה" עם קידומת; המסמכים כאן נושאים מלכא
+        // חוץ מ-3 ו-5 (כדמלכה, אדמלכה).
+        let got = search(&mut engine, "מלכה", &["קידומות ארמיות"]);
+        for id in [3, 5] {
+            assert!(
+                got.contains(&id),
+                "קידומות ארמיות החמיצו את מסמך {id}, got {got:?}"
+            );
+        }
+        for id in [1, 2, 4] {
+            assert!(
+                !got.contains(&id),
+                "קידומות בלבד לא אמורות לתת שקילות סופית (מסמך {id}), got {got:?}"
+            );
+        }
+
+        // ם↔ן: חכמים מוצא חכמין דרך סיומות ארמיות.
+        let got = search(&mut engine, "חכמים", &["סיומות ארמיות"]);
+        assert!(got.contains(&6), "ם↔ן לא עבד, got {got:?}");
+
+        // בלי האפשרויות — אין שקילות ארמית.
+        let got = search(&mut engine, "מלכה", &[]);
+        assert!(got.is_empty(), "בלי ארמית לא אמור להימצא דבר, got {got:?}");
+    }
+
+    #[test]
+    fn quote_free_indexing_and_ignore_quotes_option() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "כתב רמב\"ם על כך", "/books/a.txt");
+        add(&mut engine, 2, "דברי רמבם בהלכות", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let search = |engine: &mut SearchEngine, query: &str, opt: Option<&str>| {
+            let mut options = HashMap::new();
+            if let Some(opt) = opt {
+                options.insert(
+                    format!("{query}_0"),
+                    HashMap::from([(opt.to_string(), true)]),
+                );
+            }
+            ids(search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap())
+        };
+
+        // בלי שום אפשרות: הצורה הנקייה מוצאת גם את המקור עם הגרשיים —
+        // הטוקן-התאום שהאינדקס מטמיע.
+        let got = search(&mut engine, "רמבם", None);
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+
+        // רמב"ם בלי האפשרות: התנהגות היסטורית — רק הצורה עם הגרשיים.
+        let got = search(&mut engine, "רמב\"ם", None);
+        assert!(got.contains(&1) && !got.contains(&2), "got {got:?}");
+
+        // עם "התעלם מגרשיים": שתי הצורות.
+        let got = search(&mut engine, "רמב\"ם", Some("התעלם מגרשיים"));
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+
+        // ההדגשה מכסה את הצורה המקורית עם הגרשיים (התאום יורש offsets).
+        let results = search_advanced_default(
+            &engine,
+            "רמבם".to_string(),
+            vec!["/root".to_string()],
+            100,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+        )
+        .unwrap();
+        // הטקסט עובר escape של HTML — הגרשיים מופיעות כ-&quot;.
+        let doc1 = results.iter().find(|r| r.id == 1).unwrap();
+        assert!(
+            doc1.text.contains("<font color=red>רמב&quot;ם</font>"),
+            "highlight: {}",
+            doc1.text
+        );
+    }
+
+    #[test]
+    fn advanced_translation_option_expands_from_dictionary() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "איתא בגמרא", "/books/a.txt");
+        add(&mut engine, 2, "יש דברים בגו", "/books/b.txt");
+        engine.commit().unwrap();
+
+        let mut dict_file = tempfile::NamedTempFile::new().unwrap();
+        use std::io::Write as _;
+        dict_file
+            .write_all(r#"{ "מילון פשיטא": [ { "אִיתָא": "יש" } ] }"#.as_bytes())
+            .unwrap();
+        assert!(
+            engine.set_translation_dictionary_path(dict_file.path().to_string_lossy().into_owned())
+        );
+        assert!(engine.has_translation_dictionary());
+
+        let search = |engine: &mut SearchEngine, query: &str, opt: Option<&str>| {
+            let mut options = HashMap::new();
+            if let Some(opt) = opt {
+                options.insert(
+                    format!("{query}_0"),
+                    HashMap::from([(opt.to_string(), true)]),
+                );
+            }
+            ids(search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap())
+        };
+
+        // עברי→ארמי: "יש" עם תרגום ארמי מוצא גם את "איתא".
+        let got = search(&mut engine, "יש", Some("תרגום ארמי"));
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+        // בלי האפשרות — אין הרחבה.
+        let got = search(&mut engine, "יש", None);
+        assert!(!got.contains(&1) && got.contains(&2), "got {got:?}");
+        // ארמי→עברי.
+        let got = search(&mut engine, "איתא", Some("תרגום ארמי"));
+        assert!(got.contains(&1) && got.contains(&2), "got {got:?}");
+    }
+
+    #[test]
+    fn advanced_acronym_option_expands_bidirectionally() {
+        let (mut engine, _dir) = make_engine();
+        // id 1 — הר"ת עצמו (מאונדקס גם כ-"רמבם" דרך הטוקן-התאום).
+        add(&mut engine, 1, "אמר רמב\"ם בהלכות", "/books/a.txt");
+        // id 2 — הפענוח המלא ככתוב.
+        add(
+            &mut engine,
+            2,
+            "כתב רבי משה בן מיימון בספרו",
+            "/books/b.txt",
+        );
+        // id 3 — לא קשור.
+        add(&mut engine, 3, "דבר אחר לגמרי", "/books/c.txt");
+        engine.commit().unwrap();
+
+        let mut dict_file = tempfile::NamedTempFile::new().unwrap();
+        use std::io::Write as _;
+        dict_file
+            .write_all(r#"{ "רמב\"ם": ["רבי משה בן מיימון"] }"#.as_bytes())
+            .unwrap();
+        assert!(
+            engine.set_acronyms_dictionary_path(dict_file.path().to_string_lossy().into_owned())
+        );
+        assert!(engine.has_acronyms_dictionary());
+
+        // האפשרות דלוקה על המילה במיקום `word_index`.
+        let search = |engine: &SearchEngine, query: &str, opt_on_word: Option<(&str, usize)>| {
+            let mut options = HashMap::new();
+            if let Some((word, i)) = opt_on_word {
+                options.insert(
+                    format!("{word}_{i}"),
+                    HashMap::from([("ראשי תיבות".to_string(), true)]),
+                );
+            }
+            ids(search_advanced_default(
+                engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap())
+        };
+
+        // כיוון א' (ר"ת→פענוח): "רמב\"ם" עם האפשרות מוצא גם את הפענוח המלא.
+        let got = search(&engine, "רמב\"ם", Some(("רמב\"ם", 0)));
+        assert!(got.contains(&1) && got.contains(&2), "forward: {got:?}");
+        assert!(!got.contains(&3), "forward must not over-match: {got:?}");
+        // בלי האפשרות — רק ההתאמה הישירה.
+        let got = search(&engine, "רמב\"ם", None);
+        assert!(got.contains(&1) && !got.contains(&2), "no-opt: {got:?}");
+
+        // כיוון ב' (פענוח→ר"ת): הביטוי המלא עם האפשרות מוצא גם את הר"ת.
+        let got = search(&engine, "רבי משה בן מיימון", Some(("רבי", 0)));
+        assert!(got.contains(&1) && got.contains(&2), "reverse: {got:?}");
+        // בלי האפשרות — רק ההתאמה הישירה לביטוי.
+        let got = search(&engine, "רבי משה בן מיימון", None);
+        assert!(
+            !got.contains(&1) && got.contains(&2),
+            "reverse no-opt: {got:?}"
+        );
+
+        // הדגשה: מסמך שנמצא דרך החלופה נצבע — בשני הכיוונים.
+        let texts = |query: &str, word: &str| -> Vec<String> {
+            let options = HashMap::from([(
+                format!("{word}_0"),
+                HashMap::from([("ראשי תיבות".to_string(), true)]),
+            )]);
+            search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.text)
+            .collect()
+        };
+        // ר"ת→פענוח: מילות הפענוח נצבעות במסמך 2.
+        let got = texts("רמב\"ם", "רמב\"ם");
+        assert!(
+            got.iter().any(|t| t.contains("<font color=red>רבי</font>")
+                && t.contains("<font color=red>מיימון</font>")),
+            "forward highlight missing: {got:?}"
+        );
+        // וגם הר\"ת עצמו נצבע במסמך 1.
+        assert!(
+            got.iter().any(|t| t.contains("<font color=red>רמב")),
+            "forward self-highlight missing: {got:?}"
+        );
+        // פענוח→ר"ת: הר"ת נצבע במסמך 1.
+        let got = texts("רבי משה בן מיימון", "רבי");
+        assert!(
+            got.iter().any(|t| t.contains("<font color=red>רמב")),
+            "reverse highlight missing: {got:?}"
+        );
     }
 
     #[test]

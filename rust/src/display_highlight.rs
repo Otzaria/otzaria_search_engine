@@ -31,8 +31,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::hebrew_query::{
-    generate_spelling_variations, normalize_for_index, split_query_words, word_flags_at, WordFlags,
-    MAX_SPELLING_BRANCHES,
+    aramaic_root_variants, generate_spelling_variations, normalize_for_index, split_query_words,
+    word_flags_at, WordFlags, MAX_SPELLING_BRANCHES,
 };
 
 // ── Output type ────────────────────────────────────────────────────────────
@@ -104,12 +104,24 @@ fn spacing_for_gaps(
 
 // ── Per-word pattern building ──────────────────────────────────────────────
 
+/// גרש/גרשיים אופציונליים בין שתי אותיות עבריות בטקסט התצוגה. האינדקס
+/// מטמיע לכל מילה עם גרשיים גם את צורתה הנקייה (הטוקן-התאום), כך שטרם
+/// נטול-גרשיים ("רמבם") מתאים בדין לטקסט מודפס `רמב"ם` — וההדגשה חייבת
+/// לכסות זאת. עד שני תווים: זוג-גרשים ≡ גרשיים (מוסכמת `רמב''ם`).
+pub(crate) const OPTIONAL_QUOTES: &str = "[\"'\\u05F3\\u05F4]{0,2}";
+
 /// Builds the display pattern for one literal term: each Hebrew base letter
 /// may be followed by attached marks, and geresh/gershayim match both the
 /// ASCII and Hebrew forms. The term itself is expected to be nikud-free.
 fn charwise_display_pattern(term: &str) -> String {
     let mut out = String::with_capacity(term.len() * 4);
+    let mut prev_was_letter = false;
     for ch in term.chars() {
+        // בין שתי אותיות עבריות רצופות בטרם — גרשיים אופציונליים בתצוגה.
+        if prev_was_letter && matches!(ch, 'א'..='ת') {
+            out.push_str(OPTIONAL_QUOTES);
+        }
+        prev_was_letter = matches!(ch, 'א'..='ת');
         match ch {
             'א'..='ת' => {
                 out.push(ch);
@@ -148,18 +160,33 @@ fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[Str
     let mut seen_terms: HashSet<String> = HashSet::new();
 
     let push_term = |terms: &mut Vec<String>, seen: &mut HashSet<String>, raw: &str| {
-        let stripped = normalize_for_index(raw);
+        let mut stripped = normalize_for_index(raw);
+        // התעלם מגרשיים: התבנית נבנית מהצורה הנקייה — הגרשיים האופציונליים
+        // ש-charwise_display_pattern מתיר בין אותיות מכסים את שתי הצורות.
+        if flags.ignore_quotes {
+            stripped = crate::hebrew_query::strip_quote_chars(&stripped);
+        }
         if stripped.trim().is_empty() {
             return;
         }
-        if flags.spelling {
-            for variant in generate_spelling_variations(&stripped, MAX_SPELLING_BRANCHES) {
-                if seen.insert(variant.clone()) {
-                    terms.push(variant);
+        // סיומות ארמיות: גם וריאנט השקילות הסופית (מלכה↔מלכא, חכמים↔חכמין)
+        // מודגש; קידומות ארמיות מכוסות בכך שהמילה מאבדת את זכאות גבול-המילה
+        // (הדפוס מדגיש גם בתוך צורה עם קידומת) — כמו שאר אפשרויות המורפולוגיה.
+        let bases = if flags.aramaic_suffix {
+            aramaic_root_variants(&stripped)
+        } else {
+            vec![stripped]
+        };
+        for base in bases {
+            if flags.spelling {
+                for variant in generate_spelling_variations(&base, MAX_SPELLING_BRANCHES) {
+                    if seen.insert(variant.clone()) {
+                        terms.push(variant);
+                    }
                 }
+            } else if seen.insert(base.clone()) {
+                terms.push(base);
             }
-        } else if seen.insert(stripped.clone()) {
-            terms.push(stripped);
         }
     };
 
@@ -230,8 +257,14 @@ pub fn build_display_highlight(
             // skip it rather than emit an empty branch that matches anywhere.
             continue;
         }
-        let has_expansion =
-            flags.prefix || flags.suffix || flags.gram_prefix || flags.gram_suffix || flags.partial;
+        // קידומות ארמיות שוברות זכאות גבול-מילה (הדגשה גם בתוך צורה עם
+        // קידומת); סיומות ארמיות הן וריאנטים שלמים ואינן שוברות.
+        let has_expansion = flags.prefix
+            || flags.suffix
+            || flags.gram_prefix
+            || flags.gram_suffix
+            || flags.partial
+            || flags.aramaic_prefix;
         word_patterns.push(pattern);
         word_boundary_eligible.push(!has_expansion);
     }
@@ -361,7 +394,8 @@ pub fn build_display_highlight_from_terms(
                 || flags.suffix
                 || flags.gram_prefix
                 || flags.gram_suffix
-                || flags.partial;
+                || flags.partial
+                || flags.aramaic_prefix;
             (
                 build_word_display_pattern(word, &flags, alts),
                 !has_expansion,
@@ -536,9 +570,15 @@ mod tests {
     #[test]
     fn single_word_is_charwise_with_marks() {
         let hl = build("ספר");
+        // בין אותיות — גרשיים אופציונליים: טרם נטול-גרשיים מדגיש גם דפוס
+        // עם גרשיים (הטוקן-התאום של האינדקס).
         assert_eq!(
             hl.combined_pattern,
-            format!("ס{m}פ{m}ר{m}", m = ATTACHED_MARKS_CLASS)
+            format!(
+                "ס{m}{q}פ{m}{q}ר{m}",
+                m = ATTACHED_MARKS_CLASS,
+                q = OPTIONAL_QUOTES
+            )
         );
         assert_eq!(hl.word_patterns.len(), 1);
         assert_eq!(hl.word_boundary_eligible, vec![true]);
@@ -624,7 +664,7 @@ mod tests {
         // The defective spelling (שלם) must be one of the branches.
         assert!(hl
             .combined_pattern
-            .contains(&format!("ש{m}ל{m}ם{m}", m = ATTACHED_MARKS_CLASS)));
+            .contains(&charwise_display_pattern("שלם")));
         assert_eq!(hl.word_boundary_eligible, vec![true]);
     }
 
@@ -656,7 +696,7 @@ mod tests {
         assert!(hl.combined_pattern.starts_with("(?:"));
         assert!(hl
             .combined_pattern
-            .contains(&format!("ח{m}כ{m}ם{m}", m = ATTACHED_MARKS_CLASS)));
+            .contains(&charwise_display_pattern("חכם")));
     }
 
     #[test]

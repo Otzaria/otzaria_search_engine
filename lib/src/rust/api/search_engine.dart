@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
@@ -532,9 +532,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   Future<int> getSegmentCount();
 
+  /// האם מילון ראשי-תיבות טעון כרגע.
+  bool hasAcronymsDictionary();
+
   /// Whether a lexical dictionary is currently loaded (i.e. approximate search
   /// will use morphological expansion).
   bool hasMagicDictionary();
+
+  /// האם מילון תרגום ארמי-עברי טעון כרגע.
+  bool hasTranslationDictionary();
 
   factory SearchEngine({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
@@ -552,6 +558,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Discard all pending writes since the last commit.
   Future<void> rollback();
 
+  /// Paged regex search. Drops the single-word truncation flag: a broad
+  /// query (e.g. `.*ספר`) that overflows its collection budget serves
+  /// partial results with no signal. Not suitable for UI that must tell the
+  /// user the result is partial — use [`Self::search_and_count`]
+  /// ([`SearchPageResult::truncated`]) instead.
   Future<List<SearchResult>> search({
     required List<String> regexTerms,
     required List<String> facets,
@@ -584,6 +595,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
   });
 
+  /// Advanced-query result stream. Drops the single-word truncation flag —
+  /// see [`Self::search`]; use [`Self::search_advanced_stream_with_counts`]
+  /// (its first [`SearchStreamUpdate`] carries `truncated`) when the UI
+  /// must flag partial results.
   Stream<List<SearchResult>> searchAdvancedStream({
     required String query,
     required String negativeQuery,
@@ -786,6 +801,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// as soon as those are ready, without waiting for all snippets to be built.
   /// This is useful when `limit` is large and snippet generation is the
   /// bottleneck. For typical limits (≤ 200) the difference is negligible.
+  ///
+  /// Drops the single-word truncation flag — see [`Self::search`]; use
+  /// [`Self::search_and_count`] ([`SearchPageResult::truncated`]) when
+  /// partiality must surface.
   Stream<List<SearchResult>> searchStream({
     required List<String> regexTerms,
     required List<String> facets,
@@ -797,6 +816,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
     required int chunkSize,
   });
+
+  /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
+  /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
+  /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
+  /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
+  bool setAcronymsDictionaryPath({required String path});
 
   /// Bulk-indexing mode: while enabled, the live writer skips background
   /// segment merges (`NoMergePolicy`). During a full-library build the
@@ -815,6 +840,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// call this unconditionally at startup). Does **not** affect exact or
   /// advanced search.
   bool setMagicDictionaryPath({required String path});
+
+  /// טוען את מילון התרגום הארמי-עברי (ה-`dictionary.json` של האפליקציה)
+  /// עבור אפשרות "תרגום ארמי" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
+  /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
+  /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
+  bool setTranslationDictionaryPath({required String path});
 
   /// Delete then re-insert a single document by id. Does not commit.
   Future<void> upsertDocument({

@@ -56,6 +56,26 @@ const OPT_GRAM_PREFIX: &str = "קידומות דקדוקיות";
 const OPT_GRAM_SUFFIX: &str = "סיומות דקדוקיות";
 const OPT_SPELLING: &str = "כתיב מלא/חסר";
 const OPT_PARTIAL: &str = "חלק ממילה";
+/// אפשרות "קידומות ארמיות" פר-מילה: קידומות ארמיות (ד/כד/אד/מד וכו' —
+/// קבוצת הקידומות הדקדוקיות, שכבר נושאת את הצורות הארמיות) לפני המילה.
+const OPT_ARAMAIC_PREFIX: &str = "קידומות ארמיות";
+/// אפשרות "סיומות ארמיות" פר-מילה: שקילות אות סופית ה↔א (מלכה↔מלכא)
+/// ו-ם↔ן (חכמים↔חכמין). סימון שתי אפשרויות הארמית יחד משחזר את התנהגות
+/// אפשרות "ארמית" ההיסטורית (קידומות על כל וריאנט סופית).
+const OPT_ARAMAIC_SUFFIX: &str = "סיומות ארמיות";
+/// "התעלם מגרשיים": גרש/גרשיים שהוקלדו במילה מוסרים ממנה לפני בניית
+/// התבנית — `רמב"ם` מחפש `רמבם`, שמותאם באינדקס גם לצורות עם גרשיים
+/// (דרך הטוקן-התאום נטול-הגרשיים שהאינדוקס מטמיע לכל מילה כזו).
+const OPT_IGNORE_QUOTES: &str = "התעלם מגרשיים";
+/// "תרגום ארמי": הרחבת המילה בתרגומיה מהמילון הארמי-עברי (בשני
+/// הכיוונים). ההרחבה קורית בשכבת המנוע (שם נטען המילון) — המפתח מוגדר
+/// כאן כדי שכל מפתחות ה-UI ירוכזו במקום אחד.
+pub const OPT_TRANSLATION: &str = "תרגום ארמי";
+/// "ראשי תיבות": פענוח ר"ת דו-כיווני מהמילון (`רמב"ם`↔`רבי משה בן
+/// מיימון`). כמו התרגום, ההרחבה קורית בשכבת המנוע — אך הפענוח רב-מילי
+/// ולכן נצרך כתת-שאילתת OR ולא כחלופה חד-מילתית (ראו
+/// `SearchEngine::acronym_alternatives`). מוגדר כאן לריכוז מפתחות ה-UI.
+pub const OPT_ACRONYM: &str = "ראשי תיבות";
 
 // ── Morphological affix patterns ──────────────────────────────────────────
 //
@@ -412,6 +432,14 @@ pub struct WordFlags {
     pub gram_suffix: bool,
     pub spelling: bool,
     pub partial: bool,
+    /// קידומות ארמיות ([`OPT_ARAMAIC_PREFIX`]): ד/כד/אד/מד וכו' לפני המילה.
+    pub aramaic_prefix: bool,
+    /// סיומות ארמיות ([`OPT_ARAMAIC_SUFFIX`]): שקילות סופיות ה↔א, ם↔ן.
+    pub aramaic_suffix: bool,
+    /// התעלם מגרשיים ([`OPT_IGNORE_QUOTES`]): גרש/גרשיים מוסרים מהמילה
+    /// לפני בניית התבנית. לא אפשרות הרחבה (המילה נשארת ליטרל יחיד) ולכן
+    /// אינה חלק מ-[`Self::expands_beyond_typo`].
+    pub ignore_quotes: bool,
     /// התאמת ניקוד פר-מילה ([`OPT_MATCH_NIKUD`]) — נגזרת ל-[`VocalizedFlags`]
     /// של המילה, לא אפשרות הרחבה (ולכן לא חלק מ-[`Self::expands_beyond_typo`]).
     pub nikud: bool,
@@ -431,6 +459,9 @@ impl WordFlags {
             gram_suffix: get(OPT_GRAM_SUFFIX),
             spelling: get(OPT_SPELLING),
             partial: get(OPT_PARTIAL),
+            aramaic_prefix: get(OPT_ARAMAIC_PREFIX),
+            aramaic_suffix: get(OPT_ARAMAIC_SUFFIX),
+            ignore_quotes: get(OPT_IGNORE_QUOTES),
             nikud: get(OPT_MATCH_NIKUD),
             taamim: get(OPT_MATCH_TAAMIM),
         }
@@ -450,6 +481,19 @@ impl WordFlags {
     /// cannot replicate in one scan — so the automaton path only replaces
     /// literal typo variants when this is `false`.
     fn expands_beyond_typo(&self) -> bool {
+        self.prefix
+            || self.suffix
+            || self.gram_prefix
+            || self.gram_suffix
+            || self.spelling
+            || self.partial
+            || self.aramaic_prefix
+            || self.aramaic_suffix
+    }
+
+    /// האם סומנה אפשרות הרחבה שאינה ארמית — קובע אם הענף הארמי צריך
+    /// להתלוות לענף הרגיל (שממשיך לשאת את שאר האפשרויות) או לעמוד לבדו.
+    fn expands_besides_aramaic(&self) -> bool {
         self.prefix
             || self.suffix
             || self.gram_prefix
@@ -952,14 +996,51 @@ fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, value: String)
     }
 }
 
+// ── התעלמות מגרשיים ────────────────────────────────────────────────────────
+
+/// מסיר גרש/גרשיים (ASCII והצורות העבריות) מהמילה — צורת החיפוש של
+/// [`OPT_IGNORE_QUOTES`]. הצורות העבריות מטופלות ליתר ביטחון: הנרמול
+/// והטוקניזציה כבר מקפלים אותן ל-ASCII.
+pub(crate) fn strip_quote_chars(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\u{05F3}' | '\u{05F4}'))
+        .collect()
+}
+
 // ── כתיב מלא/חסר (full/partial spelling) ──────────────────────────────────
 
-/// Generates up to `limit` כתיב מלא/חסר variants by toggling each optional
-/// `י ו ' "`. Insertion order matches the Dart implementation (bitmask
-/// 0..2^n, bit set means "keep the optional character"); generation stops as
-/// soon as `limit` unique variants exist, so a word with many optional
-/// letters never enumerates the full 2^n space just to be truncated later.
+/// Generates up to `limit` כתיב מלא/חסר variants by rule-based edits of
+/// `י`/`ו` (plus the historical geresh/gershayim dropping):
+///
+/// * **השמטה** — רק י/ו שאינה בקצה המילה; לכל רצף אותיות זהות — השמטה אחת
+///   לכל היותר (מצוות→מצות, אבל לא מצת). ברצף שנוגע בקצה מותר להשמיט את
+///   האיבר הפנימי (וורד→ורד).
+/// * **הוספה** — י או ו בפנים המילה בלבד (לא לפני האות הראשונה ולא אחרי
+///   האחרונה), הוספה אחת לכל מרווח — כך שלעולם לא נוצרות שתי אותיות
+///   *מוכנסות* צמודות (מצת לא ימצא מצוות), אבל הוספה ליד אות קיימת זהה
+///   מותרת (מצות ימצא מצוות).
+/// * **תקרה פר-אות** — לכל מילה עד [`MAX_EDITS_PER_LETTER`] עריכות של י
+///   ועד כך של ו (בנפרד).
+/// * גרש/גרשיים נותרים ניתנים להשמטה בכל מיקום, ללא תקרה (התנהגות קודמת).
+///
+/// הסדר: המילה המקורית, אחר כך וריאנטים של עריכה אחת (השמטות לפני הוספות,
+/// משמאל לימין), אחר כך שתי עריכות, וכן הלאה — כך שקיצוץ תקציב מהסוף משמר
+/// תמיד את הצורות הקרובות ביותר למה שהוקלד.
 pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<String> {
+    /// תקרת עריכות לכל אות (י בנפרד, ו בנפרד) בווריאנט אחד.
+    const MAX_EDITS_PER_LETTER: usize = 3;
+    /// תקרת מועמדי-עריכה למילה — שומרת את חיפוש הקומבינציות פולינומיאלי
+    /// גם למילים פתולוגיות; המועמדים שמעבר לה פשוט לא מוצעים.
+    const MAX_EDIT_CANDIDATES: usize = 24;
+
+    #[derive(Clone, Copy)]
+    enum Edit {
+        /// השמטת התו במקום `pos`.
+        Del(usize),
+        /// הוספת האות לפני התו במקום `gap`.
+        Ins(usize, char),
+    }
+
     if word.is_empty() {
         return vec![String::new()];
     }
@@ -967,33 +1048,137 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
         return Vec::new();
     }
     let chars: Vec<char> = word.chars().collect();
-    let optional: Vec<usize> = chars
-        .iter()
-        .enumerate()
-        .filter(|(_, &c)| matches!(c, 'י' | 'ו' | '\'' | '"'))
-        .map(|(i, _)| i)
-        .collect();
-    let n = optional.len();
-    if n > 20 {
-        // Pathological: only-yod/vav word. Return as-is.
+    let n = chars.len();
+
+    // מועמדי עריכה בסדר דטרמיניסטי: השמטות משמאל לימין, אחר כך הוספות
+    // (לכל מרווח: ו לפני י).
+    let mut edits: Vec<Edit> = Vec::new();
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            'י' | 'ו' => {
+                // נציג השמטה אחד לכל רצף: האיבר הפנימי הראשון שלו.
+                let run_start = i == 0 || chars[i - 1] != c;
+                if run_start {
+                    if let Some(del_at) = (i..n)
+                        .take_while(|&j| chars[j] == c)
+                        .find(|&j| j > 0 && j + 1 < n)
+                    {
+                        edits.push(Edit::Del(del_at));
+                    }
+                }
+            }
+            '\'' | '"' => edits.push(Edit::Del(i)),
+            _ => {}
+        }
+    }
+    for gap in 1..n {
+        edits.push(Edit::Ins(gap, 'ו'));
+        edits.push(Edit::Ins(gap, 'י'));
+    }
+    edits.truncate(MAX_EDIT_CANDIDATES);
+    let m = edits.len();
+
+    // קומבינציה תקפה: שתי אותיות *מוכנסות* לעולם לא יוצאות צמודות בתוצאה —
+    // לא באותו מרווח, וגם לא במרווחים שונים שכל התווים ביניהם נמחקו
+    // (בוא ↛ בייא) — ועד MAX_EDITS_PER_LETTER עריכות לכל אות.
+    let valid = |idx: &[usize]| -> bool {
+        let mut yod = 0usize;
+        let mut vav = 0usize;
+        let mut deleted = [false; 64];
+        let mut gaps: Vec<usize> = Vec::new();
+        for &i in idx {
+            match edits[i] {
+                Edit::Del(pos) => {
+                    deleted[pos] = true;
+                    match chars[pos] {
+                        'י' => yod += 1,
+                        'ו' => vav += 1,
+                        _ => {}
+                    }
+                }
+                Edit::Ins(gap, letter) => {
+                    gaps.push(gap);
+                    match letter {
+                        'י' => yod += 1,
+                        _ => vav += 1,
+                    }
+                }
+            }
+        }
+        if yod > MAX_EDITS_PER_LETTER || vav > MAX_EDITS_PER_LETTER {
+            return false;
+        }
+        // מועמדי ההוספה נוצרו ממוינים לפי מרווח, והקומבינציות שומרות סדר —
+        // די לבדוק זוגות שכנים: צמודים אם כל התווים בין המרווחים נמחקו.
+        gaps.windows(2).all(|pair| {
+            let (g1, g2) = (pair[0], pair[1]);
+            g1 != g2 && !(g1..g2).all(|p| deleted[p])
+        })
+    };
+
+    let apply = |idx: &[usize]| -> String {
+        let mut deleted = [false; 64];
+        let mut inserts: Vec<(usize, char)> = Vec::new();
+        for &i in idx {
+            match edits[i] {
+                Edit::Del(pos) => deleted[pos] = true,
+                Edit::Ins(gap, letter) => inserts.push((gap, letter)),
+            }
+        }
+        let mut out = String::with_capacity(word.len() + inserts.len() * 2);
+        for i in 0..=n {
+            for &(gap, letter) in &inserts {
+                if gap == i {
+                    out.push(letter);
+                }
+            }
+            if i < n && !deleted[i] {
+                out.push(chars[i]);
+            }
+        }
+        out
+    };
+
+    // אורך מילה מעל מערך ה-deleted לא קורה בפועל (מילים בעברית), אבל
+    // ליתר ביטחון — נפילה לצורה המקורית בלבד.
+    if n >= 64 {
         return vec![word.to_string()];
     }
+
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    for mask in 0..(1usize << n) {
-        let mut variant = String::new();
-        let mut prev = 0usize;
-        for (opt_idx, &pos) in optional.iter().enumerate() {
-            variant.extend(&chars[prev..pos]);
-            if (mask >> opt_idx) & 1 == 1 {
-                variant.push(chars[pos]);
-            }
-            prev = pos + 1;
-        }
-        variant.extend(&chars[prev..]);
-        push_unique(&mut out, &mut seen, variant);
+    push_unique(&mut out, &mut seen, word.to_string());
+
+    // מעבר על קומבינציות בגודל עולה (k עריכות), בסדר לקסיקוגרפי של
+    // אינדקסי המועמדים; עצירה מוקדמת כשמכסת ה-limit מתמלאת.
+    let max_k = m.min(2 * MAX_EDITS_PER_LETTER + 2);
+    'sizes: for k in 1..=max_k {
         if out.len() >= limit {
             break;
+        }
+        let mut idx: Vec<usize> = (0..k).collect();
+        loop {
+            if valid(&idx) {
+                push_unique(&mut out, &mut seen, apply(&idx));
+                if out.len() >= limit {
+                    break 'sizes;
+                }
+            }
+            // הקומבינציה הבאה: האינדקס הימני ביותר שניתן לקדם.
+            let mut i = k;
+            loop {
+                if i == 0 {
+                    continue 'sizes;
+                }
+                i -= 1;
+                if idx[i] < m - k + i {
+                    idx[i] += 1;
+                    for j in i + 1..k {
+                        idx[j] = idx[j - 1] + 1;
+                    }
+                    break;
+                }
+            }
         }
     }
     out
@@ -1160,6 +1345,56 @@ fn partial_word_pattern(root: &str) -> String {
     format!(".{{0,{w}}}{}.{{0,{w}}}", escape_regex(root), w = window)
 }
 
+// ── ארמית: שקילות אות סופית + קידומות ─────────────────────────────────────
+
+/// וריאנט השקילות הארמית של האות הסופית: ה↔א (מלכה↔מלכא), ם↔ן
+/// (חכמים↔חכמין). `None` כשהמילה לא מסתיימת באחת מהאותיות האלה.
+pub(crate) fn aramaic_final_swap(word: &str) -> Option<String> {
+    let mut chars: Vec<char> = word.chars().collect();
+    let last = chars.last()?;
+    let swapped = match last {
+        'ה' => 'א',
+        'א' => 'ה',
+        'ם' => 'ן',
+        'ן' => 'ם',
+        _ => return None,
+    };
+    *chars.last_mut().unwrap() = swapped;
+    Some(chars.into_iter().collect())
+}
+
+/// השורש + וריאנט השקילות הסופית שלו (אם קיים), בסדר הזה.
+pub(crate) fn aramaic_root_variants(word: &str) -> Vec<String> {
+    let mut out = vec![word.to_string()];
+    if let Some(swapped) = aramaic_final_swap(word) {
+        out.push(swapped);
+    }
+    out
+}
+
+/// הענף הארמי הבסיסי: קבוצת הקידומות הדקדוקית (שנושאת את הצורות הארמיות
+/// ד/דא/א, ולכן גם כד/אד/מד דרך המשבצת השנייה) לפני השורש. זהה ל-
+/// [`grammatical_prefix_pattern`] — קיים כשם נפרד כדי שקריאת הקוד של מסלול
+/// הארמית לא תתלה בסמנטיקה של "קידומות דקדוקיות".
+fn aramaic_prefix_pattern(root: &str) -> String {
+    grammatical_prefix_pattern(root)
+}
+
+/// כמו [`aramaic_prefix_pattern`] בתוספת סיומות דקדוקיות — משמש כשסומנו
+/// גם ארמית וגם "סיומות דקדוקיות", כדי שצורה עם קידומת ארמית *וגם* סיומת
+/// (ודמלכתא) לא תיפול בין שני הענפים.
+fn aramaic_prefix_suffix_pattern(root: &str) -> String {
+    if root.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{}{}{}",
+        GRAM_PREFIX_GROUP,
+        escape_regex(root),
+        SUFFIX_PATTERN
+    )
+}
+
 /// Joins spelling variants each through a builder, wrapped in a non-capturing
 /// group. The spelling-only case passes [`escape_regex`] as the builder.
 fn join_spelling(word: &str, limit: usize, build: fn(&str) -> String) -> String {
@@ -1173,7 +1408,68 @@ fn join_spelling(word: &str, limit: usize, build: fn(&str) -> String) -> String 
 /// The core decision tree that maps a root word + [`WordFlags`] to a single
 /// tantivy-fst regex pattern. Priority order is preserved from the original
 /// Dart `createSearchPattern`.
+///
+/// אפשרויות הארמית מפוצלות: "סיומות ארמיות" מרחיבה את השורש לווריאנטי
+/// השקילות הסופית (מלכה↔מלכא), ו"קידומות ארמיות" עוטפת כל וריאנט בענף
+/// הקידומות הארמי (וסיומות דקדוקיות אם סומנו). כשסומנה גם אפשרות הרחבה
+/// נוספת (חלון קידומת חופשית, חלק ממילה וכו'), ענף עץ-הבסיס מתלווה לכל
+/// וריאנט כדי ששאר האפשרויות ימשיכו לחול גם עליו.
 fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
+    if root.is_empty() {
+        return String::new();
+    }
+    if !flags.aramaic_prefix && !flags.aramaic_suffix {
+        return word_to_pattern_base(root, flags);
+    }
+    // סיומות ארמיות: השורש + וריאנט השקילות; בלעדיהן — השורש בלבד.
+    let variants = if flags.aramaic_suffix {
+        aramaic_root_variants(root)
+    } else {
+        vec![root.to_string()]
+    };
+    let mut branches: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for variant in &variants {
+        if flags.aramaic_prefix {
+            let aramaic_builder: fn(&str) -> String = if flags.gram_suffix {
+                aramaic_prefix_suffix_pattern
+            } else {
+                aramaic_prefix_pattern
+            };
+            let aramaic_branch = if flags.spelling {
+                join_spelling(variant, 10, aramaic_builder)
+            } else {
+                aramaic_builder(variant)
+            };
+            push_unique(&mut branches, &mut seen, aramaic_branch);
+            // הענף הארמי כבר מכסה את הצורה המדויקת (הקידומות אופציונליות),
+            // אז ענף הבסיס מתווסף רק כשיש אפשרות הרחבה שהענף לא נושא.
+            if flags.expands_besides_aramaic() {
+                push_unique(
+                    &mut branches,
+                    &mut seen,
+                    word_to_pattern_base(variant, flags),
+                );
+            }
+        } else {
+            // סיומות בלבד: כל וריאנט עובר את עץ-הבסיס המלא (ליטרל כשאין
+            // אפשרויות נוספות), כך ששאר האפשרויות חלות על שתי הצורות.
+            push_unique(
+                &mut branches,
+                &mut seen,
+                word_to_pattern_base(variant, flags),
+            );
+        }
+    }
+    if branches.len() == 1 {
+        branches.into_iter().next().unwrap()
+    } else {
+        format!("(?:{})", branches.join("|"))
+    }
+}
+
+/// עץ ההחלטות ללא ארמית — הגוף ההיסטורי של [`word_to_pattern`].
+fn word_to_pattern_base(root: &str, flags: &WordFlags) -> String {
     if root.is_empty() {
         return String::new();
     }
@@ -1423,6 +1719,36 @@ fn word_to_pattern_vocalized(core: &VocCore, flags: &WordFlags) -> String {
     if core.base_len == 0 {
         return String::new();
     }
+    if flags.aramaic_prefix {
+        // המראה המנוקדת של זרוע הקידומות הארמיות ב-[`word_to_pattern`]:
+        // קבוצת הקידומות הדקדוקית (הנושאת את הצורות הארמיות) סביב ליבת
+        // המילה, בתוספת סיומות כשסומנו; וריאנטי השקילות הסופית ("סיומות
+        // ארמיות") נכנסים כליבות נפרדות ב-[`build_word_regex_vocalized`]
+        // (שינוי אות משמיט את עוגני הסימנים).
+        let suffix = if flags.gram_suffix {
+            optional_alts_group(SUFFIX_ALTS, true)
+        } else {
+            String::new()
+        };
+        let aramaic_branch = format!("{}{}{}", voc_gram_prefix_group(), core.pattern, suffix);
+        if !flags.expands_besides_aramaic() {
+            return aramaic_branch;
+        }
+        let base_branch = word_to_pattern_vocalized_base(core, flags);
+        if base_branch == aramaic_branch {
+            return aramaic_branch;
+        }
+        return format!("(?:{}|{})", aramaic_branch, base_branch);
+    }
+    word_to_pattern_vocalized_base(core, flags)
+}
+
+/// עץ ההחלטות המנוקד ללא ארמית — הגוף ההיסטורי של
+/// [`word_to_pattern_vocalized`].
+fn word_to_pattern_vocalized_base(core: &VocCore, flags: &WordFlags) -> String {
+    if core.base_len == 0 {
+        return String::new();
+    }
     if flags.prefix && flags.suffix {
         voc_partial(core)
     } else if flags.gram_prefix && flags.gram_suffix {
@@ -1471,6 +1797,13 @@ fn build_word_regex_vocalized(
                 .iter()
                 .map(|a| normalize_for_index_vocalized(a)),
         )
+        .map(|c| {
+            if flags.ignore_quotes {
+                strip_quote_chars(&c)
+            } else {
+                c
+            }
+        })
         .filter(|c| !strip_attached_marks(c).trim().is_empty())
         .collect();
     let fallback = || WordPattern::Literal(vocalized_token_pattern(word, voc));
@@ -1498,6 +1831,24 @@ fn build_word_regex_vocalized(
         if push_core(&mut branches, &mut seen, core) {
             full = true;
             break 'exact;
+        }
+    }
+    // Pass 0.5 — סיומות ארמיות: וריאנטי שקילות סופית (ה↔א, ם↔ן) כליבות
+    // חסרות-סימנים. מדורג מיד אחרי הצורות המדויקות: זו הסמנטיקה המבוקשת
+    // של האפשרות, לא קירוב — עדיפה על וריאנטי כתיב ושגיאות.
+    if !full && flags.aramaic_suffix {
+        'aramaic: for candidate in &candidates {
+            let base = strip_attached_marks(candidate);
+            if let Some(variant) = aramaic_final_swap(&base) {
+                let core = VocCore {
+                    base_len: variant.chars().count(),
+                    pattern: vocalized_free_pattern(&variant),
+                };
+                if push_core(&mut branches, &mut seen, core) {
+                    full = true;
+                    break 'aramaic;
+                }
+            }
         }
     }
     // Pass 1 — spelling variants (mark-free).
@@ -1606,6 +1957,13 @@ fn build_word_regex(
     // filtering it too keeps the pass total).
     let candidates: Vec<String> = std::iter::once(word.to_string())
         .chain(alternatives.iter().map(|a| normalize_for_index(a)))
+        .map(|c| {
+            if flags.ignore_quotes {
+                strip_quote_chars(&c)
+            } else {
+                c
+            }
+        })
         .filter(|c| !c.trim().is_empty())
         .collect();
     if candidates.is_empty() {
@@ -1870,30 +2228,38 @@ fn prepare_advanced_query_impl(
     // Typo combined with morphology/spelling keeps the literal-variant path,
     // which composes each variant through the pattern builder (an automaton
     // can't).
-    let typo_tokens: Vec<String> = if words.len() == 1
-        && word_flags_at(&words, 0, search_options).typo
-        && !word_flags_at(&words, 0, search_options).expands_beyond_typo()
-    {
-        // Vocalized mode hands the engine mark-free bases: the Levenshtein
-        // scan runs against the PLAIN dictionary (each mark would count as
-        // an edit against marked terms) and the variants are re-projected
-        // onto the vocalized dictionary as free-mark patterns.
-        std::iter::once(match voc {
-            Some(_) => strip_attached_marks(&words[0]),
-            None => words[0].clone(),
-        })
-        .chain(
-            alternative_words
-                .get(&0)
-                .into_iter()
-                .flatten()
-                .map(|a| normalize_for_index(a)),
-        )
-        .filter(|c| !c.trim().is_empty())
-        .collect()
-    } else {
-        Vec::new()
-    };
+    let first_flags = word_flags_at(&words, 0, search_options);
+    let typo_tokens: Vec<String> =
+        if words.len() == 1 && first_flags.typo && !first_flags.expands_beyond_typo() {
+            // Vocalized mode hands the engine mark-free bases: the Levenshtein
+            // scan runs against the PLAIN dictionary (each mark would count as
+            // an edit against marked terms) and the variants are re-projected
+            // onto the vocalized dictionary as free-mark patterns.
+            std::iter::once(match voc {
+                Some(_) => strip_attached_marks(&words[0]),
+                None => words[0].clone(),
+            })
+            .chain(
+                alternative_words
+                    .get(&0)
+                    .into_iter()
+                    .flatten()
+                    .map(|a| normalize_for_index(a)),
+            )
+            .map(|c| {
+                // התעלמות מגרשיים חלה גם על מסלול אוטומט-הטעויות: הסריקה רצה
+                // על הצורה הנקייה (שקיימת באינדקס לכל מילה עם גרשיים).
+                if first_flags.ignore_quotes {
+                    strip_quote_chars(&c)
+                } else {
+                    c
+                }
+            })
+            .filter(|c| !c.trim().is_empty())
+            .collect()
+        } else {
+            Vec::new()
+        };
 
     let regex_terms: Vec<WordPattern> = words
         .iter()
@@ -1983,6 +2349,8 @@ fn plain_max_expansions(
         OPT_GRAM_PREFIX,
         OPT_GRAM_SUFFIX,
         OPT_PARTIAL,
+        OPT_ARAMAIC_PREFIX,
+        OPT_ARAMAIC_SUFFIX,
     ];
     let mut shortest_morph: Option<usize> = None;
     for (i, word) in words.iter().enumerate() {
@@ -2429,9 +2797,10 @@ mod tests {
 
     fn analyzer_terms(text: &str) -> Vec<String> {
         use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
-        let mut analyzer = TextAnalyzer::builder(crate::hebrew_tokenizer::HebrewTokenizer)
-            .filter(LowerCaser)
-            .build();
+        let mut analyzer =
+            TextAnalyzer::builder(crate::hebrew_tokenizer::HebrewTokenizer::default())
+                .filter(LowerCaser)
+                .build();
         let mut stream = analyzer.token_stream(text);
         let mut terms = Vec::new();
         while stream.advance() {
@@ -2579,11 +2948,58 @@ mod tests {
     // ── generate_spelling_variations ────────────────────────────────────
 
     #[test]
-    fn spelling_variations_toggle_optional_letters() {
-        assert_eq!(generate_spelling_variations("בוא", 100), vec!["בא", "בוא"]);
-        assert_eq!(generate_spelling_variations("גמל", 100), vec!["גמל"]);
-        // ה-limit עוצר את המנייה מוקדם — לא רק חותך את התוצאה.
-        assert_eq!(generate_spelling_variations("בוא", 1), vec!["בא"]);
+    fn spelling_variations_original_first_then_single_edits() {
+        let v = generate_spelling_variations("בוא", 100);
+        // המקורית תמיד ראשונה, ההשמטה לפני ההוספות.
+        assert_eq!(v[0], "בוא");
+        assert_eq!(v[1], "בא");
+        // הוספות פנימיות (חסר→מלא) קיימות.
+        assert!(v.contains(&"בווא".to_string()));
+        // limit==1 משאיר רק את המקורית — המנייה נעצרת מוקדם.
+        assert_eq!(generate_spelling_variations("בוא", 1), vec!["בוא"]);
+    }
+
+    #[test]
+    fn spelling_variations_follow_the_male_haser_rules() {
+        // מצות ↔ מצוות: הוספת ו ליד ו קיימת מותרת, וההשמטה ההפוכה מותרת.
+        assert!(generate_spelling_variations("מצות", 100).contains(&"מצוות".to_string()));
+        assert!(generate_spelling_variations("מצוות", 100).contains(&"מצות".to_string()));
+        // מצת ↛ מצוות: שתי אותיות מוכנסות צמודות אסורות; ההשמטה הכפולה
+        // ההפוכה (מצוות ↛ מצת) אסורה גם היא — השמטה אחת לכל רצף.
+        assert!(!generate_spelling_variations("מצת", 1000).contains(&"מצוות".to_string()));
+        assert!(!generate_spelling_variations("מצוות", 1000).contains(&"מצת".to_string()));
+        // השמטה+שתי הוספות שהופכות צמודות אחרי המחיקה אסורות (בוא ↛ בייא).
+        assert!(!generate_spelling_variations("בוא", 1000).contains(&"בייא".to_string()));
+        // אות בקצה המילה אינה נמחקת: אותו ↛ אות, ויהי שומרת את ה-ו הפותחת.
+        assert!(!generate_spelling_variations("אותו", 1000).contains(&"אות".to_string()));
+        assert!(!generate_spelling_variations("ויהי", 1000)
+            .iter()
+            .any(|v| !v.starts_with('ו')));
+        // ברצף שנוגע בקצה מותר להשמיט את האיבר הפנימי (וורד→ורד).
+        assert!(generate_spelling_variations("וורד", 100).contains(&"ורד".to_string()));
+        // אין הוספה לפני האות הראשונה או אחרי האחרונה.
+        assert!(!generate_spelling_variations("גמל", 1000)
+            .iter()
+            .any(|v| v.starts_with('ו')
+                || v.starts_with('י')
+                || v.ends_with('ו')
+                || v.ends_with('י')));
+        // גרשיים עדיין ניתנים להשמטה בכל מיקום.
+        assert!(generate_spelling_variations("רמב\"ם", 100).contains(&"רמבם".to_string()));
+        assert!(generate_spelling_variations("תוס'", 100).contains(&"תוס".to_string()));
+    }
+
+    #[test]
+    fn spelling_variations_cap_edits_per_letter() {
+        // מילה עם הרבה מרווחים: אף וריאנט לא צובר יותר מ-3 עריכות של אותה
+        // אות. נספרות ההוספות בלבד (אין במילה י/ו להשמטה).
+        let base = "אבגדהזחט";
+        for v in generate_spelling_variations(base, 10_000) {
+            let added_vav = v.matches('ו').count();
+            let added_yod = v.matches('י').count();
+            assert!(added_vav <= 3, "יותר מ-3 ו' נוספו: {v}");
+            assert!(added_yod <= 3, "יותר מ-3 י' נוספו: {v}");
+        }
     }
 
     // ── typo variations ──────────────────────────────────────────────────
@@ -2683,21 +3099,123 @@ mod tests {
 
     #[test]
     fn all_optional_letter_word_does_not_widen_to_match_anything() {
-        // "וו" is entirely optional letters, so its spelling set includes the
-        // empty variant. Under spelling+partial the empty variant must collapse
-        // to an empty branch — NOT a `.{0,3}.{0,3}` wildcard that matches any
-        // short term. (Regression guard for the dropped empty-root guards.)
+        // כללי הקצה (אין השמטה בקצות המילה) מונעים מ"וו" להתרוקן, אבל מילת
+        // גרשיים בלבד עדיין מייצרת וריאנט ריק — והוא חייב לקרוס לענף ריק,
+        // לא להתרחב ל-`.{0,3}.{0,3}` שתופס כל טרם קצר. (שימור ההגנה על
+        // שורש ריק בבוני התבניות.)
         let flags = WordFlags {
             spelling: true,
             partial: true,
             ..Default::default()
         };
         let p = word_to_pattern("וו", &flags);
-        assert_eq!(p, "(?:|.{0,3}ו.{0,3}|.{0,3}וו.{0,3})");
+        assert_eq!(p, "(?:.{0,3}וו.{0,3}|.{0,3}ווו.{0,3}|.{0,3}ויו.{0,3})");
         assert!(
             !p.contains(".{0,3}.{0,3}"),
             "empty variant widened to wildcard: {p}"
         );
+        let q = word_to_pattern("''", &flags);
+        assert!(
+            !q.contains(".{0,3}.{0,3}"),
+            "empty variant widened to wildcard: {q}"
+        );
+    }
+
+    // ── ארמית ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn aramaic_final_swap_pairs() {
+        assert_eq!(aramaic_final_swap("מלכה").as_deref(), Some("מלכא"));
+        assert_eq!(aramaic_final_swap("מלכא").as_deref(), Some("מלכה"));
+        assert_eq!(aramaic_final_swap("חכמים").as_deref(), Some("חכמין"));
+        assert_eq!(aramaic_final_swap("חכמין").as_deref(), Some("חכמים"));
+        assert_eq!(aramaic_final_swap("ספר"), None);
+        assert_eq!(aramaic_final_swap(""), None);
+    }
+
+    #[test]
+    fn aramaic_both_options_build_prefixed_swap_branches() {
+        // שתי אפשרויות הארמית יחד — ההתנהגות ההיסטורית של "ארמית".
+        let flags = WordFlags {
+            aramaic_prefix: true,
+            aramaic_suffix: true,
+            ..Default::default()
+        };
+        // סופית ניתנת להחלפה: שני ענפים, לכל וריאנט קבוצת הקידומות
+        // הדקדוקית (שנושאת את הצורות הארמיות ד/כד/אד/מד).
+        let p = word_to_pattern("מלכה", &flags);
+        assert_eq!(p, format!("(?:{g}מלכה|{g}מלכא)", g = GRAM_PREFIX_GROUP));
+        // בלי סופית כזו — ענף קידומות יחיד.
+        assert_eq!(
+            word_to_pattern("ספר", &flags),
+            format!("{}ספר", GRAM_PREFIX_GROUP)
+        );
+    }
+
+    #[test]
+    fn aramaic_prefix_only_keeps_root_final_letter() {
+        let flags = WordFlags {
+            aramaic_prefix: true,
+            ..Default::default()
+        };
+        // קידומות בלבד: אין וריאנט שקילות סופית — ענף קידומות יחיד.
+        assert_eq!(
+            word_to_pattern("מלכה", &flags),
+            format!("{}מלכה", GRAM_PREFIX_GROUP)
+        );
+    }
+
+    #[test]
+    fn aramaic_suffix_only_swaps_without_prefixes() {
+        let flags = WordFlags {
+            aramaic_suffix: true,
+            ..Default::default()
+        };
+        // סיומות בלבד: שני ליטרלים (השורש + וריאנט השקילות), בלי קידומות.
+        assert_eq!(word_to_pattern("מלכה", &flags), "(?:מלכה|מלכא)");
+        // בלי סופית ניתנת להחלפה — המילה נשארת ליטרל.
+        assert_eq!(word_to_pattern("ספר", &flags), "ספר");
+    }
+
+    #[test]
+    fn aramaic_suffix_only_composes_with_other_options() {
+        // סיומות ארמיות + קידומות דקדוקיות: כל וריאנט עובר את עץ-הבסיס.
+        let flags = WordFlags {
+            aramaic_suffix: true,
+            gram_prefix: true,
+            ..Default::default()
+        };
+        let p = word_to_pattern("מלכה", &flags);
+        assert_eq!(p, format!("(?:{g}מלכה|{g}מלכא)", g = GRAM_PREFIX_GROUP));
+    }
+
+    #[test]
+    fn aramaic_with_gram_suffix_carries_suffixes_on_both_variants() {
+        let flags = WordFlags {
+            aramaic_prefix: true,
+            aramaic_suffix: true,
+            gram_suffix: true,
+            ..Default::default()
+        };
+        let p = word_to_pattern("מלכה", &flags);
+        // הענף הארמי נושא גם את הסיומות — צורה עם קידומת ארמית וגם סיומת
+        // (ודמלכתא) לא נופלת בין הענפים.
+        assert!(p.contains(&format!("{}מלכה{}", GRAM_PREFIX_GROUP, SUFFIX_PATTERN)));
+        assert!(p.contains(&format!("{}מלכא{}", GRAM_PREFIX_GROUP, SUFFIX_PATTERN)));
+    }
+
+    #[test]
+    fn vocalized_aramaic_uses_voc_prefix_group() {
+        let flags = WordFlags {
+            aramaic_prefix: true,
+            ..Default::default()
+        };
+        let core = VocCore {
+            pattern: vocalized_free_pattern("מלכה"),
+            base_len: 4,
+        };
+        let p = word_to_pattern_vocalized(&core, &flags);
+        assert!(p.starts_with(&voc_gram_prefix_group()), "{p}");
     }
 
     #[test]

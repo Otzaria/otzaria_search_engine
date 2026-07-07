@@ -17,15 +17,25 @@ use crate::hebrew_query::{fold_presentation_form, is_attached_mark};
 ///   "רמב\""   → ["רמב"]      (גרשיים בקצה — מפריד)
 ///   "א.ב"     → ["אב"]       (נקודה שקופה — לא שוברת ולא נכללת)
 ///   "עא:"     → ["עא"]       (פיסוק בסוף — מחוץ לטוקן)
+///
+/// עם `emit_quote_free` (מצב האינדוקס): טוקן שמכיל גרש/גרשיים פולט מיד
+/// אחריו טוקן-תאום נטול-גרשיים באותה עמדה ובאותם offsets (כמו נרדפת), כך
+/// שחיפוש "רמבם" מוצא גם `רמב"ם` ושאילתה שמסירה גרשיים מוצאת את שתי
+/// הצורות. בצד השאילתה נרשמים האנליזטורים בלי הפליטה הכפולה — שאילתה
+/// לעולם לא מתפרקת לשני טוקנים על אותה מילה.
 #[derive(Clone, Default)]
-pub struct HebrewTokenizer;
+pub struct HebrewTokenizer {
+    pub emit_quote_free: bool,
+}
 
 /// כמו [`HebrewTokenizer`] אך *שומר* ניקוד וטעמים בטקסט הטוקן — הטוקנייזר
 /// של השדה המנוקד (`textVocalized`). גבולות הטוקנים ומיקומיהם זהים
 /// אחד-לאחד לטוקנייזר הרגיל (סימן צמוד הוא תו-מילה בשניהם), כך ששני
 /// השדות של אותה שורה מטוקננים לאותן עמדות; רק טקסט הטרם שונה.
 #[derive(Clone, Default)]
-pub struct VocalizedHebrewTokenizer;
+pub struct VocalizedHebrewTokenizer {
+    pub emit_quote_free: bool,
+}
 
 pub struct HebrewTokenStream<'a> {
     text: &'a str,
@@ -33,6 +43,9 @@ pub struct HebrewTokenStream<'a> {
     byte_pos: usize,
     token_count: usize,
     keep_marks: bool,
+    emit_quote_free: bool,
+    /// טוקן-תאום נטול-גרשיים שממתין להיפלט (ראו `emit_quote_free`).
+    pending_quote_free: Option<Token>,
 }
 
 impl Tokenizer for HebrewTokenizer {
@@ -45,6 +58,8 @@ impl Tokenizer for HebrewTokenizer {
             byte_pos: 0,
             token_count: 0,
             keep_marks: false,
+            emit_quote_free: self.emit_quote_free,
+            pending_quote_free: None,
         }
     }
 }
@@ -59,6 +74,8 @@ impl Tokenizer for VocalizedHebrewTokenizer {
             byte_pos: 0,
             token_count: 0,
             keep_marks: true,
+            emit_quote_free: self.emit_quote_free,
+            pending_quote_free: None,
         }
     }
 }
@@ -180,6 +197,11 @@ impl<'a> HebrewTokenStream<'a> {
 
 impl<'a> TokenStream for HebrewTokenStream<'a> {
     fn advance(&mut self) -> bool {
+        // טוקן-תאום ממתין (נטול-גרשיים, אותה עמדה) — נפלט לפני המילה הבאה.
+        if let Some(pending) = self.pending_quote_free.take() {
+            self.token = pending;
+            return true;
+        }
         match Self::find_next_token(self.text, self.byte_pos) {
             None => false,
             Some((tok_text, tok_start, tok_end)) => {
@@ -230,6 +252,22 @@ impl<'a> TokenStream for HebrewTokenStream<'a> {
                 self.token.position = self.token_count;
                 self.token_count += 1;
                 self.byte_pos = tok_end;
+                // מצב אינדוקס: מילה עם גרש/גרשיים מטמיעה גם את צורתה
+                // הנקייה באותה עמדה ובאותם offsets — שאילתות phrase רואות
+                // עמדה אחת, וההדגשה יורשת את טווח המילה המקורית.
+                if self.emit_quote_free && self.token.text.contains(['\'', '"']) {
+                    let stripped: String = self
+                        .token
+                        .text
+                        .chars()
+                        .filter(|c| *c != '\'' && *c != '"')
+                        .collect();
+                    if !stripped.is_empty() && stripped != self.token.text {
+                        let mut dup = self.token.clone();
+                        dup.text = stripped;
+                        self.pending_quote_free = Some(dup);
+                    }
+                }
                 true
             }
         }
@@ -249,7 +287,7 @@ mod tests {
     use super::*;
 
     fn tokenize(text: &str) -> Vec<String> {
-        let mut tokenizer = HebrewTokenizer;
+        let mut tokenizer = HebrewTokenizer::default();
         let mut stream = tokenizer.token_stream(text);
         let mut tokens = Vec::new();
         while stream.advance() {
@@ -259,7 +297,7 @@ mod tests {
     }
 
     fn spans(text: &str) -> Vec<(usize, usize)> {
-        let mut tokenizer = HebrewTokenizer;
+        let mut tokenizer = HebrewTokenizer::default();
         let mut stream = tokenizer.token_stream(text);
         let mut out = Vec::new();
         while stream.advance() {
@@ -470,10 +508,57 @@ mod tests {
         assert_eq!(tokenize("תוס"), vec!["תוס"]);
     }
 
+    // ── מצב אינדוקס: טוקן-תאום נטול-גרשיים ──────────────────────────────
+
+    fn tokenize_indexing(text: &str) -> Vec<(String, usize, usize, usize)> {
+        let mut tokenizer = HebrewTokenizer {
+            emit_quote_free: true,
+        };
+        let mut stream = tokenizer.token_stream(text);
+        let mut out = Vec::new();
+        while stream.advance() {
+            let t = stream.token();
+            out.push((t.text.clone(), t.position, t.offset_from, t.offset_to));
+        }
+        out
+    }
+
+    #[test]
+    fn indexing_mode_emits_quote_free_twin_same_position() {
+        let tokens = tokenize_indexing("רמב\"ם אמר");
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|(t, p, _, _)| (t.as_str(), *p))
+                .collect::<Vec<_>>(),
+            vec![("רמב\"ם", 0), ("רמבם", 0), ("אמר", 1)]
+        );
+        // התאום יורש את ה-offsets של המילה המקורית — ההדגשה מכסה אותה.
+        assert_eq!(tokens[0].2..tokens[0].3, tokens[1].2..tokens[1].3);
+    }
+
+    #[test]
+    fn indexing_mode_twin_for_geresh_and_plain_words_unaffected() {
+        let tokens = tokenize_indexing("תוס' שלום");
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|(t, p, _, _)| (t.as_str(), *p))
+                .collect::<Vec<_>>(),
+            vec![("תוס'", 0), ("תוס", 0), ("שלום", 1)]
+        );
+    }
+
+    #[test]
+    fn query_mode_never_emits_twin() {
+        // ברירת המחדל (emit_quote_free=false) — התנהגות היסטורית.
+        assert_eq!(tokenize("רמב\"ם"), vec!["רמב\"ם"]);
+    }
+
     // ── הטוקנייזר המנוקד ─────────────────────────────────────────────────
 
     fn tokenize_vocalized(text: &str) -> Vec<String> {
-        let mut tokenizer = VocalizedHebrewTokenizer;
+        let mut tokenizer = VocalizedHebrewTokenizer::default();
         let mut stream = tokenizer.token_stream(text);
         let mut tokens = Vec::new();
         while stream.advance() {
@@ -501,7 +586,7 @@ mod tests {
         ];
         for s in samples {
             let plain = spans(s);
-            let mut tokenizer = VocalizedHebrewTokenizer;
+            let mut tokenizer = VocalizedHebrewTokenizer::default();
             let mut stream = tokenizer.token_stream(s);
             let mut voc = Vec::new();
             while stream.advance() {

@@ -15,3 +15,6 @@ mod hebrew_tokenizer;
 // Only `SearchEngine::set_magic_dictionary_path`/`has_magic_dictionary` are
 // exposed to Dart; everything here is used purely from Rust.
 mod magic;
+// מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
+// מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
+mod lexicons;
