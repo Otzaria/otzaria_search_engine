@@ -103,8 +103,10 @@ pub struct SearchPageResult {
     /// `true` when a broad single-word query overflowed its collection budget
     /// and only the highest-priority term expansions were served, so both
     /// `total_count` and `results` are partial (see
-    /// [`SearchEngine::single_regex_term_query`]). Only the regex and advanced
-    /// paths can degrade this way; the exact/fuzzy paths always report `false`.
+    /// [`SearchEngine::single_regex_term_query`]). The regex, advanced and
+    /// *vocalized* exact/fuzzy paths can degrade this way (a vocalized word
+    /// materializes a term set like an advanced word); the mark-free
+    /// exact/fuzzy paths never do and always report `false`.
     pub truncated: bool,
 }
 
@@ -127,9 +129,10 @@ pub struct SearchStreamUpdate {
     /// and only the highest-priority term expansions were served, so both the
     /// counts and the results are partial (see [`SearchEngine::single_regex_term_query`]).
     /// Meaningful only on the first, counts-bearing event; always `false` on
-    /// result chunks and on the exact/fuzzy paths, which never degrade this way.
-    /// The UI surfaces this as a "results may be partial — narrow the search"
-    /// warning.
+    /// result chunks and on the mark-free exact/fuzzy paths, which never
+    /// degrade this way (the vocalized exact/fuzzy paths can, like the
+    /// advanced path). The UI surfaces this as a "results may be partial —
+    /// narrow the search" warning.
     pub truncated: bool,
 }
 
@@ -140,7 +143,7 @@ pub struct FacetCount {
 
 /// A total hit count paired with the single-word truncation flag — the
 /// status-bearing return of [`SearchEngine::count_with_status`] and its
-/// advanced variant. `truncated` carries the same meaning as
+/// advanced/exact/fuzzy variants. `truncated` carries the same meaning as
 /// [`SearchStreamUpdate::truncated`]: `true` when a broad single-word query
 /// overflowed its collection budget, so `count` undercounts the true total.
 pub struct CountResult {
@@ -150,15 +153,17 @@ pub struct CountResult {
 
 /// Per-`filePath` live-document counts paired with the truncation flag — the
 /// status-bearing return of [`SearchEngine::count_by_book_with_status`] and
-/// its advanced variant. When `truncated`, the per-book counts are partial.
+/// its advanced/exact/fuzzy variants. When `truncated`, the per-book counts
+/// are partial.
 pub struct BookCountResult {
     pub counts: HashMap<String, u32>,
     pub truncated: bool,
 }
 
 /// Per-child facet counts paired with the truncation flag — the status-bearing
-/// return of [`SearchEngine::get_facet_counts_with_status`] and its advanced
-/// variant. When `truncated`, the facet counts are partial.
+/// return of [`SearchEngine::get_facet_counts_with_status`] and its
+/// advanced/exact/fuzzy variants. When `truncated`, the facet counts are
+/// partial.
 pub struct FacetCountsResult {
     pub counts: Vec<FacetCount>,
     pub truncated: bool,
@@ -2221,6 +2226,10 @@ impl SearchEngine {
         Self::surface_stream_error(&sink, result)
     }
 
+    /// Exact-mode hit count. Drops the truncation flag: the mark-free path
+    /// never truncates, but the vocalized single-word path can (its term set
+    /// is materialized like an advanced word) — use
+    /// [`Self::count_exact_with_status`] when partiality must surface.
     pub fn count_exact(
         &self,
         query: String,
@@ -2228,11 +2237,30 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
     ) -> Result<u32> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
-        self.run_count(q)
+        Ok(self
+            .count_exact_with_status(query, facets, match_nikud, match_taamim)?
+            .count)
     }
 
+    /// Like [`Self::count_exact`] but also reports whether the vocalized
+    /// single-word term collection truncated.
+    pub fn count_exact_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<CountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
+        Ok(CountResult {
+            count: self.run_count(q)?,
+            truncated,
+        })
+    }
+
+    /// Exact-mode per-book counts. Drops the truncation flag — see
+    /// [`Self::count_exact`]; use [`Self::count_by_book_exact_with_status`].
     pub fn count_by_book_exact(
         &self,
         query: String,
@@ -2240,11 +2268,30 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
     ) -> Result<HashMap<String, u32>> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
-        self.run_count_by_book(q)
+        Ok(self
+            .count_by_book_exact_with_status(query, facets, match_nikud, match_taamim)?
+            .counts)
     }
 
+    /// Like [`Self::count_by_book_exact`] but also reports whether the
+    /// vocalized single-word term collection truncated.
+    pub fn count_by_book_exact_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<BookCountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
+        Ok(BookCountResult {
+            counts: self.run_count_by_book(q)?,
+            truncated,
+        })
+    }
+
+    /// Exact-mode facet counts. Drops the truncation flag — see
+    /// [`Self::count_exact`]; use [`Self::get_facet_counts_exact_with_status`].
     pub fn get_facet_counts_exact(
         &self,
         query: String,
@@ -2253,9 +2300,33 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
     ) -> Result<Vec<FacetCount>> {
+        Ok(self
+            .get_facet_counts_exact_with_status(
+                query,
+                facets,
+                facet_prefix,
+                match_nikud,
+                match_taamim,
+            )?
+            .counts)
+    }
+
+    /// Like [`Self::get_facet_counts_exact`] but also reports whether the
+    /// vocalized single-word term collection truncated.
+    pub fn get_facet_counts_exact_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<FacetCountsResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
-        self.run_facet_counts(q, facet_prefix)
+        let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
+        Ok(FacetCountsResult {
+            counts: self.run_facet_counts(q, facet_prefix)?,
+            truncated,
+        })
     }
 
     // -- Advanced ----------------------------------------------------------------
@@ -3008,6 +3079,27 @@ impl SearchEngine {
         Self::surface_stream_error(&sink, result)
     }
 
+    /// Builds the fuzzy-mode query for the count family: the vocalized path
+    /// carries its truncation flag; the mark-free path uses its own automaton
+    /// budgets, not the single-word degrade mechanism, so it never truncates.
+    fn build_fuzzy_count_query(
+        &self,
+        query: &str,
+        facets: &[String],
+        max_distance: u8,
+        voc: &VocalizedFlags,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        if voc.any() {
+            self.build_fuzzy_query_vocalized(query, facets, max_distance, voc)
+        } else {
+            Ok((self.build_fuzzy_query(query, facets, max_distance)?, false))
+        }
+    }
+
+    /// Fuzzy-mode hit count. Drops the truncation flag: the mark-free path
+    /// never truncates, but the vocalized path can (its term set is
+    /// materialized like an advanced word) — use
+    /// [`Self::count_fuzzy_with_status`] when partiality must surface.
     pub fn count_fuzzy(
         &self,
         query: String,
@@ -3016,16 +3108,31 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
     ) -> Result<u32> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let q = if voc.any() {
-            self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?
-                .0
-        } else {
-            self.build_fuzzy_query(&query, &facets, max_distance)?
-        };
-        self.run_count(q)
+        Ok(self
+            .count_fuzzy_with_status(query, facets, max_distance, match_nikud, match_taamim)?
+            .count)
     }
 
+    /// Like [`Self::count_fuzzy`] but also reports whether the vocalized
+    /// term collection truncated.
+    pub fn count_fuzzy_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<CountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
+        Ok(CountResult {
+            count: self.run_count(q)?,
+            truncated,
+        })
+    }
+
+    /// Fuzzy-mode per-book counts. Drops the truncation flag — see
+    /// [`Self::count_fuzzy`]; use [`Self::count_by_book_fuzzy_with_status`].
     pub fn count_by_book_fuzzy(
         &self,
         query: String,
@@ -3034,16 +3141,37 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
     ) -> Result<HashMap<String, u32>> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let q = if voc.any() {
-            self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?
-                .0
-        } else {
-            self.build_fuzzy_query(&query, &facets, max_distance)?
-        };
-        self.run_count_by_book(q)
+        Ok(self
+            .count_by_book_fuzzy_with_status(
+                query,
+                facets,
+                max_distance,
+                match_nikud,
+                match_taamim,
+            )?
+            .counts)
     }
 
+    /// Like [`Self::count_by_book_fuzzy`] but also reports whether the
+    /// vocalized term collection truncated.
+    pub fn count_by_book_fuzzy_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<BookCountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
+        Ok(BookCountResult {
+            counts: self.run_count_by_book(q)?,
+            truncated,
+        })
+    }
+
+    /// Fuzzy-mode facet counts. Drops the truncation flag — see
+    /// [`Self::count_fuzzy`]; use [`Self::get_facet_counts_fuzzy_with_status`].
     pub fn get_facet_counts_fuzzy(
         &self,
         query: String,
@@ -3053,14 +3181,35 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
     ) -> Result<Vec<FacetCount>> {
+        Ok(self
+            .get_facet_counts_fuzzy_with_status(
+                query,
+                facets,
+                facet_prefix,
+                max_distance,
+                match_nikud,
+                match_taamim,
+            )?
+            .counts)
+    }
+
+    /// Like [`Self::get_facet_counts_fuzzy`] but also reports whether the
+    /// vocalized term collection truncated.
+    pub fn get_facet_counts_fuzzy_with_status(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<FacetCountsResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let q = if voc.any() {
-            self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?
-                .0
-        } else {
-            self.build_fuzzy_query(&query, &facets, max_distance)?
-        };
-        self.run_facet_counts(q, facet_prefix)
+        let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
+        Ok(FacetCountsResult {
+            counts: self.run_facet_counts(q, facet_prefix)?,
+            truncated,
+        })
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
@@ -3197,6 +3346,26 @@ impl SearchEngine {
             voc,
             negative_scope,
         )?;
+
+        // שלילה בטווח "תחת אותה כותרת" פוסלת *סעיפים שלמים*: השאילתה שנבנתה
+        // מחזירה רק את השורות שנושאות מילת שלילה, כך שב-MustNot היא הייתה
+        // מותירה את שאר שורות הסעיף. במקומה נאספים ה-sectionId שהיא חותכת
+        // וכל שורה בסעיף כזה נחסמת.
+        let negative: Box<dyn Query> = if matches!(negative_scope, SearchScope::SameSection) {
+            let sections = self
+                .index_reader
+                .searcher()
+                .search(negative.as_ref(), &SectionIdsCollector)?;
+            if sections.is_empty() {
+                return Ok((positive_query, positive_truncated || negative_truncated));
+            }
+            Box::new(SectionFilteredQuery::new(
+                Box::new(AllQuery),
+                Arc::new(sections),
+            ))
+        } else {
+            negative
+        };
 
         Ok((
             Box::new(BooleanQuery::new(vec![
@@ -10270,6 +10439,69 @@ mod tests {
             scope_search(&engine, "בשבת נדון", SearchScope::SameSection),
             Vec::<u64>::new()
         );
+    }
+
+    #[test]
+    fn same_section_negative_scope_excludes_whole_section() {
+        let (engine, _dir, id_base) = scope_engine();
+        // "מתכוין" מופיע בסימן א (שורה 3) ובסימן ב (שורה 7). צירוף השלילה
+        // "מתעסק בחלבים" נמצא בשורה *אחרת* של סימן א (שורה 4) — שלילה בטווח
+        // "תחת אותה כותרת" חייבת לפסול את כל הסעיף, כולל שורות שאין בהן
+        // אף מילת שלילה, ולהותיר רק את סימן ב.
+        let ids: Vec<u64> = engine
+            .search_advanced(
+                "מתכוין".to_string(),
+                "מתעסק בחלבים".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::SameSection,
+                SearchScope::SameSection,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![id_base + 7]);
+
+        // שלילה שאינה חותכת אף סעיף אינה משנה דבר.
+        let ids: Vec<u64> = engine
+            .search_advanced(
+                "מתכוין".to_string(),
+                "בחלבים נדון".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::SameSection,
+                SearchScope::SameSection,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![id_base + 3, id_base + 7]);
     }
 
     #[test]

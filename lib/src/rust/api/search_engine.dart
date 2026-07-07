@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
 
@@ -328,6 +328,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
   });
 
+  /// Exact-mode per-book counts. Drops the truncation flag — see
+  /// [`Self::count_exact`]; use [`Self::count_by_book_exact_with_status`].
   Future<Map<String, int>> countByBookExact({
     required String query,
     required List<String> facets,
@@ -335,7 +337,28 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
   });
 
+  /// Like [`Self::count_by_book_exact`] but also reports whether the
+  /// vocalized single-word term collection truncated.
+  Future<BookCountResult> countByBookExactWithStatus({
+    required String query,
+    required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Fuzzy-mode per-book counts. Drops the truncation flag — see
+  /// [`Self::count_fuzzy`]; use [`Self::count_by_book_fuzzy_with_status`].
   Future<Map<String, int>> countByBookFuzzy({
+    required String query,
+    required List<String> facets,
+    required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::count_by_book_fuzzy`] but also reports whether the
+  /// vocalized term collection truncated.
+  Future<BookCountResult> countByBookFuzzyWithStatus({
     required String query,
     required List<String> facets,
     required int maxDistance,
@@ -360,6 +383,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// index built elsewhere — and compare it against the current library.
   Future<Map<String, int>> countDocumentsByFilePath();
 
+  /// Exact-mode hit count. Drops the truncation flag: the mark-free path
+  /// never truncates, but the vocalized single-word path can (its term set
+  /// is materialized like an advanced word) — use
+  /// [`Self::count_exact_with_status`] when partiality must surface.
   Future<int> countExact({
     required String query,
     required List<String> facets,
@@ -367,7 +394,30 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
   });
 
+  /// Like [`Self::count_exact`] but also reports whether the vocalized
+  /// single-word term collection truncated.
+  Future<CountResult> countExactWithStatus({
+    required String query,
+    required List<String> facets,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Fuzzy-mode hit count. Drops the truncation flag: the mark-free path
+  /// never truncates, but the vocalized path can (its term set is
+  /// materialized like an advanced word) — use
+  /// [`Self::count_fuzzy_with_status`] when partiality must surface.
   Future<int> countFuzzy({
+    required String query,
+    required List<String> facets,
+    required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::count_fuzzy`] but also reports whether the vocalized
+  /// term collection truncated.
+  Future<CountResult> countFuzzyWithStatus({
     required String query,
     required List<String> facets,
     required int maxDistance,
@@ -499,6 +549,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
   });
 
+  /// Exact-mode facet counts. Drops the truncation flag — see
+  /// [`Self::count_exact`]; use [`Self::get_facet_counts_exact_with_status`].
   Future<List<FacetCount>> getFacetCountsExact({
     required String query,
     required List<String> facets,
@@ -507,7 +559,30 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
   });
 
+  /// Like [`Self::get_facet_counts_exact`] but also reports whether the
+  /// vocalized single-word term collection truncated.
+  Future<FacetCountsResult> getFacetCountsExactWithStatus({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Fuzzy-mode facet counts. Drops the truncation flag — see
+  /// [`Self::count_fuzzy`]; use [`Self::get_facet_counts_fuzzy_with_status`].
   Future<List<FacetCount>> getFacetCountsFuzzy({
+    required String query,
+    required List<String> facets,
+    required String facetPrefix,
+    required int maxDistance,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
+  /// Like [`Self::get_facet_counts_fuzzy`] but also reports whether the
+  /// vocalized term collection truncated.
+  Future<FacetCountsResult> getFacetCountsFuzzyWithStatus({
     required String query,
     required List<String> facets,
     required String facetPrefix,
@@ -867,7 +942,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
 /// Per-`filePath` live-document counts paired with the truncation flag — the
 /// status-bearing return of [`SearchEngine::count_by_book_with_status`] and
-/// its advanced variant. When `truncated`, the per-book counts are partial.
+/// its advanced/exact/fuzzy variants. When `truncated`, the per-book counts
+/// are partial.
 class BookCountResult {
   final Map<String, int> counts;
   final bool truncated;
@@ -888,7 +964,7 @@ class BookCountResult {
 
 /// A total hit count paired with the single-word truncation flag — the
 /// status-bearing return of [`SearchEngine::count_with_status`] and its
-/// advanced variant. `truncated` carries the same meaning as
+/// advanced/exact/fuzzy variants. `truncated` carries the same meaning as
 /// [`SearchStreamUpdate::truncated`]: `true` when a broad single-word query
 /// overflowed its collection budget, so `count` undercounts the true total.
 class CountResult {
@@ -1008,8 +1084,9 @@ class FacetCount {
 }
 
 /// Per-child facet counts paired with the truncation flag — the status-bearing
-/// return of [`SearchEngine::get_facet_counts_with_status`] and its advanced
-/// variant. When `truncated`, the facet counts are partial.
+/// return of [`SearchEngine::get_facet_counts_with_status`] and its
+/// advanced/exact/fuzzy variants. When `truncated`, the facet counts are
+/// partial.
 class FacetCountsResult {
   final List<FacetCount> counts;
   final bool truncated;
@@ -1192,8 +1269,10 @@ class SearchPageResult {
   /// `true` when a broad single-word query overflowed its collection budget
   /// and only the highest-priority term expansions were served, so both
   /// `total_count` and `results` are partial (see
-  /// [`SearchEngine::single_regex_term_query`]). Only the regex and advanced
-  /// paths can degrade this way; the exact/fuzzy paths always report `false`.
+  /// [`SearchEngine::single_regex_term_query`]). The regex, advanced and
+  /// *vocalized* exact/fuzzy paths can degrade this way (a vocalized word
+  /// materializes a term set like an advanced word); the mark-free
+  /// exact/fuzzy paths never do and always report `false`.
   final bool truncated;
 
   const SearchPageResult({
@@ -1297,9 +1376,10 @@ class SearchStreamUpdate {
   /// and only the highest-priority term expansions were served, so both the
   /// counts and the results are partial (see [`SearchEngine::single_regex_term_query`]).
   /// Meaningful only on the first, counts-bearing event; always `false` on
-  /// result chunks and on the exact/fuzzy paths, which never degrade this way.
-  /// The UI surfaces this as a "results may be partial — narrow the search"
-  /// warning.
+  /// result chunks and on the mark-free exact/fuzzy paths, which never
+  /// degrade this way (the vocalized exact/fuzzy paths can, like the
+  /// advanced path). The UI surfaces this as a "results may be partial —
+  /// narrow the search" warning.
   final bool truncated;
 
   const SearchStreamUpdate({
