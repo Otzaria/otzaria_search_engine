@@ -353,13 +353,20 @@ fn build_terms_display_pattern(terms: &[String]) -> String {
 /// [`split_query_words`] over the engine-normalized query (the same order
 /// `hebrew_query::prepare_advanced_query` builds `regex_terms` in).
 ///
-/// Because the terms come from the same automaton scan the search itself
-/// performs, a document found via ANY variant — typo, morphological affix,
-/// partial word — highlights that variant: full parity by construction. And
-/// since every branch is a complete index token, the whole inflected word is
-/// highlighted and the word keeps token-boundary eligibility even under
-/// morphological options (unlike the query-shape fallback, which highlights a
-/// bare root and must waive boundaries).
+/// Per word, the pattern source depends on the active options:
+///
+/// - **Typo tolerance** (with or without other options): the matched index
+///   terms — Levenshtein variants the query-shape builder cannot reproduce —
+///   are painted as whole tokens. Token boundaries are kept unless a
+///   boundary-breaking expansion is also active, in which case they are waived
+///   so the variant still highlights inside an inflected form.
+/// - **Boundary-breaking expansion without typo** (prefix / suffix / partial):
+///   the compact query-shape pattern highlights only the typed substring/root
+///   with boundaries waived. Unlike the term list it is not budget-truncated,
+///   so every occurrence highlights — the term list can drop visible words when
+///   the option matches thousands of index tokens.
+/// - **No expansion** (plain / spelling): the matched whole tokens, boundaries
+///   kept.
 ///
 /// A word with an empty term list (nothing in this index matched, or its
 /// automatons failed to compile) falls back to the query-shape
@@ -389,19 +396,25 @@ pub fn build_display_highlight_from_terms(
             .unwrap_or(&[]);
         let matched = per_word_terms.get(i).map(Vec::as_slice).unwrap_or(&[]);
 
-        let (pattern, boundary_eligible) = if matched.is_empty() {
-            let has_expansion = flags.prefix
-                || flags.suffix
-                || flags.gram_prefix
-                || flags.gram_suffix
-                || flags.partial
-                || flags.aramaic_prefix;
+        // הרחבה ששוברת גבול-מילה (קידומת/סיומת/חלק-ממילה): ה-query-shape
+        // קומפקטי, מכסה כל התאמה ומדגיש רק את החלק שהוקלד — בניגוד למונחי-
+        // האינדקס שחסומים בתקציב ומדגישים מילים שלמות. מונחי-האינדקס נשמרים
+        // לשגיאות-כתיב (וריאנטי Levenshtein שה-query-shape אינו יודע להפיק);
+        // כשגם הרחבה פעילה מוותרים על גבול-המילה כדי שהווריאנטים לא ייפסלו.
+        let has_expansion = flags.prefix
+            || flags.suffix
+            || flags.gram_prefix
+            || flags.gram_suffix
+            || flags.partial
+            || flags.aramaic_prefix;
+        let (pattern, boundary_eligible) = if !matched.is_empty() && !(has_expansion && !flags.typo)
+        {
+            (build_terms_display_pattern(matched), !has_expansion)
+        } else {
             (
                 build_word_display_pattern(word, &flags, alts),
                 !has_expansion,
             )
-        } else {
-            (build_terms_display_pattern(matched), true)
         };
         if pattern.is_empty() {
             continue;
@@ -766,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn from_terms_partial_word_keeps_boundaries_unlike_query_shape() {
+    fn from_terms_partial_word_uses_query_shape_substring() {
         let options = options_for("ספר", 0, "חלק ממילה");
 
         let query_shape =
@@ -782,10 +795,36 @@ mod tests {
             &[vec!["הספרים".to_string(), "ספר".to_string()]],
         )
         .unwrap();
-        // The full inflected word is a branch, so the whole word highlights
-        // and token boundaries hold.
-        assert_eq!(from_terms.word_boundary_eligible, vec![true]);
-        assert!(from_terms.combined_pattern.contains(&charwise("הספרים")));
+        // מילת חלק-ממילה מדגישה את התת-מחרוזת שהוקלדה (כמו ה-query-shape),
+        // עם כיסוי מלא ולא חסום-תקציב — במקום המילה המנוטה השלמה.
+        assert_eq!(from_terms.word_boundary_eligible, vec![false]);
+        assert_eq!(from_terms.combined_pattern, query_shape.combined_pattern);
+    }
+
+    #[test]
+    fn from_terms_typo_with_expansion_keeps_matched_variants() {
+        // typo + חלק ממילה: החיפוש מוצא וריאנט שגיאת-כתיב (מסה) שה-query-shape
+        // לעולם לא היה מפיק. חייבים לשמור את מונחי-האינדקס גם כשיש הרחבה,
+        // אחרת הווריאנט לא יודגש. גבול-המילה מוותר בגלל ההרחבה.
+        let options = HashMap::from([(
+            "ספר_0".to_string(),
+            HashMap::from([
+                ("שגיאות כתיב".to_string(), true),
+                ("חלק ממילה".to_string(), true),
+            ]),
+        )]);
+        let hl = build_display_highlight_from_terms(
+            "ספר",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options,
+            &[vec!["ספר".to_string(), "םפר".to_string()]],
+        )
+        .unwrap();
+        // הווריאנט השגוי נשמר בתבנית, והגבול מוותר (לא נדחה בתוך צורה מורחבת).
+        assert!(hl.combined_pattern.contains(&charwise("םפר")));
+        assert_eq!(hl.word_boundary_eligible, vec![false]);
     }
 
     #[test]

@@ -7383,7 +7383,7 @@ mod tests {
     }
 
     #[test]
-    fn index_highlight_partial_word_paints_whole_token_with_boundaries() {
+    fn index_highlight_partial_word_uses_query_shape_substring() {
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "הספרים הקדושים", "/books/a.txt");
         add(&mut engine, 2, "ספר תורה", "/books/b.txt");
@@ -7399,24 +7399,24 @@ mod tests {
                 0,
                 HashMap::new(),
                 HashMap::new(),
-                options,
+                options.clone(),
             )
             .unwrap()
             .expect("pattern");
 
-        // Both matched tokens are branches, longest first, and — unlike the
-        // query-shape path, which waives boundaries for "חלק ממילה" — the
-        // whole inflected word highlights under token boundaries.
-        assert!(hl.combined_pattern.contains(&charwise("הספרים")));
-        assert!(hl.combined_pattern.contains(&charwise("ספר")));
-        assert!(
-            hl.combined_pattern.find(&charwise("הספרים")).unwrap()
-                < hl.combined_pattern
-                    .find(&format!("|{}", charwise("ספר")))
-                    .unwrap(),
-            "longer term must precede its prefix in the alternation"
-        );
-        assert_eq!(hl.word_boundary_eligible, vec![true]);
+        // חלק-ממילה מדגיש את התת-מחרוזת שהוקלדה (query-shape) עם כיסוי מלא —
+        // לא את המילים המנוטות השלמות מהאינדקס (שחסומות בתקציב ומחמיצות
+        // מילים גלויות). ראה display_highlight::build_display_highlight_from_terms.
+        let query_shape = generate_highlight_pattern(
+            "ספר".to_string(),
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            options,
+        )
+        .expect("pattern");
+        assert_eq!(hl.combined_pattern, query_shape.combined_pattern);
+        assert_eq!(hl.word_boundary_eligible, vec![false]);
     }
 
     #[test]
