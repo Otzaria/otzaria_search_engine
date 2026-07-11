@@ -128,6 +128,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightPattern dco_decode_box_autoadd_highlight_pattern(dynamic raw);
 
   @protected
+  ResultGrouping dco_decode_box_autoadd_result_grouping(dynamic raw);
+
+  @protected
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw);
 
   @protected
@@ -179,6 +182,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<FacetCount> dco_decode_list_facet_count(dynamic raw);
 
   @protected
+  List<MergedSibling> dco_decode_list_merged_sibling(dynamic raw);
+
+  @protected
   List<PdfIndexLine> dco_decode_list_pdf_index_line(dynamic raw);
 
   @protected
@@ -218,6 +224,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
+  MergedSibling dco_decode_merged_sibling(dynamic raw);
+
+  @protected
   Map<String, int>? dco_decode_opt_Map_String_u_32_None(dynamic raw);
 
   @protected
@@ -233,6 +242,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightPattern? dco_decode_opt_box_autoadd_highlight_pattern(dynamic raw);
 
   @protected
+  ResultGrouping? dco_decode_opt_box_autoadd_result_grouping(dynamic raw);
+
+  @protected
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
 
   @protected
@@ -240,6 +252,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  List<String>? dco_decode_opt_list_String(dynamic raw);
 
   @protected
   PdfIndexLine dco_decode_pdf_index_line(dynamic raw);
@@ -266,6 +281,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   (int, List<String>) dco_decode_record_u_32_list_string(dynamic raw);
+
+  @protected
+  ResultGrouping dco_decode_result_grouping(dynamic raw);
 
   @protected
   ResultsOrder dco_decode_results_order(dynamic raw);
@@ -413,6 +431,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ResultGrouping sse_decode_box_autoadd_result_grouping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SearchResult sse_decode_box_autoadd_search_result(
     SseDeserializer deserializer,
   );
@@ -474,6 +497,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<FacetCount> sse_decode_list_facet_count(SseDeserializer deserializer);
 
   @protected
+  List<MergedSibling> sse_decode_list_merged_sibling(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<PdfIndexLine> sse_decode_list_pdf_index_line(
     SseDeserializer deserializer,
   );
@@ -529,6 +557,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
 
   @protected
+  MergedSibling sse_decode_merged_sibling(SseDeserializer deserializer);
+
+  @protected
   Map<String, int>? sse_decode_opt_Map_String_u_32_None(
     SseDeserializer deserializer,
   );
@@ -552,6 +583,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ResultGrouping? sse_decode_opt_box_autoadd_result_grouping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SearchResult? sse_decode_opt_box_autoadd_search_result(
     SseDeserializer deserializer,
   );
@@ -561,6 +597,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
 
   @protected
   PdfIndexLine sse_decode_pdf_index_line(SseDeserializer deserializer);
@@ -591,6 +630,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   (int, List<String>) sse_decode_record_u_32_list_string(
     SseDeserializer deserializer,
   );
+
+  @protected
+  ResultGrouping sse_decode_result_grouping(SseDeserializer deserializer);
 
   @protected
   ResultsOrder sse_decode_results_order(SseDeserializer deserializer);
@@ -773,6 +815,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_result_grouping(
+    ResultGrouping self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_search_result(
     SearchResult self,
     SseSerializer serializer,
@@ -848,6 +896,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_merged_sibling(
+    List<MergedSibling> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_pdf_index_line(
     List<PdfIndexLine> self,
     SseSerializer serializer,
@@ -914,6 +968,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_merged_sibling(MergedSibling self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_Map_String_u_32_None(
     Map<String, int>? self,
     SseSerializer serializer,
@@ -941,6 +998,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_result_grouping(
+    ResultGrouping? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_search_result(
     SearchResult? self,
     SseSerializer serializer,
@@ -951,6 +1014,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
 
   @protected
   void sse_encode_pdf_index_line(PdfIndexLine self, SseSerializer serializer);
@@ -991,6 +1057,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_u_32_list_string(
     (int, List<String>) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_result_grouping(
+    ResultGrouping self,
     SseSerializer serializer,
   );
 

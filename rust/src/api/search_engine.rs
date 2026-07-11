@@ -51,6 +51,42 @@ pub struct SearchResult {
     pub segment: u64,
     pub is_pdf: bool,
     pub file_path: String,
+    /// כמה תוצאות גולמיות מאוחדות בכרטיס הזה (1 = ללא איחוד). ראו
+    /// [`ResultGrouping`]: בחיפוש מקובץ התוצאה היא נציג הקבוצה, והמונה
+    /// הוא "נמצאו X תוצאות בטווח".
+    pub merged_count: u32,
+    /// שאר חברות הקבוצה (ללא הנציג), עד [`MERGED_SIBLINGS_CAP`] — מיקומים
+    /// בלבד, בלי snippet, כדי שהאפליקציה תוכל להציג "הרחב" ולקפוץ אליהן.
+    /// `merged_count` עשוי לעלות על `merged.len() + 1` כשהקבוצה גדולה מהתקרה.
+    pub merged: Vec<MergedSibling>,
+}
+
+/// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
+/// שורת-משנה בכרטיס מקובץ ולפתוח את הספר במקום הנכון.
+#[derive(Clone)]
+pub struct MergedSibling {
+    pub title: String,
+    pub reference: String,
+    pub id: u64,
+    pub segment: u64,
+    pub is_pdf: bool,
+    pub file_path: String,
+}
+
+/// מצב איחוד תוצאות. `None` בפרמטר `grouping` = ההתנהגות הקיימת (שטוח).
+///
+/// - `SameSection` — כל התוצאות שתחת אותה כותרת באותו ספר (אותו `sectionId`;
+///   ב-PDF: אותו עמוד) מתאחדות לכרטיס אחד עם מונה — "נמצאו X תוצאות בטווח".
+/// - `IdenticalText` — שורות שגוף הטקסט העברי שלהן זהה (חתימת `lineHash`)
+///   מתאחדות גם חוצה-ספרים — אותה משנה במהדורות שונות, מדרש מצוטט וכו'.
+///   שורה קצרה מדי לחתימה (ראו [`line_dedup_hash`]) לעולם אינה מתאחדת.
+///
+/// הנציג של קבוצה הוא התוצאה הטובה ביותר לפי סדר המיון הנוכחי, והקבוצות
+/// ממוינות לפי הנציג; `limit`/`offset` נספרים בקבוצות (לא בתוצאות גולמיות).
+#[derive(Clone, Copy)]
+pub enum ResultGrouping {
+    SameSection,
+    IdenticalText,
 }
 
 pub struct DocumentInput {
@@ -79,6 +115,11 @@ pub struct DocumentInput {
     pub section_id: Option<u64>,
     /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
     pub generation_order: Option<u32>,
+    /// נתיבי facet נוספים לצד `topics` — ממדי סינון (מחבר/תקופה/ספר-יסוד),
+    /// למשל `"/author/רש\"י"`, `"/era/ראשונים"`, `"/base"`. ראו
+    /// [`FACET_DIMENSION_ROOTS`] לסמנטיקת הסינון (OR בתוך ממד, AND בין
+    /// ממדים). `None` = אין.
+    pub extra_facets: Option<Vec<String>>,
 }
 
 /// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
@@ -108,6 +149,10 @@ pub struct SearchPageResult {
     /// materializes a term set like an advanced word); the mark-free
     /// exact/fuzzy paths never do and always report `false`.
     pub truncated: bool,
+    /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping` — זה המספר שדפדוף
+    /// (limit/offset) נספר בו. `None` בחיפוש שטוח. `total_count` נשאר
+    /// תמיד ספירת התוצאות הגולמיות.
+    pub group_count: Option<u32>,
 }
 
 /// One event of a combined stream search (`search_*_stream_with_counts`).
@@ -134,6 +179,10 @@ pub struct SearchStreamUpdate {
     /// advanced path). The UI surfaces this as a "results may be partial —
     /// narrow the search" warning.
     pub truncated: bool,
+    /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping`; `Some` רק באירוע
+    /// הראשון (נושא-הספירות), כמו `total_count`. `total_count` ו-
+    /// `book_counts` נשארים ספירות גולמיות גם בחיפוש מקובץ.
+    pub group_count: Option<u32>,
 }
 
 pub struct FacetCount {
@@ -307,6 +356,11 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // ההתאימות לא תתפוס זאת מעצמה, ולכן חובה להעלות את הגרסה לפני פרסום
 // כדי שאינדקסים ישנים ייבנו מחדש (בלעדיהם חיפוש `רמבם` לא ימצא `רמב"ם`
 // ו"התעלם מגרשיים" לא יעבוד על ספרים שאונדקסו קודם).
+//
+// שים לב: נוספו השדה `lineHash` (FAST, חתימת דה-דופ לשורה) ו-facets
+// ממדיים (author/era/base על שדה topics) — שינויי סכימה/תוכן שמחייבים
+// העלאת גרסה לפני פרסום (את lineHash בדיקת ההתאימות תתפוס גם לבדה;
+// את ה-facets הממדיים — לא, כמו הטוקן נטול-הגרשיים לעיל).
 const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 const DEFAULT_GENERATION_ORDER: u32 = 5;
@@ -350,8 +404,9 @@ const FUZZY_BOOST_FUZZY: Score = 1.0;
 
 /// The schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics,
-/// contentHash, textVocalized, sectionId, generationSort)`.
+/// contentHash, textVocalized, sectionId, generationSort, lineHash)`.
 type SchemaFields = (
+    Field,
     Field,
     Field,
     Field,
@@ -549,6 +604,59 @@ fn content_fingerprint(text: &str) -> u64 {
     for byte in text.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
+}
+
+/// שורש-ממד שמור בנתיבי facet: נתיב שהמקטע הראשון שלו הוא אחד מאלה שייך
+/// לממד סינון (מחבר/תקופה/ספרי-יסוד) ולא לעץ הקטגוריות. הסמנטיקה בסינון
+/// (ראו [`SearchEngine::facet_filter_query`]): נתיבים מאותו ממד הם OR
+/// ביניהם, וממדים שונים (וכן קבוצת הקטגוריות) הם AND — "ראשונים AND
+/// מסכת ברכות" עובד, בעוד ריבוי מחברים נשאר "אחד מהם".
+///
+/// השורשים באנגלית בכוונה: שמות קטגוריות בספרייה הם עבריים, כך שאין
+/// התנגשות עם עץ הקטגוריות הקיים.
+pub const FACET_DIMENSION_ROOTS: [&str; 3] = ["author", "era", "base"];
+
+/// תקרת חברות-הקבוצה המוחזרות לכל תוצאה מאוחדת ([`SearchResult::merged`]).
+/// `merged_count` תמיד מדווח את הגודל האמיתי גם כשהרשימה נחתכת.
+const MERGED_SIBLINGS_CAP: usize = 10;
+
+/// מינימום אותיות עבריות לחתימת דה-דופליקציה: שורה קצרה מזה מקבלת 0
+/// ("אין חתימה") ולעולם לא תתאחד עם שורות אחרות במצב `IdenticalText` —
+/// כותרות ושורות בנות מילה-שתיים זהות בכל מקום ואיחודן היה מטעה.
+const LINE_DEDUP_MIN_LETTERS: usize = 12;
+
+/// חתימת דה-דופליקציה לשורת אינדקס: FNV-1a על *האותיות העבריות בלבד* של
+/// הטקסט המנורמל — רווחים, פיסוק, גרשיים וסימנים אחרים אינם משתתפים, כך
+/// ששתי מהדורות שנבדלות רק בפיסוק/רווחים מקבלות אותה חתימה. שינויי כתיב
+/// (מלא/חסר) כן משנים את החתימה — זהו דה-דופ שמרני של טקסט זהה, לא זיהוי
+/// מקבילות מקורב. מוטבעת בשדה `lineHash` (FAST) בזמן אינדוקס ומשמשת את
+/// מצב האיחוד [`ResultGrouping::IdenticalText`].
+///
+/// 0 שמור ל"אין חתימה" (שורה קצרה מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות).
+fn line_dedup_hash(normalized_text: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    let mut letters = 0usize;
+    let mut buf = [0u8; 4];
+    for c in normalized_text.chars() {
+        if !('א'..='ת').contains(&c) {
+            continue;
+        }
+        letters += 1;
+        for byte in c.encode_utf8(&mut buf).as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    if letters < LINE_DEDUP_MIN_LETTERS {
+        return 0;
     }
     if hash == 0 {
         1
@@ -908,6 +1016,9 @@ fn current_schema() -> Schema {
     // מאוחסן ואינו מחופש ישירות.
     schema_builder.add_u64_field("sectionId", FAST);
     schema_builder.add_u64_field("generationSort", FAST);
+    // חתימת דה-דופליקציה של גוף השורה (ראו line_dedup_hash). FAST בלבד:
+    // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
+    schema_builder.add_u64_field("lineHash", FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
     schema_builder.build()
 }
@@ -1206,6 +1317,7 @@ impl SearchEngine {
         _file_path: &str,
         _section_id: Option<u64>,
         _generation_order: Option<u32>,
+        _extra_facets: Option<Vec<String>>,
     ) -> Result<()> {
         let (
             title_f,
@@ -1220,6 +1332,7 @@ impl SearchEngine {
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
+            line_hash_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(_topics)?;
         let mut document = doc!(
@@ -1236,8 +1349,12 @@ impl SearchEngine {
             generation_sort_f => generation_sort_key(
                 _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
                 _id
-            )
+            ),
+            line_hash_f    => line_dedup_hash(_text)
         );
+        for facet in _extra_facets.iter().flatten() {
+            document.add_facet(topics_f, Facet::from_text(facet)?);
+        }
         // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; `_text` מגיע בדרך
         // כלל מנורמל (נטול סימנים) ואז אין תוספת.
         if hebrew_query::contains_attached_marks(_text) {
@@ -1266,10 +1383,12 @@ impl SearchEngine {
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
+            line_hash_f,
         ) = self.all_fields()?;
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
+            let line_hash = line_dedup_hash(&doc.text);
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
@@ -1284,8 +1403,12 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(
                     doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
                     doc.id
-                )
+                ),
+                line_hash_f    => line_hash
             );
+            for facet in doc.extra_facets.iter().flatten() {
+                document.add_facet(topics_f, Facet::from_text(facet)?);
+            }
             if let Some(vocalized) = doc.text_vocalized {
                 if !vocalized.is_empty() {
                     document.add_text(text_vocalized_f, vocalized);
@@ -1317,6 +1440,7 @@ impl SearchEngine {
         catalogue_order: u32,
         generation_order: u32,
         text: String,
+        extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
         self.add_text_book_impl(
             title,
@@ -1325,6 +1449,7 @@ impl SearchEngine {
             catalogue_order,
             generation_order,
             &text,
+            extra_facets.unwrap_or_default(),
         )
     }
 
@@ -1342,6 +1467,7 @@ impl SearchEngine {
         catalogue_order: u32,
         generation_order: u32,
         text: Vec<u8>,
+        extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
@@ -1357,9 +1483,11 @@ impl SearchEngine {
             catalogue_order,
             generation_order,
             &text,
+            extra_facets.unwrap_or_default(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_text_book_impl(
         &mut self,
         title: String,
@@ -1368,6 +1496,7 @@ impl SearchEngine {
         catalogue_order: u32,
         generation_order: u32,
         text: &str,
+        extra_facets: Vec<String>,
     ) -> Result<u32> {
         if text.is_empty() {
             return Ok(0);
@@ -1387,8 +1516,15 @@ impl SearchEngine {
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
+            line_hash_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(&topics)?;
+        // נתיבי הממדים (מחבר/תקופה/יסוד) נפרסים פעם אחת לספר ומוטבעים
+        // כערכי facet נוספים על כל שורה.
+        let extra_facet_values: Vec<Facet> = extra_facets
+            .iter()
+            .map(|f| Facet::from_text(f))
+            .collect::<std::result::Result<_, _>>()?;
         let content_hash = content_fingerprint(text);
         let id_base = (u64::from(catalogue_order) + 1) << 32;
         let writer = self.writer_mut()?;
@@ -1418,21 +1554,24 @@ impl SearchEngine {
         // also gets its vocalized rendering, for the `textVocalized` field
         // (the mark check is cheap and almost always short-circuits false).
         use rayon::prelude::*;
-        let normalized: Vec<(String, Option<String>)> = lines
+        let normalized: Vec<(String, Option<String>, u64)> = lines
             .par_iter()
             .map(|raw_line| {
                 let plain = hebrew_query::normalize_text_for_indexing(raw_line);
                 let vocalized = hebrew_query::contains_attached_marks(raw_line)
                     .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
                     .filter(|v| !v.is_empty());
-                (plain, vocalized)
+                let line_hash = line_dedup_hash(&plain);
+                (plain, vocalized, line_hash)
             })
             .collect();
         let prepare_time = prepare_started.elapsed();
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        for (segment, (normalized_line, vocalized_line)) in normalized.into_iter().enumerate() {
+        for (segment, (normalized_line, vocalized_line, line_hash)) in
+            normalized.into_iter().enumerate()
+        {
             let reference = references[reference_of_line[segment] as usize].as_str();
             let id = id_base + ordinal + 1;
             let mut document = doc!(
@@ -1448,8 +1587,12 @@ impl SearchEngine {
                 // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
                 // בין ספרים, אז המזהה ייחודי גלובלית.
                 section_id_f   => id_base + u64::from(reference_of_line[segment]),
-                generation_sort_f => generation_sort_key(generation_order, id)
+                generation_sort_f => generation_sort_key(generation_order, id),
+                line_hash_f    => line_hash
             );
+            for facet in &extra_facet_values {
+                document.add_facet(topics_f, facet.clone());
+            }
             if let Some(vocalized) = vocalized_line {
                 document.add_text(text_vocalized_f, vocalized);
             }
@@ -1482,6 +1625,7 @@ impl SearchEngine {
     /// Returns the number of documents added; 0 means the PDF yielded no
     /// usable text (scanned/garbage) — the caller falls back to a sidecar or
     /// writes its empty-book marker.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_pdf_book(
         &mut self,
         title: String,
@@ -1490,6 +1634,7 @@ impl SearchEngine {
         catalogue_order: u32,
         generation_order: u32,
         pages: Vec<PdfPageInput>,
+        extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
         if pages.is_empty() {
             return Ok(0);
@@ -1512,8 +1657,14 @@ impl SearchEngine {
             _text_vocalized_f,
             section_id_f,
             generation_sort_f,
+            line_hash_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(&topics)?;
+        let extra_facet_values: Vec<Facet> = extra_facets
+            .unwrap_or_default()
+            .iter()
+            .map(|f| Facet::from_text(f))
+            .collect::<std::result::Result<_, _>>()?;
         let id_base = (u64::from(catalogue_order) + 1) << 32;
         let writer = self.writer_mut()?;
 
@@ -1546,7 +1697,8 @@ impl SearchEngine {
             }
             let page = &pages[page_idx];
             let id = id_base + ordinal + 1;
-            writer.add_document(doc!(
+            let line_hash = line_dedup_hash(&normalized);
+            let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => page.reference.as_str(),
                 text_f         => normalized,
@@ -1558,8 +1710,13 @@ impl SearchEngine {
                 content_hash_f => 0u64,
                 // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
                 section_id_f   => id_base + u64::from(page.page_index),
-                generation_sort_f => generation_sort_key(generation_order, id)
-            ))?;
+                generation_sort_f => generation_sort_key(generation_order, id),
+                line_hash_f    => line_hash
+            );
+            for facet in &extra_facet_values {
+                document.add_facet(topics_f, facet.clone());
+            }
+            writer.add_document(document)?;
             ordinal += 1;
         }
         let enqueue_time = enqueue_started.elapsed();
@@ -1573,6 +1730,7 @@ impl SearchEngine {
     }
 
     /// Delete then re-insert a single document by id. Does not commit.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_document(
         &mut self,
         _id: u64,
@@ -1585,6 +1743,7 @@ impl SearchEngine {
         _file_path: &str,
         _section_id: Option<u64>,
         _generation_order: Option<u32>,
+        _extra_facets: Option<Vec<String>>,
     ) -> Result<()> {
         self.delete_document_by_id(_id)?;
         self.add_document(
@@ -1598,6 +1757,7 @@ impl SearchEngine {
             _file_path,
             _section_id,
             _generation_order,
+            _extra_facets,
         )
     }
 
@@ -1616,11 +1776,13 @@ impl SearchEngine {
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
+            line_hash_f,
         ) = self.all_fields()?;
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
+            let line_hash = line_dedup_hash(&doc.text);
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
@@ -1635,8 +1797,12 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(
                     doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
                     doc.id
-                )
+                ),
+                line_hash_f    => line_hash
             );
+            for facet in doc.extra_facets.iter().flatten() {
+                document.add_facet(topics_f, Facet::from_text(facet)?);
+            }
             if let Some(vocalized) = doc.text_vocalized {
                 if !vocalized.is_empty() {
                     document.add_text(text_vocalized_f, vocalized);
@@ -1763,6 +1929,7 @@ impl SearchEngine {
             offset,
             &order,
             &hl,
+            None,
         )
     }
 
@@ -1790,6 +1957,7 @@ impl SearchEngine {
             &order,
             &hl,
             truncated,
+            None,
         )
     }
 
@@ -2022,6 +2190,8 @@ impl SearchEngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
+            merged_count: 1,
+            merged: Vec::new(),
         }))
     }
 
@@ -2051,6 +2221,7 @@ impl SearchEngine {
             offset,
             &order,
             &hl,
+            None,
         )
     }
 
@@ -2092,6 +2263,7 @@ impl SearchEngine {
                 &order,
                 &hl,
                 chunk_size,
+                None,
                 &sink,
             )
         })();
@@ -2108,6 +2280,7 @@ impl SearchEngine {
 
     // -- Exact -------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_exact(
         &self,
         query: String,
@@ -2117,6 +2290,7 @@ impl SearchEngine {
         order: ResultsOrder,
         match_nikud: bool,
         match_taamim: bool,
+        grouping: Option<ResultGrouping>,
     ) -> Result<Vec<SearchResult>> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
@@ -2128,6 +2302,7 @@ impl SearchEngine {
             offset,
             &order,
             &HighlightConfig::default(),
+            grouping.as_ref(),
         )
     }
 
@@ -2141,6 +2316,7 @@ impl SearchEngine {
         order: ResultsOrder,
         match_nikud: bool,
         match_taamim: bool,
+        grouping: Option<ResultGrouping>,
     ) -> Result<SearchPageResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
@@ -2153,6 +2329,7 @@ impl SearchEngine {
             &order,
             &HighlightConfig::default(),
             truncated,
+            grouping.as_ref(),
         )
     }
 
@@ -2167,6 +2344,7 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         chunk_size: u32,
+        grouping: Option<ResultGrouping>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
@@ -2181,6 +2359,7 @@ impl SearchEngine {
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
+                grouping.as_ref(),
                 &sink,
             )
         })();
@@ -2202,6 +2381,7 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         chunk_size: u32,
+        grouping: Option<ResultGrouping>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
@@ -2220,6 +2400,7 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 truncated,
+                grouping.as_ref(),
                 &sink,
             )
         })();
@@ -2351,6 +2532,7 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        grouping: Option<ResultGrouping>,
     ) -> Result<Vec<SearchResult>> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         // מצב-שדה: הדגלים הגלובליים או אפשרות "ניקוד"/"טעמים" פר-מילה —
@@ -2395,6 +2577,7 @@ impl SearchEngine {
             offset,
             &order,
             &HighlightConfig::default(),
+            grouping.as_ref(),
         )
     }
 
@@ -2418,6 +2601,7 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        grouping: Option<ResultGrouping>,
     ) -> Result<SearchPageResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
@@ -2460,6 +2644,7 @@ impl SearchEngine {
             &order,
             &HighlightConfig::default(),
             truncated,
+            grouping.as_ref(),
         )
     }
 
@@ -2488,6 +2673,7 @@ impl SearchEngine {
         scope: SearchScope,
         negative_scope: SearchScope,
         chunk_size: u32,
+        grouping: Option<ResultGrouping>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
@@ -2532,6 +2718,7 @@ impl SearchEngine {
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
+                grouping.as_ref(),
                 &sink,
             )
         })();
@@ -2564,6 +2751,7 @@ impl SearchEngine {
         scope: SearchScope,
         negative_scope: SearchScope,
         chunk_size: u32,
+        grouping: Option<ResultGrouping>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
@@ -2609,6 +2797,7 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 truncated,
+                grouping.as_ref(),
                 &sink,
             )
         })();
@@ -2901,6 +3090,7 @@ impl SearchEngine {
         order: ResultsOrder,
         match_nikud: bool,
         match_taamim: bool,
+        grouping: Option<ResultGrouping>,
     ) -> Result<Vec<SearchResult>> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         if voc.any() {
@@ -2915,6 +3105,7 @@ impl SearchEngine {
                 offset,
                 &order,
                 &HighlightConfig::default(),
+                grouping.as_ref(),
             );
         }
         let token_texts = self.index_token_texts(&query)?;
@@ -2928,6 +3119,7 @@ impl SearchEngine {
             offset,
             &order,
             &HighlightConfig::default(),
+            grouping.as_ref(),
         )
     }
 
@@ -2942,6 +3134,7 @@ impl SearchEngine {
         order: ResultsOrder,
         match_nikud: bool,
         match_taamim: bool,
+        grouping: Option<ResultGrouping>,
     ) -> Result<SearchPageResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         if voc.any() {
@@ -2956,6 +3149,7 @@ impl SearchEngine {
                 &order,
                 &HighlightConfig::default(),
                 truncated,
+                grouping.as_ref(),
             );
         }
         let token_texts = self.index_token_texts(&query)?;
@@ -2970,6 +3164,7 @@ impl SearchEngine {
             &order,
             &HighlightConfig::default(),
             false,
+            grouping.as_ref(),
         )
     }
 
@@ -2985,6 +3180,7 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         chunk_size: u32,
+        grouping: Option<ResultGrouping>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
@@ -3001,6 +3197,7 @@ impl SearchEngine {
                     &order,
                     &HighlightConfig::default(),
                     chunk_size,
+                    grouping.as_ref(),
                     &sink,
                 );
             }
@@ -3016,6 +3213,7 @@ impl SearchEngine {
                 &order,
                 &HighlightConfig::default(),
                 chunk_size,
+                grouping.as_ref(),
                 &sink,
             )
         })();
@@ -3038,6 +3236,7 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         chunk_size: u32,
+        grouping: Option<ResultGrouping>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
@@ -3055,6 +3254,7 @@ impl SearchEngine {
                     &HighlightConfig::default(),
                     chunk_size,
                     truncated,
+                    grouping.as_ref(),
                     &sink,
                 );
             }
@@ -3073,6 +3273,7 @@ impl SearchEngine {
                 // The fuzzy path uses its own automaton budgets, not the
                 // single-word degrade mechanism.
                 false,
+                grouping.as_ref(),
                 &sink,
             )
         })();
@@ -3228,6 +3429,7 @@ impl SearchEngine {
             self.schema.get_field("textVocalized")?,
             self.schema.get_field("sectionId")?,
             self.schema.get_field("generationSort")?,
+            self.schema.get_field("lineHash")?,
         ))
     }
 
@@ -3398,19 +3600,14 @@ impl SearchEngine {
         text_field: Field,
         scope: &SearchScope,
     ) -> Result<(Box<dyn Query>, bool)> {
-        let topics_field = self.schema.get_field("topics")?;
-
         // Resolved up front: the same facet filter both narrows the section
         // pre-pass (fewer candidate sections to intersect) and gates the
-        // final result set.
-        let facets_query: Option<TermSetQuery> = if facets.is_empty() {
+        // final result set. סמנטיקת הממדים (OR בתוך ממד, AND ביניהם)
+        // נבנית ב-facet_filter_query.
+        let facets_query: Option<Box<dyn Query>> = if facets.is_empty() {
             None
         } else {
-            let facet_terms: Vec<Term> = facets
-                .iter()
-                .map(|f| Ok(Term::from_facet(topics_field, &Facet::from_text(f)?)))
-                .collect::<Result<Vec<_>>>()?;
-            Some(TermSetQuery::new(facet_terms))
+            Some(self.facet_filter_query(&facets)?)
         };
 
         // Only the word-materialization paths (single word / paragraph /
@@ -3434,7 +3631,7 @@ impl SearchEngine {
                     text_field,
                     max_expansions,
                     scope,
-                    facets_query.as_ref(),
+                    facets_query.as_deref(),
                 )?,
                 SearchScope::WordDistance => {
                     debug_assert_eq!(gaps.len() + 1, regex_terms.len());
@@ -3477,7 +3674,7 @@ impl SearchEngine {
         Ok((
             Box::new(BooleanQuery::new(vec![
                 (Occur::Must, main_query),
-                (Occur::Must, Box::new(facets_query) as Box<dyn Query>),
+                (Occur::Must, facets_query),
             ])),
             truncated,
         ))
@@ -3504,7 +3701,7 @@ impl SearchEngine {
         text_field: Field,
         max_expansions: u32,
         scope: &SearchScope,
-        facets_query: Option<&TermSetQuery>,
+        facets_query: Option<&dyn Query>,
     ) -> Result<(Box<dyn Query>, bool)> {
         let mut truncated = false;
         let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(regex_terms.len());
@@ -3529,7 +3726,7 @@ impl SearchEngine {
                 Some(fq) => searcher.search(
                     &BooleanQuery::new(vec![
                         (Occur::Must, word_query.box_clone()),
-                        (Occur::Must, Box::new(fq.clone()) as Box<dyn Query>),
+                        (Occur::Must, fq.box_clone()),
                     ]),
                     &SectionIdsCollector,
                 )?,
@@ -3790,14 +3987,44 @@ impl SearchEngine {
         }
     }
 
-    /// Facet filter sub-query (a `TermSetQuery` over the `topics` facet field).
+    /// Facet filter sub-query over the `topics` facet field.
+    ///
+    /// הנתיבים מחולקים לקבוצות לפי המקטע הראשון: כל שורש ממדי
+    /// ([`FACET_DIMENSION_ROOTS`] — `author`/`era`/`base`) הוא קבוצה
+    /// משלו, וכל השאר (עץ הקטגוריות/ספרים) קבוצה אחת. בתוך קבוצה —
+    /// `TermSetQuery` (OR, בהתאמת-קידומת של facet); בין קבוצות — AND.
+    /// כך "תקופת ראשונים AND המדף הנבחר" מתנהג נכון, בעוד קריאה עם
+    /// נתיבי קטגוריות בלבד שקולה בדיוק להתנהגות הקודמת (קבוצה אחת).
     fn facet_filter_query(&self, facets: &[String]) -> Result<Box<dyn Query>> {
         let topics_f = self.schema.get_field("topics")?;
-        let facet_terms: Vec<Term> = facets
-            .iter()
-            .map(|f| Ok(Term::from_facet(topics_f, &Facet::from_text(f)?)))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Box::new(TermSetQuery::new(facet_terms)))
+        // הסדר דטרמיניסטי: קטגוריות תחילה ואז הממדים לפי סדר ההגדרה —
+        // אינדקס 0 = קטגוריות, i+1 = הממד ה-i.
+        let mut groups: Vec<Vec<Term>> = vec![Vec::new(); FACET_DIMENSION_ROOTS.len() + 1];
+        for f in facets {
+            let facet = Facet::from_text(f)?;
+            let root = f.trim_start_matches('/').split('/').next().unwrap_or("");
+            let group = FACET_DIMENSION_ROOTS
+                .iter()
+                .position(|d| *d == root)
+                .map_or(0, |i| i + 1);
+            groups[group].push(Term::from_facet(topics_f, &facet));
+        }
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = groups
+            .into_iter()
+            .filter(|terms| !terms.is_empty())
+            .map(|terms| {
+                (
+                    Occur::Must,
+                    Box::new(TermSetQuery::new(terms)) as Box<dyn Query>,
+                )
+            })
+            .collect();
+        Ok(match clauses.len() {
+            // אין facets — פילטר ריק לא אמור להיקרא, אבל אם כן: הכל עובר.
+            0 => Box::new(AllQuery),
+            1 => clauses.pop().expect("one clause").1,
+            _ => Box::new(BooleanQuery::new(clauses)),
+        })
     }
 
     /// Exact mode: a `TermQuery` (one token) or `PhraseQuery` (several), filtered
@@ -4604,6 +4831,7 @@ impl SearchEngine {
 
     // ── Shared query executors (take a prebuilt query) ───────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn run_search<F>(
         &self,
         query: Box<dyn Query>,
@@ -4613,11 +4841,24 @@ impl SearchEngine {
         offset: u32,
         order: &ResultsOrder,
         hl: &HighlightConfig,
+        grouping: Option<&ResultGrouping>,
     ) -> Result<Vec<SearchResult>>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
+        if let Some(grouping) = grouping {
+            let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
+            return Self::build_grouped_results(
+                &self.schema,
+                &searcher,
+                &query,
+                make_highlight,
+                text_field,
+                hl,
+                &page,
+            );
+        }
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
         if addresses.is_empty() {
             return Ok(Vec::new());
@@ -4646,11 +4887,30 @@ impl SearchEngine {
         order: &ResultsOrder,
         hl: &HighlightConfig,
         truncated: bool,
+        grouping: Option<&ResultGrouping>,
     ) -> Result<SearchPageResult>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
+        if let Some(grouping) = grouping {
+            let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
+            let results = Self::build_grouped_results(
+                &self.schema,
+                &searcher,
+                &query,
+                make_highlight,
+                text_field,
+                hl,
+                &page,
+            )?;
+            return Ok(SearchPageResult {
+                total_count: page.raw_total,
+                results,
+                truncated,
+                group_count: Some(page.group_count),
+            });
+        }
         // Tuple collector: single index pass for both count and top-docs.
         let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
             ResultsOrder::Catalogue => {
@@ -4686,6 +4946,7 @@ impl SearchEngine {
                 total_count,
                 results: Vec::new(),
                 truncated,
+                group_count: None,
             });
         }
         let plan = Self::resolve_highlight(&searcher, make_highlight);
@@ -4703,6 +4964,7 @@ impl SearchEngine {
             total_count,
             results,
             truncated,
+            group_count: None,
         })
     }
 
@@ -4768,6 +5030,7 @@ impl SearchEngine {
         order: &ResultsOrder,
         hl: &HighlightConfig,
         chunk_size: u32,
+        grouping: Option<&ResultGrouping>,
         sink: &StreamSink<Vec<SearchResult>>,
     ) -> Result<()>
     where
@@ -4775,6 +5038,24 @@ impl SearchEngine {
     {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
+        if let Some(grouping) = grouping {
+            let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
+            let results = Self::build_grouped_results(
+                &self.schema,
+                &searcher,
+                &query,
+                make_highlight,
+                text_field,
+                hl,
+                &page,
+            )?;
+            for chunk in results.chunks(chunk_size) {
+                if sink.add(chunk.to_vec()).is_err() {
+                    break;
+                }
+            }
+            return Ok(());
+        }
         let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
         if addresses.is_empty() {
             return Ok(());
@@ -4820,6 +5101,7 @@ impl SearchEngine {
         hl: &HighlightConfig,
         chunk_size: u32,
         truncated: bool,
+        grouping: Option<&ResultGrouping>,
         sink: &StreamSink<SearchStreamUpdate>,
     ) -> Result<()>
     where
@@ -4827,6 +5109,49 @@ impl SearchEngine {
     {
         let searcher = self.index_reader.searcher();
         let chunk_size = (chunk_size.max(1)) as usize;
+
+        if let Some(grouping) = grouping {
+            // מעבר אינדקס אחד: קיבוץ + ספירות פר-ספר יחד, כמו המסלול השטוח.
+            let collector = GroupCollector::new(grouping, order);
+            let (hits, book_counts) = searcher.search(&*query, &(collector, BookCountCollector))?;
+            let page = Self::finalize_grouped(hits, limit, offset);
+            if sink
+                .add(SearchStreamUpdate {
+                    total_count: Some(page.raw_total),
+                    book_counts: Some(book_counts),
+                    results: Vec::new(),
+                    truncated,
+                    group_count: Some(page.group_count),
+                })
+                .is_err()
+            {
+                return Ok(());
+            }
+            let results = Self::build_grouped_results(
+                &self.schema,
+                &searcher,
+                &query,
+                make_highlight,
+                text_field,
+                hl,
+                &page,
+            )?;
+            for chunk in results.chunks(chunk_size) {
+                if sink
+                    .add(SearchStreamUpdate {
+                        total_count: None,
+                        book_counts: None,
+                        results: chunk.to_vec(),
+                        truncated: false,
+                        group_count: None,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            return Ok(());
+        }
 
         let (addresses, total_count, book_counts): (Vec<DocAddress>, u32, HashMap<String, u32>) =
             match order {
@@ -4867,6 +5192,7 @@ impl SearchEngine {
                 book_counts: Some(book_counts),
                 results: Vec::new(),
                 truncated,
+                group_count: None,
             })
             .is_err()
         {
@@ -4899,6 +5225,7 @@ impl SearchEngine {
                     book_counts: None,
                     results,
                     truncated: false,
+                    group_count: None,
                 })
                 .is_err()
             {
@@ -4962,6 +5289,147 @@ impl SearchEngine {
             }
         };
         Ok(addresses)
+    }
+
+    /// מריץ את שאילתת החיפוש עם [`GroupCollector`] וגוזר את עמוד הקבוצות
+    /// המבוקש (`limit`/`offset` בקבוצות). מעבר אינדקס מלא אחד — אותה
+    /// מחלקת עלות כמו ספירת-כל/ספירה-פר-ספר שהמסך ממילא מריץ.
+    fn collect_grouped(
+        searcher: &Searcher,
+        query: &dyn Query,
+        grouping: &ResultGrouping,
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+    ) -> Result<GroupedPage> {
+        let collector = GroupCollector::new(grouping, order);
+        let hits = searcher.search(query, &collector)?;
+        Ok(Self::finalize_grouped(hits, limit, offset))
+    }
+
+    /// ממיין את הקבוצות לפי הנציג הטוב ביותר וגוזר את העמוד המבוקש.
+    fn finalize_grouped(hits: GroupedHits, limit: u32, offset: u32) -> GroupedPage {
+        let group_count = hits.groups.len() as u32;
+        let mut groups: Vec<GroupAcc> = hits.groups.into_values().collect();
+        groups.sort_by_key(|g| (g.best.0, g.best.1));
+        let reps: Vec<GroupedRep> = groups
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|g| GroupedRep {
+                id: g.best.1,
+                address: g.best.2,
+                count: g.count,
+                siblings: g.siblings.iter().map(|s| s.2).collect(),
+            })
+            .collect();
+        GroupedPage {
+            reps,
+            group_count,
+            raw_total: hits.raw_total,
+        }
+    }
+
+    /// בונה את תוצאות העמוד המקובץ: snippet מלא לנציגים (כמו במסלול
+    /// השטוח), ולכל נציג — מונה הקבוצה וחברותיה (שליפת doc-store קלה,
+    /// בלי snippet). התאמת נציג→קבוצה נעשית לפי `id` (build_results עשוי
+    /// לדלג על מסמך שאינו ניתן לקריאה).
+    #[allow(clippy::too_many_arguments)]
+    fn build_grouped_results<F>(
+        schema: &Schema,
+        searcher: &Searcher,
+        query: &Box<dyn Query>,
+        make_highlight: F,
+        text_field: Field,
+        hl: &HighlightConfig,
+        page: &GroupedPage,
+    ) -> Result<Vec<SearchResult>>
+    where
+        F: FnOnce(&Searcher) -> Result<HighlightPlan>,
+    {
+        if page.reps.is_empty() {
+            return Ok(Vec::new());
+        }
+        let plan = Self::resolve_highlight(searcher, make_highlight);
+        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
+        let addresses: Vec<DocAddress> = page.reps.iter().map(|r| r.address).collect();
+        let mut results = Self::build_results(
+            schema,
+            searcher,
+            hl_q,
+            text_field,
+            addresses,
+            hl,
+            plan.phrase.as_ref(),
+        )?;
+        let rep_by_id: HashMap<u64, &GroupedRep> = page.reps.iter().map(|r| (r.id, r)).collect();
+        for result in &mut results {
+            let Some(rep) = rep_by_id.get(&result.id) else {
+                continue;
+            };
+            result.merged_count = rep.count;
+            result.merged = rep
+                .siblings
+                .iter()
+                .filter_map(|addr| Self::fetch_merged_sibling(schema, searcher, *addr).transpose())
+                .collect::<Result<Vec<_>>>()?;
+        }
+        Ok(results)
+    }
+
+    /// שליפת doc-store קלה לחברת קבוצה — מיקום בלבד, בלי snippet.
+    /// מסמך שאינו ניתן לקריאה נשמט בשקט מהרשימה (המונה כבר ספר אותו).
+    fn fetch_merged_sibling(
+        schema: &Schema,
+        searcher: &Searcher,
+        address: DocAddress,
+    ) -> Result<Option<MergedSibling>> {
+        let doc = match searcher.doc::<TantivyDocument>(address) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!(
+                    "dropping merged sibling: doc store read failed at segment {} doc {}: {e}",
+                    address.segment_ord,
+                    address.doc_id
+                );
+                return Ok(None);
+            }
+        };
+        let title_f = schema.get_field("title")?;
+        let reference_f = schema.get_field("reference")?;
+        let id_f = schema.get_field("id")?;
+        let segment_f = schema.get_field("segment")?;
+        let is_pdf_f = schema.get_field("isPdf")?;
+        let file_path_f = schema.get_field("filePath")?;
+        Ok(Some(MergedSibling {
+            title: doc
+                .get_first(title_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            reference: doc
+                .get_first(reference_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            id: doc
+                .get_first(id_f)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
+            segment: doc
+                .get_first(segment_f)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
+            is_pdf: doc
+                .get_first(is_pdf_f)
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default(),
+            file_path: doc
+                .get_first(file_path_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        }))
     }
 
     /// Builds display-highlight patterns from the index terms this query
@@ -5819,6 +6287,8 @@ impl SearchEngine {
                 segment,
                 is_pdf,
                 file_path,
+                merged_count: 1,
+                merged: Vec::new(),
             });
         }
         Ok(results)
@@ -5935,6 +6405,225 @@ impl SegmentCollector for BookCountSegmentCollector {
             }
         }
         Ok(result)
+    }
+}
+
+// ── GroupCollector ─────────────────────────────────────────────────────────────
+
+/// מפתח המיון של מסמך בקיבוץ, כ-u64 עולה: `id` (קטלוג), `generationSort`
+/// (דורות), או היפוך ביטי הציון (רלוונטיות — ציון BM25 אי-שלילי, כך
+/// שהיפוך הביטים הופך "ציון גבוה" ל"ערך נמוך" והמיון נשאר עולה).
+#[derive(Clone, Copy)]
+enum GroupSort {
+    IdAsc,
+    GenerationAsc,
+    ScoreDesc,
+}
+
+/// `(sort_val, id, address)` — ה-id ייחודי גלובלית ומשמש שובר-שוויון
+/// דטרמיניסטי (בציוני רלוונטיות שוויון שכיח).
+type GroupEntry = (u64, u64, DocAddress);
+
+/// צבירת קבוצה אחת: מונה, הנציג הטוב ביותר, ועד [`MERGED_SIBLINGS_CAP`]
+/// חברות נוספות ממוינות לפי אותו סדר.
+struct GroupAcc {
+    count: u32,
+    best: GroupEntry,
+    siblings: Vec<GroupEntry>,
+}
+
+impl GroupAcc {
+    fn new(entry: GroupEntry) -> Self {
+        Self {
+            count: 1,
+            best: entry,
+            siblings: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, mut entry: GroupEntry) {
+        self.count += 1;
+        if (entry.0, entry.1) < (self.best.0, self.best.1) {
+            std::mem::swap(&mut self.best, &mut entry);
+        }
+        Self::insert_capped(&mut self.siblings, entry);
+    }
+
+    fn insert_capped(siblings: &mut Vec<GroupEntry>, entry: GroupEntry) {
+        let pos = siblings.partition_point(|s| (s.0, s.1) <= (entry.0, entry.1));
+        if pos < MERGED_SIBLINGS_CAP {
+            siblings.insert(pos, entry);
+            siblings.truncate(MERGED_SIBLINGS_CAP);
+        }
+    }
+
+    fn merge(&mut self, other: GroupAcc) {
+        self.count += other.count;
+        let mut displaced = other.best;
+        if (displaced.0, displaced.1) < (self.best.0, self.best.1) {
+            std::mem::swap(&mut self.best, &mut displaced);
+        }
+        Self::insert_capped(&mut self.siblings, displaced);
+        for entry in other.siblings {
+            Self::insert_capped(&mut self.siblings, entry);
+        }
+    }
+}
+
+/// פרי החיפוש המקובץ: ספירת התוצאות הגולמית + מפת הקבוצות. מפתח קבוצה
+/// הוא `(תג, ערך)` — תג 0 = `sectionId`, תג 1 = `lineHash`, תג 2 =
+/// מסמך-יחיד (שורה ללא חתימת דה-דופ במצב `IdenticalText` לעולם אינה
+/// מתאחדת, וה-id שלה משמש כמפתח).
+struct GroupedHits {
+    raw_total: u32,
+    groups: HashMap<(u8, u64), GroupAcc>,
+}
+
+/// נציג קבוצה בעמוד סופי, אחרי מיון וחיתוך `limit`/`offset`.
+struct GroupedRep {
+    id: u64,
+    address: DocAddress,
+    count: u32,
+    siblings: Vec<DocAddress>,
+}
+
+/// עמוד קבוצות סופי — נציגים + ספירות.
+struct GroupedPage {
+    reps: Vec<GroupedRep>,
+    group_count: u32,
+    raw_total: u32,
+}
+
+/// אוסף את כל המסמכים התואמים לקבוצות (ראו [`ResultGrouping`]) במעבר
+/// אחד, עם נציג-מיטבי וחברות קצוצות-תקרה לכל קבוצה. הזיכרון פרופורציונלי
+/// למספר הקבוצות; שאילתות רחבות חסומות ממילא בתקציב ה-postings.
+struct GroupCollector {
+    mode: ResultGrouping,
+    sort: GroupSort,
+}
+
+impl GroupCollector {
+    fn new(grouping: &ResultGrouping, order: &ResultsOrder) -> Self {
+        Self {
+            mode: *grouping,
+            sort: match order {
+                ResultsOrder::Catalogue => GroupSort::IdAsc,
+                ResultsOrder::Generation => GroupSort::GenerationAsc,
+                ResultsOrder::Relevance => GroupSort::ScoreDesc,
+            },
+        }
+    }
+}
+
+struct GroupSegmentCollector {
+    seg_ord: SegmentOrdinal,
+    mode: ResultGrouping,
+    sort: GroupSort,
+    id_col: tantivy::columnar::Column<u64>,
+    /// עמודת המיון (`id`/`generationSort`); `None` במיון לפי ציון.
+    sort_col: Option<tantivy::columnar::Column<u64>>,
+    /// עמודת מפתח הקבוצה: `sectionId` או `lineHash` לפי המצב.
+    key_col: tantivy::columnar::Column<u64>,
+    raw_total: u32,
+    groups: HashMap<(u8, u64), GroupAcc>,
+}
+
+impl Collector for GroupCollector {
+    type Fruit = GroupedHits;
+    type Child = GroupSegmentCollector;
+
+    fn for_segment(
+        &self,
+        seg_ord: SegmentOrdinal,
+        reader: &SegmentReader,
+    ) -> tantivy::Result<GroupSegmentCollector> {
+        let fast = reader.fast_fields();
+        let id_col = fast.u64("id")?;
+        let sort_col = match self.sort {
+            GroupSort::IdAsc => None, // עמודת ה-id כבר בידינו
+            GroupSort::GenerationAsc => Some(fast.u64("generationSort")?),
+            GroupSort::ScoreDesc => None,
+        };
+        let key_col = match self.mode {
+            ResultGrouping::SameSection => fast.u64("sectionId")?,
+            ResultGrouping::IdenticalText => fast.u64("lineHash")?,
+        };
+        Ok(GroupSegmentCollector {
+            seg_ord,
+            mode: self.mode,
+            sort: self.sort,
+            id_col,
+            sort_col,
+            key_col,
+            raw_total: 0,
+            groups: HashMap::new(),
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        matches!(self.sort, GroupSort::ScoreDesc)
+    }
+
+    fn merge_fruits(&self, per_segment: Vec<GroupedHits>) -> tantivy::Result<GroupedHits> {
+        let mut merged = GroupedHits {
+            raw_total: 0,
+            groups: HashMap::new(),
+        };
+        for seg in per_segment {
+            merged.raw_total += seg.raw_total;
+            for (key, acc) in seg.groups {
+                match merged.groups.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().merge(acc),
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(acc);
+                    }
+                }
+            }
+        }
+        Ok(merged)
+    }
+}
+
+impl SegmentCollector for GroupSegmentCollector {
+    type Fruit = GroupedHits;
+
+    fn collect(&mut self, doc_id: DocId, score: Score) {
+        let id = self.id_col.first(doc_id).unwrap_or_default();
+        let sort_val = match self.sort {
+            GroupSort::IdAsc => id,
+            GroupSort::GenerationAsc => self
+                .sort_col
+                .as_ref()
+                .and_then(|c| c.first(doc_id))
+                .unwrap_or(u64::MAX),
+            GroupSort::ScoreDesc => u64::from(!score.to_bits()),
+        };
+        let key = match self.mode {
+            ResultGrouping::SameSection => (0u8, self.key_col.first(doc_id).unwrap_or(id)),
+            ResultGrouping::IdenticalText => {
+                let hash = self.key_col.first(doc_id).unwrap_or(0);
+                if hash == 0 {
+                    (2u8, id)
+                } else {
+                    (1u8, hash)
+                }
+            }
+        };
+        let entry: GroupEntry = (sort_val, id, DocAddress::new(self.seg_ord, doc_id));
+        self.raw_total += 1;
+        match self.groups.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(entry),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(GroupAcc::new(entry));
+            }
+        }
+    }
+
+    fn harvest(self) -> GroupedHits {
+        GroupedHits {
+            raw_total: self.raw_total,
+            groups: self.groups,
+        }
     }
 }
 
@@ -6091,6 +6780,7 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
         )
     }
 
@@ -6393,7 +7083,7 @@ mod tests {
     fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {
         engine
             .add_document(
-                id, "title", "ref", "/root", text, 0, false, file_path, None, None,
+                id, "title", "ref", "/root", text, 0, false, file_path, None, None, None,
             )
             .unwrap();
     }
@@ -6439,6 +7129,7 @@ mod tests {
                 "/books/commentary.txt",
                 None,
                 Some(65),
+                None,
             )
             .unwrap();
         engine
@@ -6453,6 +7144,7 @@ mod tests {
                 "/books/source-b.txt",
                 None,
                 Some(2),
+                None,
             )
             .unwrap();
         engine
@@ -6467,6 +7159,7 @@ mod tests {
                 "/books/source-a.txt",
                 None,
                 Some(2),
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -6480,6 +7173,7 @@ mod tests {
                 ResultsOrder::Generation,
                 false,
                 false,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -6502,6 +7196,7 @@ mod tests {
                 5,
                 DEFAULT_GENERATION_ORDER,
                 text.to_string(),
+                None,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -6516,6 +7211,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -6538,6 +7234,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(nikud_hit.len(), 1);
@@ -6565,6 +7262,7 @@ mod tests {
                 5,
                 DEFAULT_GENERATION_ORDER,
                 text.as_bytes().to_vec(),
+                None,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -6579,6 +7277,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -6603,6 +7302,7 @@ mod tests {
                 1,
                 DEFAULT_GENERATION_ORDER,
                 String::new(),
+                None,
             )
             .unwrap();
         assert_eq!(added, 0);
@@ -6633,6 +7333,7 @@ mod tests {
                 5,
                 DEFAULT_GENERATION_ORDER,
                 pages,
+                None,
             )
             .unwrap();
         // השורה הריקה ושורת הסימנים סוננו כזבל — נותרו שתי שורות תוכן.
@@ -6649,6 +7350,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -6696,6 +7398,7 @@ mod tests {
                     text: "\n≡≡≡≡≡\n∴ ⊕ ⊗ ⊘ ∴".to_string(),
                     page_index: 0,
                 }],
+                None,
             )
             .unwrap();
         assert_eq!(added, 0);
@@ -6721,6 +7424,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -7077,6 +7781,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -7727,6 +8432,7 @@ mod tests {
                 "/books/a.txt",
                 None,
                 None,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -7777,6 +8483,7 @@ mod tests {
             text_vocalized: None,
             section_id: None,
             generation_order: None,
+            extra_facets: None,
         }
     }
 
@@ -8016,6 +8723,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert!(
@@ -8034,6 +8742,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert!(
@@ -8057,6 +8766,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(fuzzy_lex.len(), 1, "lexical fuzzy must find the inflection");
@@ -8092,6 +8802,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert!(
@@ -8127,6 +8838,7 @@ mod tests {
                 order,
                 false,
                 false,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -8217,6 +8929,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -8276,6 +8989,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert_eq!(
@@ -8321,6 +9035,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         let hit = results.iter().find(|result| result.id == 1).unwrap();
@@ -8357,6 +9072,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1]);
@@ -8571,6 +9287,7 @@ mod tests {
                 "/books/a.txt",
                 None,
                 None,
+                None,
             )
             .unwrap();
         engine.delete_document_by_id(2).unwrap();
@@ -8617,6 +9334,7 @@ mod tests {
                 0,
                 false,
                 "/books/a.txt",
+                None,
                 None,
                 None,
             )
@@ -8688,6 +9406,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1, 2]);
@@ -8702,6 +9421,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1]);
@@ -8723,6 +9443,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1]);
@@ -8748,6 +9469,7 @@ mod tests {
                 "/books/a.txt",
                 None,
                 None,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -8762,6 +9484,7 @@ mod tests {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                 )
                 .unwrap();
             assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
@@ -9437,6 +10160,7 @@ mod tests {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                 )
                 .unwrap())
         };
@@ -9478,6 +10202,7 @@ mod tests {
                     ResultsOrder::Relevance,
                     false,
                     false,
+                    None,
                 )
                 .unwrap())
         };
@@ -9526,6 +10251,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert!(
@@ -9547,6 +10273,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap());
         assert!(got.contains(&1), "got {got:?}");
@@ -9939,6 +10666,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -9969,6 +10697,7 @@ mod tests {
             ResultsOrder::Relevance,
             false,
             false,
+            None,
         );
         assert!(result.is_err(), "distance > 2 should error, not panic");
 
@@ -9998,6 +10727,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -10026,6 +10756,7 @@ mod tests {
                     ResultsOrder::Relevance,
                     false,
                     false,
+                    None,
                 )
                 .unwrap();
             assert!(results.is_empty(), "query {query:?} should match nothing");
@@ -10061,6 +10792,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(page.total_count, 2);
@@ -10086,6 +10818,7 @@ mod tests {
                 1,
                 DEFAULT_GENERATION_ORDER,
                 text.to_string(),
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -10105,6 +10838,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(hits.len(), 1);
@@ -10121,6 +10855,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert!(miss.is_empty());
@@ -10139,6 +10874,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(plain.len(), 2);
@@ -10153,6 +10889,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(voc.len(), 1);
@@ -10171,6 +10908,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(nikud_only.len(), 1);
@@ -10184,6 +10922,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 true,
+                None,
             )
             .unwrap();
         assert_eq!(with_taam.len(), 1);
@@ -10197,6 +10936,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 true,
+                None,
             )
             .unwrap();
         assert!(wrong_taam.is_empty());
@@ -10214,6 +10954,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(page.total_count, 1);
@@ -10337,6 +11078,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert!(!hits.is_empty());
@@ -10351,6 +11093,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
             )
             .unwrap();
         assert!(exact_only.is_empty());
@@ -10378,6 +11121,7 @@ mod tests {
                 7,
                 0,
                 text.to_string(),
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -10468,6 +11212,7 @@ mod tests {
                 false,
                 SearchScope::SameSection,
                 SearchScope::SameSection,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -10496,6 +11241,7 @@ mod tests {
                 false,
                 SearchScope::SameSection,
                 SearchScope::SameSection,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -10568,5 +11314,255 @@ mod tests {
             text.contains("<font color=red>מתכוין</font>"),
             "snippet: {text}"
         );
+    }
+
+    // ── Dimension facets (author/era/base) ────────────────────────────────
+
+    fn add_with_facets(
+        engine: &mut SearchEngine,
+        id: u64,
+        text: &str,
+        topics: &str,
+        file_path: &str,
+        extra: &[&str],
+    ) {
+        engine
+            .add_document(
+                id,
+                "title",
+                "ref",
+                topics,
+                text,
+                0,
+                false,
+                file_path,
+                None,
+                None,
+                Some(extra.iter().map(|s| s.to_string()).collect()),
+            )
+            .unwrap();
+    }
+
+    fn exact_count(engine: &SearchEngine, query: &str, facets: &[&str]) -> u32 {
+        engine
+            .count_exact(
+                query.to_string(),
+                facets.iter().map(|s| s.to_string()).collect(),
+                false,
+                false,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn dimension_facets_or_within_and_across() {
+        let (mut engine, _dir) = make_engine();
+        // ספר א: קטגוריה x, ראשונים, רש"י. ספר ב: קטגוריה x, אחרונים.
+        // ספר ג: קטגוריה y, ראשונים, וגם ספר-יסוד.
+        add_with_facets(
+            &mut engine,
+            1,
+            "דבר המלך",
+            "/root/x",
+            "a",
+            &["/era/ראשונים", "/author/רשי"],
+        );
+        add_with_facets(
+            &mut engine,
+            2,
+            "דבר המלך",
+            "/root/x",
+            "b",
+            &["/era/אחרונים"],
+        );
+        add_with_facets(
+            &mut engine,
+            3,
+            "דבר המלך",
+            "/root/y",
+            "c",
+            &["/era/ראשונים", "/base"],
+        );
+        engine.commit().unwrap();
+
+        // בלי פילטר — הכל.
+        assert_eq!(exact_count(&engine, "המלך", &[]), 3);
+        // ממד תקופה: OR בתוך הממד.
+        assert_eq!(exact_count(&engine, "המלך", &["/era/ראשונים"]), 2);
+        assert_eq!(
+            exact_count(&engine, "המלך", &["/era/ראשונים", "/era/אחרונים"]),
+            3
+        );
+        // תקופה AND קטגוריה.
+        assert_eq!(
+            exact_count(&engine, "המלך", &["/era/ראשונים", "/root/x"]),
+            1
+        );
+        // מחבר AND תקופה סותרת — ריק.
+        assert_eq!(
+            exact_count(&engine, "המלך", &["/author/רשי", "/era/אחרונים"]),
+            0
+        );
+        // ספרי יסוד.
+        assert_eq!(exact_count(&engine, "המלך", &["/base"]), 1);
+        // קטגוריות בלבד — ההתנהגות הישנה (OR בין קטגוריות).
+        assert_eq!(exact_count(&engine, "המלך", &["/root/x", "/root/y"]), 3);
+    }
+
+    // ── Result grouping ────────────────────────────────────────────────────
+
+    #[test]
+    fn grouping_same_section_collapses_with_count() {
+        let (mut engine, _dir) = make_engine();
+        let text = "<h1>פרק א\n\
+                    המלך דוד אמר שירה גדולה מאוד בלילה\n\
+                    ועוד אמר המלך דוד דברי שירה נפלאים מאוד\n\
+                    <h1>פרק ב\n\
+                    המלך דוד לא אמר כאן דבר"
+            .to_string();
+        engine
+            .add_text_book(
+                "תהלים".to_string(),
+                "/root".to_string(),
+                "book:a".to_string(),
+                0,
+                0,
+                text,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let page = engine
+            .search_and_count_exact(
+                "שירה".to_string(),
+                vec![],
+                50,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                Some(ResultGrouping::SameSection),
+            )
+            .unwrap();
+        // שתי שורות תואמות באותו סעיף — קבוצה אחת, מונה 2, אחות אחת.
+        assert_eq!(page.total_count, 2, "raw hit count");
+        assert_eq!(page.group_count, Some(1));
+        assert_eq!(page.results.len(), 1);
+        let rep = &page.results[0];
+        assert_eq!(rep.merged_count, 2);
+        assert_eq!(rep.merged.len(), 1);
+        assert_eq!(rep.merged[0].title, "תהלים");
+        // הנציג הוא המוקדם בסדר הקטלוג.
+        assert!(rep.segment < rep.merged[0].segment);
+        // בלי קיבוץ — שתי תוצאות שטוחות.
+        let flat = engine
+            .search_and_count_exact(
+                "שירה".to_string(),
+                vec![],
+                50,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(flat.group_count, None);
+        assert_eq!(flat.results.len(), 2);
+        assert!(flat.results.iter().all(|r| r.merged_count == 1));
+    }
+
+    #[test]
+    fn grouping_identical_text_merges_across_books() {
+        let (mut engine, _dir) = make_engine();
+        // אותה שורה (ארוכה מסף החתימה) בשני ספרים; שורה שונה בספר שלישי.
+        let mishna = "אמר רבי עקיבא כל ישראל יש להם חלק לעולם הבא";
+        add(&mut engine, (1u64 << 32) + 1, mishna, "book:a");
+        add(&mut engine, (2u64 << 32) + 1, mishna, "book:b");
+        add(
+            &mut engine,
+            (3u64 << 32) + 1,
+            "רבי עקיבא היה דורש כתרי אותיות של תורה",
+            "book:c",
+        );
+        engine.commit().unwrap();
+
+        let page = engine
+            .search_and_count_exact(
+                "עקיבא".to_string(),
+                vec![],
+                50,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                Some(ResultGrouping::IdenticalText),
+            )
+            .unwrap();
+        assert_eq!(page.total_count, 3);
+        assert_eq!(page.group_count, Some(2));
+        assert_eq!(page.results.len(), 2);
+        let merged = page
+            .results
+            .iter()
+            .find(|r| r.merged_count == 2)
+            .expect("merged group");
+        assert_eq!(merged.merged.len(), 1);
+        // הנציג והאחות מספרים שונים.
+        assert_ne!(merged.file_path, merged.merged[0].file_path);
+
+        // דפדוף נספר בקבוצות: עמוד שני של קבוצה-אחת-לכל-עמוד.
+        let second = engine
+            .search_and_count_exact(
+                "עקיבא".to_string(),
+                vec![],
+                1,
+                1,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                Some(ResultGrouping::IdenticalText),
+            )
+            .unwrap();
+        assert_eq!(second.group_count, Some(2));
+        assert_eq!(second.results.len(), 1);
+    }
+
+    #[test]
+    fn grouping_identical_text_skips_short_lines() {
+        let (mut engine, _dir) = make_engine();
+        // שורה זהה קצרה מסף 12 האותיות — לעולם לא מתאחדת.
+        add(&mut engine, (1u64 << 32) + 1, "אמר רבא", "book:a");
+        add(&mut engine, (2u64 << 32) + 1, "אמר רבא", "book:b");
+        engine.commit().unwrap();
+
+        let page = engine
+            .search_and_count_exact(
+                "רבא".to_string(),
+                vec![],
+                50,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                Some(ResultGrouping::IdenticalText),
+            )
+            .unwrap();
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.group_count, Some(2));
+        assert!(page.results.iter().all(|r| r.merged_count == 1));
+    }
+
+    #[test]
+    fn line_dedup_hash_ignores_punctuation_and_spacing() {
+        let a = line_dedup_hash("אמר רבי עקיבא, כל ישראל יש להם חלק!");
+        let b = line_dedup_hash("אמר  רבי עקיבא כל ישראל — יש להם חלק");
+        assert_ne!(a, 0);
+        assert_eq!(a, b);
+        // שינוי אות משנה חתימה.
+        assert_ne!(a, line_dedup_hash("אמר רבי עקיבה כל ישראל יש להם חלק"));
+        // קצר מדי — אין חתימה.
+        assert_eq!(line_dedup_hash("אמר רבא"), 0);
     }
 }

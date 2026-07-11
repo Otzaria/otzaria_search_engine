@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `make_snippet_generator`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fetch_merged_sibling`, `finalize_grouped`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `merge`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -154,6 +154,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   });
 
   /// Add many documents in a single FFI call. Does not commit.
@@ -184,6 +185,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int catalogueOrder,
     required int generationOrder,
     required List<PdfPageInput> pages,
+    List<String>? extraFacets,
   });
 
   /// Indexes a whole text book in ONE FFI call. Does not commit.
@@ -206,6 +208,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int catalogueOrder,
     required int generationOrder,
     required String text,
+    List<String>? extraFacets,
   });
 
   /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
@@ -221,6 +224,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int catalogueOrder,
     required int generationOrder,
     required List<int> text,
+    List<String>? extraFacets,
   });
 
   /// Delete all documents. Does not commit.
@@ -668,6 +672,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   });
 
   /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -694,6 +699,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -720,6 +726,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   /// Search and return total hit count alongside paged results in one call.
@@ -754,6 +761,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   });
 
   Future<SearchPageResult> searchAndCountExact({
@@ -764,6 +772,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Future<SearchPageResult> searchAndCountFuzzy({
@@ -775,6 +784,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Future<List<SearchResult>> searchExact({
@@ -785,6 +795,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Stream<List<SearchResult>> searchExactStream({
@@ -796,6 +807,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -811,6 +823,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Future<List<SearchResult>> searchFuzzy({
@@ -822,6 +835,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Stream<List<SearchResult>> searchFuzzyStream({
@@ -834,6 +848,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -850,6 +865,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -934,6 +950,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   });
 
   /// Upsert many documents in a single FFI call. Does not commit.
@@ -1016,6 +1033,12 @@ class DocumentInput {
   /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
   final int? generationOrder;
 
+  /// נתיבי facet נוספים לצד `topics` — ממדי סינון (מחבר/תקופה/ספר-יסוד),
+  /// למשל `"/author/רש\"י"`, `"/era/ראשונים"`, `"/base"`. ראו
+  /// [`FACET_DIMENSION_ROOTS`] לסמנטיקת הסינון (OR בתוך ממד, AND בין
+  /// ממדים). `None` = אין.
+  final List<String>? extraFacets;
+
   const DocumentInput({
     required this.id,
     required this.title,
@@ -1029,6 +1052,7 @@ class DocumentInput {
     this.textVocalized,
     this.sectionId,
     this.generationOrder,
+    this.extraFacets,
   });
 
   @override
@@ -1044,7 +1068,8 @@ class DocumentInput {
       contentHash.hashCode ^
       textVocalized.hashCode ^
       sectionId.hashCode ^
-      generationOrder.hashCode;
+      generationOrder.hashCode ^
+      extraFacets.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1062,7 +1087,8 @@ class DocumentInput {
           contentHash == other.contentHash &&
           textVocalized == other.textVocalized &&
           sectionId == other.sectionId &&
-          generationOrder == other.generationOrder;
+          generationOrder == other.generationOrder &&
+          extraFacets == other.extraFacets;
 }
 
 class FacetCount {
@@ -1211,6 +1237,47 @@ class IndexCompatibility {
           reason == other.reason;
 }
 
+/// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
+/// שורת-משנה בכרטיס מקובץ ולפתוח את הספר במקום הנכון.
+class MergedSibling {
+  final String title;
+  final String reference;
+  final BigInt id;
+  final BigInt segment;
+  final bool isPdf;
+  final String filePath;
+
+  const MergedSibling({
+    required this.title,
+    required this.reference,
+    required this.id,
+    required this.segment,
+    required this.isPdf,
+    required this.filePath,
+  });
+
+  @override
+  int get hashCode =>
+      title.hashCode ^
+      reference.hashCode ^
+      id.hashCode ^
+      segment.hashCode ^
+      isPdf.hashCode ^
+      filePath.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MergedSibling &&
+          runtimeType == other.runtimeType &&
+          title == other.title &&
+          reference == other.reference &&
+          id == other.id &&
+          segment == other.segment &&
+          isPdf == other.isPdf &&
+          filePath == other.filePath;
+}
+
 /// A PDF line prepared for indexing: the normalised text together with its
 /// garbage verdict, so the batch API answers both questions the indexing
 /// isolate asks per line in one round-trip.
@@ -1260,6 +1327,18 @@ class PdfPageInput {
           pageIndex == other.pageIndex;
 }
 
+/// מצב איחוד תוצאות. `None` בפרמטר `grouping` = ההתנהגות הקיימת (שטוח).
+///
+/// - `SameSection` — כל התוצאות שתחת אותה כותרת באותו ספר (אותו `sectionId`;
+///   ב-PDF: אותו עמוד) מתאחדות לכרטיס אחד עם מונה — "נמצאו X תוצאות בטווח".
+/// - `IdenticalText` — שורות שגוף הטקסט העברי שלהן זהה (חתימת `lineHash`)
+///   מתאחדות גם חוצה-ספרים — אותה משנה במהדורות שונות, מדרש מצוטט וכו'.
+///   שורה קצרה מדי לחתימה (ראו [`line_dedup_hash`]) לעולם אינה מתאחדת.
+///
+/// הנציג של קבוצה הוא התוצאה הטובה ביותר לפי סדר המיון הנוכחי, והקבוצות
+/// ממוינות לפי הנציג; `limit`/`offset` נספרים בקבוצות (לא בתוצאות גולמיות).
+enum ResultGrouping { sameSection, identicalText }
+
 enum ResultsOrder { catalogue, relevance, generation }
 
 class SearchPageResult {
@@ -1275,15 +1354,24 @@ class SearchPageResult {
   /// exact/fuzzy paths never do and always report `false`.
   final bool truncated;
 
+  /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping` — זה המספר שדפדוף
+  /// (limit/offset) נספר בו. `None` בחיפוש שטוח. `total_count` נשאר
+  /// תמיד ספירת התוצאות הגולמיות.
+  final int? groupCount;
+
   const SearchPageResult({
     required this.totalCount,
     required this.results,
     required this.truncated,
+    this.groupCount,
   });
 
   @override
   int get hashCode =>
-      totalCount.hashCode ^ results.hashCode ^ truncated.hashCode;
+      totalCount.hashCode ^
+      results.hashCode ^
+      truncated.hashCode ^
+      groupCount.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1292,7 +1380,8 @@ class SearchPageResult {
           runtimeType == other.runtimeType &&
           totalCount == other.totalCount &&
           results == other.results &&
-          truncated == other.truncated;
+          truncated == other.truncated &&
+          groupCount == other.groupCount;
 }
 
 class SearchResult {
@@ -1304,6 +1393,16 @@ class SearchResult {
   final bool isPdf;
   final String filePath;
 
+  /// כמה תוצאות גולמיות מאוחדות בכרטיס הזה (1 = ללא איחוד). ראו
+  /// [`ResultGrouping`]: בחיפוש מקובץ התוצאה היא נציג הקבוצה, והמונה
+  /// הוא "נמצאו X תוצאות בטווח".
+  final int mergedCount;
+
+  /// שאר חברות הקבוצה (ללא הנציג), עד [`MERGED_SIBLINGS_CAP`] — מיקומים
+  /// בלבד, בלי snippet, כדי שהאפליקציה תוכל להציג "הרחב" ולקפוץ אליהן.
+  /// `merged_count` עשוי לעלות על `merged.len() + 1` כשהקבוצה גדולה מהתקרה.
+  final List<MergedSibling> merged;
+
   const SearchResult({
     required this.title,
     required this.reference,
@@ -1312,6 +1411,8 @@ class SearchResult {
     required this.segment,
     required this.isPdf,
     required this.filePath,
+    required this.mergedCount,
+    required this.merged,
   });
 
   @override
@@ -1322,7 +1423,9 @@ class SearchResult {
       id.hashCode ^
       segment.hashCode ^
       isPdf.hashCode ^
-      filePath.hashCode;
+      filePath.hashCode ^
+      mergedCount.hashCode ^
+      merged.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1335,7 +1438,9 @@ class SearchResult {
           id == other.id &&
           segment == other.segment &&
           isPdf == other.isPdf &&
-          filePath == other.filePath;
+          filePath == other.filePath &&
+          mergedCount == other.mergedCount &&
+          merged == other.merged;
 }
 
 /// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
@@ -1382,11 +1487,17 @@ class SearchStreamUpdate {
   /// narrow the search" warning.
   final bool truncated;
 
+  /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping`; `Some` רק באירוע
+  /// הראשון (נושא-הספירות), כמו `total_count`. `total_count` ו-
+  /// `book_counts` נשארים ספירות גולמיות גם בחיפוש מקובץ.
+  final int? groupCount;
+
   const SearchStreamUpdate({
     this.totalCount,
     this.bookCounts,
     required this.results,
     required this.truncated,
+    this.groupCount,
   });
 
   @override
@@ -1394,7 +1505,8 @@ class SearchStreamUpdate {
       totalCount.hashCode ^
       bookCounts.hashCode ^
       results.hashCode ^
-      truncated.hashCode;
+      truncated.hashCode ^
+      groupCount.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1404,5 +1516,6 @@ class SearchStreamUpdate {
           totalCount == other.totalCount &&
           bookCounts == other.bookCounts &&
           results == other.results &&
-          truncated == other.truncated;
+          truncated == other.truncated &&
+          groupCount == other.groupCount;
 }

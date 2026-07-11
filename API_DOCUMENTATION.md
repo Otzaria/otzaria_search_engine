@@ -393,6 +393,41 @@ Topics use hierarchical facet notation with forward slashes:
 
 Documents match a facet query if their topic starts with any of the specified facets.
 
+### Dimension Facets (author / era / base)
+
+Alongside the category path, a document can carry extra facet values supplied at
+indexing time (`extraFacets` on `addTextBook`/`addTextBookBytes`/`addPdfBook`/
+`addDocument`/`upsertDocument`, or `DocumentInput.extraFacets`). Three English
+roots are reserved as *filter dimensions* (they cannot collide with Hebrew
+category names): `/author/<name>`, `/era/<period>`, `/base` (foundational books).
+
+Filtering semantics (`facets` parameter, all search/count functions): the facet
+list is partitioned by root — each reserved dimension is its own group, and all
+other paths (the category tree) form one group. Within a group facets are OR'ed
+(prefix match, as before); across groups they are AND'ed. So
+`["/תנך", "/era/ראשונים"]` = "in תנ"ך AND by a rishon", while
+`["/era/ראשונים", "/era/אחרונים"]` = "either era". A call with only category
+facets behaves exactly as before.
+
+### Result Grouping (deduplication)
+
+The exact/advanced/fuzzy `search*`, `searchAndCount*`, `search*Stream` and
+`search*StreamWithCounts` functions accept an optional `grouping` parameter
+(`ResultGrouping?`, default null = flat results):
+
+- `sameSection` — hits under the same heading in the same book (same
+  `sectionId`; a PDF page is a section) collapse into one result with a count.
+- `identicalText` — lines whose Hebrew letters are identical (punctuation,
+  spacing and quotes ignored; see `lineHash`) collapse across books. Lines
+  shorter than 12 Hebrew letters never merge.
+
+When grouping is active: `limit`/`offset` count *groups*; each returned
+`SearchResult` is the group's best representative (by the requested order) and
+carries `mergedCount` (total group size) plus `merged` (up to 10 sibling
+locations — title/reference/id/segment/isPdf/filePath, no snippet).
+`SearchPageResult.groupCount` / the first `SearchStreamUpdate.groupCount` report
+the total number of groups; `totalCount` and `bookCounts` remain raw hit counts.
+
 ### Index Persistence
 
 The search engine stores its index on disk at the specified path. The index persists between application runs and can be reused without rebuilding.

@@ -106,6 +106,7 @@ abstract class RustLibApi extends BaseApi {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   });
 
   Future<void> crateApiSearchEngineSearchEngineAddDocumentsBatch({
@@ -121,6 +122,7 @@ abstract class RustLibApi extends BaseApi {
     required int catalogueOrder,
     required int generationOrder,
     required List<PdfPageInput> pages,
+    List<String>? extraFacets,
   });
 
   Future<int> crateApiSearchEngineSearchEngineAddTextBook({
@@ -131,6 +133,7 @@ abstract class RustLibApi extends BaseApi {
     required int catalogueOrder,
     required int generationOrder,
     required String text,
+    List<String>? extraFacets,
   });
 
   Future<int> crateApiSearchEngineSearchEngineAddTextBookBytes({
@@ -141,6 +144,7 @@ abstract class RustLibApi extends BaseApi {
     required int catalogueOrder,
     required int generationOrder,
     required List<int> text,
+    List<String>? extraFacets,
   });
 
   Future<void> crateApiSearchEngineSearchEngineClear({
@@ -550,6 +554,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   });
 
   Stream<List<SearchResult>>
@@ -574,6 +579,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Stream<SearchStreamUpdate>
@@ -598,6 +604,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCount({
@@ -633,6 +640,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCountExact({
@@ -644,6 +652,7 @@ abstract class RustLibApi extends BaseApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCountFuzzy({
@@ -656,6 +665,7 @@ abstract class RustLibApi extends BaseApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchExact({
@@ -667,6 +677,7 @@ abstract class RustLibApi extends BaseApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchExactStream({
@@ -679,6 +690,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Stream<SearchStreamUpdate>
@@ -692,6 +704,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchFuzzy({
@@ -704,6 +717,7 @@ abstract class RustLibApi extends BaseApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   });
 
   Stream<List<SearchResult>> crateApiSearchEngineSearchEngineSearchFuzzyStream({
@@ -717,6 +731,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Stream<SearchStreamUpdate>
@@ -731,6 +746,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   });
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchFuzzyTerms({
@@ -789,6 +805,7 @@ abstract class RustLibApi extends BaseApi {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   });
 
   Future<void> crateApiSearchEngineSearchEngineUpsertDocumentsBatch({
@@ -993,6 +1010,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1012,6 +1030,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(filePath, serializer);
           sse_encode_opt_box_autoadd_u_64(sectionId, serializer);
           sse_encode_opt_box_autoadd_u_32(generationOrder, serializer);
+          sse_encode_opt_list_String(extraFacets, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1036,6 +1055,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           filePath,
           sectionId,
           generationOrder,
+          extraFacets,
         ],
         apiImpl: this,
       ),
@@ -1057,6 +1077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "filePath",
           "sectionId",
           "generationOrder",
+          "extraFacets",
         ],
       );
 
@@ -1108,6 +1129,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int catalogueOrder,
     required int generationOrder,
     required List<PdfPageInput> pages,
+    List<String>? extraFacets,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1123,6 +1145,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(catalogueOrder, serializer);
           sse_encode_u_32(generationOrder, serializer);
           sse_encode_list_pdf_page_input(pages, serializer);
+          sse_encode_opt_list_String(extraFacets, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1143,6 +1166,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           catalogueOrder,
           generationOrder,
           pages,
+          extraFacets,
         ],
         apiImpl: this,
       ),
@@ -1160,6 +1184,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "catalogueOrder",
           "generationOrder",
           "pages",
+          "extraFacets",
         ],
       );
 
@@ -1172,6 +1197,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int catalogueOrder,
     required int generationOrder,
     required String text,
+    List<String>? extraFacets,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1187,6 +1213,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(catalogueOrder, serializer);
           sse_encode_u_32(generationOrder, serializer);
           sse_encode_String(text, serializer);
+          sse_encode_opt_list_String(extraFacets, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1207,6 +1234,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           catalogueOrder,
           generationOrder,
           text,
+          extraFacets,
         ],
         apiImpl: this,
       ),
@@ -1224,6 +1252,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "catalogueOrder",
           "generationOrder",
           "text",
+          "extraFacets",
         ],
       );
 
@@ -1236,6 +1265,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int catalogueOrder,
     required int generationOrder,
     required List<int> text,
+    List<String>? extraFacets,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1251,6 +1281,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(catalogueOrder, serializer);
           sse_encode_u_32(generationOrder, serializer);
           sse_encode_list_prim_u_8_loose(text, serializer);
+          sse_encode_opt_list_String(extraFacets, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1271,6 +1302,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           catalogueOrder,
           generationOrder,
           text,
+          extraFacets,
         ],
         apiImpl: this,
       ),
@@ -1289,6 +1321,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "catalogueOrder",
           "generationOrder",
           "text",
+          "extraFacets",
         ],
       );
 
@@ -3747,6 +3780,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3783,6 +3817,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_bool(matchTaamim, serializer);
           sse_encode_search_scope(scope, serializer);
           sse_encode_search_scope(negativeScope, serializer);
+          sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3815,6 +3850,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           matchTaamim,
           scope,
           negativeScope,
+          grouping,
         ],
         apiImpl: this,
       ),
@@ -3844,6 +3880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "scope",
           "negativeScope",
+          "grouping",
         ],
       );
 
@@ -3870,6 +3907,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -3912,6 +3950,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_search_scope(scope, serializer);
             sse_encode_search_scope(negativeScope, serializer);
             sse_encode_u_32(chunkSize, serializer);
+            sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -3947,6 +3986,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             scope,
             negativeScope,
             chunkSize,
+            grouping,
             sink,
           ],
           apiImpl: this,
@@ -3981,6 +4021,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "scope",
           "negativeScope",
           "chunkSize",
+          "grouping",
           "sink",
         ],
       );
@@ -4008,6 +4049,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -4050,6 +4092,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_search_scope(scope, serializer);
             sse_encode_search_scope(negativeScope, serializer);
             sse_encode_u_32(chunkSize, serializer);
+            sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4085,6 +4128,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             scope,
             negativeScope,
             chunkSize,
+            grouping,
             sink,
           ],
           apiImpl: this,
@@ -4119,6 +4163,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "scope",
           "negativeScope",
           "chunkSize",
+          "grouping",
           "sink",
         ],
       );
@@ -4217,6 +4262,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4253,6 +4299,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_bool(matchTaamim, serializer);
           sse_encode_search_scope(scope, serializer);
           sse_encode_search_scope(negativeScope, serializer);
+          sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4286,6 +4333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           matchTaamim,
           scope,
           negativeScope,
+          grouping,
         ],
         apiImpl: this,
       ),
@@ -4316,6 +4364,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "scope",
           "negativeScope",
+          "grouping",
         ],
       );
 
@@ -4329,6 +4378,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4345,6 +4395,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_results_order(order, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4367,6 +4418,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           order,
           matchNikud,
           matchTaamim,
+          grouping,
         ],
         apiImpl: this,
       ),
@@ -4386,6 +4438,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "order",
           "matchNikud",
           "matchTaamim",
+          "grouping",
         ],
       );
 
@@ -4400,6 +4453,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4417,6 +4471,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_results_order(order, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4440,6 +4495,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           order,
           matchNikud,
           matchTaamim,
+          grouping,
         ],
         apiImpl: this,
       ),
@@ -4460,6 +4516,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "order",
           "matchNikud",
           "matchTaamim",
+          "grouping",
         ],
       );
 
@@ -4473,6 +4530,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4489,6 +4547,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_results_order(order, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4510,6 +4569,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           order,
           matchNikud,
           matchTaamim,
+          grouping,
         ],
         apiImpl: this,
       ),
@@ -4528,6 +4588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "order",
           "matchNikud",
           "matchTaamim",
+          "grouping",
         ],
       );
 
@@ -4542,6 +4603,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -4561,6 +4623,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchNikud, serializer);
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
+            sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4585,6 +4648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchNikud,
             matchTaamim,
             chunkSize,
+            grouping,
             sink,
           ],
           apiImpl: this,
@@ -4608,6 +4672,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchNikud",
           "matchTaamim",
           "chunkSize",
+          "grouping",
           "sink",
         ],
       );
@@ -4624,6 +4689,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -4643,6 +4709,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchNikud, serializer);
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
+            sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4667,6 +4734,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchNikud,
             matchTaamim,
             chunkSize,
+            grouping,
             sink,
           ],
           apiImpl: this,
@@ -4690,6 +4758,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchNikud",
           "matchTaamim",
           "chunkSize",
+          "grouping",
           "sink",
         ],
       );
@@ -4705,6 +4774,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4722,6 +4792,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_results_order(order, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4744,6 +4815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           order,
           matchNikud,
           matchTaamim,
+          grouping,
         ],
         apiImpl: this,
       ),
@@ -4763,6 +4835,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "order",
           "matchNikud",
           "matchTaamim",
+          "grouping",
         ],
       );
 
@@ -4778,6 +4851,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -4798,6 +4872,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchNikud, serializer);
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
+            sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4823,6 +4898,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchNikud,
             matchTaamim,
             chunkSize,
+            grouping,
             sink,
           ],
           apiImpl: this,
@@ -4847,6 +4923,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchNikud",
           "matchTaamim",
           "chunkSize",
+          "grouping",
           "sink",
         ],
       );
@@ -4864,6 +4941,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -4884,6 +4962,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchNikud, serializer);
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
+            sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4909,6 +4988,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchNikud,
             matchTaamim,
             chunkSize,
+            grouping,
             sink,
           ],
           apiImpl: this,
@@ -4933,6 +5013,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchNikud",
           "matchTaamim",
           "chunkSize",
+          "grouping",
           "sink",
         ],
       );
@@ -5245,6 +5326,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -5264,6 +5346,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(filePath, serializer);
           sse_encode_opt_box_autoadd_u_64(sectionId, serializer);
           sse_encode_opt_box_autoadd_u_32(generationOrder, serializer);
+          sse_encode_opt_list_String(extraFacets, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -5288,6 +5371,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           filePath,
           sectionId,
           generationOrder,
+          extraFacets,
         ],
         apiImpl: this,
       ),
@@ -5309,6 +5393,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "filePath",
           "sectionId",
           "generationOrder",
+          "extraFacets",
         ],
       );
 
@@ -5957,6 +6042,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ResultGrouping dco_decode_box_autoadd_result_grouping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_result_grouping(raw);
+  }
+
+  @protected
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_search_result(raw);
@@ -5990,8 +6081,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DocumentInput dco_decode_document_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return DocumentInput(
       id: dco_decode_u_64(arr[0]),
       title: dco_decode_String(arr[1]),
@@ -6005,6 +6096,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       textVocalized: dco_decode_opt_String(arr[9]),
       sectionId: dco_decode_opt_box_autoadd_u_64(arr[10]),
       generationOrder: dco_decode_opt_box_autoadd_u_32(arr[11]),
+      extraFacets: dco_decode_opt_list_String(arr[12]),
     );
   }
 
@@ -6118,6 +6210,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<MergedSibling> dco_decode_list_merged_sibling(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_merged_sibling).toList();
+  }
+
+  @protected
   List<PdfIndexLine> dco_decode_list_pdf_index_line(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_pdf_index_line).toList();
@@ -6197,6 +6295,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MergedSibling dco_decode_merged_sibling(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return MergedSibling(
+      title: dco_decode_String(arr[0]),
+      reference: dco_decode_String(arr[1]),
+      id: dco_decode_u_64(arr[2]),
+      segment: dco_decode_u_64(arr[3]),
+      isPdf: dco_decode_bool(arr[4]),
+      filePath: dco_decode_String(arr[5]),
+    );
+  }
+
+  @protected
   Map<String, int>? dco_decode_opt_Map_String_u_32_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_Map_String_u_32_None(raw);
@@ -6227,6 +6341,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ResultGrouping? dco_decode_opt_box_autoadd_result_grouping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_result_grouping(raw);
+  }
+
+  @protected
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_search_result(raw);
@@ -6242,6 +6362,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
+  }
+
+  @protected
+  List<String>? dco_decode_opt_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_list_String(raw);
   }
 
   @protected
@@ -6332,6 +6458,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ResultGrouping dco_decode_result_grouping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return ResultGrouping.values[raw as int];
+  }
+
+  @protected
   ResultsOrder dco_decode_results_order(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ResultsOrder.values[raw as int];
@@ -6341,12 +6473,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchPageResult dco_decode_search_page_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return SearchPageResult(
       totalCount: dco_decode_u_32(arr[0]),
       results: dco_decode_list_search_result(arr[1]),
       truncated: dco_decode_bool(arr[2]),
+      groupCount: dco_decode_opt_box_autoadd_u_32(arr[3]),
     );
   }
 
@@ -6354,8 +6487,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchResult dco_decode_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return SearchResult(
       title: dco_decode_String(arr[0]),
       reference: dco_decode_String(arr[1]),
@@ -6364,6 +6497,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       segment: dco_decode_u_64(arr[4]),
       isPdf: dco_decode_bool(arr[5]),
       filePath: dco_decode_String(arr[6]),
+      mergedCount: dco_decode_u_32(arr[7]),
+      merged: dco_decode_list_merged_sibling(arr[8]),
     );
   }
 
@@ -6377,13 +6512,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchStreamUpdate dco_decode_search_stream_update(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return SearchStreamUpdate(
       totalCount: dco_decode_opt_box_autoadd_u_32(arr[0]),
       bookCounts: dco_decode_opt_Map_String_u_32_None(arr[1]),
       results: dco_decode_list_search_result(arr[2]),
       truncated: dco_decode_bool(arr[3]),
+      groupCount: dco_decode_opt_box_autoadd_u_32(arr[4]),
     );
   }
 
@@ -6686,6 +6822,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ResultGrouping sse_decode_box_autoadd_result_grouping(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_result_grouping(deserializer));
+  }
+
+  @protected
   SearchResult sse_decode_box_autoadd_search_result(
     SseDeserializer deserializer,
   ) {
@@ -6728,6 +6872,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_textVocalized = sse_decode_opt_String(deserializer);
     var var_sectionId = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_generationOrder = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_extraFacets = sse_decode_opt_list_String(deserializer);
     return DocumentInput(
       id: var_id,
       title: var_title,
@@ -6741,6 +6886,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       textVocalized: var_textVocalized,
       sectionId: var_sectionId,
       generationOrder: var_generationOrder,
+      extraFacets: var_extraFacets,
     );
   }
 
@@ -6883,6 +7029,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <FacetCount>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_facet_count(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<MergedSibling> sse_decode_list_merged_sibling(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <MergedSibling>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_merged_sibling(deserializer));
     }
     return ans_;
   }
@@ -7041,6 +7201,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MergedSibling sse_decode_merged_sibling(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_title = sse_decode_String(deserializer);
+    var var_reference = sse_decode_String(deserializer);
+    var var_id = sse_decode_u_64(deserializer);
+    var var_segment = sse_decode_u_64(deserializer);
+    var var_isPdf = sse_decode_bool(deserializer);
+    var var_filePath = sse_decode_String(deserializer);
+    return MergedSibling(
+      title: var_title,
+      reference: var_reference,
+      id: var_id,
+      segment: var_segment,
+      isPdf: var_isPdf,
+      filePath: var_filePath,
+    );
+  }
+
+  @protected
   Map<String, int>? sse_decode_opt_Map_String_u_32_None(
     SseDeserializer deserializer,
   ) {
@@ -7104,6 +7283,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ResultGrouping? sse_decode_opt_box_autoadd_result_grouping(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_result_grouping(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   SearchResult? sse_decode_opt_box_autoadd_search_result(
     SseDeserializer deserializer,
   ) {
@@ -7133,6 +7325,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_u_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_list_String(deserializer));
     } else {
       return null;
     }
@@ -7214,6 +7417,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ResultGrouping sse_decode_result_grouping(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return ResultGrouping.values[inner];
+  }
+
+  @protected
   ResultsOrder sse_decode_results_order(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -7226,10 +7436,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_totalCount = sse_decode_u_32(deserializer);
     var var_results = sse_decode_list_search_result(deserializer);
     var var_truncated = sse_decode_bool(deserializer);
+    var var_groupCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     return SearchPageResult(
       totalCount: var_totalCount,
       results: var_results,
       truncated: var_truncated,
+      groupCount: var_groupCount,
     );
   }
 
@@ -7243,6 +7455,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_segment = sse_decode_u_64(deserializer);
     var var_isPdf = sse_decode_bool(deserializer);
     var var_filePath = sse_decode_String(deserializer);
+    var var_mergedCount = sse_decode_u_32(deserializer);
+    var var_merged = sse_decode_list_merged_sibling(deserializer);
     return SearchResult(
       title: var_title,
       reference: var_reference,
@@ -7251,6 +7465,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       segment: var_segment,
       isPdf: var_isPdf,
       filePath: var_filePath,
+      mergedCount: var_mergedCount,
+      merged: var_merged,
     );
   }
 
@@ -7270,11 +7486,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_bookCounts = sse_decode_opt_Map_String_u_32_None(deserializer);
     var var_results = sse_decode_list_search_result(deserializer);
     var var_truncated = sse_decode_bool(deserializer);
+    var var_groupCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     return SearchStreamUpdate(
       totalCount: var_totalCount,
       bookCounts: var_bookCounts,
       results: var_results,
       truncated: var_truncated,
+      groupCount: var_groupCount,
     );
   }
 
@@ -7610,6 +7828,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_result_grouping(
+    ResultGrouping self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_result_grouping(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_search_result(
     SearchResult self,
     SseSerializer serializer,
@@ -7652,6 +7879,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.textVocalized, serializer);
     sse_encode_opt_box_autoadd_u_64(self.sectionId, serializer);
     sse_encode_opt_box_autoadd_u_32(self.generationOrder, serializer);
+    sse_encode_opt_list_String(self.extraFacets, serializer);
   }
 
   @protected
@@ -7771,6 +7999,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_facet_count(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_merged_sibling(
+    List<MergedSibling> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_merged_sibling(item, serializer);
     }
   }
 
@@ -7917,6 +8157,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_merged_sibling(MergedSibling self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.title, serializer);
+    sse_encode_String(self.reference, serializer);
+    sse_encode_u_64(self.id, serializer);
+    sse_encode_u_64(self.segment, serializer);
+    sse_encode_bool(self.isPdf, serializer);
+    sse_encode_String(self.filePath, serializer);
+  }
+
+  @protected
   void sse_encode_opt_Map_String_u_32_None(
     Map<String, int>? self,
     SseSerializer serializer,
@@ -7979,6 +8230,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_result_grouping(
+    ResultGrouping? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_result_grouping(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_search_result(
     SearchResult? self,
     SseSerializer serializer,
@@ -8008,6 +8272,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_u_64(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_list_String(
+    List<String>? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_list_String(self, serializer);
     }
   }
 
@@ -8087,6 +8364,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_result_grouping(
+    ResultGrouping self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_results_order(ResultsOrder self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -8101,6 +8387,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.totalCount, serializer);
     sse_encode_list_search_result(self.results, serializer);
     sse_encode_bool(self.truncated, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.groupCount, serializer);
   }
 
   @protected
@@ -8113,6 +8400,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.segment, serializer);
     sse_encode_bool(self.isPdf, serializer);
     sse_encode_String(self.filePath, serializer);
+    sse_encode_u_32(self.mergedCount, serializer);
+    sse_encode_list_merged_sibling(self.merged, serializer);
   }
 
   @protected
@@ -8131,6 +8420,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_Map_String_u_32_None(self.bookCounts, serializer);
     sse_encode_list_search_result(self.results, serializer);
     sse_encode_bool(self.truncated, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.groupCount, serializer);
   }
 
   @protected
@@ -8243,6 +8533,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddDocument(
     that: this,
     id: id,
@@ -8255,6 +8546,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     filePath: filePath,
     sectionId: sectionId,
     generationOrder: generationOrder,
+    extraFacets: extraFacets,
   );
 
   /// Add many documents in a single FFI call. Does not commit.
@@ -8289,6 +8581,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int catalogueOrder,
     required int generationOrder,
     required List<PdfPageInput> pages,
+    List<String>? extraFacets,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddPdfBook(
     that: this,
     title: title,
@@ -8297,6 +8590,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     catalogueOrder: catalogueOrder,
     generationOrder: generationOrder,
     pages: pages,
+    extraFacets: extraFacets,
   );
 
   /// Indexes a whole text book in ONE FFI call. Does not commit.
@@ -8319,6 +8613,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int catalogueOrder,
     required int generationOrder,
     required String text,
+    List<String>? extraFacets,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddTextBook(
     that: this,
     title: title,
@@ -8327,6 +8622,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     catalogueOrder: catalogueOrder,
     generationOrder: generationOrder,
     text: text,
+    extraFacets: extraFacets,
   );
 
   /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
@@ -8342,6 +8638,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int catalogueOrder,
     required int generationOrder,
     required List<int> text,
+    List<String>? extraFacets,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddTextBookBytes(
     that: this,
     title: title,
@@ -8350,6 +8647,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     catalogueOrder: catalogueOrder,
     generationOrder: generationOrder,
     text: text,
+    extraFacets: extraFacets,
   );
 
   /// Delete all documents. Does not commit.
@@ -9089,6 +9387,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvanced(
     that: this,
     query: query,
@@ -9109,6 +9408,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     matchTaamim: matchTaamim,
     scope: scope,
     negativeScope: negativeScope,
+    grouping: grouping,
   );
 
   /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -9135,6 +9435,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvancedStream(
         that: this,
@@ -9157,6 +9458,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         scope: scope,
         negativeScope: negativeScope,
         chunkSize: chunkSize,
+        grouping: grouping,
       );
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -9183,6 +9485,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope scope,
     required SearchScope negativeScope,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAdvancedStreamWithCounts(
         that: this,
@@ -9205,6 +9508,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         scope: scope,
         negativeScope: negativeScope,
         chunkSize: chunkSize,
+        grouping: grouping,
       );
 
   /// Search and return total hit count alongside paged results in one call.
@@ -9249,6 +9553,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAndCountAdvanced(
         that: this,
@@ -9270,6 +9575,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchTaamim: matchTaamim,
         scope: scope,
         negativeScope: negativeScope,
+        grouping: grouping,
       );
 
   Future<SearchPageResult> searchAndCountExact({
@@ -9280,6 +9586,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAndCountExact(
         that: this,
@@ -9290,6 +9597,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         order: order,
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
+        grouping: grouping,
       );
 
   Future<SearchPageResult> searchAndCountFuzzy({
@@ -9301,6 +9609,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAndCountFuzzy(
         that: this,
@@ -9312,6 +9621,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         order: order,
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
+        grouping: grouping,
       );
 
   Future<List<SearchResult>> searchExact({
@@ -9322,6 +9632,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchExact(
     that: this,
     query: query,
@@ -9331,6 +9642,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     order: order,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    grouping: grouping,
   );
 
   Stream<List<SearchResult>> searchExactStream({
@@ -9342,6 +9654,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchExactStream(
     that: this,
     query: query,
@@ -9352,6 +9665,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
     chunkSize: chunkSize,
+    grouping: grouping,
   );
 
   /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -9367,6 +9681,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchExactStreamWithCounts(
         that: this,
@@ -9378,6 +9693,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
         chunkSize: chunkSize,
+        grouping: grouping,
       );
 
   Future<List<SearchResult>> searchFuzzy({
@@ -9389,6 +9705,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required ResultsOrder order,
     required bool matchNikud,
     required bool matchTaamim,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchFuzzy(
     that: this,
     query: query,
@@ -9399,6 +9716,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     order: order,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    grouping: grouping,
   );
 
   Stream<List<SearchResult>> searchFuzzyStream({
@@ -9411,6 +9729,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchFuzzyStream(
     that: this,
     query: query,
@@ -9422,6 +9741,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
     chunkSize: chunkSize,
+    grouping: grouping,
   );
 
   /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -9438,6 +9758,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchNikud,
     required bool matchTaamim,
     required int chunkSize,
+    ResultGrouping? grouping,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchFuzzyStreamWithCounts(
         that: this,
@@ -9450,6 +9771,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
         chunkSize: chunkSize,
+        grouping: grouping,
       );
 
   /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -9572,6 +9894,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required String filePath,
     BigInt? sectionId,
     int? generationOrder,
+    List<String>? extraFacets,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineUpsertDocument(
     that: this,
     id: id,
@@ -9584,6 +9907,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     filePath: filePath,
     sectionId: sectionId,
     generationOrder: generationOrder,
+    extraFacets: extraFacets,
   );
 
   /// Upsert many documents in a single FFI call. Does not commit.
