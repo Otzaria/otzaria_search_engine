@@ -147,7 +147,10 @@ pub struct SearchPageResult {
     /// [`SearchEngine::single_regex_term_query`]). The regex, advanced and
     /// *vocalized* exact/fuzzy paths can degrade this way (a vocalized word
     /// materializes a term set like an advanced word); the mark-free
-    /// exact/fuzzy paths never do and always report `false`.
+    /// exact/fuzzy paths never do this. A *grouped* search on any path can
+    /// also set it when the group cap overflows
+    /// ([`GROUP_COLLECTOR_MAX_GROUPS`]) — then `group_count` is a lower
+    /// bound while `total_count` stays exact.
     pub truncated: bool,
     /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping` — זה המספר שדפדוף
     /// (limit/offset) נספר בו. `None` בחיפוש שטוח. `total_count` נשאר
@@ -176,7 +179,10 @@ pub struct SearchStreamUpdate {
     /// Meaningful only on the first, counts-bearing event; always `false` on
     /// result chunks and on the mark-free exact/fuzzy paths, which never
     /// degrade this way (the vocalized exact/fuzzy paths can, like the
-    /// advanced path). The UI surfaces this as a "results may be partial —
+    /// advanced path). A *grouped* search on any path can also set it when
+    /// the group cap overflows ([`GROUP_COLLECTOR_MAX_GROUPS`]) — then
+    /// `group_count` is a lower bound while `total_count`/`book_counts`
+    /// stay exact. The UI surfaces this as a "results may be partial —
     /// narrow the search" warning.
     pub truncated: bool,
     /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping`; `Some` רק באירוע
@@ -631,19 +637,34 @@ pub const FACET_DIMENSION_ROOTS: [&str; 3] = ["author", "era", "base"];
 /// `merged_count` תמיד מדווח את הגודל האמיתי גם כשהרשימה נחתכת.
 const MERGED_SIBLINGS_CAP: usize = 10;
 
+/// תקרת הקבוצות שמפת סגמנט (וכן המפה הממוזגת) של [`GroupCollector`] מחזיקה.
+/// הזיכרון של הקיבוץ פרופורציונלי למספר הקבוצות הייחודיות — בלי תקרה,
+/// חיפוש exact של מילה נפוצה (TermQuery, שאינו עובר דרך תקציב ה-postings
+/// של מילה-בודדת) צובר GroupAcc לכל שורה ייחודית: ~100 בייט לקבוצה,
+/// מאות MB בשאילתות של מיליוני שורות. בהגעה לתקרה — degrade, לא שגיאה:
+/// hits לקבוצות קיימות ממשיכים להיצבר (המונים שלהן מדויקים) ו-raw_total
+/// נשאר מדויק, אבל קבוצות *חדשות* נשמטות ו-`truncated` מדווח למעלה
+/// (אותו דגל "תוצאות חלקיות" שה-UI כבר מציג). ~5MB לסגמנט במקרה הגרוע.
+const GROUP_COLLECTOR_MAX_GROUPS: usize = 50_000;
+
 /// מינימום אותיות עבריות לחתימת דה-דופליקציה: שורה קצרה מזה מקבלת 0
 /// ("אין חתימה") ולעולם לא תתאחד עם שורות אחרות במצב `IdenticalText` —
 /// כותרות ושורות בנות מילה-שתיים זהות בכל מקום ואיחודן היה מטעה.
 const LINE_DEDUP_MIN_LETTERS: usize = 12;
 
-/// חתימת דה-דופליקציה לשורת אינדקס: FNV-1a על *האותיות העבריות בלבד* של
-/// הטקסט המנורמל — רווחים, פיסוק, גרשיים וסימנים אחרים אינם משתתפים, כך
-/// ששתי מהדורות שנבדלות רק בפיסוק/רווחים מקבלות אותה חתימה. שינויי כתיב
-/// (מלא/חסר) כן משנים את החתימה — זהו דה-דופ שמרני של טקסט זהה, לא זיהוי
-/// מקבילות מקורב. מוטבעת בשדה `lineHash` (FAST) בזמן אינדוקס ומשמשת את
-/// מצב האיחוד [`ResultGrouping::IdenticalText`].
+/// חתימת דה-דופליקציה לשורת אינדקס: FNV-1a על האותיות העבריות והתווים
+/// האלפאנומריים (ASCII, מקופלי-רישיות) של הטקסט המנורמל — רווחים, פיסוק,
+/// גרשיים וסימנים אחרים אינם משתתפים, כך ששתי מהדורות שנבדלות רק
+/// בפיסוק/רווחים מקבלות אותה חתימה. ספרות ואותיות לטיניות *כן* משתתפות:
+/// "לשלם 100 שקלים" ו"לשלם 200 שקלים" הן שורות שונות, לא כפילות (המחיר:
+/// מהדורה שמוסיפה מספרי-פסוק בספרות לא תתאחד עם מהדורה נקייה — עדיף
+/// פיצול-יתר על איחוד שמעלים תוכן). שינויי כתיב (מלא/חסר) גם הם משנים
+/// את החתימה — זהו דה-דופ שמרני של טקסט זהה, לא זיהוי מקבילות מקורב.
+/// מוטבעת בשדה `lineHash` (FAST) בזמן אינדוקס ומשמשת את מצב האיחוד
+/// [`ResultGrouping::IdenticalText`].
 ///
-/// 0 שמור ל"אין חתימה" (שורה קצרה מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות).
+/// 0 שמור ל"אין חתימה" — פחות מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות
+/// *עבריות* (אלפאנומרי משתתף בחתימה אך אינו נספר לסף).
 fn line_dedup_hash(normalized_text: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -651,10 +672,14 @@ fn line_dedup_hash(normalized_text: &str) -> u64 {
     let mut letters = 0usize;
     let mut buf = [0u8; 4];
     for c in normalized_text.chars() {
-        if !('א'..='ת').contains(&c) {
+        let c = if ('א'..='ת').contains(&c) {
+            letters += 1;
+            c
+        } else if c.is_ascii_alphanumeric() {
+            c.to_ascii_lowercase()
+        } else {
             continue;
-        }
-        letters += 1;
+        };
         for byte in c.encode_utf8(&mut buf).as_bytes() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(FNV_PRIME);
@@ -2066,6 +2091,13 @@ impl SearchEngine {
     /// Return per-child facet counts for a given prefix (e.g. "/"). Drops the
     /// truncation flag — see [`Self::count`]; use
     /// [`Self::get_facet_counts_with_status`] when partiality must surface.
+    ///
+    /// שימו לב: ממדי הסינון חיים באותו שדה facet כמו עץ הקטגוריות, ולכן
+    /// תחת prefix `/` מופיעים גם השורשים השמורים [`FACET_DIMENSION_ROOTS`]
+    /// (`/author`, `/era`, `/base`) לצד קטגוריות-העל. לקוח שמונה ילדים
+    /// כדי לבנות עץ קטגוריות חייב לסנן אותם (באפליקציה:
+    /// `FacetHelper.isDimensionFacet`); לקוח שקורא ספירות לפי נתיבים
+    /// ידועים מראש אינו מושפע.
     pub fn get_facet_counts(
         &self,
         regex_terms: Vec<String>,
@@ -2512,6 +2544,7 @@ impl SearchEngine {
 
     /// Exact-mode facet counts. Drops the truncation flag — see
     /// [`Self::count_exact`]; use [`Self::get_facet_counts_exact_with_status`].
+    /// על שורשי הממדים תחת prefix `/` ראו [`Self::get_facet_counts`].
     pub fn get_facet_counts_exact(
         &self,
         query: String,
@@ -3025,6 +3058,7 @@ impl SearchEngine {
 
     /// Advanced-query facet counts. Drops the truncation flag — see
     /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
+    /// על שורשי הממדים תחת prefix `/` ראו [`Self::get_facet_counts`].
     #[allow(clippy::too_many_arguments)]
     pub fn get_facet_counts_advanced(
         &self,
@@ -3412,6 +3446,7 @@ impl SearchEngine {
 
     /// Fuzzy-mode facet counts. Drops the truncation flag — see
     /// [`Self::count_fuzzy`]; use [`Self::get_facet_counts_fuzzy_with_status`].
+    /// על שורשי הממדים תחת prefix `/` ראו [`Self::get_facet_counts`].
     pub fn get_facet_counts_fuzzy(
         &self,
         query: String,
@@ -4946,7 +4981,7 @@ impl SearchEngine {
             return Ok(SearchPageResult {
                 total_count: page.raw_total,
                 results,
-                truncated,
+                truncated: truncated || page.truncated,
                 group_count: Some(page.group_count),
             });
         }
@@ -5159,7 +5194,7 @@ impl SearchEngine {
                     total_count: Some(page.raw_total),
                     book_counts: Some(book_counts),
                     results: Vec::new(),
-                    truncated,
+                    truncated: truncated || page.truncated,
                     group_count: Some(page.group_count),
                 })
                 .is_err()
@@ -5331,8 +5366,10 @@ impl SearchEngine {
     }
 
     /// מריץ את שאילתת החיפוש עם [`GroupCollector`] וגוזר את עמוד הקבוצות
-    /// המבוקש (`limit`/`offset` בקבוצות). מעבר אינדקס מלא אחד — אותה
-    /// מחלקת עלות כמו ספירת-כל/ספירה-פר-ספר שהמסך ממילא מריץ.
+    /// המבוקש (`limit`/`offset` בקבוצות). CPU: מעבר אינדקס מלא אחד — אותה
+    /// מחלקת עלות כמו ספירת-כל/ספירה-פר-ספר שהמסך ממילא מריץ. זיכרון:
+    /// O(קבוצות), קצוץ ב-[`GROUP_COLLECTOR_MAX_GROUPS`] — בניגוד לספירות,
+    /// שמחזיקות מונה-לספר בלבד.
     fn collect_grouped(
         searcher: &Searcher,
         query: &dyn Query,
@@ -5366,6 +5403,7 @@ impl SearchEngine {
             reps,
             group_count,
             raw_total: hits.raw_total,
+            truncated: hits.truncated,
         }
     }
 
@@ -6508,9 +6546,13 @@ impl GroupAcc {
 /// הוא `(תג, ערך)` — תג 0 = `sectionId`, תג 1 = `lineHash`, תג 2 =
 /// מסמך-יחיד (שורה ללא חתימת דה-דופ במצב `IdenticalText` לעולם אינה
 /// מתאחדת, וה-id שלה משמש כמפתח).
+///
+/// `truncated` — [`GROUP_COLLECTOR_MAX_GROUPS`] נפגעה וקבוצות חדשות
+/// נשמטו; `raw_total` נשאר מדויק.
 struct GroupedHits {
     raw_total: u32,
     groups: HashMap<(u8, u64), GroupAcc>,
+    truncated: bool,
 }
 
 /// נציג קבוצה בעמוד סופי, אחרי מיון וחיתוך `limit`/`offset`.
@@ -6521,11 +6563,13 @@ struct GroupedRep {
     siblings: Vec<DocAddress>,
 }
 
-/// עמוד קבוצות סופי — נציגים + ספירות.
+/// עמוד קבוצות סופי — נציגים + ספירות. `truncated` כב-[`GroupedHits`]:
+/// תקרת הקבוצות נפגעה, `group_count` הוא תחתית ולא הערך המלא.
 struct GroupedPage {
     reps: Vec<GroupedRep>,
     group_count: u32,
     raw_total: u32,
+    truncated: bool,
 }
 
 /// שדות ה-doc-store שחברת קבוצה נושאת ([`MergedSibling`]) — נפתרים מהסכימה
@@ -6554,7 +6598,11 @@ impl SiblingFields {
 
 /// אוסף את כל המסמכים התואמים לקבוצות (ראו [`ResultGrouping`]) במעבר
 /// אחד, עם נציג-מיטבי וחברות קצוצות-תקרה לכל קבוצה. הזיכרון פרופורציונלי
-/// למספר הקבוצות; שאילתות רחבות חסומות ממילא בתקציב ה-postings.
+/// למספר הקבוצות — וזה *אינו* חסום בתקציב ה-postings: המסלולים exact
+/// הלא-מנוקד (TermQuery/PhraseQuery) ו-fuzzy (תקציבי האוטומטון חוסמים
+/// מספר מונחים, לא מספר מסמכים תואמים) יכולים לעבור על מיליוני שורות.
+/// לכן מספר הקבוצות קצוץ ב-[`GROUP_COLLECTOR_MAX_GROUPS`] עם degrade
+/// מדווח, לא צבירה בלתי-חסומה.
 struct GroupCollector {
     mode: ResultGrouping,
     sort: GroupSort,
@@ -6584,6 +6632,7 @@ struct GroupSegmentCollector {
     key_col: tantivy::columnar::Column<u64>,
     raw_total: u32,
     groups: HashMap<(u8, u64), GroupAcc>,
+    truncated: bool,
 }
 
 impl Collector for GroupCollector {
@@ -6615,6 +6664,7 @@ impl Collector for GroupCollector {
             key_col,
             raw_total: 0,
             groups: HashMap::new(),
+            truncated: false,
         })
     }
 
@@ -6626,14 +6676,23 @@ impl Collector for GroupCollector {
         let mut merged = GroupedHits {
             raw_total: 0,
             groups: HashMap::new(),
+            truncated: false,
         };
         for seg in per_segment {
             merged.raw_total += seg.raw_total;
+            merged.truncated |= seg.truncated;
             for (key, acc) in seg.groups {
+                // גם המפה הממוזגת קצוצה: איחוד סגמנטים שכל אחד מהם בתקרה
+                // היה מכפיל אותה פי מספר הסגמנטים.
+                let at_cap = merged.groups.len() >= GROUP_COLLECTOR_MAX_GROUPS;
                 match merged.groups.entry(key) {
                     std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().merge(acc),
                     std::collections::hash_map::Entry::Vacant(v) => {
-                        v.insert(acc);
+                        if at_cap {
+                            merged.truncated = true;
+                        } else {
+                            v.insert(acc);
+                        }
                     }
                 }
             }
@@ -6669,10 +6728,15 @@ impl SegmentCollector for GroupSegmentCollector {
         };
         let entry: GroupEntry = (sort_val, id, DocAddress::new(self.seg_ord, doc_id));
         self.raw_total += 1;
+        let at_cap = self.groups.len() >= GROUP_COLLECTOR_MAX_GROUPS;
         match self.groups.entry(key) {
             std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(entry),
             std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(GroupAcc::new(entry));
+                if at_cap {
+                    self.truncated = true;
+                } else {
+                    v.insert(GroupAcc::new(entry));
+                }
             }
         }
     }
@@ -6681,6 +6745,7 @@ impl SegmentCollector for GroupSegmentCollector {
         GroupedHits {
             raw_total: self.raw_total,
             groups: self.groups,
+            truncated: self.truncated,
         }
     }
 }
@@ -11688,6 +11753,8 @@ mod tests {
             .unwrap();
         assert_eq!(page.total_count, 3);
         assert_eq!(page.group_count, Some(2));
+        // הרחק מתקרת הקבוצות — הדגל לא מורם.
+        assert!(!page.truncated);
         assert_eq!(page.results.len(), 2);
         let merged = page
             .results
@@ -11750,5 +11817,54 @@ mod tests {
         assert_ne!(a, line_dedup_hash("אמר רבי עקיבה כל ישראל יש להם חלק"));
         // קצר מדי — אין חתימה.
         assert_eq!(line_dedup_hash("אמר רבא"), 0);
+    }
+
+    #[test]
+    fn line_dedup_hash_distinguishes_digits_and_latin() {
+        // שורות שנבדלות רק במספר אינן כפילות.
+        let a = line_dedup_hash("יש לשלם מאה שקלים עד יום 15 בחודש");
+        let b = line_dedup_hash("יש לשלם מאה שקלים עד יום 16 בחודש");
+        assert_ne!(a, 0);
+        assert_ne!(a, b);
+        // וכך גם אותיות לטיניות...
+        assert_ne!(
+            line_dedup_hash("ראו במהדורת ניו יורק עמוד A דפוס ראשון"),
+            line_dedup_hash("ראו במהדורת ניו יורק עמוד B דפוס ראשון"),
+        );
+        // ...אבל רישיות לטיניות מקופלות, כמו שאר הקיפול הטיפוגרפי.
+        assert_eq!(
+            line_dedup_hash("ראו במהדורת ניו יורק עמוד a דפוס ראשון"),
+            line_dedup_hash("ראו במהדורת ניו יורק עמוד A דפוס ראשון"),
+        );
+        // אלפאנומרי משתתף בחתימה אך לא נספר לסף האותיות העבריות.
+        assert_eq!(line_dedup_hash("1234567890 abcdef אמר רבא"), 0);
+    }
+
+    #[test]
+    fn group_collector_caps_group_count() {
+        let collector =
+            GroupCollector::new(&ResultGrouping::IdenticalText, &ResultsOrder::Catalogue);
+        let seg = |start: u64, end: u64| GroupedHits {
+            raw_total: (end - start) as u32,
+            truncated: false,
+            groups: (start..end)
+                .map(|i| {
+                    let key = (1u8, i);
+                    (key, GroupAcc::new((i, i, DocAddress::new(0, i as u32))))
+                })
+                .collect(),
+        };
+        // סגמנט ראשון ממלא את המפה הממוזגת עד התקרה; השני חופף בקבוצה
+        // אחת (0) ומוסיף קבוצות חדשות מעבר לתקרה.
+        let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
+        let merged = collector
+            .merge_fruits(vec![seg(0, cap), seg(0, 1), seg(cap, cap + 10)])
+            .unwrap();
+        // קבוצות חדשות נשמטו + הדגל דווח; raw_total נשאר מדויק.
+        assert!(merged.truncated);
+        assert_eq!(merged.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
+        assert_eq!(merged.raw_total, GROUP_COLLECTOR_MAX_GROUPS as u32 + 11);
+        // קבוצה קיימת ממשיכה להתמזג גם בתקרה — המונה שלה מדויק.
+        assert_eq!(merged.groups[&(1u8, 0)].count, 2);
     }
 }
