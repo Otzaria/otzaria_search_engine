@@ -505,21 +505,26 @@ impl WordFlags {
 
 // ── Tokenisation ───────────────────────────────────────────────────────────
 
-/// Normalises punctuation exactly like the Dart `sanitizeQuery`:
-/// `״→"`, `׳→'`, `־`/`-`→space; strips `,;!?:*()[]{}^$|\+.~\``;
-/// collapses whitespace runs to a single space; trims.
+/// Normalises punctuation to the tokenizer's rules (the query-side mirror of
+/// `HebrewTokenizer`):
+/// * גרשיים: `״`/`“`/`”`→`"`, גרש: `׳`/`‘`/`’`→`'` (הצורות הטיפוגרפיות
+///   נפוצות בטקסטים שעברו Word/OCR ומשמשות לסירוגין ברינדור RTL).
+/// * מפרידים → רווח: מקף/מינוס, `|`, ופיסוק דבוק `,;:!?(){}` — כמו
+///   בטוקנייזר, שם הם שוברים טוקן.
+/// * שקופים נמחקים: `*[]^$\+.~\`` ותווים בלתי-נראים (bidi/zero-width) —
+///   כמו בטוקנייזר, שם הם נבלעים בלי לשבור.
+/// * כיווץ רצפי רווחים לרווח יחיד; trim.
 pub fn sanitize_query(query: &str) -> String {
-    const STRIP: &[char] = &[
-        ',', ';', '!', '?', ':', '*', '(', ')', '[', ']', '{', '}', '^', '$', '|', '\\', '+', '.',
-        '~', '`',
-    ];
+    const STRIP: &[char] = &['*', '[', ']', '^', '$', '\\', '+', '.', '~', '`'];
     let mut buf = String::with_capacity(query.len());
     for ch in query.chars() {
         match ch {
-            '\u{05F4}' => buf.push('"'),
-            '\u{05F3}' => buf.push('\''),
-            '\u{05BE}' | '-' => buf.push(' '),
-            c if STRIP.contains(&c) => {}
+            '\u{05F4}' | '\u{201C}' | '\u{201D}' => buf.push('"'),
+            '\u{05F3}' | '\u{2018}' | '\u{2019}' => buf.push('\''),
+            '\u{05BE}' | '-' | '|' | ',' | ';' | ':' | '!' | '?' | '(' | ')' | '{' | '}' => {
+                buf.push(' ')
+            }
+            c if STRIP.contains(&c) || is_invisible_char(c) => {}
             c => buf.push(c),
         }
     }
@@ -543,17 +548,10 @@ fn collapse_whitespace(s: &str) -> String {
     out.trim().to_string()
 }
 
-/// תו שממשיך טוקן בשאילתה — משקף אחד-לאחד את `is_word_char` של
-/// `HebrewTokenizer` (אות/ספרה או ניקוד/טעם צמוד), כך שטוקני שאילתה נשברים
-/// בדיוק היכן שהאינדקס שובר. בפרט, מפרידי הפיסוק שבטווח העברי — פסק
-/// (U+05C0), סוף-פסוק (U+05C3) ונו"ן הפוכה (U+05C6) — שוברים טוקן; אחרת
-/// `ברא׃` היה נשאר טוקן אחד שלא קיים במילון האינדקס.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || is_attached_mark(c)
-}
-
 /// Splits a sanitised query into word tokens, mirroring the `HebrewTokenizer`
-/// the `text` field is indexed with (see `crate::hebrew_tokenizer`):
+/// the `text` field is indexed with — literally: the boundaries come from
+/// the tokenizer's own scan core (`next_token_boundaries`), so the two sides
+/// cannot drift apart. The quote rules, for reference:
 /// * `"` between word characters is part of the token (`ז"ל`, `רמב"ם`);
 ///   at a word edge it separates (`רמב"` → `רמב`).
 /// * `'` between word characters is part of the token (`ד'אש`, `ג'ורג'`);
@@ -561,49 +559,30 @@ fn is_word_char(c: char) -> bool {
 /// * `''` between word characters collapses to a single `"` (the old-file
 ///   convention `רמב''ם` ≡ `רמב"ם`); any other quote run separates.
 ///
-/// `sanitize_query` has already normalised `״`→`"` and `׳`→`'` and stripped
-/// the transparent punctuation, so query tokens line up with the
-/// ASCII-quote index terms.
+/// `sanitize_query` has already folded `״`/`׳` and the typographic forms to
+/// ASCII quotes, turned the separators into spaces and stripped the
+/// transparent punctuation — so unlike the index side, the only token-text
+/// normalisation left here is the `''`→`"` collapse. Attached marks are
+/// intentionally KEPT in the word (the vocalized path needs them; the plain
+/// path normalises the query before splitting).
 pub fn split_query_words(query: &str) -> Vec<String> {
     let cleaned = sanitize_query(query);
-    let chars: Vec<char> = cleaned.trim().chars().collect();
     let mut words = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if !is_word_char(chars[i]) {
-            i += 1;
-            continue;
-        }
-        let mut word = String::new();
-        loop {
-            while i < chars.len() && is_word_char(chars[i]) {
-                word.push(chars[i]);
-                i += 1;
-            }
-            // רצף הגרשים/הגרשיים שאחרי המילה; התו שאחריו מכריע אם הרצף
-            // פנימי (הטוקן נמשך דרכו) או סוגר — כמו בטוקנייזר.
-            let run_start = i;
-            while i < chars.len() && (chars[i] == '\'' || chars[i] == '"') {
-                i += 1;
-            }
-            let followed_by_word = i < chars.len() && is_word_char(chars[i]);
-            match (&chars[run_start..i], followed_by_word) {
-                ([], _) => break,
-                (['\''], true) => word.push('\''),
-                (['\'', '\''], true) => word.push('"'),
-                (['"'], true) => word.push('"'),
-                // סוף מילה: גרש סוגר (הראשון בלבד) נבלע; גרשיים — לא.
-                ([first, ..], false) => {
-                    if *first == '\'' {
-                        word.push('\'');
-                    }
-                    break;
-                }
-                // צירוף לא-חוקי לפני תו-מילה (`""`, שלשות...) — מפריד.
-                (_, true) => break,
+    let mut pos = 0;
+    while let Some((start, end)) = crate::hebrew_tokenizer::next_token_boundaries(&cleaned, pos) {
+        let mut word = String::with_capacity(end - start);
+        for c in cleaned[start..end].chars() {
+            if c == '\'' && word.ends_with('\'') {
+                // זוג גרשים בתוך הגבולות הוא פנימי בהכרח (גרש סוגר נבלע
+                // יחיד) — מאוחד לגרשיים, כמו בטוקנייזר.
+                word.pop();
+                word.push('"');
+            } else {
+                word.push(c);
             }
         }
         words.push(word);
+        pos = end;
     }
     words
 }
@@ -617,7 +596,11 @@ pub fn split_query_words(query: &str) -> Vec<String> {
 /// gluing `"אשר־שמע"` into one word before `split_query_words` gets to treat
 /// the maqaf as a word break.
 pub(crate) fn normalize_for_index(text: &str) -> String {
-    strip_attached_marks(&fold_presentation_forms(text)).to_lowercase()
+    fold_presentation_forms(text)
+        .chars()
+        .filter(|c| !is_word_mark(*c))
+        .collect::<String>()
+        .to_lowercase()
 }
 
 // ── Hebrew character classes & folding ──────────────────────────────────────
@@ -629,6 +612,36 @@ pub(crate) fn normalize_for_index(text: &str) -> String {
 pub(crate) fn is_attached_mark(c: char) -> bool {
     matches!(c, '\u{0591}'..='\u{05C7}')
         && !matches!(c, '\u{05BE}' | '\u{05C0}' | '\u{05C3}' | '\u{05C6}')
+}
+
+/// Combining marks כלליים (U+0300–U+036F) — בקורפוס: נקודה עילית (U+0307)
+/// וחברותיה בתעתיק ערבית-יהודית (`כלת̇ום`, `מצ̇ארע`). מטופלים כמו סימן צמוד
+/// עברי: ממשיכי-מילה שמוסרים מטרם השדה הרגיל ונשמרים בשדה המנוקד. בכוונה
+/// *לא* קטגוריית `Mark` המלאה של Unicode — היא כוללת את הטווח העברי שכבר
+/// מטופל עם החרגות-מפרידים, וכתבים אחרים עם דקויות משלהם.
+#[inline]
+pub(crate) fn is_general_combining_mark(c: char) -> bool {
+    matches!(c, '\u{0300}'..='\u{036F}')
+}
+
+/// כל סימן ממשיך-מילה: סימן עברי צמוד, combining mark כללי, או varika
+/// (U+FB1E — Presentation Form צמוד שמקופל ל-`""`; בלי ההכללה כאן הוא היה
+/// שובר מילה בקלט לא-מנורמל למרות שהקיפול פשוט בולע אותו).
+#[inline]
+pub(crate) fn is_word_mark(c: char) -> bool {
+    is_attached_mark(c) || is_general_combining_mark(c) || c == '\u{FB1E}'
+}
+
+/// תווים בלתי-נראים (bidi controls, zero-width, BOM) — הסט שמסלול ה-PDF
+/// מוחק מאז ומתמיד ([`normalize_pdf_text_for_indexing`]). בטוקנייזר הם
+/// שקופים (נבלעים, לא שוברים) וב-`sanitize_query` נמחקים — עקבי עם
+/// התנהגות ה-PDF שמדביקה אותם.
+#[inline]
+pub(crate) fn is_invisible_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+    )
 }
 
 /// מסיר ניקוד וטעמים צמודים בלבד ([`is_attached_mark`]) — משאיר מקף, פסק
@@ -914,18 +927,11 @@ pub fn normalize_vocalized_text_for_indexing(input: &str) -> String {
     fold_strip_collapse(&strip_html_for_indexing(input), false, |_| false)
 }
 
-const PDF_INVISIBLE: &[char] = &[
-    // Dart `_pdfInvisibleChars`: U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+FEFF
-    '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}',
-    '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{FEFF}',
-];
-
 /// Ingestion normalisation for PDF text: like [`normalize_text_for_indexing`]
-/// but also drops bidi/zero-width invisibles OCR tends to leave behind.
+/// but also drops bidi/zero-width invisibles OCR tends to leave behind
+/// ([`is_invisible_char`] — the Dart `_pdfInvisibleChars` set).
 pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
-    fold_strip_collapse(&strip_html_for_indexing(input), true, |c| {
-        PDF_INVISIBLE.contains(&c)
-    })
+    fold_strip_collapse(&strip_html_for_indexing(input), true, is_invisible_char)
 }
 
 /// Heuristic mirroring the Dart `isProbablyGarbagePdfText`: after removing all
@@ -1526,14 +1532,21 @@ fn word_to_pattern_base(root: &str, flags: &WordFlags) -> String {
 /// Free-marks regex atom: any run of attached marks. The class range also
 /// covers the separator punctuation inside U+0591–U+05C7 (maqaf, paseq, sof
 /// pasuq, nun hafukha), which can never appear inside a token — the
-/// tokenizer breaks on them — so the wider class costs nothing.
-pub(crate) const VOC_FREE_MARKS: &str = "[\u{0591}-\u{05C7}]*";
+/// tokenizer breaks on them — so the wider class costs nothing. Includes the
+/// general combining range (U+0300–U+036F): the vocalized tokenizer keeps
+/// those marks in term text, and they are always free (never a requirement).
+pub(crate) const VOC_FREE_MARKS: &str = "[\u{0300}-\u{036F}\u{0591}-\u{05C7}]*";
 
 /// Whole-term pattern for one vocalized query token: typed marks of an
 /// enabled class are required in order, everything else is free.
 pub(crate) fn vocalized_token_pattern(token: &str, voc: &VocalizedFlags) -> String {
     let mut out = String::with_capacity(token.len() * 4);
     for c in token.chars() {
+        if is_general_combining_mark(c) {
+            // סימן combining כללי אינו ניקוד ואינו טעם — לעולם לא דרישה;
+            // ריצת הסימנים החופשיים שאחרי אות הבסיס כבר מכסה אותו.
+            continue;
+        }
         if is_attached_mark(c) {
             if voc.requires(c) {
                 // Marks are never regex metacharacters — pushed verbatim.
@@ -2432,6 +2445,40 @@ mod tests {
         assert_eq!(sanitize_query("תוס׳"), "תוס'");
     }
 
+    #[test]
+    fn sanitize_folds_typographic_quotes() {
+        // הצורות הטיפוגרפיות (Word/OCR) מתקפלות ל-ASCII — שתי צורות הכיוון
+        // משמשות לסירוגין ברינדור RTL, לכן כל הארבע מקופלות.
+        assert_eq!(sanitize_query("רמח\u{201D}ל"), "רמח\"ל");
+        assert_eq!(sanitize_query("רמח\u{201C}ל"), "רמח\"ל");
+        assert_eq!(sanitize_query("תוס\u{2019}"), "תוס'");
+        assert_eq!(sanitize_query("תוס\u{2018}"), "תוס'");
+    }
+
+    #[test]
+    fn sanitize_breaking_punctuation_becomes_space() {
+        // פיסוק ההפסקה ו-`|` הם מפרידים (כמו בטוקנייזר) — רווח, לא מחיקה:
+        // `שלום,עולם` חייב להתפצל לשתי מילים, לא להידבק.
+        assert_eq!(sanitize_query("א|ב"), "א ב");
+        assert_eq!(sanitize_query("שלום,עולם"), "שלום עולם");
+        assert_eq!(sanitize_query("רעהו,10"), "רעהו 10");
+        assert_eq!(sanitize_query("איפא:5"), "איפא 5");
+        assert_eq!(sanitize_query("א;ב!ג?ד(ה)ו{ז}"), "א ב ג ד ה ו ז");
+        // נקודה ו-[] נשארים שקופים — נמחקים בלי לפצל.
+        assert_eq!(sanitize_query("פ.ב.י"), "פבי");
+        assert_eq!(sanitize_query("יב[ע]ר"), "יבער");
+        assert_eq!(sanitize_query("3.14"), "314");
+    }
+
+    #[test]
+    fn sanitize_drops_invisible_chars() {
+        // תווים בלתי-נראים (bidi/zero-width/BOM) נמחקים — מדביקים, לא
+        // מפצלים — עקבי עם מסלול ה-PDF ועם שקיפותם בטוקנייזר.
+        assert_eq!(sanitize_query("לה\u{FEFF}תיר"), "להתיר");
+        assert_eq!(sanitize_query("שלום\u{200F}עולם"), "שלוםעולם");
+        assert_eq!(sanitize_query("א\u{202B}ב\u{202C}ג"), "אבג");
+    }
+
     // ── ingestion normalisation (parity with the old Dart IndexingDocumentBuilder) ──
 
     #[test]
@@ -2524,6 +2571,27 @@ mod tests {
         assert_eq!(normalize_for_index("Torah"), "torah");
     }
 
+    #[test]
+    fn normalize_for_index_strips_general_combining_marks() {
+        // תעתיק ערבית-יהודית: הנקודה העילית (U+0307) מוסרת מצורת המילון —
+        // כמו ניקוד — כך ש`כלת̇ום` ו-`כלתום` ממופים לאותו טרם.
+        assert_eq!(normalize_for_index("כלת\u{0307}ום"), "כלתום");
+        assert_eq!(normalize_for_index("מצ\u{0307}ארע"), "מצארע");
+        // varika (U+FB1E) נבלע דרך קיפול ה-Presentation Forms.
+        assert_eq!(normalize_for_index("א\u{FB1E}ב"), "אב");
+    }
+
+    #[test]
+    fn general_combining_marks_are_word_marks_not_attached() {
+        for cp in 0x0300u32..=0x036F {
+            let c = char::from_u32(cp).unwrap();
+            assert!(is_general_combining_mark(c) && is_word_mark(c));
+            // לא ניקוד ולא טעם — לעולם לא דרישת-התאמה בחיפוש מנוקד.
+            assert!(!is_attached_mark(c) && !is_nikud_mark(c) && !is_taam_mark(c));
+        }
+        assert!(!is_general_combining_mark('א') && !is_general_combining_mark('\u{05B8}'));
+    }
+
     // ── חיפוש מנוקד ─────────────────────────────────────────────────────
 
     #[test]
@@ -2560,6 +2628,21 @@ mod tests {
         );
         assert!(contains_attached_marks("בָּרָא"));
         assert!(!contains_attached_marks("ברא"));
+    }
+
+    #[test]
+    fn vocalized_token_pattern_combining_marks_never_required() {
+        // combining כללי שהוקלד אינו דרישה — גם כששתי המחלקות דלוקות:
+        // התבנית זהה לזו של המילה הנקייה, והריצה החופשית (שכוללת את
+        // U+0300–036F) מכסה אותו בטרמים מנוקדים.
+        let all = VocalizedFlags::new(true, true);
+        assert_eq!(
+            vocalized_token_pattern("כלת\u{0307}ום", &all),
+            vocalized_token_pattern("כלתום", &all)
+        );
+        assert!(VOC_FREE_MARKS.contains("\u{0300}"));
+        // תבנית של מילה מנוקדת עדיין מקמפלת ב-tantivy-fst.
+        tantivy_fst::Regex::new(&vocalized_token_pattern("בָּרָ\u{0307}א", &all)).unwrap();
     }
 
     #[test]
@@ -2823,6 +2906,13 @@ mod tests {
             "שאלה: מה הדין? תשובה — [עיין] {שם} וצ\"ע!",
             "3.14 ד'אש תוס'. סי' קכ\"ה ס\"ק ז'",
             "hello, world! (test) A.B.C 1+2",
+            // גרשיים טיפוגרפיים (Word/OCR), פיסוק דבוק, תעתיק עם combining
+            // ותווים בלתי-נראים — דפוסי הקורפוס שהובילו לכללים החדשים.
+            "אמר רמח\u{201D}ל ותוס\u{2019} על שד\u{201C}ל",
+            "וְאָהַבְתָּ לְרֵעֲךָ,10 כָּמוֹךָ",
+            "שלום,עולם איפא:5 א{ב}ג",
+            "כלת\u{0307}ום ומצ\u{0307}ארע בתעתיק",
+            "לה\u{FEFF}תיר ושלום\u{200F}עולם",
         ];
         for text in corpus {
             assert_eq!(
@@ -2906,12 +2996,56 @@ mod tests {
             "אשר־שמע אל־משה בית-דין",
             "3.14 סי' קכ\"ה ס\"ק ז'",
             "ה\"מגיד משנה\" כתב",
+            // הכללים החדשים: `|` ופיסוק דבוק מפרידים בשני המסלולים,
+            // צורות טיפוגרפיות מתקפלות, בלתי-נראים מדביקים.
+            "א|ב",
+            "שלום,עולם רעהו,10 איפא:5",
+            "רמח\u{201D}ל תוס\u{2019} שד\u{201C}ל",
+            "אמר \u{201C}שלום\u{201D} לכולם",
+            "יב[ע]ר פ.ב.י (עא:) {שם}",
+            "לה\u{FEFF}תיר שלום\u{200F}עולם",
         ];
         for s in samples {
             assert_eq!(
                 split_query_words(s),
                 analyzer_terms(s),
                 "split/tokenizer drift for: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_split_query_words_matches_index_analyzer() {
+        // הרחבת ה-property של טסט הדוגמאות: לכל קלט אקראי (זרע קבוע —
+        // דטרמיניסטי) משני הצדדים יוצאים אותם טרמים בדיוק. האלפבית מכסה
+        // אותיות, ספרות, כל צורות הגרשים, מפרידים, שקופים ובלתי-נראים —
+        // אך לא ניקוד/Presentation Forms: שם ה-analyzer מנרמל את טקסט
+        // הטוקן (הסרת סימנים/קיפול) בעוד split_query_words משמר בכוונה
+        // (המסלול המנוקד צריך את הסימנים) — הגבולות זהים, הטקסט לא.
+        const ALPHABET: &[char] = &[
+            'א', 'ב', 'ג', 'ש', 'ת', 'ם', 'ן', '3', '7', '\'', '"', '\u{05F3}', '\u{05F4}',
+            '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', ' ', ' ', '-', '\u{05BE}', '|', ',',
+            ';', ':', '!', '?', '(', ')', '{', '}', '\u{05C0}', '\u{05C3}', '.', '[', ']', '*',
+            '+', '~', '`', '^', '$', '\\', '\u{200F}', '\u{FEFF}', '\u{202B}',
+        ];
+        fn xorshift(state: &mut u64) -> u64 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *state = x;
+            x
+        }
+        let mut state = 0xDEAD_BEEF_5EED_u64;
+        for _ in 0..2_000 {
+            let len = (xorshift(&mut state) as usize) % 24;
+            let s: String = (0..len)
+                .map(|_| ALPHABET[(xorshift(&mut state) as usize) % ALPHABET.len()])
+                .collect();
+            assert_eq!(
+                split_query_words(&s),
+                analyzer_terms(&s),
+                "split/tokenizer drift for: {s:?}"
             );
         }
     }

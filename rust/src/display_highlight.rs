@@ -58,13 +58,16 @@ pub struct DisplayHighlight {
 /// after a letter would swallow a separator between words and break
 /// word-boundary detection (e.g. "אשר־שמע") or let a one-word pattern
 /// highlight across a verse boundary (e.g. "אב" matching "א׃ב").
+/// Also covers the general combining range U+0300–U+036F (Judeo-Arabic
+/// transliteration dots: `כלת̇ום`), which the tokenizer treats like attached
+/// marks — so a mark-free query term highlights the marked display form.
 pub(crate) const ATTACHED_MARKS_CLASS: &str =
-    "[\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]*";
+    "[\u{0300}-\u{036F}\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]*";
 
 /// Separator between adjacent query words in displayed text: whitespace,
 /// Hebrew marks, HTML tags (so markup between words is not a mismatch), or
 /// punctuation.
-const WORD_SEPARATOR: &str = r#"(?:\s|[֑-ׇ]|<[^>]*>|[.,:;!?'"״׳־\-–—()\[\]{}])+"#;
+const WORD_SEPARATOR: &str = r#"(?:\s|[֑-ׇ̀-ͯ]|<[^>]*>|[.,:;!?'"״׳‘’“”־\-–—()\[\]{}])+"#;
 
 /// Cumulative per-word pattern length budget. Display patterns are ~3× longer
 /// than index-term patterns (each letter carries a marks class), so this is
@@ -108,7 +111,17 @@ fn spacing_for_gaps(
 /// מטמיע לכל מילה עם גרשיים גם את צורתה הנקייה (הטוקן-התאום), כך שטרם
 /// נטול-גרשיים ("רמבם") מתאים בדין לטקסט מודפס `רמב"ם` — וההדגשה חייבת
 /// לכסות זאת. עד שני תווים: זוג-גרשים ≡ גרשיים (מוסכמת `רמב''ם`).
-pub(crate) const OPTIONAL_QUOTES: &str = "[\"'\\u05F3\\u05F4]{0,2}";
+/// כולל את הצורות הטיפוגרפיות (U+2018/U+2019/U+201C/U+201D) שהטוקנייזר
+/// מקפל — `רמח”ל` בדפוס מודגש ע"י `רמח"ל`/`רמחל`.
+pub(crate) const OPTIONAL_QUOTES: &str = "[\"'\\u05F3\\u05F4\\u2018\\u2019\\u201C\\u201D]{0,2}";
+
+/// גרש בטקסט תצוגה: ASCII, עברי, או ציטוט-יחיד טיפוגרפי — הצורות
+/// שהטוקנייזר מקפל ל-`'` (ראו `hebrew_tokenizer::is_geresh`).
+const GERESH_DISPLAY_CLASS: &str = "['\\u05F3\\u2018\\u2019]";
+
+/// גרשיים בטקסט תצוגה: ", ״, צורה טיפוגרפית, או זוג גרשים מודפס
+/// (`רמב''ם`) — הצורות שהטוקנייזר מקפל ל-`"`.
+const GERSHAYIM_DISPLAY_CLASS: &str = "(?:[\"\\u05F4\\u201C\\u201D]|['\\u05F3\\u2018\\u2019]{2})";
 
 /// Builds the display pattern for one literal term: each Hebrew base letter
 /// may be followed by attached marks, and geresh/gershayim match both the
@@ -127,11 +140,11 @@ fn charwise_display_pattern(term: &str) -> String {
                 out.push(ch);
                 out.push_str(ATTACHED_MARKS_CLASS);
             }
-            // `"` בטרם ≡ גרשיים בדפוס: ", ״, או זוג גרשים (מוסכמת
-            // `רמב''ם` בקבצים ישנים — הטוקנייזר מאחד אותו ל-`"` אבל טקסט
-            // התצוגה נשמר כפי שנדפס).
-            '"' => out.push_str("(?:[\"\\u05F4]|['\\u05F3]{2})"),
-            '\'' => out.push_str("['\\u05F3]"),
+            // `"` בטרם ≡ גרשיים בדפוס: ", ״, צורה טיפוגרפית (“ ”), או זוג
+            // גרשים (מוסכמת `רמב''ם` בקבצים ישנים — הטוקנייזר מאחד אותו
+            // ל-`"` אבל טקסט התצוגה נשמר כפי שנדפס).
+            '"' => out.push_str(GERSHAYIM_DISPLAY_CLASS),
+            '\'' => out.push_str(GERESH_DISPLAY_CLASS),
             _ => push_escaped_char(&mut out, ch),
         }
     }
@@ -474,8 +487,8 @@ fn literal_charwise_pattern(word: &str) -> String {
     let mut out = String::with_capacity(word.len() * 4);
     for ch in word.chars() {
         match ch {
-            '"' | '\u{05F4}' => out.push_str("(?:[\"\\u05F4]|['\\u05F3]{2})"),
-            '\'' | '\u{05F3}' => out.push_str("['\\u05F3]"),
+            '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' => out.push_str(GERSHAYIM_DISPLAY_CLASS),
+            '\'' | '\u{05F3}' | '\u{2018}' | '\u{2019}' => out.push_str(GERESH_DISPLAY_CLASS),
             _ => push_escaped_char(&mut out, ch),
         }
         out.push_str(ATTACHED_MARKS_CLASS);
@@ -543,12 +556,16 @@ mod tests {
         fn quotes_match_both_forms() {
             let ascii = build_literal_pattern("ז\"ל").unwrap();
             let hebrew = build_literal_pattern("ז\u{05F4}ל").unwrap();
+            let curly = build_literal_pattern("ז\u{201D}ל").unwrap();
             assert_eq!(ascii, hebrew);
-            // המחלקה תופסת ", ״ וגם זוג גרשים מודפס (רמב''ם).
-            assert!(ascii.contains("(?:[\"\\u05F4]|['\\u05F3]{2})"));
+            // צורה טיפוגרפית בקלט מתנהגת כמו גרשיים רגילות.
+            assert_eq!(ascii, curly);
+            // המחלקה תופסת ", ״, צורות טיפוגרפיות וגם זוג גרשים מודפס.
+            assert!(ascii.contains(super::super::GERSHAYIM_DISPLAY_CLASS));
 
             let geresh = build_literal_pattern("תוס'").unwrap();
-            assert!(geresh.contains("['\\u05F3]"));
+            assert_eq!(geresh, build_literal_pattern("תוס\u{2019}").unwrap());
+            assert!(geresh.contains(super::super::GERESH_DISPLAY_CLASS));
         }
 
         #[test]
@@ -651,7 +668,7 @@ mod tests {
     #[test]
     fn trailing_geresh_matches_both_forms() {
         let hl = build("תוס'");
-        assert!(hl.combined_pattern.contains("['\\u05F3]"));
+        assert!(hl.combined_pattern.contains(GERESH_DISPLAY_CLASS));
     }
 
     #[test]
@@ -661,10 +678,9 @@ mod tests {
         let hl = build("ז\"ל");
         assert_eq!(hl.word_patterns.len(), 1);
         assert!(hl.combined_pattern.contains("ז"));
-        // ", ״ או זוג גרשים מודפס — טקסט התצוגה נשמר כפי שנדפס.
-        assert!(hl
-            .combined_pattern
-            .contains("(?:[\"\\u05F4]|['\\u05F3]{2})"));
+        // ", ״, צורה טיפוגרפית או זוג גרשים מודפס — טקסט התצוגה נשמר
+        // כפי שנדפס.
+        assert!(hl.combined_pattern.contains(GERSHAYIM_DISPLAY_CLASS));
     }
 
     #[test]

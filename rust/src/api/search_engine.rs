@@ -23,7 +23,7 @@ use tantivy::query::{
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
 use tantivy::snippet::SnippetGenerator;
-use tantivy::tokenizer::{LowerCaser, TextAnalyzer, TokenStream};
+use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, TextAnalyzer, TokenStream};
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
@@ -33,7 +33,7 @@ use crate::display_highlight;
 use crate::gap_phrase::GapVerifiedPhraseQuery;
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
-use crate::hebrew_tokenizer::{HebrewTokenizer, VocalizedHebrewTokenizer};
+use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
@@ -363,6 +363,11 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // את ה-facets הממדיים — לא, כמו הטוקן נטול-הגרשיים לעיל).
 const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
+
+/// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
+/// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
+/// גרשיים וניקוד), ומתחת לכל ריצת-זבל אמיתית (base64 שזלג לקורפוס).
+const MAX_TOKEN_BYTES: usize = 128;
 const DEFAULT_GENERATION_ORDER: u32 = 5;
 const GENERATION_SORT_SHIFT: u32 = 56;
 const GENERATION_SORT_ID_MASK: u64 = (1u64 << GENERATION_SORT_SHIFT) - 1;
@@ -1144,19 +1149,27 @@ impl SearchEngine {
         };
         // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
         // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
+        // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
+        // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
+        // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
+        // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
         index.tokenizers().register(
             "hebrew",
             TextAnalyzer::builder(HebrewTokenizer {
                 emit_quote_free: true,
+                keep_marks: false,
             })
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
             .filter(LowerCaser)
             .build(),
         );
         index.tokenizers().register(
             "hebrew_vocalized",
-            TextAnalyzer::builder(VocalizedHebrewTokenizer {
+            TextAnalyzer::builder(HebrewTokenizer {
                 emit_quote_free: true,
+                keep_marks: true,
             })
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
             .filter(LowerCaser)
             .build(),
         );
@@ -1166,15 +1179,19 @@ impl SearchEngine {
             "hebrew_query",
             TextAnalyzer::builder(HebrewTokenizer {
                 emit_quote_free: false,
+                keep_marks: false,
             })
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
             .filter(LowerCaser)
             .build(),
         );
         index.tokenizers().register(
             "hebrew_vocalized_query",
-            TextAnalyzer::builder(VocalizedHebrewTokenizer {
+            TextAnalyzer::builder(HebrewTokenizer {
                 emit_quote_free: false,
+                keep_marks: true,
             })
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
             .filter(LowerCaser)
             .build(),
         );
@@ -1305,6 +1322,11 @@ impl SearchEngine {
     /// Add a single document. Does not commit.
     /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
     /// [`Self::add_documents_batch`] is the fingerprint-aware path.
+    ///
+    /// `_text` is normalized here ([`normalize_text_for_indexing`]) — the API
+    /// is exposed over FFI, so the "input is already normalized" assumption
+    /// is enforced rather than documented. Already-normalized text passes
+    /// through the fast paths at negligible cost.
     pub fn add_document(
         &mut self,
         _id: u64,
@@ -1335,10 +1357,11 @@ impl SearchEngine {
             line_hash_f,
         ) = self.all_fields()?;
         let topics_facet = Facet::from_text(_topics)?;
+        let normalized_text = hebrew_query::normalize_text_for_indexing(_text);
         let mut document = doc!(
             title_f        => _title,
             reference_f    => _reference,
-            text_f         => _text,
+            text_f         => normalized_text.as_str(),
             id_f           => _id,
             segment_f      => _segment,
             is_pdf_f       => _is_pdf,
@@ -1350,13 +1373,13 @@ impl SearchEngine {
                 _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
                 _id
             ),
-            line_hash_f    => line_dedup_hash(_text)
+            line_hash_f    => line_dedup_hash(&normalized_text)
         );
         for facet in _extra_facets.iter().flatten() {
             document.add_facet(topics_f, Facet::from_text(facet)?);
         }
-        // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; `_text` מגיע בדרך
-        // כלל מנורמל (נטול סימנים) ואז אין תוספת.
+        // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; הבדיקה על הקלט הגולמי
+        // (הנרמול הרגיל מסיר את הסימנים) והעותק המנוקד מנורמל בנפרד.
         if hebrew_query::contains_attached_marks(_text) {
             document.add_text(
                 text_vocalized_f,
@@ -1369,6 +1392,12 @@ impl SearchEngine {
 
     /// Add many documents in a single FFI call. Does not commit.
     /// For initial bulk loads – no duplicate checking.
+    ///
+    /// `text` is normalized here ([`normalize_text_for_indexing`]) and a
+    /// supplied `text_vocalized` through its vocalized counterpart — the API
+    /// is exposed over FFI, so the "input is already normalized" assumption
+    /// is enforced rather than documented. Already-normalized input passes
+    /// through the fast paths at negligible cost.
     pub fn add_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
         let (
             title_f,
@@ -1388,11 +1417,12 @@ impl SearchEngine {
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
-            let line_hash = line_dedup_hash(&doc.text);
+            let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
+            let line_hash = line_dedup_hash(&normalized_text);
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
-                text_f         => doc.text,
+                text_f         => normalized_text,
                 id_f           => doc.id,
                 segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
@@ -1411,7 +1441,10 @@ impl SearchEngine {
             }
             if let Some(vocalized) = doc.text_vocalized {
                 if !vocalized.is_empty() {
-                    document.add_text(text_vocalized_f, vocalized);
+                    document.add_text(
+                        text_vocalized_f,
+                        hebrew_query::normalize_vocalized_text_for_indexing(&vocalized),
+                    );
                 }
             }
             writer.add_document(document)?;
@@ -1762,6 +1795,8 @@ impl SearchEngine {
     }
 
     /// Upsert many documents in a single FFI call. Does not commit.
+    /// Normalizes `text`/`text_vocalized` exactly like
+    /// [`Self::add_documents_batch`].
     pub fn upsert_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
         let (
             title_f,
@@ -1782,11 +1817,12 @@ impl SearchEngine {
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
-            let line_hash = line_dedup_hash(&doc.text);
+            let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
+            let line_hash = line_dedup_hash(&normalized_text);
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
-                text_f         => doc.text,
+                text_f         => normalized_text,
                 id_f           => doc.id,
                 segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
@@ -1805,7 +1841,10 @@ impl SearchEngine {
             }
             if let Some(vocalized) = doc.text_vocalized {
                 if !vocalized.is_empty() {
-                    document.add_text(text_vocalized_f, vocalized);
+                    document.add_text(
+                        text_vocalized_f,
+                        hebrew_query::normalize_vocalized_text_for_indexing(&vocalized),
+                    );
                 }
             }
             writer.add_document(document)?;
@@ -7245,6 +7284,134 @@ mod tests {
             fingerprints.get("/books/bereshit.txt"),
             Some(&compute_content_fingerprint(text.to_string()))
         );
+    }
+
+    #[test]
+    fn add_document_and_batch_normalize_like_add_text_book() {
+        // ה-API הישירים חשופים ב-FFI — ההנחה "הקלט כבר מנורמל" נאכפת:
+        // HTML מוסר, ניקוד מוסר מהשדה הרגיל, והעותק המנוקד נבנה מהגולמי.
+        let raw = "<b>בְּרֵאשִׁית</b>  בָּרָא אלהים";
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_document(
+                1,
+                "title",
+                "ref",
+                "/root",
+                raw,
+                0,
+                false,
+                "/books/a.txt",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        engine
+            .add_documents_batch(vec![DocumentInput {
+                id: 2,
+                title: "title".to_string(),
+                reference: "ref".to_string(),
+                topics: "/root".to_string(),
+                text: raw.to_string(),
+                segment: 1,
+                is_pdf: false,
+                file_path: "/books/b.txt".to_string(),
+                content_hash: None,
+                text_vocalized: Some("<b>בְּרֵאשִׁית</b>  בָּרָא אלהים".to_string()),
+                section_id: None,
+                generation_order: None,
+                extra_facets: None,
+            }])
+            .unwrap();
+        engine
+            .upsert_documents_batch(vec![DocumentInput {
+                id: 3,
+                title: "title".to_string(),
+                reference: "ref".to_string(),
+                topics: "/root".to_string(),
+                text: raw.to_string(),
+                segment: 2,
+                is_pdf: false,
+                file_path: "/books/c.txt".to_string(),
+                content_hash: None,
+                text_vocalized: Some("<b>בְּרֵאשִׁית</b>  בָּרָא אלהים".to_string()),
+                section_id: None,
+                generation_order: None,
+                extra_facets: None,
+            }])
+            .unwrap();
+        engine.commit().unwrap();
+
+        // שלושת המסלולים מאונדקסים ומאוחסנים בצורה המנורמלת.
+        let results = engine
+            .search_exact(
+                "בראשית ברא".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 3);
+        for hit in &results {
+            // הטקסט השמור מנורמל (בלי ה-HTML המקורי ובלי ניקוד בשדה
+            // הרגיל); תגי ה-font הם עיטור ההדגשה של תוצאת החיפוש.
+            let clean = hit
+                .text
+                .replace("<font color=red>", "")
+                .replace("</font>", "");
+            assert_eq!(clean, "בראשית ברא אלהים");
+        }
+
+        // העותקים המנוקדים נורמלו גם הם (ה-HTML הוסר): מסלולי ה-batch
+        // (add/upsert) דרך הנרמול הנאכף על text_vocalized שסופק, ומסלול
+        // add_document דרך העותק שהוא בונה בעצמו מהקלט הגולמי — חיפוש
+        // מנוקד מוצא את כולן.
+        let vocalized = engine
+            .search_exact(
+                "בְּרֵאשִׁית".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                true,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(vocalized.len(), 3);
+    }
+
+    #[test]
+    fn analyzers_drop_tokens_longer_than_cap() {
+        // RemoveLongFilter על כל האנליזטורים: זבל base64 (נמדדו ריצות של
+        // אלפי תווים בקורפוס) לא נכנס למילון הטרמים — וגם צד השאילתה מפיל
+        // את הטוקן, כך שספירת PhraseQuery נשארת עקבית עם האינדקס.
+        let (mut engine, _dir) = make_engine();
+        let garbage = "א".repeat(80); // 160 בייט — מעל התקרה
+        let long_but_legit = "א".repeat(60); // 120 בייט — מתחת לתקרה
+        add(
+            &mut engine,
+            1,
+            &format!("שלום {garbage} עולם"),
+            "/books/junk.txt",
+        );
+        engine.commit().unwrap();
+
+        // הטוקן הארוך לא נטמע; המילים סביבו כן.
+        assert_eq!(
+            engine
+                .index_token_texts(&format!("שלום {garbage}"))
+                .unwrap(),
+            vec!["שלום"]
+        );
+        assert_eq!(engine.index_token_texts(&long_but_legit).unwrap().len(), 1);
+        assert_eq!(search_ids(&mut engine, "שלום"), vec![1]);
+        assert_eq!(search_ids(&mut engine, &garbage), Vec::<u64>::new());
     }
 
     #[test]
