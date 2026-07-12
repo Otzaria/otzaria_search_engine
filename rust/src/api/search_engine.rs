@@ -5402,6 +5402,7 @@ impl SearchEngine {
             plan.phrase.as_ref(),
         )?;
         let rep_by_id: HashMap<u64, &GroupedRep> = page.reps.iter().map(|r| (r.id, r)).collect();
+        let fields = SiblingFields::resolve(schema)?;
         for result in &mut results {
             let Some(rep) = rep_by_id.get(&result.id) else {
                 continue;
@@ -5410,7 +5411,7 @@ impl SearchEngine {
             result.merged = rep
                 .siblings
                 .iter()
-                .filter_map(|addr| Self::fetch_merged_sibling(schema, searcher, *addr).transpose())
+                .filter_map(|addr| Self::fetch_merged_sibling(&fields, searcher, *addr).transpose())
                 .collect::<Result<Vec<_>>>()?;
         }
         Ok(results)
@@ -5419,7 +5420,7 @@ impl SearchEngine {
     /// שליפת doc-store קלה לחברת קבוצה — מיקום בלבד, בלי snippet.
     /// מסמך שאינו ניתן לקריאה נשמט בשקט מהרשימה (המונה כבר ספר אותו).
     fn fetch_merged_sibling(
-        schema: &Schema,
+        fields: &SiblingFields,
         searcher: &Searcher,
         address: DocAddress,
     ) -> Result<Option<MergedSibling>> {
@@ -5434,37 +5435,31 @@ impl SearchEngine {
                 return Ok(None);
             }
         };
-        let title_f = schema.get_field("title")?;
-        let reference_f = schema.get_field("reference")?;
-        let id_f = schema.get_field("id")?;
-        let segment_f = schema.get_field("segment")?;
-        let is_pdf_f = schema.get_field("isPdf")?;
-        let file_path_f = schema.get_field("filePath")?;
         Ok(Some(MergedSibling {
             title: doc
-                .get_first(title_f)
+                .get_first(fields.title)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
             reference: doc
-                .get_first(reference_f)
+                .get_first(fields.reference)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
             id: doc
-                .get_first(id_f)
+                .get_first(fields.id)
                 .and_then(|v| v.as_u64())
                 .unwrap_or_default(),
             segment: doc
-                .get_first(segment_f)
+                .get_first(fields.segment)
                 .and_then(|v| v.as_u64())
                 .unwrap_or_default(),
             is_pdf: doc
-                .get_first(is_pdf_f)
+                .get_first(fields.is_pdf)
                 .and_then(|v| v.as_bool())
                 .unwrap_or_default(),
             file_path: doc
-                .get_first(file_path_f)
+                .get_first(fields.file_path)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
@@ -6531,6 +6526,30 @@ struct GroupedPage {
     reps: Vec<GroupedRep>,
     group_count: u32,
     raw_total: u32,
+}
+
+/// שדות ה-doc-store שחברת קבוצה נושאת ([`MergedSibling`]) — נפתרים מהסכימה
+/// פעם אחת לעמוד ולא פר-sibling.
+struct SiblingFields {
+    title: Field,
+    reference: Field,
+    id: Field,
+    segment: Field,
+    is_pdf: Field,
+    file_path: Field,
+}
+
+impl SiblingFields {
+    fn resolve(schema: &Schema) -> Result<Self> {
+        Ok(Self {
+            title: schema.get_field("title")?,
+            reference: schema.get_field("reference")?,
+            id: schema.get_field("id")?,
+            segment: schema.get_field("segment")?,
+            is_pdf: schema.get_field("isPdf")?,
+            file_path: schema.get_field("filePath")?,
+        })
+    }
 }
 
 /// אוסף את כל המסמכים התואמים לקבוצות (ראו [`ResultGrouping`]) במעבר
