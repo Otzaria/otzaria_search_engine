@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `fetch_merged_sibling`, `finalize_grouped`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `merge`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `CachedTermSet`, `DfaWrapper`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `TermCacheKey`
+// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `merge_group`, `merge`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `DfaWrapper`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SiblingFields`, `TermCacheKey`, `WordMatch`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
@@ -129,6 +129,10 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
 /// [`SearchEngine::get_book_fingerprints`] to detect books whose content
 /// changed without reindexing everything.
 ///
+/// שימו לב: מסלולי האינדוקס ([`SearchEngine::add_text_book`]) חותמים את
+/// החתימה **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata —
+/// השוואה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
+///
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
 /// Deliberately hashes the *raw* text (before normalization/tokenization) so
 /// the fingerprint does not shift when text-processing internals change.
@@ -138,11 +142,40 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
 BigInt computeContentFingerprint({required String text}) => RustLib.instance.api
     .crateApiSearchEngineComputeContentFingerprint(text: text);
 
+/// חתימת האינדוקס הקנונית לספר טקסט: הטקסט הגולמי + כל ה-metadata שמוטבע
+/// באינדקס — כותרת, נתיב קטגוריה, סדר קטלוגי, סדר דורות וממדי הסינון.
+/// שינוי בכל אחד מהם, גם ללא שינוי טקסט, משנה את החתימה — כך שהשוואה מול
+/// [`SearchEngine::get_book_fingerprints`] מזהה גם ספר שרק ה-metadata שלו
+/// התעדכן (אחרת האינדקס נשאר עם facets/מיון/כותרת ישנים).
+///
+/// ה-extra_facets ממוינים ומנוקי-כפילויות — סדרם אינו משפיע על האינדקס.
+/// Never returns 0. Pure string computation — safe to call synchronously.
+BigInt computeBookFingerprint({
+  required String text,
+  required String title,
+  required String topics,
+  required int catalogueOrder,
+  required int generationOrder,
+  List<String>? extraFacets,
+}) => RustLib.instance.api.crateApiSearchEngineComputeBookFingerprint(
+  text: text,
+  title: title,
+  topics: topics,
+  catalogueOrder: catalogueOrder,
+  generationOrder: generationOrder,
+  extraFacets: extraFacets,
+);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
   /// Add a single document. Does not commit.
   /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
   /// [`Self::add_documents_batch`] is the fingerprint-aware path.
+  ///
+  /// `_text` is normalized here ([`normalize_text_for_indexing`]) — the API
+  /// is exposed over FFI, so the "input is already normalized" assumption
+  /// is enforced rather than documented. Already-normalized text passes
+  /// through the fast paths at negligible cost.
   Future<void> addDocument({
     required BigInt id,
     required String title,
@@ -159,6 +192,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Add many documents in a single FFI call. Does not commit.
   /// For initial bulk loads – no duplicate checking.
+  ///
+  /// `text` is normalized here ([`normalize_text_for_indexing`]) and a
+  /// supplied `text_vocalized` through its vocalized counterpart — the API
+  /// is exposed over FFI, so the "input is already normalized" assumption
+  /// is enforced rather than documented. Already-normalized input passes
+  /// through the fast paths at negligible cost.
   Future<void> addDocumentsBatch({required List<DocumentInput> docs});
 
   /// Indexes a whole PDF book in ONE FFI call. Does not commit.
@@ -192,8 +231,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   ///
   /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
   /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
-  /// book's raw-text content fingerprint on every document, and adds one
-  /// document per line. Returns the number of documents added (0 for empty
+  /// book's canonical fingerprint ([`compute_book_fingerprint`] — text +
+  /// metadata) on every document, and adds one document per line. Returns the number of documents added (0 for empty
   /// text — the caller writes its empty-book marker in that case).
   ///
   /// This is the whole-book replacement for the app's per-line pipeline
@@ -263,6 +302,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
@@ -282,6 +323,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -311,6 +354,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
@@ -330,6 +375,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Exact-mode per-book counts. Drops the truncation flag — see
@@ -504,6 +551,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Return per-child facet counts for a given prefix (e.g. "/"). Drops the
   /// truncation flag — see [`Self::count`]; use
   /// [`Self::get_facet_counts_with_status`] when partiality must surface.
+  ///
+  /// שימו לב: ממדי הסינון חיים באותו שדה facet כמו עץ הקטגוריות, ולכן
+  /// תחת prefix `/` מופיעים גם השורשים השמורים [`FACET_DIMENSION_ROOTS`]
+  /// (`/author`, `/era`, `/base`) לצד קטגוריות-העל. לקוח שמונה ילדים
+  /// כדי לבנות עץ קטגוריות חייב לסנן אותם (באפליקציה:
+  /// `FacetHelper.isDimensionFacet`); לקוח שקורא ספירות לפי נתיבים
+  /// ידועים מראש אינו מושפע.
   Future<List<FacetCount>> getFacetCounts({
     required List<String> regexTerms,
     required List<String> facets,
@@ -514,6 +568,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Advanced-query facet counts. Drops the truncation flag — see
   /// [`Self::count`]; use [`Self::get_facet_counts_advanced_with_status`].
+  /// על שורשי הממדים תחת prefix `/` ראו [`Self::get_facet_counts`].
   Future<List<FacetCount>> getFacetCountsAdvanced({
     required String query,
     required String negativeQuery,
@@ -531,6 +586,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
@@ -551,10 +608,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required SearchScope scope,
     required SearchScope negativeScope,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Exact-mode facet counts. Drops the truncation flag — see
   /// [`Self::count_exact`]; use [`Self::get_facet_counts_exact_with_status`].
+  /// על שורשי הממדים תחת prefix `/` ראו [`Self::get_facet_counts`].
   Future<List<FacetCount>> getFacetCountsExact({
     required String query,
     required List<String> facets,
@@ -575,6 +635,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Fuzzy-mode facet counts. Drops the truncation flag — see
   /// [`Self::count_fuzzy`]; use [`Self::get_facet_counts_fuzzy_with_status`].
+  /// על שורשי הממדים תחת prefix `/` ראו [`Self::get_facet_counts`].
   Future<List<FacetCount>> getFacetCountsFuzzy({
     required String query,
     required List<String> facets,
@@ -673,6 +734,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope scope,
     required SearchScope negativeScope,
     ResultGrouping? grouping,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -700,6 +763,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     required int chunkSize,
     ResultGrouping? grouping,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -727,6 +792,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     required int chunkSize,
     ResultGrouping? grouping,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   /// Search and return total hit count alongside paged results in one call.
@@ -762,6 +829,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope scope,
     required SearchScope negativeScope,
     ResultGrouping? grouping,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
   });
 
   Future<SearchPageResult> searchAndCountExact({
@@ -954,6 +1023,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   });
 
   /// Upsert many documents in a single FFI call. Does not commit.
+  /// Normalizes `text`/`text_vocalized` exactly like
+  /// [`Self::add_documents_batch`].
   Future<void> upsertDocumentsBatch({required List<DocumentInput> docs});
 }
 
@@ -1351,7 +1422,10 @@ class SearchPageResult {
   /// [`SearchEngine::single_regex_term_query`]). The regex, advanced and
   /// *vocalized* exact/fuzzy paths can degrade this way (a vocalized word
   /// materializes a term set like an advanced word); the mark-free
-  /// exact/fuzzy paths never do and always report `false`.
+  /// exact/fuzzy paths never do this. A *grouped* search on any path can
+  /// also set it when the group cap overflows
+  /// ([`GROUP_COLLECTOR_MAX_GROUPS`]) — then `group_count` is a lower
+  /// bound while `total_count` stays exact.
   final bool truncated;
 
   /// מספר הקבוצות הכולל כשהחיפוש רץ עם `grouping` — זה המספר שדפדוף
@@ -1395,7 +1469,8 @@ class SearchResult {
 
   /// כמה תוצאות גולמיות מאוחדות בכרטיס הזה (1 = ללא איחוד). ראו
   /// [`ResultGrouping`]: בחיפוש מקובץ התוצאה היא נציג הקבוצה, והמונה
-  /// הוא "נמצאו X תוצאות בטווח".
+  /// הוא "נמצאו X תוצאות בטווח". כש-`truncated` דלוק המונה הוא תחתית —
+  /// קבוצה שפונתה מהתקרה וחזרה מאבדת את חבריה המוקדמים.
   final int mergedCount;
 
   /// שאר חברות הקבוצה (ללא הנציג), עד [`MERGED_SIBLINGS_CAP`] — מיקומים
@@ -1483,7 +1558,10 @@ class SearchStreamUpdate {
   /// Meaningful only on the first, counts-bearing event; always `false` on
   /// result chunks and on the mark-free exact/fuzzy paths, which never
   /// degrade this way (the vocalized exact/fuzzy paths can, like the
-  /// advanced path). The UI surfaces this as a "results may be partial —
+  /// advanced path). A *grouped* search on any path can also set it when
+  /// the group cap overflows ([`GROUP_COLLECTOR_MAX_GROUPS`]) — then
+  /// `group_count` is a lower bound while `total_count`/`book_counts`
+  /// stay exact. The UI surfaces this as a "results may be partial —
   /// narrow the search" warning.
   final bool truncated;
 
@@ -1518,4 +1596,24 @@ class SearchStreamUpdate {
           results == other.results &&
           truncated == other.truncated &&
           groupCount == other.groupCount;
+}
+
+/// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).
+///
+/// בכל מצב שאינו [`WordMatchMode::All`] דרישת הסדר והמרחק חסרת משמעות —
+/// מילים עשויות להיות חסרות — ולכן ההתאמה נעשית ברזולוציית ה-scope בלבד:
+/// `WordDistance` מתנהג כ-`SameParagraph`, ו-`SameSection` דורש שהסעיף
+/// יכיל לפחות את מספר המילים הנדרש.
+enum WordMatchMode {
+  /// ההתנהגות הקיימת: כל המילים חובה.
+  all,
+
+  /// די במילה אחת ממילות השאילתה.
+  anyWord,
+
+  /// רוב המילים: יותר ממחצית (`n/2 + 1`).
+  mostWords,
+
+  /// לפחות `word_match_count` מילים (הפרמטר הנלווה); נחתך ל-`[1, n]`.
+  atLeast,
 }

@@ -53,7 +53,8 @@ pub struct SearchResult {
     pub file_path: String,
     /// כמה תוצאות גולמיות מאוחדות בכרטיס הזה (1 = ללא איחוד). ראו
     /// [`ResultGrouping`]: בחיפוש מקובץ התוצאה היא נציג הקבוצה, והמונה
-    /// הוא "נמצאו X תוצאות בטווח".
+    /// הוא "נמצאו X תוצאות בטווח". כש-`truncated` דלוק המונה הוא תחתית —
+    /// קבוצה שפונתה מהתקרה וחזרה מאבדת את חבריה המוקדמים.
     pub merged_count: u32,
     /// שאר חברות הקבוצה (ללא הנציג), עד [`MERGED_SIBLINGS_CAP`] — מיקומים
     /// בלבד, בלי snippet, כדי שהאפליקציה תוכל להציג "הרחב" ולקפוץ אליהן.
@@ -247,6 +248,52 @@ pub enum SearchScope {
     /// כשהן פזורות על פני שורות שונות. התוצאות הן השורות שבתוך סעיף
     /// חותך שמכילות מילה מהשאילתה.
     SameSection,
+}
+
+/// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).
+///
+/// בכל מצב שאינו [`WordMatchMode::All`] דרישת הסדר והמרחק חסרת משמעות —
+/// מילים עשויות להיות חסרות — ולכן ההתאמה נעשית ברזולוציית ה-scope בלבד:
+/// `WordDistance` מתנהג כ-`SameParagraph`, ו-`SameSection` דורש שהסעיף
+/// יכיל לפחות את מספר המילים הנדרש.
+pub enum WordMatchMode {
+    /// ההתנהגות הקיימת: כל המילים חובה.
+    All,
+    /// די במילה אחת ממילות השאילתה.
+    AnyWord,
+    /// רוב המילים: יותר ממחצית (`n/2 + 1`).
+    MostWords,
+    /// לפחות `word_match_count` מילים (הפרמטר הנלווה); נחתך ל-`[1, n]`.
+    AtLeast,
+}
+
+/// הצורה הפנימית של צמד הפרמטרים `word_match_mode`/`word_match_count`.
+/// (מופרד מ-[`WordMatchMode`] כי enum נושא-נתונים בגשר היה גורר תלות freezed.)
+enum WordMatch {
+    All,
+    AtLeast(u32),
+    Most,
+}
+
+impl WordMatch {
+    fn from_api(mode: Option<WordMatchMode>, count: Option<u32>) -> Self {
+        match mode.unwrap_or(WordMatchMode::All) {
+            WordMatchMode::All => WordMatch::All,
+            WordMatchMode::AnyWord => WordMatch::AtLeast(1),
+            WordMatchMode::MostWords => WordMatch::Most,
+            WordMatchMode::AtLeast => WordMatch::AtLeast(count.unwrap_or(1).max(1)),
+        }
+    }
+
+    /// מספר המילים המינימלי הנדרש עבור שאילתה בת `word_count` מילים.
+    fn min_words(&self, word_count: usize) -> usize {
+        let min = match self {
+            WordMatch::All => word_count,
+            WordMatch::AtLeast(count) => *count as usize,
+            WordMatch::Most => word_count / 2 + 1,
+        };
+        min.min(word_count)
+    }
 }
 
 pub enum ResultsOrder {
@@ -595,6 +642,10 @@ pub fn is_probably_garbage_pdf_text(normalized_text: String) -> bool {
 /// [`SearchEngine::get_book_fingerprints`] to detect books whose content
 /// changed without reindexing everything.
 ///
+/// שימו לב: מסלולי האינדוקס ([`SearchEngine::add_text_book`]) חותמים את
+/// החתימה **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata —
+/// השוואה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
+///
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
 /// Deliberately hashes the *raw* text (before normalization/tokenization) so
 /// the fingerprint does not shift when text-processing internals change.
@@ -606,20 +657,94 @@ pub fn compute_content_fingerprint(text: String) -> u64 {
     content_fingerprint(&text)
 }
 
-/// Borrowing form of [`compute_content_fingerprint`] so in-engine callers
-/// ([`SearchEngine::add_text_book`]) never clone a whole book to hash it.
 fn content_fingerprint(text: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = FNV_OFFSET;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
+    let mut fnv = Fnv::new();
+    fnv.feed(text.as_bytes());
+    fnv.finish()
+}
+
+/// חתימת האינדוקס הקנונית לספר טקסט: הטקסט הגולמי + כל ה-metadata שמוטבע
+/// באינדקס — כותרת, נתיב קטגוריה, סדר קטלוגי, סדר דורות וממדי הסינון.
+/// שינוי בכל אחד מהם, גם ללא שינוי טקסט, משנה את החתימה — כך שהשוואה מול
+/// [`SearchEngine::get_book_fingerprints`] מזהה גם ספר שרק ה-metadata שלו
+/// התעדכן (אחרת האינדקס נשאר עם facets/מיון/כותרת ישנים).
+///
+/// ה-extra_facets ממוינים ומנוקי-כפילויות — סדרם אינו משפיע על האינדקס.
+/// Never returns 0. Pure string computation — safe to call synchronously.
+#[frb(sync)]
+pub fn compute_book_fingerprint(
+    text: String,
+    title: String,
+    topics: String,
+    catalogue_order: u32,
+    generation_order: u32,
+    extra_facets: Option<Vec<String>>,
+) -> u64 {
+    book_fingerprint(
+        &text,
+        &title,
+        &topics,
+        catalogue_order,
+        generation_order,
+        extra_facets.unwrap_or_default(),
+    )
+}
+
+/// Borrowing form of [`compute_book_fingerprint`] so the indexing path
+/// never clones a whole book to hash it.
+fn book_fingerprint(
+    text: &str,
+    title: &str,
+    topics: &str,
+    catalogue_order: u32,
+    generation_order: u32,
+    mut extra_facets: Vec<String>,
+) -> u64 {
+    extra_facets.sort_unstable();
+    extra_facets.dedup();
+    let mut fnv = Fnv::new();
+    fnv.feed_field(text.as_bytes());
+    fnv.feed_field(title.as_bytes());
+    fnv.feed_field(topics.as_bytes());
+    fnv.feed_field(&catalogue_order.to_le_bytes());
+    fnv.feed_field(&generation_order.to_le_bytes());
+    for facet in &extra_facets {
+        fnv.feed_field(facet.as_bytes());
     }
-    if hash == 0 {
-        1
-    } else {
-        hash
+    fnv.finish()
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a מצטבר — הבסיס לכל חתימות התוכן. `feed_field` מקדים קידומת-אורך
+/// כדי ששרשורי שדות שונים לא יתלכדו ("אב"+"ג" מול "א"+"בג").
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Fnv(FNV_OFFSET)
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    fn feed_field(&mut self, bytes: &[u8]) {
+        self.feed(&(bytes.len() as u64).to_le_bytes());
+        self.feed(bytes);
+    }
+
+    /// 0 שמור ל"אין חתימה" — לעולם אינו מוחזר כחתימה אמיתית.
+    fn finish(self) -> u64 {
+        if self.0 == 0 {
+            1
+        } else {
+            self.0
+        }
     }
 }
 
@@ -634,7 +759,8 @@ fn content_fingerprint(text: &str) -> u64 {
 pub const FACET_DIMENSION_ROOTS: [&str; 3] = ["author", "era", "base"];
 
 /// תקרת חברות-הקבוצה המוחזרות לכל תוצאה מאוחדת ([`SearchResult::merged`]).
-/// `merged_count` תמיד מדווח את הגודל האמיתי גם כשהרשימה נחתכת.
+/// `merged_count` מדווח את הגודל האמיתי גם כשהרשימה נחתכת — למעט תחת
+/// `truncated`, שם הוא תחתית (ראו [`SearchResult::merged_count`]).
 const MERGED_SIBLINGS_CAP: usize = 10;
 
 /// תקרת הקבוצות שמפת סגמנט (וכן המפה הממוזגת) של [`GroupCollector`] מחזיקה.
@@ -642,9 +768,10 @@ const MERGED_SIBLINGS_CAP: usize = 10;
 /// חיפוש exact של מילה נפוצה (TermQuery, שאינו עובר דרך תקציב ה-postings
 /// של מילה-בודדת) צובר GroupAcc לכל שורה ייחודית: ~100 בייט לקבוצה,
 /// מאות MB בשאילתות של מיליוני שורות. בהגעה לתקרה — degrade, לא שגיאה:
-/// hits לקבוצות קיימות ממשיכים להיצבר (המונים שלהן מדויקים) ו-raw_total
-/// נשאר מדויק, אבל קבוצות *חדשות* נשמטות ו-`truncated` מדווח למעלה
-/// (אותו דגל "תוצאות חלקיות" שה-UI כבר מציג). ~5MB לסגמנט במקרה הגרוע.
+/// הקבוצה *הגרועה* לפי סדר המיון מפנה את מקומה לקבוצה טובה ממנה (ראו
+/// [`BoundedGroups`]) — כך שכל עמוד בטווח התקרה נשאר מדויק — ו-`truncated`
+/// מדווח למעלה (אותו דגל "תוצאות חלקיות" שה-UI כבר מציג). `raw_total`
+/// נשאר מדויק. ~7MB לסגמנט במקרה הגרוע.
 const GROUP_COLLECTOR_MAX_GROUPS: usize = 50_000;
 
 /// מינימום אותיות עבריות לחתימת דה-דופליקציה: שורה קצרה מזה מקבלת 0
@@ -652,10 +779,10 @@ const GROUP_COLLECTOR_MAX_GROUPS: usize = 50_000;
 /// כותרות ושורות בנות מילה-שתיים זהות בכל מקום ואיחודן היה מטעה.
 const LINE_DEDUP_MIN_LETTERS: usize = 12;
 
-/// חתימת דה-דופליקציה לשורת אינדקס: FNV-1a על האותיות העבריות והתווים
-/// האלפאנומריים (ASCII, מקופלי-רישיות) של הטקסט המנורמל — רווחים, פיסוק,
-/// גרשיים וסימנים אחרים אינם משתתפים, כך ששתי מהדורות שנבדלות רק
-/// בפיסוק/רווחים מקבלות אותה חתימה. ספרות ואותיות לטיניות *כן* משתתפות:
+/// חתימת דה-דופליקציה לשורת אינדקס: FNV-1a על האותיות והספרות (כל
+/// יוניקוד, מקופלות-רישיות) של הטקסט המנורמל — רווחים, פיסוק, גרשיים
+/// וסימנים אחרים אינם משתתפים, כך ששתי מהדורות שנבדלות רק
+/// בפיסוק/רווחים מקבלות אותה חתימה. ספרות ואותיות זרות *כן* משתתפות:
 /// "לשלם 100 שקלים" ו"לשלם 200 שקלים" הן שורות שונות, לא כפילות (המחיר:
 /// מהדורה שמוסיפה מספרי-פסוק בספרות לא תתאחד עם מהדורה נקייה — עדיף
 /// פיצול-יתר על איחוד שמעלים תוכן). שינויי כתיב (מלא/חסר) גם הם משנים
@@ -666,33 +793,23 @@ const LINE_DEDUP_MIN_LETTERS: usize = 12;
 /// 0 שמור ל"אין חתימה" — פחות מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות
 /// *עבריות* (אלפאנומרי משתתף בחתימה אך אינו נספר לסף).
 fn line_dedup_hash(normalized_text: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = FNV_OFFSET;
+    let mut fnv = Fnv::new();
     let mut letters = 0usize;
     let mut buf = [0u8; 4];
     for c in normalized_text.chars() {
-        let c = if ('א'..='ת').contains(&c) {
+        if ('א'..='ת').contains(&c) {
             letters += 1;
-            c
-        } else if c.is_ascii_alphanumeric() {
-            c.to_ascii_lowercase()
-        } else {
+        } else if !c.is_alphanumeric() {
             continue;
-        };
-        for byte in c.encode_utf8(&mut buf).as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        for lower in c.to_lowercase() {
+            fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
         }
     }
     if letters < LINE_DEDUP_MIN_LETTERS {
         return 0;
     }
-    if hash == 0 {
-        1
-    } else {
-        hash
-    }
+    fnv.finish()
 }
 
 /// Mirrors the Dart `IndexingDocumentBuilder._updateReferenceTrail`: a new
@@ -1481,8 +1598,8 @@ impl SearchEngine {
     ///
     /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
     /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
-    /// book's raw-text content fingerprint on every document, and adds one
-    /// document per line. Returns the number of documents added (0 for empty
+    /// book's canonical fingerprint ([`compute_book_fingerprint`] — text +
+    /// metadata) on every document, and adds one document per line. Returns the number of documents added (0 for empty
     /// text — the caller writes its empty-book marker in that case).
     ///
     /// This is the whole-book replacement for the app's per-line pipeline
@@ -1583,7 +1700,14 @@ impl SearchEngine {
             .iter()
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
-        let content_hash = content_fingerprint(text);
+        let content_hash = book_fingerprint(
+            text,
+            &title,
+            &topics,
+            catalogue_order,
+            generation_order,
+            extra_facets.clone(),
+        );
         let id_base = (u64::from(catalogue_order) + 1) << 32;
         let writer = self.writer_mut()?;
 
@@ -2605,8 +2729,11 @@ impl SearchEngine {
         scope: SearchScope,
         negative_scope: SearchScope,
         grouping: Option<ResultGrouping>,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<Vec<SearchResult>> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
         // מצב-שדה: הדגלים הגלובליים או אפשרות "ניקוד"/"טעמים" פר-מילה —
         // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
         // בתוך בניית השאילתה.
@@ -2620,6 +2747,7 @@ impl SearchEngine {
             facets,
             &voc,
             &scope,
+            &match_mode,
         )?;
         let (q, _) = self.apply_advanced_negative_query(
             q,
@@ -2641,6 +2769,7 @@ impl SearchEngine {
                     &gaps,
                     &voc_mode,
                     &scope,
+                    &match_mode,
                     &acronym_alts,
                 )
             },
@@ -2674,8 +2803,11 @@ impl SearchEngine {
         scope: SearchScope,
         negative_scope: SearchScope,
         grouping: Option<ResultGrouping>,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<SearchPageResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
         let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
             &query,
@@ -2686,6 +2818,7 @@ impl SearchEngine {
             facets,
             &voc,
             &scope,
+            &match_mode,
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -2707,6 +2840,7 @@ impl SearchEngine {
                     &gaps,
                     &voc_mode,
                     &scope,
+                    &match_mode,
                     &acronym_alts,
                 )
             },
@@ -2746,10 +2880,13 @@ impl SearchEngine {
         negative_scope: SearchScope,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
             let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
                 &query,
@@ -2760,6 +2897,7 @@ impl SearchEngine {
                 facets,
                 &voc,
                 &scope,
+                &match_mode,
             )?;
             let (q, _) = self.apply_advanced_negative_query(
                 q,
@@ -2781,6 +2919,7 @@ impl SearchEngine {
                         &gaps,
                         &voc_mode,
                         &scope,
+                        &match_mode,
                         &acronym_alts,
                     )
                 },
@@ -2824,10 +2963,13 @@ impl SearchEngine {
         negative_scope: SearchScope,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
             let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
                 &query,
@@ -2838,6 +2980,7 @@ impl SearchEngine {
                 facets,
                 &voc,
                 &scope,
+                &match_mode,
             )?;
             let (q, truncated) = self.apply_advanced_negative_query(
                 q,
@@ -2859,6 +3002,7 @@ impl SearchEngine {
                         &gaps,
                         &voc_mode,
                         &scope,
+                        &match_mode,
                         &acronym_alts,
                     )
                 },
@@ -2896,6 +3040,8 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<u32> {
         Ok(self
             .count_advanced_with_status(
@@ -2914,6 +3060,8 @@ impl SearchEngine {
                 match_taamim,
                 scope,
                 negative_scope,
+                word_match_mode,
+                word_match_count,
             )?
             .count)
     }
@@ -2937,6 +3085,8 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<CountResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
@@ -2948,6 +3098,7 @@ impl SearchEngine {
             facets,
             &voc,
             &scope,
+            &WordMatch::from_api(word_match_mode, word_match_count),
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -2986,6 +3137,8 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_advanced_with_status(
@@ -3004,6 +3157,8 @@ impl SearchEngine {
                 match_taamim,
                 scope,
                 negative_scope,
+                word_match_mode,
+                word_match_count,
             )?
             .counts)
     }
@@ -3027,6 +3182,8 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<BookCountResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
@@ -3038,6 +3195,7 @@ impl SearchEngine {
             facets,
             &voc,
             &scope,
+            &WordMatch::from_api(word_match_mode, word_match_count),
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -3078,6 +3236,8 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<Vec<FacetCount>> {
         Ok(self
             .get_facet_counts_advanced_with_status(
@@ -3097,6 +3257,8 @@ impl SearchEngine {
                 match_taamim,
                 scope,
                 negative_scope,
+                word_match_mode,
+                word_match_count,
             )?
             .counts)
     }
@@ -3121,6 +3283,8 @@ impl SearchEngine {
         match_taamim: bool,
         scope: SearchScope,
         negative_scope: SearchScope,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
     ) -> Result<FacetCountsResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
@@ -3132,6 +3296,7 @@ impl SearchEngine {
             facets,
             &voc,
             &scope,
+            &WordMatch::from_api(word_match_mode, word_match_count),
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -3587,11 +3752,13 @@ impl SearchEngine {
         self.build_query_from_patterns(
             patterns,
             &[],
+            &[],
             facets,
             &gaps,
             max_expansions,
             text_field,
             &SearchScope::WordDistance,
+            &WordMatch::All,
         )
     }
 
@@ -3612,6 +3779,8 @@ impl SearchEngine {
             return Ok((positive_query, positive_truncated));
         }
 
+        // שלילה בהתאמה חלקית הייתה פוסלת כל תוצאה שנושאת ולו מילת-שלילה
+        // אחת — לכן צירוף מילות השלילה נשאר תמיד "כל המילים".
         let (negative, _, _, negative_truncated, _) = self.build_advanced_query(
             negative_query,
             negative_distance,
@@ -3621,6 +3790,7 @@ impl SearchEngine {
             Vec::new(),
             voc,
             negative_scope,
+            &WordMatch::All,
         )?;
 
         // שלילה בטווח "תחת אותה כותרת" פוסלת *סעיפים שלמים*: השאילתה שנבנתה
@@ -3667,12 +3837,14 @@ impl SearchEngine {
     fn build_query_from_patterns(
         &self,
         regex_terms: Vec<hebrew_query::WordPattern>,
+        source_words: &[String],
         typo_tokens: &[String],
         facets: Vec<String>,
         gaps: &[u32],
         max_expansions: u32,
         text_field: Field,
         scope: &SearchScope,
+        match_mode: &WordMatch,
     ) -> Result<(Box<dyn Query>, bool)> {
         // Resolved up front: the same facet filter both narrows the section
         // pre-pass (fewer candidate sections to intersect) and gates the
@@ -3696,18 +3868,22 @@ impl SearchEngine {
                 text_field,
                 max_expansions,
             )?,
-            _ => match scope {
-                // הטווחים "פסקה"/"כותרת" מוותרים על סדר ומרווח — כל מילה
-                // מתממשת ל-TermSetQuery משלה והצירוף נעשה בין מסמכים
+            _ => match (scope, match_mode) {
+                // הטווחים "פסקה"/"כותרת" מוותרים על סדר ומרווח, וכך גם כל
+                // מצב התאמה שאינו "כל המילים" (מילים עשויות לחסור) — כל
+                // מילה מתממשת ל-TermSetQuery משלה והצירוף נעשה בין מסמכים
                 // (פסקה) או בין סעיפים (כותרת).
-                SearchScope::SameParagraph | SearchScope::SameSection => self.scoped_words_query(
+                (SearchScope::SameParagraph | SearchScope::SameSection, _)
+                | (_, WordMatch::AtLeast(_) | WordMatch::Most) => self.scoped_words_query(
                     &regex_terms,
+                    source_words,
                     text_field,
                     max_expansions,
                     scope,
                     facets_query.as_deref(),
+                    match_mode,
                 )?,
-                SearchScope::WordDistance => {
+                (SearchScope::WordDistance, WordMatch::All) => {
                     debug_assert_eq!(gaps.len() + 1, regex_terms.len());
                     // The phrase path needs one pattern string per word position:
                     // `RegexPhraseQuery` compiles each as a single DFA (branch
@@ -3754,47 +3930,97 @@ impl SearchEngine {
         ))
     }
 
-    /// Multi-word query for the paragraph/section scopes: every word is
-    /// materialized into its own `TermSetQuery` (same budgets and cache as
-    /// the single-word path — each word executes exactly like it would
-    /// alone), then combined:
+    /// Multi-word query for the paragraph/section scopes (and every partial
+    /// match mode): every distinct word is materialized into its own
+    /// `TermSetQuery` (same budgets and cache as the single-word path —
+    /// each word executes exactly like it would alone), then combined:
     ///
-    /// - **Paragraph** — a boolean AND: all words must occur in the same
-    ///   document (= book line), in any order, at any distance.
+    /// - **Paragraph** (וגם `WordDistance` בהתאמה חלקית) — boolean בין
+    ///   מסמכים: כשכל המילים נדרשות — AND; פחות מזה — Should עם מינימום
+    ///   נדרש (מסמך עם יותר מילים מקבל score גבוה יותר).
     /// - **Section** — a two-pass plan (see the `section_scope` module):
-    ///   intersect the per-word `sectionId` sets, then serve the lines that
-    ///   carry any query word inside a fully-matching section. The facet
-    ///   filter narrows the pre-pass so a facet-excluded book cannot bloat
-    ///   the intersection sets (correctness never depends on it — section
-    ///   ids are unique per book).
+    ///   keep the sections whose per-word `sectionId` sets cover at least
+    ///   the required word count (intersection when all are required),
+    ///   then serve the lines that carry any query word inside such a
+    ///   section. The facet filter narrows the pre-pass so a facet-excluded
+    ///   book cannot bloat the section sets (correctness never depends on
+    ///   it — section ids are unique per book).
+    ///
+    /// הסף נגזר מ-`match_mode` על מספר המילים **הייחודיות**: מופעים כפולים
+    /// של אותה מילת-מקור מתמזגים ל-clause אחד (איחוד הענפים של כולם — גם
+    /// כשאפשרויות פר-מילה נותנות להם תבניות שונות), אחרת clause כפול היה
+    /// מספק את הסף פעמיים. בהיעדר מילות מקור (ה-API המחרוזתי, חלופות ר"ת)
+    /// התבנית עצמה היא מפתח המיזוג.
     ///
     /// `truncated` is the OR over the per-word collection truncations.
+    #[allow(clippy::too_many_arguments)]
     fn scoped_words_query(
         &self,
         regex_terms: &[hebrew_query::WordPattern],
+        source_words: &[String],
         text_field: Field,
         max_expansions: u32,
         scope: &SearchScope,
         facets_query: Option<&dyn Query>,
+        match_mode: &WordMatch,
     ) -> Result<(Box<dyn Query>, bool)> {
+        let mut by_word: HashMap<String, usize> = HashMap::with_capacity(regex_terms.len());
+        let mut merged_branches: Vec<Vec<String>> = Vec::with_capacity(regex_terms.len());
+        for (i, pattern) in regex_terms.iter().enumerate() {
+            let key = source_words
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| pattern.joined());
+            match by_word.entry(key) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    let branches = &mut merged_branches[*e.get()];
+                    for branch in pattern.branches() {
+                        if !branches.iter().any(|b| b == branch) {
+                            branches.push(branch.clone());
+                        }
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(merged_branches.len());
+                    merged_branches.push(pattern.branches().to_vec());
+                }
+            }
+        }
         let mut truncated = false;
-        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(regex_terms.len());
-        for pattern in regex_terms {
+        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(merged_branches.len());
+        for branches in &merged_branches {
             let (word_query, word_truncated) =
-                self.single_regex_term_query(pattern.branches(), &[], text_field, max_expansions)?;
+                self.single_regex_term_query(branches, &[], text_field, max_expansions)?;
             truncated |= word_truncated;
             word_queries.push(word_query);
         }
+        let min_required = match_mode.min_words(word_queries.len());
+        let all_required = min_required >= word_queries.len();
 
-        if matches!(scope, SearchScope::SameParagraph) {
-            let clauses: Vec<(Occur, Box<dyn Query>)> =
-                word_queries.into_iter().map(|q| (Occur::Must, q)).collect();
-            return Ok((Box::new(BooleanQuery::new(clauses)), truncated));
+        // סף של מילה אחת שקול ל-OR שטוח גם בטווח הסעיף: שורה שנושאת מילה
+        // כלשהי שייכת ממילא לסעיף שמכיל אותה — ה-pre-pass מיותר.
+        if !matches!(scope, SearchScope::SameSection) || min_required <= 1 {
+            let query: Box<dyn Query> = if all_required {
+                let clauses: Vec<(Occur, Box<dyn Query>)> =
+                    word_queries.into_iter().map(|q| (Occur::Must, q)).collect();
+                Box::new(BooleanQuery::new(clauses))
+            } else {
+                let clauses: Vec<(Occur, Box<dyn Query>)> = word_queries
+                    .into_iter()
+                    .map(|q| (Occur::Should, q))
+                    .collect();
+                Box::new(BooleanQuery::with_minimum_required_clauses(
+                    clauses,
+                    min_required,
+                ))
+            };
+            return Ok((query, truncated));
         }
 
-        // Section scope — pass 1: the sections every word appears in.
+        // Section scope — pass 1: the sections carrying enough of the words.
         let searcher = self.index_reader.searcher();
         let mut allowed: Option<HashSet<u64>> = None;
+        let mut section_word_counts: HashMap<u64, usize> = HashMap::new();
         for word_query in &word_queries {
             let sections = match facets_query {
                 Some(fq) => searcher.search(
@@ -3806,6 +4032,12 @@ impl SearchEngine {
                 )?,
                 None => searcher.search(word_query.as_ref(), &SectionIdsCollector)?,
             };
+            if !all_required {
+                for section in sections {
+                    *section_word_counts.entry(section).or_insert(0) += 1;
+                }
+                continue;
+            }
             allowed = Some(match allowed {
                 None => sections,
                 Some(prev) => prev.intersection(&sections).copied().collect(),
@@ -3815,6 +4047,17 @@ impl SearchEngine {
                 // contain all the words.
                 return Ok((Box::new(EmptyQuery), truncated));
             }
+        }
+        if !all_required {
+            let reaching: HashSet<u64> = section_word_counts
+                .into_iter()
+                .filter(|(_, count)| *count >= min_required)
+                .map(|(section, _)| section)
+                .collect();
+            if reaching.is_empty() {
+                return Ok((Box::new(EmptyQuery), truncated));
+            }
+            allowed = Some(reaching);
         }
 
         // Pass 2: the lines that carry any query word, gated to the
@@ -4662,6 +4905,7 @@ impl SearchEngine {
         facets: Vec<String>,
         voc: &VocalizedFlags,
         scope: &SearchScope,
+        match_mode: &WordMatch,
     ) -> Result<AdvancedQueryBuild> {
         // The vocalized mode is requested either by the global API flags or
         // by a per-word "ניקוד"/"טעמים" option; the per-word requirement
@@ -4713,6 +4957,7 @@ impl SearchEngine {
         // must use it, not the raw `distance`, or a spacing-permitted match
         // would be rejected and fall back to the broad term highlight.
         let gaps = prepared.gaps.clone();
+        let source_words = std::mem::take(&mut prepared.words);
         // The highlight builders want one pattern string per word; the query
         // builder gets the structured patterns so a single word compiles per
         // branch instead of as one state-limited DFA.
@@ -4735,12 +4980,14 @@ impl SearchEngine {
         )?;
         let (main_query, main_truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
+            &source_words,
             &prepared.typo_tokens,
             facets,
             &gaps,
             prepared.max_expansions,
             text_field,
             scope,
+            match_mode,
         )?;
         let (query, truncated, acronym_patterns) = if acronym_alts.is_empty() {
             (main_query, main_truncated, Vec::new())
@@ -4838,16 +5085,19 @@ impl SearchEngine {
                 .iter()
                 .map(|p| hebrew_query::WordPattern::Literal(p.clone()))
                 .collect();
-            // פענוח הוא ביטוי קנוני — מילים צמודות (slop 0, ללא GapVerified).
+            // פענוח הוא ביטוי קנוני — מילים צמודות (slop 0, ללא GapVerified),
+            // וכל מילותיו חובה גם כשהשאילתה הראשית בהתאמה חלקית.
             let gaps = vec![0u32; patterns.len().saturating_sub(1)];
             let (alt_query, truncated) = self.build_query_from_patterns(
                 patterns,
+                &[],
                 &[],
                 facets.clone(),
                 &gaps,
                 max_expansions,
                 text_field,
                 scope,
+                &WordMatch::All,
             )?;
             out.push((alt_query, truncated, literal_patterns));
         }
@@ -5732,13 +5982,17 @@ impl SearchEngine {
         gaps: &[u32],
         voc: &VocalizedFlags,
         scope: &SearchScope,
+        match_mode: &WordMatch,
         acronym_alts: &[Vec<String>],
     ) -> Result<HighlightPlan> {
+        // בהתאמה חלקית אין דרישת סדר/מרחק — מסנן הביטוי של מסלול המרחק
+        // היה מוחק הדגשות לגיטימיות של מילים בודדות או בסדר הפוך.
+        let partial = !matches!(match_mode, WordMatch::All);
         match scope {
-            SearchScope::WordDistance => {
+            SearchScope::WordDistance if !partial => {
                 self.advanced_highlight_plan(searcher, regex_terms, gaps, voc, acronym_alts)
             }
-            SearchScope::SameParagraph | SearchScope::SameSection => {
+            _ => {
                 if regex_terms.len() < 2 && acronym_alts.is_empty() {
                     return Ok(HighlightPlan::none());
                 }
@@ -6542,13 +6796,83 @@ impl GroupAcc {
     }
 }
 
+/// מפת קבוצות חסומת-[`GROUP_COLLECTOR_MAX_GROUPS`] שמפנה בתקרה את הקבוצה
+/// *הגרועה* (לפי הנציג הטוב ביותר) לטובת קבוצה טובה ממנה — כך שהקבוצות
+/// הטובות ביותר שורדות בכל סדר סריקה/מיזוג, והעמוד המוחזר מדויק. השארית
+/// לאחר תקרה: `group_count` הוא תחתית, ומונה של קבוצה שפונתה וחזרה מאבד
+/// את חבריה המוקדמים — שניהם תחת אותו דגל `truncated`.
+struct BoundedGroups {
+    groups: HashMap<(u8, u64), GroupAcc>,
+    /// אינדקס המיון: `(sort_val, id)` של הנציג הטוב + מפתח הקבוצה.
+    by_best: std::collections::BTreeSet<(u64, u64, (u8, u64))>,
+    truncated: bool,
+}
+
+impl BoundedGroups {
+    fn new() -> Self {
+        Self {
+            groups: HashMap::new(),
+            by_best: std::collections::BTreeSet::new(),
+            truncated: false,
+        }
+    }
+
+    /// מסמך בודד (מסלול האיסוף פר-סגמנט).
+    fn add_entry(&mut self, key: (u8, u64), entry: GroupEntry) {
+        if let Some(acc) = self.groups.get_mut(&key) {
+            let old_best = (acc.best.0, acc.best.1, key);
+            acc.push(entry);
+            let new_best = (acc.best.0, acc.best.1, key);
+            if new_best != old_best {
+                self.by_best.remove(&old_best);
+                self.by_best.insert(new_best);
+            }
+            return;
+        }
+        self.insert_group(key, GroupAcc::new(entry));
+    }
+
+    /// קבוצה שלמה מסגמנט אחר (מסלול המיזוג).
+    fn merge_group(&mut self, key: (u8, u64), acc: GroupAcc) {
+        if let Some(existing) = self.groups.get_mut(&key) {
+            let old_best = (existing.best.0, existing.best.1, key);
+            existing.merge(acc);
+            let new_best = (existing.best.0, existing.best.1, key);
+            if new_best != old_best {
+                self.by_best.remove(&old_best);
+                self.by_best.insert(new_best);
+            }
+            return;
+        }
+        self.insert_group(key, acc);
+    }
+
+    fn insert_group(&mut self, key: (u8, u64), acc: GroupAcc) {
+        let best = (acc.best.0, acc.best.1, key);
+        if self.groups.len() >= GROUP_COLLECTOR_MAX_GROUPS {
+            self.truncated = true;
+            let worst = *self
+                .by_best
+                .last()
+                .expect("cap > 0, so a full map has a worst group");
+            if best >= worst {
+                return;
+            }
+            self.by_best.remove(&worst);
+            self.groups.remove(&worst.2);
+        }
+        self.by_best.insert(best);
+        self.groups.insert(key, acc);
+    }
+}
+
 /// פרי החיפוש המקובץ: ספירת התוצאות הגולמית + מפת הקבוצות. מפתח קבוצה
 /// הוא `(תג, ערך)` — תג 0 = `sectionId`, תג 1 = `lineHash`, תג 2 =
 /// מסמך-יחיד (שורה ללא חתימת דה-דופ במצב `IdenticalText` לעולם אינה
 /// מתאחדת, וה-id שלה משמש כמפתח).
 ///
-/// `truncated` — [`GROUP_COLLECTOR_MAX_GROUPS`] נפגעה וקבוצות חדשות
-/// נשמטו; `raw_total` נשאר מדויק.
+/// `truncated` — [`GROUP_COLLECTOR_MAX_GROUPS`] נפגעה וקבוצות גרועות
+/// פונו (ראו [`BoundedGroups`]); `raw_total` נשאר מדויק.
 struct GroupedHits {
     raw_total: u32,
     groups: HashMap<(u8, u64), GroupAcc>,
@@ -6631,8 +6955,7 @@ struct GroupSegmentCollector {
     /// עמודת מפתח הקבוצה: `sectionId` או `lineHash` לפי המצב.
     key_col: tantivy::columnar::Column<u64>,
     raw_total: u32,
-    groups: HashMap<(u8, u64), GroupAcc>,
-    truncated: bool,
+    groups: BoundedGroups,
 }
 
 impl Collector for GroupCollector {
@@ -6663,8 +6986,7 @@ impl Collector for GroupCollector {
             sort_col,
             key_col,
             raw_total: 0,
-            groups: HashMap::new(),
-            truncated: false,
+            groups: BoundedGroups::new(),
         })
     }
 
@@ -6673,31 +6995,23 @@ impl Collector for GroupCollector {
     }
 
     fn merge_fruits(&self, per_segment: Vec<GroupedHits>) -> tantivy::Result<GroupedHits> {
-        let mut merged = GroupedHits {
-            raw_total: 0,
-            groups: HashMap::new(),
-            truncated: false,
-        };
+        // גם המפה הממוזגת קצוצה (איחוד סגמנטים שכל אחד מהם בתקרה היה
+        // מכפיל אותה פי מספר הסגמנטים) — עם אותו פינוי-הגרועה, כך שסדר
+        // הסגמנטים אינו קובע אילו קבוצות שורדות.
+        let mut merged = BoundedGroups::new();
+        let mut raw_total = 0u32;
         for seg in per_segment {
-            merged.raw_total += seg.raw_total;
+            raw_total += seg.raw_total;
             merged.truncated |= seg.truncated;
             for (key, acc) in seg.groups {
-                // גם המפה הממוזגת קצוצה: איחוד סגמנטים שכל אחד מהם בתקרה
-                // היה מכפיל אותה פי מספר הסגמנטים.
-                let at_cap = merged.groups.len() >= GROUP_COLLECTOR_MAX_GROUPS;
-                match merged.groups.entry(key) {
-                    std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().merge(acc),
-                    std::collections::hash_map::Entry::Vacant(v) => {
-                        if at_cap {
-                            merged.truncated = true;
-                        } else {
-                            v.insert(acc);
-                        }
-                    }
-                }
+                merged.merge_group(key, acc);
             }
         }
-        Ok(merged)
+        Ok(GroupedHits {
+            raw_total,
+            groups: merged.groups,
+            truncated: merged.truncated,
+        })
     }
 }
 
@@ -6728,24 +7042,14 @@ impl SegmentCollector for GroupSegmentCollector {
         };
         let entry: GroupEntry = (sort_val, id, DocAddress::new(self.seg_ord, doc_id));
         self.raw_total += 1;
-        let at_cap = self.groups.len() >= GROUP_COLLECTOR_MAX_GROUPS;
-        match self.groups.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(entry),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                if at_cap {
-                    self.truncated = true;
-                } else {
-                    v.insert(GroupAcc::new(entry));
-                }
-            }
-        }
+        self.groups.add_entry(key, entry);
     }
 
     fn harvest(self) -> GroupedHits {
         GroupedHits {
             raw_total: self.raw_total,
-            groups: self.groups,
-            truncated: self.truncated,
+            groups: self.groups.groups,
+            truncated: self.groups.truncated,
         }
     }
 }
@@ -6904,6 +7208,8 @@ mod tests {
             scope,
             negative_scope,
             None,
+            None,
+            None,
         )
     }
 
@@ -6944,6 +7250,8 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
+            None,
         )
     }
 
@@ -6976,6 +7284,8 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
+            None,
         )
     }
 
@@ -7362,11 +7672,64 @@ mod tests {
             .unwrap();
         assert_eq!(nikud_hit.len(), 1);
 
-        // טביעת האצבע נחתמה על הספר, זהה לחישוב הציבורי על הטקסט הגולמי.
+        // טביעת האצבע נחתמה על הספר, זהה לחישוב הציבורי הקנוני
+        // (טקסט + metadata).
         let fingerprints = engine.get_book_fingerprints().unwrap();
         assert_eq!(
             fingerprints.get("/books/bereshit.txt"),
-            Some(&compute_content_fingerprint(text.to_string()))
+            Some(&compute_book_fingerprint(
+                text.to_string(),
+                "בראשית".to_string(),
+                "/root".to_string(),
+                5,
+                DEFAULT_GENERATION_ORDER,
+                None,
+            ))
+        );
+        // שינוי metadata בלבד (סדר דורות) משנה את החתימה — הספר יזוהה
+        // כדורש אינדוקס-מחדש.
+        assert_ne!(
+            compute_book_fingerprint(
+                text.to_string(),
+                "בראשית".to_string(),
+                "/root".to_string(),
+                5,
+                DEFAULT_GENERATION_ORDER,
+                None,
+            ),
+            compute_book_fingerprint(
+                text.to_string(),
+                "בראשית".to_string(),
+                "/root".to_string(),
+                5,
+                7,
+                None,
+            ),
+        );
+        // סדר ה-extra_facets אינו משנה את החתימה.
+        assert_eq!(
+            compute_book_fingerprint(
+                text.to_string(),
+                "בראשית".to_string(),
+                "/root".to_string(),
+                5,
+                DEFAULT_GENERATION_ORDER,
+                Some(vec![
+                    "/author/רש\"י".to_string(),
+                    "/era/ראשונים".to_string()
+                ]),
+            ),
+            compute_book_fingerprint(
+                text.to_string(),
+                "בראשית".to_string(),
+                "/root".to_string(),
+                5,
+                DEFAULT_GENERATION_ORDER,
+                Some(vec![
+                    "/era/ראשונים".to_string(),
+                    "/author/רש\"י".to_string()
+                ]),
+            ),
         );
     }
 
@@ -7538,7 +7901,14 @@ mod tests {
         let fingerprints = engine.get_book_fingerprints().unwrap();
         assert_eq!(
             fingerprints.get("/books/bereshit.txt"),
-            Some(&compute_content_fingerprint(text.to_string()))
+            Some(&compute_book_fingerprint(
+                text.to_string(),
+                "בראשית".to_string(),
+                "/root".to_string(),
+                5,
+                DEFAULT_GENERATION_ORDER,
+                None,
+            ))
         );
     }
 
@@ -10054,6 +10424,8 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
+                None,
             )
             .unwrap();
         assert!(
@@ -10078,6 +10450,8 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
+                None,
             )
             .unwrap();
         assert!(
@@ -10103,6 +10477,8 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
+                None,
             )
             .unwrap();
         assert!(
@@ -10129,6 +10505,8 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
+                None,
             )
             .unwrap();
         assert!(!count.truncated, "under the cap the count must not flag");
@@ -10152,6 +10530,8 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
+                None,
             )
             .unwrap();
         assert!(!facets.truncated, "under the cap the facets must not flag");
@@ -11464,6 +11844,8 @@ mod tests {
                 SearchScope::SameSection,
                 SearchScope::SameSection,
                 None,
+                None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -11492,6 +11874,8 @@ mod tests {
                 false,
                 SearchScope::SameSection,
                 SearchScope::SameSection,
+                None,
+                None,
                 None,
             )
             .unwrap()
@@ -11564,6 +11948,380 @@ mod tests {
         assert!(
             text.contains("<font color=red>מתכוין</font>"),
             "snippet: {text}"
+        );
+    }
+
+    fn word_match_results(
+        engine: &SearchEngine,
+        query: &str,
+        scope: SearchScope,
+        mode: Option<WordMatchMode>,
+        count: Option<u32>,
+    ) -> Vec<SearchResult> {
+        let negative_scope = same_search_scope(&scope);
+        engine
+            .search_advanced(
+                query.to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                scope,
+                negative_scope,
+                None,
+                mode,
+                count,
+            )
+            .unwrap()
+    }
+
+    fn word_match_search(
+        engine: &SearchEngine,
+        query: &str,
+        scope: SearchScope,
+        mode: Option<WordMatchMode>,
+        count: Option<u32>,
+    ) -> Vec<u64> {
+        word_match_results(engine, query, scope, mode, count)
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    #[test]
+    fn any_word_matches_lines_with_a_single_query_word() {
+        let (engine, _dir, id_base) = scope_engine();
+        // ברירת המחדל (כל המילים, מסלול המרחק) — אין שורה עם הצירוף.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין בחלבים",
+                SearchScope::WordDistance,
+                None,
+                None
+            ),
+            Vec::<u64>::new()
+        );
+        // "מילה אחת מספיקה": כל שורה שנושאת אחת מהמילים, בכל scope.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין בחלבים",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::AnyWord),
+                None
+            ),
+            vec![id_base + 3, id_base + 4, id_base + 7]
+        );
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין בחלבים",
+                SearchScope::SameParagraph,
+                Some(WordMatchMode::AnyWord),
+                None
+            ),
+            vec![id_base + 3, id_base + 4, id_base + 7]
+        );
+    }
+
+    #[test]
+    fn any_word_snippet_highlights_the_present_word() {
+        let (engine, _dir, id_base) = scope_engine();
+        let results = word_match_results(
+            &engine,
+            "מתכוין בחלבים",
+            SearchScope::WordDistance,
+            Some(WordMatchMode::AnyWord),
+            None,
+        );
+        // שורה שנושאת רק מילה אחת — היא נצבעת, בלי מסנן סדר/מרחק.
+        let first = results.iter().find(|r| r.id == id_base + 3).unwrap();
+        assert!(
+            first.text.contains("<font color=red>מתכוין</font>"),
+            "snippet: {}",
+            first.text
+        );
+    }
+
+    #[test]
+    fn most_words_requires_a_majority() {
+        let (engine, _dir, id_base) = scope_engine();
+        // שלוש מילים — רוב = 2. שורה 3 נושאת רק "מתכוין" ונפסלת;
+        // שורה 4 נושאת "מתעסק"+"בחלבים"; שורה 7 "מתעסק"+"מתכוין".
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין מתעסק בחלבים",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::MostWords),
+                None
+            ),
+            vec![id_base + 4, id_base + 7]
+        );
+    }
+
+    #[test]
+    fn at_least_count_is_clamped_and_defaults_to_one() {
+        let (engine, _dir, id_base) = scope_engine();
+        let at_least = |count: Option<u32>| {
+            word_match_search(
+                &engine,
+                "מתכוין מתעסק בחלבים",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::AtLeast),
+                count,
+            )
+        };
+        // אף שורה לא נושאת את שלוש המילים.
+        assert_eq!(at_least(Some(3)), Vec::<u64>::new());
+        // מעל מספר המילים — נחתך ל"כולן".
+        assert_eq!(at_least(Some(10)), Vec::<u64>::new());
+        assert_eq!(at_least(Some(2)), vec![id_base + 4, id_base + 7]);
+        // בלי ספירה (או 0) — מילה אחת.
+        let any = vec![id_base + 3, id_base + 4, id_base + 7];
+        assert_eq!(at_least(Some(1)), any);
+        assert_eq!(at_least(None), any);
+        assert_eq!(at_least(Some(0)), any);
+    }
+
+    #[test]
+    fn word_match_same_section_counts_distinct_words_per_section() {
+        let (engine, _dir, id_base) = scope_engine();
+        // "מתכוין בחלבים נדון", רוב = 2: סימן א נושא מתכוין+בחלבים,
+        // סימן ב נושא נדון+מתכוין — שני הסעיפים עוברים, וחוזרות כל
+        // השורות שנושאות מילת שאילתה בתוכם.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין בחלבים נדון",
+                SearchScope::SameSection,
+                Some(WordMatchMode::MostWords),
+                None
+            ),
+            vec![id_base + 3, id_base + 4, id_base + 6, id_base + 7]
+        );
+        // כל שלוש המילים — אף סעיף לא מכיל את שלושתן.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין בחלבים נדון",
+                SearchScope::SameSection,
+                Some(WordMatchMode::AtLeast),
+                Some(3)
+            ),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn word_match_all_explicit_matches_default_behavior() {
+        let (engine, _dir, id_base) = scope_engine();
+        // Some(All) זהה ל-None — מסלול הביטוי הקיים נשאר בתוקף.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "אינו מתכוין",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::All),
+                None
+            ),
+            vec![id_base + 3, id_base + 7]
+        );
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "אינו מתכוין",
+                SearchScope::WordDistance,
+                None,
+                None
+            ),
+            vec![id_base + 3, id_base + 7]
+        );
+    }
+
+    #[test]
+    fn any_word_respects_the_negative_query() {
+        let (engine, _dir, id_base) = scope_engine();
+        // חיובי בהתאמה חלקית; השלילה נשארת "כל המילים" ופוסלת את שורה 3.
+        let ids: Vec<u64> = engine
+            .search_advanced(
+                "מתכוין בחלבים".to_string(),
+                "בשבת".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+                None,
+                Some(WordMatchMode::AnyWord),
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![id_base + 4, id_base + 7]);
+    }
+
+    #[test]
+    fn word_match_count_matches_search() {
+        let (engine, _dir, _id_base) = scope_engine();
+        let count = engine
+            .count_advanced(
+                "מתכוין בחלבים".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+                Some(WordMatchMode::AnyWord),
+                None,
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn partial_modes_drop_order_even_when_the_threshold_is_all_words() {
+        let (engine, _dir, id_base) = scope_engine();
+        // שתי מילים: רוב = 2 = כולן — ובכל זאת הסדר אינו נדרש: שורה 7
+        // נושאת אותן בסדר הפוך, ומסלול הביטוי (ברירת המחדל) מפספס אותה.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין מתעסק",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::MostWords),
+                None
+            ),
+            vec![id_base + 7]
+        );
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין מתעסק",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::AtLeast),
+                Some(2)
+            ),
+            vec![id_base + 7]
+        );
+    }
+
+    #[test]
+    fn duplicate_query_words_count_once_toward_the_threshold() {
+        let (engine, _dir, id_base) = scope_engine();
+        // "מתכוין מתכוין בחלבים" עם סף 2 — שורה שנושאת רק "מתכוין" אינה
+        // עוברת בזכות הכפילות, ואין שורה עם שתי המילים הייחודיות.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין מתכוין בחלבים",
+                SearchScope::WordDistance,
+                Some(WordMatchMode::AtLeast),
+                Some(2)
+            ),
+            Vec::<u64>::new()
+        );
+        // בטווח הסעיף: סימן א מכיל את שתי הייחודיות (בשורות שונות);
+        // סימן ב, שבו רק "מתכוין", נפסל למרות הכפילות.
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין מתכוין בחלבים",
+                SearchScope::SameSection,
+                Some(WordMatchMode::AtLeast),
+                Some(2)
+            ),
+            vec![id_base + 3, id_base + 4]
+        );
+    }
+
+    #[test]
+    fn duplicate_words_with_different_options_still_count_once() {
+        let (engine, _dir, _id_base) = scope_engine();
+        // אפשרות פר-מילה על המופע הראשון בלבד נותנת לשני המופעים תבניות
+        // שונות — ובכל זאת הם מילת-מקור אחת, והסף לא מסופק פעמיים.
+        let options: HashMap<String, HashMap<String, bool>> = HashMap::from([(
+            "מתכוין_0".to_string(),
+            HashMap::from([("קידומות".to_string(), true)]),
+        )]);
+        let ids: Vec<u64> = engine
+            .search_advanced(
+                "מתכוין מתכוין בחלבים".to_string(),
+                String::new(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                options,
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                SearchScope::WordDistance,
+                SearchScope::WordDistance,
+                None,
+                Some(WordMatchMode::AtLeast),
+                Some(2),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn any_word_in_section_scope_matches_lines_with_any_word() {
+        let (engine, _dir, id_base) = scope_engine();
+        // סף 1 בטווח הסעיף שקול ל-OR שטוח (המימוש מדלג על ה-pre-pass).
+        assert_eq!(
+            word_match_search(
+                &engine,
+                "מתכוין בחלבים",
+                SearchScope::SameSection,
+                Some(WordMatchMode::AnyWord),
+                None
+            ),
+            vec![id_base + 3, id_base + 4, id_base + 7]
         );
     }
 
@@ -11838,6 +12596,20 @@ mod tests {
         );
         // אלפאנומרי משתתף בחתימה אך לא נספר לסף האותיות העבריות.
         assert_eq!(line_dedup_hash("1234567890 abcdef אמר רבא"), 0);
+        // אלפאנומרי שאינו ASCII משתתף גם הוא: ספרות ערביות-הודיות ואותיות
+        // לטיניות עם סימנים מבדילים שורות, בקיפול רישיות יוניקודי.
+        assert_ne!(
+            line_dedup_hash("יש לשלם מאה שקלים עד יום ١٥ בחודש"),
+            line_dedup_hash("יש לשלם מאה שקלים עד יום ١٦ בחודש"),
+        );
+        assert_ne!(
+            line_dedup_hash("ראו במהדורת פריז עמוד é דפוס ראשון"),
+            line_dedup_hash("ראו במהדורת פריז עמוד è דפוס ראשון"),
+        );
+        assert_eq!(
+            line_dedup_hash("ראו במהדורת פריז עמוד É דפוס ראשון"),
+            line_dedup_hash("ראו במהדורת פריז עמוד é דפוס ראשון"),
+        );
     }
 
     #[test]
@@ -11855,16 +12627,76 @@ mod tests {
                 .collect(),
         };
         // סגמנט ראשון ממלא את המפה הממוזגת עד התקרה; השני חופף בקבוצה
-        // אחת (0) ומוסיף קבוצות חדשות מעבר לתקרה.
+        // אחת (0) ומוסיף קבוצות גרועות יותר (sort גבוה) מעבר לתקרה.
         let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
         let merged = collector
             .merge_fruits(vec![seg(0, cap), seg(0, 1), seg(cap, cap + 10)])
             .unwrap();
-        // קבוצות חדשות נשמטו + הדגל דווח; raw_total נשאר מדויק.
+        // קבוצות גרועות מהקיימות נדחו + הדגל דווח; raw_total נשאר מדויק.
         assert!(merged.truncated);
         assert_eq!(merged.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
         assert_eq!(merged.raw_total, GROUP_COLLECTOR_MAX_GROUPS as u32 + 11);
         // קבוצה קיימת ממשיכה להתמזג גם בתקרה — המונה שלה מדויק.
         assert_eq!(merged.groups[&(1u8, 0)].count, 2);
+    }
+
+    #[test]
+    fn group_collector_keeps_the_best_groups_in_any_arrival_order() {
+        let collector =
+            GroupCollector::new(&ResultGrouping::IdenticalText, &ResultsOrder::Catalogue);
+        let seg = |start: u64, end: u64| GroupedHits {
+            raw_total: (end - start) as u32,
+            truncated: false,
+            groups: (start..end)
+                .map(|i| {
+                    let key = (1u8, i);
+                    (
+                        key,
+                        GroupAcc::new((i, i, DocAddress::new(0, (i % 1000) as u32))),
+                    )
+                })
+                .collect(),
+        };
+        // סגמנט ראשון ממלא את התקרה בקבוצות "גרועות" (sort גבוה); קבוצה
+        // טובה שמגיעה אחריו חייבת להיכנס על חשבון הגרועה ביותר — סדר
+        // הסריקה/המיזוג אינו קובע אילו קבוצות שורדות.
+        let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
+        let high_base = 1_000_000u64;
+        let merged = collector
+            .merge_fruits(vec![seg(high_base, high_base + cap), seg(1, 2)])
+            .unwrap();
+        assert!(merged.truncated);
+        assert_eq!(merged.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
+        // הטובה נכנסה, הגרועה ביותר פונתה.
+        assert!(merged.groups.contains_key(&(1u8, 1)));
+        assert!(!merged.groups.contains_key(&(1u8, high_base + cap - 1)));
+        // והעמוד הראשון מתחיל בקבוצה הטובה ביותר.
+        let page = SearchEngine::finalize_grouped(merged, 1, 0);
+        assert_eq!(page.reps[0].id, 1);
+        assert!(page.truncated);
+    }
+
+    #[test]
+    fn bounded_groups_add_entry_evicts_worst_group() {
+        // מסלול האיסוף פר-סגמנט: מילוי התקרה במסמכים "גרועים", ואז מסמך
+        // טוב — הקבוצה שלו נכנסת; מסמך גרוע מהגרועה ביותר — נדחה.
+        let mut bounded = BoundedGroups::new();
+        for i in 0..GROUP_COLLECTOR_MAX_GROUPS as u64 {
+            let sort = 1000 + i;
+            bounded.add_entry((1u8, sort), (sort, sort, DocAddress::new(0, i as u32)));
+        }
+        assert!(!bounded.truncated);
+        bounded.add_entry((1u8, 5), (5, 5, DocAddress::new(0, 1)));
+        assert!(bounded.truncated);
+        assert!(bounded.groups.contains_key(&(1u8, 5)));
+        let worst_key = (1u8, 1000 + GROUP_COLLECTOR_MAX_GROUPS as u64 - 1);
+        assert!(!bounded.groups.contains_key(&worst_key));
+        // מסמך לקבוצה קיימת נצבר גם בתקרה, והמונה מדויק.
+        bounded.add_entry((1u8, 5), (6, 6, DocAddress::new(0, 2)));
+        assert_eq!(bounded.groups[&(1u8, 5)].count, 2);
+        // קבוצה חדשה גרועה מכולן — נדחית.
+        bounded.add_entry((1u8, 999_999), (999_999, 999_999, DocAddress::new(0, 3)));
+        assert!(!bounded.groups.contains_key(&(1u8, 999_999)));
+        assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
     }
 }

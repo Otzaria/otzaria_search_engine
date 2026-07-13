@@ -135,8 +135,18 @@ Future<List<SearchResult>> searchFuzzy({query, facets, limit, offset, maxDistanc
 Future<List<SearchResult>> searchAdvanced({
   query, facets, limit, offset, distance,
   customSpacing, alternativeWords, searchOptions, order,
+  wordMatchMode, wordMatchCount,
 })
 ```
+
+`wordMatchMode` (optional, advanced family only) relaxes the all-words
+requirement: `all` (default — current behavior), `anyWord`, `mostWords`
+(`n/2+1`), or `atLeast` together with `wordMatchCount` (clamped to
+`[1, n]`). Any mode other than `all` drops the order/distance requirement:
+`wordDistance` scope behaves like `sameParagraph`, and `sameSection`
+requires the section to carry at least the required number of distinct
+query words. Duplicate query words count once toward the threshold.
+The negative query always requires all of its words.
 
 Each mode also provides `count*`, `searchAndCount*` and `search*Stream`
 variants (`countExact`, `searchAndCountFuzzy`, `searchAdvancedStream`, …).

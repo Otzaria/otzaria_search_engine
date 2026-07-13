@@ -189,6 +189,9 @@ pub struct AdvancedQuery {
     /// whole-term regex with its top-level alternation kept structured, so the
     /// single-word path can compile every branch as its own small DFA.
     pub regex_terms: Vec<WordPattern>,
+    /// מילות המקור המנורמלות, מיושרות ל-`regex_terms` — מאפשרות לזהות מילה
+    /// שהוקלדה פעמיים גם כשהאפשרויות פר-מילה מייצרות לה תבניות שונות.
+    pub words: Vec<String>,
     /// Per-pair intermediate-word allowance: `gaps[i]` is how many words may
     /// separate query words `i` and `i+1` (length `words-1`; empty for a
     /// single word). Resolved from `custom_spacing`/`distance` by
@@ -2216,6 +2219,7 @@ fn prepare_advanced_query_impl(
             gaps: resolve_gaps(custom_spacing, distance, words.len()),
             max_expansions,
             typo_tokens: Vec::new(),
+            words,
         };
     }
 
@@ -2308,6 +2312,7 @@ fn prepare_advanced_query_impl(
         gaps: resolve_gaps(custom_spacing, distance, words.len()),
         max_expansions,
         typo_tokens,
+        words,
     }
 }
 
