@@ -763,16 +763,43 @@ pub const FACET_DIMENSION_ROOTS: [&str; 3] = ["author", "era", "base"];
 /// `truncated`, שם הוא תחתית (ראו [`SearchResult::merged_count`]).
 const MERGED_SIBLINGS_CAP: usize = 10;
 
-/// תקרת הקבוצות שמפת סגמנט (וכן המפה הממוזגת) של [`GroupCollector`] מחזיקה.
-/// הזיכרון של הקיבוץ פרופורציונלי למספר הקבוצות הייחודיות — בלי תקרה,
-/// חיפוש exact של מילה נפוצה (TermQuery, שאינו עובר דרך תקציב ה-postings
-/// של מילה-בודדת) צובר GroupAcc לכל שורה ייחודית: ~100 בייט לקבוצה,
-/// מאות MB בשאילתות של מיליוני שורות. בהגעה לתקרה — degrade, לא שגיאה:
-/// הקבוצה *הגרועה* לפי סדר המיון מפנה את מקומה לקבוצה טובה ממנה (ראו
-/// [`BoundedGroups`]) — כך שכל עמוד בטווח התקרה נשאר מדויק — ו-`truncated`
-/// מדווח למעלה (אותו דגל "תוצאות חלקיות" שה-UI כבר מציג). `raw_total`
-/// נשאר מדויק. ~7MB לסגמנט במקרה הגרוע.
+/// תקרת הקבוצות שהצבירה **הגלובלית** של [`GroupCollector`] מחזיקה (מפה
+/// משותפת אחת לכל החיפוש, לא פר-סגמנט). הזיכרון של הקיבוץ פרופורציונלי
+/// למספר הקבוצות הייחודיות — בלי תקרה, חיפוש exact של מילה נפוצה
+/// (TermQuery, שאינו עובר דרך תקציב ה-postings של מילה-בודדת) צובר
+/// GroupAcc לכל שורה ייחודית: ~100 בייט לקבוצה, מאות MB בשאילתות של
+/// מיליוני שורות. בהגעה לתקרה — degrade, לא שגיאה: הקבוצה *הגרועה* לפי
+/// סדר המיון מפנה את מקומה לקבוצה טובה ממנה (ראו [`BoundedGroups`]) — כך
+/// שכל עמוד בטווח התקרה נשאר מדויק — ו-`truncated` מדווח למעלה (אותו דגל
+/// "תוצאות חלקיות" שה-UI כבר מציג). `raw_total` נשאר מדויק. ~7MB לחיפוש
+/// במקרה הגרוע, ללא תלות במספר הסגמנטים.
 const GROUP_COLLECTOR_MAX_GROUPS: usize = 50_000;
+
+/// תקציב הסעיפים הנספרים במסלול ההתאמה החלקית של טווח "תחת אותה כותרת" —
+/// מילה נפוצה חותכת מאות אלפי סעיפים והמפה המשותפת גדלה כאיחוד שלהן.
+/// מעבר לתקציב סעיפים *חדשים* נשמטים (degrade מדווח ב-`truncated`, כמו
+/// [`GROUP_COLLECTOR_MAX_GROUPS`]) וסעיפים שכבר נספרים ממשיכים להצטבר.
+/// ‏~24MB במקרה הגרוע.
+const SECTION_COUNT_BUDGET: usize = 500_000;
+
+/// צובר את `sections` לתוך מפת הספירה תחת התקציב; מחזיר האם נחתך.
+fn accumulate_section_counts(
+    counts: &mut HashMap<u64, usize>,
+    sections: HashSet<u64>,
+    budget: usize,
+) -> bool {
+    let mut truncated = false;
+    for section in sections {
+        if let Some(count) = counts.get_mut(&section) {
+            *count += 1;
+        } else if counts.len() < budget {
+            counts.insert(section, 1);
+        } else {
+            truncated = true;
+        }
+    }
+    truncated
+}
 
 /// מינימום אותיות עבריות לחתימת דה-דופליקציה: שורה קצרה מזה מקבלת 0
 /// ("אין חתימה") ולעולם לא תתאחד עם שורות אחרות במצב `IdenticalText` —
@@ -4033,9 +4060,11 @@ impl SearchEngine {
                 None => searcher.search(word_query.as_ref(), &SectionIdsCollector)?,
             };
             if !all_required {
-                for section in sections {
-                    *section_word_counts.entry(section).or_insert(0) += 1;
-                }
+                truncated |= accumulate_section_counts(
+                    &mut section_word_counts,
+                    sections,
+                    SECTION_COUNT_BUDGET,
+                );
                 continue;
             }
             allowed = Some(match allowed {
@@ -5436,9 +5465,9 @@ impl SearchEngine {
 
         if let Some(grouping) = grouping {
             // מעבר אינדקס אחד: קיבוץ + ספירות פר-ספר יחד, כמו המסלול השטוח.
-            let collector = GroupCollector::new(grouping, order);
-            let (hits, book_counts) = searcher.search(&*query, &(collector, BookCountCollector))?;
-            let page = Self::finalize_grouped(hits, limit, offset);
+            let collectors = (GroupCollector::new(grouping, order), BookCountCollector);
+            let ((), book_counts) = searcher.search(&*query, &collectors)?;
+            let page = Self::finalize_grouped(collectors.0.take_hits(), limit, offset);
             if sink
                 .add(SearchStreamUpdate {
                     total_count: Some(page.raw_total),
@@ -5629,8 +5658,8 @@ impl SearchEngine {
         order: &ResultsOrder,
     ) -> Result<GroupedPage> {
         let collector = GroupCollector::new(grouping, order);
-        let hits = searcher.search(query, &collector)?;
-        Ok(Self::finalize_grouped(hits, limit, offset))
+        searcher.search(query, &collector)?;
+        Ok(Self::finalize_grouped(collector.take_hits(), limit, offset))
     }
 
     /// ממיין את הקבוצות לפי הנציג הטוב ביותר וגוזר את העמוד המבוקש.
@@ -6782,18 +6811,6 @@ impl GroupAcc {
             siblings.truncate(MERGED_SIBLINGS_CAP);
         }
     }
-
-    fn merge(&mut self, other: GroupAcc) {
-        self.count += other.count;
-        let mut displaced = other.best;
-        if (displaced.0, displaced.1) < (self.best.0, self.best.1) {
-            std::mem::swap(&mut self.best, &mut displaced);
-        }
-        Self::insert_capped(&mut self.siblings, displaced);
-        for entry in other.siblings {
-            Self::insert_capped(&mut self.siblings, entry);
-        }
-    }
 }
 
 /// מפת קבוצות חסומת-[`GROUP_COLLECTOR_MAX_GROUPS`] שמפנה בתקרה את הקבוצה
@@ -6830,21 +6847,6 @@ impl BoundedGroups {
             return;
         }
         self.insert_group(key, GroupAcc::new(entry));
-    }
-
-    /// קבוצה שלמה מסגמנט אחר (מסלול המיזוג).
-    fn merge_group(&mut self, key: (u8, u64), acc: GroupAcc) {
-        if let Some(existing) = self.groups.get_mut(&key) {
-            let old_best = (existing.best.0, existing.best.1, key);
-            existing.merge(acc);
-            let new_best = (existing.best.0, existing.best.1, key);
-            if new_best != old_best {
-                self.by_best.remove(&old_best);
-                self.by_best.insert(new_best);
-            }
-            return;
-        }
-        self.insert_group(key, acc);
     }
 
     fn insert_group(&mut self, key: (u8, u64), acc: GroupAcc) {
@@ -6920,16 +6922,31 @@ impl SiblingFields {
     }
 }
 
+/// גודל ה-buffer הפר-סגמנטי שמרווח את הנעילה על הצבירה המשותפת —
+/// נעילה אחת לכל ~4K מסמכים תואמים במקום נעילה פר-מסמך.
+const GROUP_FLUSH_BUFFER: usize = 4_096;
+
+/// הצבירה המשותפת של החיפוש המקובץ: מפה חסומה **אחת לכל החיפוש**.
+/// צבירה פר-סגמנט (עם מיזוג ב-merge_fruits) הייתה מחזיקה עד
+/// [`GROUP_COLLECTOR_MAX_GROUPS`] קבוצות לכל סגמנט בו-זמנית — עשרות
+/// סגמנטים (אינדקס לא ממוזג) היו מצטברים למאות MB לפני המיזוג.
+struct SharedGroupedAcc {
+    raw_total: u32,
+    groups: BoundedGroups,
+}
+
 /// אוסף את כל המסמכים התואמים לקבוצות (ראו [`ResultGrouping`]) במעבר
 /// אחד, עם נציג-מיטבי וחברות קצוצות-תקרה לכל קבוצה. הזיכרון פרופורציונלי
 /// למספר הקבוצות — וזה *אינו* חסום בתקציב ה-postings: המסלולים exact
 /// הלא-מנוקד (TermQuery/PhraseQuery) ו-fuzzy (תקציבי האוטומטון חוסמים
 /// מספר מונחים, לא מספר מסמכים תואמים) יכולים לעבור על מיליוני שורות.
-/// לכן מספר הקבוצות קצוץ ב-[`GROUP_COLLECTOR_MAX_GROUPS`] עם degrade
-/// מדווח, לא צבירה בלתי-חסומה.
+/// לכן מספר הקבוצות קצוץ גלובלית ב-[`GROUP_COLLECTOR_MAX_GROUPS`] עם
+/// degrade מדווח, לא צבירה בלתי-חסומה. התוצאה נשלפת ב-[`Self::take_hits`]
+/// אחרי `searcher.search` (ה-Fruit ריק).
 struct GroupCollector {
     mode: ResultGrouping,
     sort: GroupSort,
+    shared: Arc<Mutex<SharedGroupedAcc>>,
 }
 
 impl GroupCollector {
@@ -6941,6 +6958,20 @@ impl GroupCollector {
                 ResultsOrder::Generation => GroupSort::GenerationAsc,
                 ResultsOrder::Relevance => GroupSort::ScoreDesc,
             },
+            shared: Arc::new(Mutex::new(SharedGroupedAcc {
+                raw_total: 0,
+                groups: BoundedGroups::new(),
+            })),
+        }
+    }
+
+    /// שולף את התוצאה שנצברה — לקריאה פעם אחת, אחרי `searcher.search`.
+    fn take_hits(&self) -> GroupedHits {
+        let mut acc = self.shared.lock().expect("group accumulator poisoned");
+        GroupedHits {
+            raw_total: acc.raw_total,
+            truncated: acc.groups.truncated,
+            groups: std::mem::take(&mut acc.groups.groups),
         }
     }
 }
@@ -6954,12 +6985,25 @@ struct GroupSegmentCollector {
     sort_col: Option<tantivy::columnar::Column<u64>>,
     /// עמודת מפתח הקבוצה: `sectionId` או `lineHash` לפי המצב.
     key_col: tantivy::columnar::Column<u64>,
-    raw_total: u32,
-    groups: BoundedGroups,
+    shared: Arc<Mutex<SharedGroupedAcc>>,
+    buffer: Vec<((u8, u64), GroupEntry)>,
+}
+
+impl GroupSegmentCollector {
+    fn flush(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let mut acc = self.shared.lock().expect("group accumulator poisoned");
+        acc.raw_total = acc.raw_total.saturating_add(self.buffer.len() as u32);
+        for (key, entry) in self.buffer.drain(..) {
+            acc.groups.add_entry(key, entry);
+        }
+    }
 }
 
 impl Collector for GroupCollector {
-    type Fruit = GroupedHits;
+    type Fruit = ();
     type Child = GroupSegmentCollector;
 
     fn for_segment(
@@ -6985,8 +7029,8 @@ impl Collector for GroupCollector {
             id_col,
             sort_col,
             key_col,
-            raw_total: 0,
-            groups: BoundedGroups::new(),
+            shared: Arc::clone(&self.shared),
+            buffer: Vec::with_capacity(GROUP_FLUSH_BUFFER),
         })
     }
 
@@ -6994,29 +7038,13 @@ impl Collector for GroupCollector {
         matches!(self.sort, GroupSort::ScoreDesc)
     }
 
-    fn merge_fruits(&self, per_segment: Vec<GroupedHits>) -> tantivy::Result<GroupedHits> {
-        // גם המפה הממוזגת קצוצה (איחוד סגמנטים שכל אחד מהם בתקרה היה
-        // מכפיל אותה פי מספר הסגמנטים) — עם אותו פינוי-הגרועה, כך שסדר
-        // הסגמנטים אינו קובע אילו קבוצות שורדות.
-        let mut merged = BoundedGroups::new();
-        let mut raw_total = 0u32;
-        for seg in per_segment {
-            raw_total += seg.raw_total;
-            merged.truncated |= seg.truncated;
-            for (key, acc) in seg.groups {
-                merged.merge_group(key, acc);
-            }
-        }
-        Ok(GroupedHits {
-            raw_total,
-            groups: merged.groups,
-            truncated: merged.truncated,
-        })
+    fn merge_fruits(&self, _per_segment: Vec<()>) -> tantivy::Result<()> {
+        Ok(())
     }
 }
 
 impl SegmentCollector for GroupSegmentCollector {
-    type Fruit = GroupedHits;
+    type Fruit = ();
 
     fn collect(&mut self, doc_id: DocId, score: Score) {
         let id = self.id_col.first(doc_id).unwrap_or_default();
@@ -7041,16 +7069,14 @@ impl SegmentCollector for GroupSegmentCollector {
             }
         };
         let entry: GroupEntry = (sort_val, id, DocAddress::new(self.seg_ord, doc_id));
-        self.raw_total += 1;
-        self.groups.add_entry(key, entry);
+        self.buffer.push((key, entry));
+        if self.buffer.len() >= GROUP_FLUSH_BUFFER {
+            self.flush();
+        }
     }
 
-    fn harvest(self) -> GroupedHits {
-        GroupedHits {
-            raw_total: self.raw_total,
-            groups: self.groups.groups,
-            truncated: self.groups.truncated,
-        }
+    fn harvest(mut self) {
+        self.flush();
     }
 }
 
@@ -12541,6 +12567,49 @@ mod tests {
     }
 
     #[test]
+    fn grouping_merges_across_segments_through_the_shared_accumulator() {
+        let (mut engine, _dir) = make_engine();
+        // commit בין הספרים ⇒ סגמנטים נפרדים; הצבירה המשותפת חייבת לאחד
+        // את הקבוצה חוצת-הסגמנטים ולמנות את שני חבריה.
+        let mishna = "אמר רבי עקיבא כל ישראל יש להם חלק לעולם הבא";
+        add(&mut engine, (1u64 << 32) + 1, mishna, "book:a");
+        engine.commit().unwrap();
+        add(&mut engine, (2u64 << 32) + 1, mishna, "book:b");
+        add(
+            &mut engine,
+            (3u64 << 32) + 1,
+            "רבי עקיבא היה דורש כתרי אותיות של תורה",
+            "book:c",
+        );
+        engine.commit().unwrap();
+
+        let page = engine
+            .search_and_count_exact(
+                "עקיבא".to_string(),
+                vec![],
+                50,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                Some(ResultGrouping::IdenticalText),
+            )
+            .unwrap();
+        assert_eq!(page.total_count, 3);
+        assert_eq!(page.group_count, Some(2));
+        assert!(!page.truncated);
+        // הקבוצה המאוחדת נושאת את שני החברים משני הסגמנטים, והנציג הוא
+        // בעל ה-id הנמוך (מהסגמנט הראשון).
+        let merged = page
+            .results
+            .iter()
+            .find(|r| r.merged_count == 2)
+            .expect("merged group");
+        assert_eq!(merged.id, (1u64 << 32) + 1);
+        assert_eq!(merged.merged.len(), 1);
+    }
+
+    #[test]
     fn grouping_identical_text_skips_short_lines() {
         let (mut engine, _dir) = make_engine();
         // שורה זהה קצרה מסף 12 האותיות — לעולם לא מתאחדת.
@@ -12613,67 +12682,64 @@ mod tests {
     }
 
     #[test]
-    fn group_collector_caps_group_count() {
-        let collector =
-            GroupCollector::new(&ResultGrouping::IdenticalText, &ResultsOrder::Catalogue);
-        let seg = |start: u64, end: u64| GroupedHits {
-            raw_total: (end - start) as u32,
-            truncated: false,
-            groups: (start..end)
-                .map(|i| {
-                    let key = (1u8, i);
-                    (key, GroupAcc::new((i, i, DocAddress::new(0, i as u32))))
-                })
-                .collect(),
-        };
-        // סגמנט ראשון ממלא את המפה הממוזגת עד התקרה; השני חופף בקבוצה
-        // אחת (0) ומוסיף קבוצות גרועות יותר (sort גבוה) מעבר לתקרה.
+    fn bounded_groups_cap_keeps_counting_existing_groups() {
+        // מילוי התקרה; קבוצה קיימת ממשיכה לצבור גם בתקרה, וקבוצות גרועות
+        // מכל הקיימות נדחות עם דגל.
+        let mut bounded = BoundedGroups::new();
         let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
-        let merged = collector
-            .merge_fruits(vec![seg(0, cap), seg(0, 1), seg(cap, cap + 10)])
-            .unwrap();
-        // קבוצות גרועות מהקיימות נדחו + הדגל דווח; raw_total נשאר מדויק.
-        assert!(merged.truncated);
-        assert_eq!(merged.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
-        assert_eq!(merged.raw_total, GROUP_COLLECTOR_MAX_GROUPS as u32 + 11);
-        // קבוצה קיימת ממשיכה להתמזג גם בתקרה — המונה שלה מדויק.
-        assert_eq!(merged.groups[&(1u8, 0)].count, 2);
+        for i in 0..cap {
+            bounded.add_entry((1u8, i), (i, i, DocAddress::new(0, i as u32)));
+        }
+        bounded.add_entry((1u8, 0), (0, 0, DocAddress::new(1, 0)));
+        for i in cap..cap + 10 {
+            bounded.add_entry((1u8, i), (i, i, DocAddress::new(2, (i % 1000) as u32)));
+        }
+        assert!(bounded.truncated);
+        assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
+        // קבוצה קיימת ממשיכה להיספר גם בתקרה — המונה שלה מדויק.
+        assert_eq!(bounded.groups[&(1u8, 0)].count, 2);
     }
 
     #[test]
-    fn group_collector_keeps_the_best_groups_in_any_arrival_order() {
-        let collector =
-            GroupCollector::new(&ResultGrouping::IdenticalText, &ResultsOrder::Catalogue);
-        let seg = |start: u64, end: u64| GroupedHits {
-            raw_total: (end - start) as u32,
-            truncated: false,
-            groups: (start..end)
-                .map(|i| {
-                    let key = (1u8, i);
-                    (
-                        key,
-                        GroupAcc::new((i, i, DocAddress::new(0, (i % 1000) as u32))),
-                    )
-                })
-                .collect(),
-        };
-        // סגמנט ראשון ממלא את התקרה בקבוצות "גרועות" (sort גבוה); קבוצה
-        // טובה שמגיעה אחריו חייבת להיכנס על חשבון הגרועה ביותר — סדר
-        // הסריקה/המיזוג אינו קובע אילו קבוצות שורדות.
+    fn bounded_groups_keep_the_best_groups_in_any_arrival_order() {
+        // מילוי התקרה בקבוצות "גרועות" (sort גבוה); קבוצה טובה שמגיעה
+        // אחריהן חייבת להיכנס על חשבון הגרועה ביותר — סדר הסריקה בין
+        // הסגמנטים אינו קובע אילו קבוצות שורדות.
+        let mut bounded = BoundedGroups::new();
         let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
         let high_base = 1_000_000u64;
-        let merged = collector
-            .merge_fruits(vec![seg(high_base, high_base + cap), seg(1, 2)])
-            .unwrap();
-        assert!(merged.truncated);
-        assert_eq!(merged.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
+        for i in high_base..high_base + cap {
+            bounded.add_entry((1u8, i), (i, i, DocAddress::new(0, (i % 1000) as u32)));
+        }
+        bounded.add_entry((1u8, 1), (1, 1, DocAddress::new(1, 1)));
+        assert!(bounded.truncated);
+        assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
         // הטובה נכנסה, הגרועה ביותר פונתה.
-        assert!(merged.groups.contains_key(&(1u8, 1)));
-        assert!(!merged.groups.contains_key(&(1u8, high_base + cap - 1)));
+        assert!(bounded.groups.contains_key(&(1u8, 1)));
+        assert!(!bounded.groups.contains_key(&(1u8, high_base + cap - 1)));
         // והעמוד הראשון מתחיל בקבוצה הטובה ביותר.
-        let page = SearchEngine::finalize_grouped(merged, 1, 0);
+        let hits = GroupedHits {
+            raw_total: cap as u32 + 1,
+            truncated: bounded.truncated,
+            groups: bounded.groups,
+        };
+        let page = SearchEngine::finalize_grouped(hits, 1, 0);
         assert_eq!(page.reps[0].id, 1);
         assert!(page.truncated);
+    }
+
+    #[test]
+    fn accumulate_section_counts_respects_the_budget() {
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        // המילה הראשונה ממלאה את התקציב; סעיף חדש מהמילה השנייה נשמט עם
+        // דגל, אבל סעיף שכבר נספר ממשיך להצטבר.
+        let truncated = accumulate_section_counts(&mut counts, (0..3u64).collect(), 3);
+        assert!(!truncated);
+        let truncated = accumulate_section_counts(&mut counts, HashSet::from([1u64, 99]), 3);
+        assert!(truncated);
+        assert_eq!(counts.len(), 3);
+        assert_eq!(counts[&1], 2);
+        assert!(!counts.contains_key(&99));
     }
 
     #[test]
