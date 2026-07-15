@@ -451,10 +451,12 @@ pub fn build_display_highlight_from_terms(
 /// (U+FB1D–U+FB4F) — תואם את `_isHebrewLetter` של החיפוש המקומי בספר.
 const HEBREW_LETTER_CLASS: &str = r"א-תװ-ײיִ-ﭏ";
 
-/// גרש/גרשיים על כל צורותיהם, לבדיקת גבול תלוית-הקשר: גרש/גרשיים **בין**
-/// אותיות עבריות (רש״י, ד׳אש) הם חלק מהטוקן — כמו בטוקנייזר — ולכן אינם
-/// גבול מילה; גרשיים פותח/סוגר של ציטוט כן גבול.
-const QUOTE_CHARS_CLASS: &str = "\"'׳״‘’“”";
+/// fragment גרש/גרשיים לבדיקת הגבול, בסמנטיקת הטוקנייזר: גרשיים יחיד או
+/// גרש/זוג-גרשים (הייצוג הישן '' לגרשיים). גרש/גרשיים **בין** אותיות
+/// עבריות (רש״י, ד׳אש, אב''ג) הם חלק מהטוקן ולכן אינם גבול מילה;
+/// גרשיים פותח/סוגר של ציטוט כן גבול.
+const QUOTE_BOUNDARY_FRAGMENT: &str =
+    "(?:[\"\u{05F4}\u{201C}\u{201D}]|['\u{05F3}\u{2018}\u{2019}]{1,2})";
 
 /// Builds the regex for highlighting *literal* in-book search matches (the
 /// simple/exact mode that scans the open book locally): the query phrase
@@ -485,11 +487,13 @@ pub fn build_literal_pattern(query: &str) -> Option<String> {
         .join(r"[\s־׀|]+");
     // גבול תלוי-הקשר: התאמה נפסלת אם לפניה אות (או אות+גרש/גרשיים — המילה
     // ממשיכה מתוך רש״י), או אם אחריה אות (או גרש/גרשיים+אות). גרשיים שאחריו
-    // לא-אות (סוגר ציטוט) נשאר גבול — ״הרעתי״ מודגש.
+    // לא-אות (סוגר ציטוט) נשאר גבול — ״הרעתי״ מודגש. ה-lookahead מדלג בעצמו
+    // על סימנים צמודים שנותרו: [marks]* שבתבנית נסוג ב-backtracking ומשאיר
+    // ניקוד בין ההתאמה לאות הבאה (אמר בתוך אָמַרְתִּי) — הדילוג סוגר את הפרצה.
     Some(format!(
-        "(?<![{cls}]{marks}[{q}]?)(?:{phrase})(?![{q}]?[{cls}])",
+        "(?<![{cls}]{marks}{qf}?)(?:{phrase})(?!{marks}{qf}?[{cls}])",
         cls = HEBREW_LETTER_CLASS,
-        q = QUOTE_CHARS_CLASS,
+        qf = QUOTE_BOUNDARY_FRAGMENT,
         marks = ATTACHED_MARKS_CLASS,
     ))
 }
@@ -616,15 +620,14 @@ mod tests {
         #[test]
         fn quote_boundary_is_context_dependent() {
             // גרש/גרשיים אינם אות: ״הרעתי״ מודגש. אך בין אותיות (רש״י) הם
-            // חלק מהטוקן — ה-lookaround פוסל התאמה שממשיכה דרך גרשיים לאות.
+            // חלק מהטוקן — ה-lookaround פוסל התאמה שממשיכה דרך גרשיים לאות,
+            // מדלג בעצמו על ניקוד שנותר, ומכיר גם בזוג-גרשים ('') כגרשיים.
             let p = build_literal_pattern("הרעתי").unwrap();
             let letters = super::super::HEBREW_LETTER_CLASS;
-            let quotes = super::super::QUOTE_CHARS_CLASS;
-            assert!(p.starts_with(&format!(
-                "(?<![{letters}]{marks}[{quotes}]?)",
-                marks = super::super::ATTACHED_MARKS_CLASS
-            )));
-            assert!(p.ends_with(&format!("(?![{quotes}]?[{letters}])")));
+            let marks = super::super::ATTACHED_MARKS_CLASS;
+            let qf = super::super::QUOTE_BOUNDARY_FRAGMENT;
+            assert!(p.starts_with(&format!("(?<![{letters}]{marks}{qf}?)")));
+            assert!(p.ends_with(&format!("(?!{marks}{qf}?[{letters}])")));
         }
 
         #[test]

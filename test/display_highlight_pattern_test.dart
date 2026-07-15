@@ -230,6 +230,26 @@ Future<void> main() async {
         expect(compileLiteral('י').hasMatch('רש״י'), isFalse);
       });
 
+      test('ניקוד אינו עוקף את גבול המילה הימני', () {
+        // backtracking של [ניקוד]* השאיר סימן בין ההתאמה לאות הבאה —
+        // ה-lookahead חייב לדלג על סימנים צמודים בעצמו.
+        expect(compileLiteral('אמר').hasMatch('אָמַרְתִּי'), isFalse);
+        expect(compileLiteral('אב').hasMatch('אָבֿג'), isFalse);
+        expect(compileLiteral('אב').hasMatch('אָבֿ״ג'), isFalse);
+      });
+
+      test('זוג גרשים (\'\') נחשב גרשיים — אינו גבול בין אותיות', () {
+        expect(compileLiteral('אב').hasMatch("אב''ג"), isFalse);
+        expect(compileLiteral('ג').hasMatch("אב''ג"), isFalse);
+        expect(compileLiteral('אב').hasMatch('אב׳׳ג'), isFalse);
+      });
+
+      test('מילה מנוקדת שלמה עדיין נמצאת', () {
+        final match = compileLiteral('אמר').firstMatch('הוּא אָמַר לִי');
+        expect(match, isNotNull);
+        expect(match!.group(0), 'אָמַר');
+      });
+
       test('גרשיים פנימי (ראשי-תיבות) נשאר בהדגשה', () {
         final match = compileLiteral('רש"י').firstMatch('אמר רש״י כאן');
         expect(match, isNotNull);
