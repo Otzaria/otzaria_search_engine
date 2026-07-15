@@ -502,27 +502,33 @@ fn push_quote_class(out: &mut String, ch: char) {
 }
 
 fn literal_charwise_pattern(word: &str, is_last_word: bool) -> String {
-    let chars: Vec<char> = word.chars().collect();
+    let total_chars = word.chars().count();
     // רק במילה האחרונה בביטוי: גרש/גרשיים נגרר הופך ל-lookahead (מאומת אך לא
     // נצרך/נצבע) — כך "הרעתי\u{05F4}" מדגיש "הרעתי" בלבד, כמו
     // generate_highlight_pattern. במילים לא-אחרונות הגרש נצרך כרגיל, אחרת
     // ה-\s+ שאחריהן היה פוגש גרש במקום רווח ו"ר׳ עקיבא" לא היה נמצא.
     // גרשיים פנימי (ראשי-תיבות "רש\u{05F4}י") תמיד נצרך ומודגש.
-    let mut core_len = chars.len();
+    let mut trailing_quotes = 0;
     if is_last_word {
-        while core_len > 0 && is_query_quote(chars[core_len - 1]) {
-            core_len -= 1;
-        }
-        // מילה שכולה גרש/גרשיים — אין ליבה; משאירים הכל נצרך (מקרה קצה).
-        if core_len == 0 {
-            core_len = chars.len();
+        for ch in word.chars().rev() {
+            if is_query_quote(ch) {
+                trailing_quotes += 1;
+            } else {
+                break;
+            }
         }
     }
+    // מילה שכולה גרש/גרשיים — אין ליבה; משאירים הכל נצרך (מקרה קצה).
+    let core_len = if trailing_quotes == total_chars {
+        total_chars
+    } else {
+        total_chars - trailing_quotes
+    };
 
     // כל תו מוסיף את ATTACHED_MARKS_CLASS (~25 בתים) ואולי מחלקת גרש/גרשיים;
     // הקצאה מראש נדיבה מונעת reallocations בלולאה.
     let mut out = String::with_capacity(word.len() * 30);
-    for &ch in &chars[..core_len] {
+    for ch in word.chars().take(core_len) {
         if is_query_quote(ch) {
             push_quote_class(&mut out, ch);
         } else {
@@ -530,9 +536,9 @@ fn literal_charwise_pattern(word: &str, is_last_word: bool) -> String {
         }
         out.push_str(ATTACHED_MARKS_CLASS);
     }
-    if core_len < chars.len() {
+    if core_len < total_chars {
         out.push_str("(?=");
-        for &ch in &chars[core_len..] {
+        for ch in word.chars().skip(core_len) {
             push_quote_class(&mut out, ch);
         }
         out.push(')');
