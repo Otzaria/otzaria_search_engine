@@ -244,6 +244,20 @@ Future<void> main() async {
         expect(compileLiteral('אב').hasMatch('אב׳׳ג'), isFalse);
       });
 
+      test('סימן צמוד אחרי גרש/גרשיים אינו עוקף את הגבול', () {
+        // הטוקנייזר רואה גרש→סימן→אות כחלק מאותו טוקן — גם הגבול חייב.
+        expect(compileLiteral('אב').hasMatch('אב״ֿג'), isFalse);
+        expect(compileLiteral('ג').hasMatch('אב״ֿג'), isFalse);
+        expect(compileLiteral('אב').hasMatch('אב׳ֿג'), isFalse);
+        expect(compileLiteral('אב').hasMatch('אב׳ֿ׳ג'), isFalse);
+        expect(compileLiteral('אב').hasMatch('אב״ֿ״ג'), isFalse);
+      });
+
+      test('רצפי ציטוט לא-תקינים נשארים גבול', () {
+        expect(compileLiteral('אב').hasMatch('אב""ג'), isTrue);
+        expect(compileLiteral('אב').hasMatch("אב'''ג"), isTrue);
+      });
+
       test('מילה מנוקדת שלמה עדיין נמצאת', () {
         final match = compileLiteral('אמר').firstMatch('הוּא אָמַר לִי');
         expect(match, isNotNull);

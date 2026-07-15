@@ -64,6 +64,10 @@ pub struct DisplayHighlight {
 pub(crate) const ATTACHED_MARKS_CLASS: &str =
     "[\u{0300}-\u{036F}\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]*";
 
+/// אותה מחלקה ללא הכמת — לבניית `+`/`*` מפורשים ב-fragment הגבול.
+const ATTACHED_MARKS_SET: &str =
+    "[\u{0300}-\u{036F}\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]";
+
 /// Separator between adjacent query words in displayed text: whitespace,
 /// Hebrew marks, HTML tags (so markup between words is not a mismatch), or
 /// punctuation.
@@ -451,12 +455,19 @@ pub fn build_display_highlight_from_terms(
 /// (U+FB1D–U+FB4F) — תואם את `_isHebrewLetter` של החיפוש המקומי בספר.
 const HEBREW_LETTER_CLASS: &str = r"א-תװ-ײיִ-ﭏ";
 
-/// fragment גרש/גרשיים לבדיקת הגבול, בסמנטיקת הטוקנייזר: גרשיים יחיד או
-/// גרש/זוג-גרשים (הייצוג הישן '' לגרשיים). גרש/גרשיים **בין** אותיות
-/// עבריות (רש״י, ד׳אש, אב''ג) הם חלק מהטוקן ולכן אינם גבול מילה;
-/// גרשיים פותח/סוגר של ציטוט כן גבול.
-const QUOTE_BOUNDARY_FRAGMENT: &str =
-    "(?:[\"\u{05F4}\u{201C}\u{201D}]|['\u{05F3}\u{2018}\u{2019}]{1,2})";
+/// fragment גרש/גרשיים לבדיקת הגבול, בסמנטיקת הטוקנייזר: גרשיים יחיד,
+/// גרש/זוג-גרשים ('' ≡ גרשיים) עם סימנים צמודים אופציונליים ביניהם, או
+/// זוג-גרשיים המופרד בסימן צמוד (רמב\"ֿ\"ם מתקפל לגרשיים — ראו
+/// test_quote_runs_split_by_marks_dedupe_to_single_gershayim). רצפים
+/// לא-תקינים (\"\" או ''' נקיים) אינם חיבור — נשארים גבול.
+fn quote_boundary_fragment() -> String {
+    format!(
+        "(?:[{g2}]{m}+[{g2}]|[{g2}]|[{g1}]{m}*[{g1}]?)",
+        g2 = "\"\u{05F4}\u{201C}\u{201D}",
+        g1 = "'\u{05F3}\u{2018}\u{2019}",
+        m = ATTACHED_MARKS_SET,
+    )
+}
 
 /// Builds the regex for highlighting *literal* in-book search matches (the
 /// simple/exact mode that scans the open book locally): the query phrase
@@ -490,10 +501,10 @@ pub fn build_literal_pattern(query: &str) -> Option<String> {
     // לא-אות (סוגר ציטוט) נשאר גבול — ״הרעתי״ מודגש. ה-lookahead מדלג בעצמו
     // על סימנים צמודים שנותרו: [marks]* שבתבנית נסוג ב-backtracking ומשאיר
     // ניקוד בין ההתאמה לאות הבאה (אמר בתוך אָמַרְתִּי) — הדילוג סוגר את הפרצה.
+    let qf = quote_boundary_fragment();
     Some(format!(
-        "(?<![{cls}]{marks}{qf}?)(?:{phrase})(?!{marks}{qf}?[{cls}])",
+        "(?<![{cls}]{marks}{qf}?{marks})(?:{phrase})(?!{marks}{qf}?{marks}[{cls}])",
         cls = HEBREW_LETTER_CLASS,
-        qf = QUOTE_BOUNDARY_FRAGMENT,
         marks = ATTACHED_MARKS_CLASS,
     ))
 }
@@ -574,6 +585,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn attached_marks_set_matches_class() {
+        assert_eq!(format!("{ATTACHED_MARKS_SET}*"), ATTACHED_MARKS_CLASS);
+    }
+
+    #[test]
     fn attached_marks_class_equals_tokenizer_attached_set() {
         // מפרקים את מחלקת התווים (תווים בודדים וטווחים) ומשווים לסט של
         // is_attached_mark — כך מפרידי הפסוק (מקף, פסק, סוף-פסוק, נו"ן
@@ -625,9 +641,9 @@ mod tests {
             let p = build_literal_pattern("הרעתי").unwrap();
             let letters = super::super::HEBREW_LETTER_CLASS;
             let marks = super::super::ATTACHED_MARKS_CLASS;
-            let qf = super::super::QUOTE_BOUNDARY_FRAGMENT;
-            assert!(p.starts_with(&format!("(?<![{letters}]{marks}{qf}?)")));
-            assert!(p.ends_with(&format!("(?!{marks}{qf}?[{letters}])")));
+            let qf = super::super::quote_boundary_fragment();
+            assert!(p.starts_with(&format!("(?<![{letters}]{marks}{qf}?{marks})")));
+            assert!(p.ends_with(&format!("(?!{marks}{qf}?{marks}[{letters}])")));
         }
 
         #[test]
