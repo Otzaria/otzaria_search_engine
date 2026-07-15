@@ -447,9 +447,9 @@ pub fn build_display_highlight_from_terms(
 // ── Literal in-book pattern ────────────────────────────────────────────────
 
 /// מחלקת האותיות העבריות לבדיקת גבולות מילה בתבנית הליטרלית: אותיות בסיס
-/// (U+05D0–U+05EA), ליגטורות וגרשיים (U+05F0–U+05F4) וצורות תצוגה
+/// (U+05D0–U+05EA), ליגטורות יידיש (U+05F0–U+05F2) וצורות תצוגה
 /// (U+FB1D–U+FB4F) — תואם את `_isHebrewLetter` של החיפוש המקומי בספר.
-const HEBREW_LETTER_CLASS: &str = r"א-תװ-״יִ-ﭏ";
+const HEBREW_LETTER_CLASS: &str = r"א-תװ-ײיִ-ﭏ";
 
 /// Builds the regex for highlighting *literal* in-book search matches (the
 /// simple/exact mode that scans the open book locally): the query phrase
@@ -469,11 +469,15 @@ pub fn build_literal_pattern(query: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
+    let last = words.len() - 1;
+    // מפריד בין מילים סובל גם מקף/פסק (הטקסט המוצג עשוי להכיל "אשר־שמע")
+    // — עקבי עם generate_highlight_pattern ולא תלוי בניקוי מקדים של הטקסט.
     let phrase = words
         .iter()
-        .map(|w| literal_charwise_pattern(w))
+        .enumerate()
+        .map(|(i, w)| literal_charwise_pattern(w, i == last))
         .collect::<Vec<_>>()
-        .join(r"\s+");
+        .join(r"[\s־׀|]+");
     Some(format!(
         "(?<![{cls}])(?:{phrase})(?![{cls}])",
         cls = HEBREW_LETTER_CLASS,
@@ -483,15 +487,55 @@ pub fn build_literal_pattern(query: &str) -> Option<String> {
 /// תבנית תו-אחר-תו לביטוי ליטרלי: אחרי כל תו מותרים סימני ניקוד/טעמים
 /// (הטקסט המוצג מנוקד; השאילתה בדרך כלל לא), וגרש/גרשיים תופסים את שתי
 /// הצורות — הלועזית והעברית.
-fn literal_charwise_pattern(word: &str) -> String {
-    let mut out = String::with_capacity(word.len() * 4);
-    for ch in word.chars() {
-        match ch {
-            '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' => out.push_str(GERSHAYIM_DISPLAY_CLASS),
-            '\'' | '\u{05F3}' | '\u{2018}' | '\u{2019}' => out.push_str(GERESH_DISPLAY_CLASS),
-            _ => push_escaped_char(&mut out, ch),
+fn is_query_quote(ch: char) -> bool {
+    matches!(
+        ch,
+        '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' | '\'' | '\u{05F3}' | '\u{2018}' | '\u{2019}'
+    )
+}
+
+fn push_quote_class(out: &mut String, ch: char) {
+    match ch {
+        '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' => out.push_str(GERSHAYIM_DISPLAY_CLASS),
+        _ => out.push_str(GERESH_DISPLAY_CLASS),
+    }
+}
+
+fn literal_charwise_pattern(word: &str, is_last_word: bool) -> String {
+    let chars: Vec<char> = word.chars().collect();
+    // רק במילה האחרונה בביטוי: גרש/גרשיים נגרר הופך ל-lookahead (מאומת אך לא
+    // נצרך/נצבע) — כך "הרעתי\u{05F4}" מדגיש "הרעתי" בלבד, כמו
+    // generate_highlight_pattern. במילים לא-אחרונות הגרש נצרך כרגיל, אחרת
+    // ה-\s+ שאחריהן היה פוגש גרש במקום רווח ו"ר׳ עקיבא" לא היה נמצא.
+    // גרשיים פנימי (ראשי-תיבות "רש\u{05F4}י") תמיד נצרך ומודגש.
+    let mut core_len = chars.len();
+    if is_last_word {
+        while core_len > 0 && is_query_quote(chars[core_len - 1]) {
+            core_len -= 1;
+        }
+        // מילה שכולה גרש/גרשיים — אין ליבה; משאירים הכל נצרך (מקרה קצה).
+        if core_len == 0 {
+            core_len = chars.len();
+        }
+    }
+
+    // כל תו מוסיף את ATTACHED_MARKS_CLASS (~25 בתים) ואולי מחלקת גרש/גרשיים;
+    // הקצאה מראש נדיבה מונעת reallocations בלולאה.
+    let mut out = String::with_capacity(word.len() * 30);
+    for &ch in &chars[..core_len] {
+        if is_query_quote(ch) {
+            push_quote_class(&mut out, ch);
+        } else {
+            push_escaped_char(&mut out, ch);
         }
         out.push_str(ATTACHED_MARKS_CLASS);
+    }
+    if core_len < chars.len() {
+        out.push_str("(?=");
+        for &ch in &chars[core_len..] {
+            push_quote_class(&mut out, ch);
+        }
+        out.push(')');
     }
     out
 }
@@ -547,9 +591,24 @@ mod tests {
         }
 
         #[test]
+        fn geresh_and_gershayim_are_word_boundaries() {
+            // גרש/גרשיים אינם אות בגבול המילה — כך "הרעתי" מודגש כשהוא צמוד
+            // לגרשיים של ציטוט (״הרעתי״), במקום להיחסם כאילו נמשך לתוך אות.
+            let p = build_literal_pattern("הרעתי").unwrap();
+            assert!(
+                !p.contains('\u{05F4}'),
+                "gershayim must not be a boundary letter"
+            );
+            assert!(
+                !p.contains('\u{05F3}'),
+                "geresh must not be a boundary letter"
+            );
+        }
+
+        #[test]
         fn multi_word_joined_by_whitespace() {
             let p = build_literal_pattern("  כל   היום  ").unwrap();
-            assert!(p.contains(r"\s+"));
+            assert!(p.contains(r"[\s"));
         }
 
         #[test]
@@ -566,6 +625,37 @@ mod tests {
             let geresh = build_literal_pattern("תוס'").unwrap();
             assert_eq!(geresh, build_literal_pattern("תוס\u{2019}").unwrap());
             assert!(geresh.contains(super::super::GERESH_DISPLAY_CLASS));
+        }
+
+        #[test]
+        fn trailing_quote_is_lookahead_not_consumed() {
+            // גרשיים נגרר בשאילתה מאומת ב-lookahead — אינו נצרך ולכן לא נכלל
+            // ב-group(0) ולא נצבע (כמו generate_highlight_pattern).
+            let p = build_literal_pattern("הרעתי\"").unwrap();
+            assert!(p.contains("(?="), "trailing gershayim must be a lookahead");
+            // גרשיים פנימי (ראשי-תיבות) נשאר נצרך ומודגש.
+            let acronym = build_literal_pattern("רש\"י").unwrap();
+            assert!(
+                !acronym.contains("(?="),
+                "internal gershayim must stay consuming"
+            );
+        }
+
+        #[test]
+        fn lookahead_only_on_last_word() {
+            // גרש במילה לא-אחרונה ("ר׳ עקיבא") נצרך — אחרת המפריד שאחריו יפגוש
+            // גרש במקום רווח והביטוי לא יימצא.
+            let p = build_literal_pattern("ר\u{05F3} עקיבא").unwrap();
+            assert!(
+                !p.contains("(?="),
+                "non-final abbrev geresh must be consumed, not a lookahead"
+            );
+        }
+
+        #[test]
+        fn word_separator_tolerates_maqaf() {
+            let p = build_literal_pattern("אשר שמע").unwrap();
+            assert!(p.contains('\u{05BE}'), "separator must tolerate maqaf");
         }
 
         #[test]
