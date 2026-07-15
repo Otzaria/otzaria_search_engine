@@ -64,6 +64,10 @@ pub struct DisplayHighlight {
 pub(crate) const ATTACHED_MARKS_CLASS: &str =
     "[\u{0300}-\u{036F}\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]*";
 
+/// אותה מחלקה ללא הכמת — לבניית `+`/`*` מפורשים ב-fragment הגבול.
+const ATTACHED_MARKS_SET: &str =
+    "[\u{0300}-\u{036F}\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]";
+
 /// Separator between adjacent query words in displayed text: whitespace,
 /// Hebrew marks, HTML tags (so markup between words is not a mismatch), or
 /// punctuation.
@@ -447,9 +451,23 @@ pub fn build_display_highlight_from_terms(
 // ── Literal in-book pattern ────────────────────────────────────────────────
 
 /// מחלקת האותיות העבריות לבדיקת גבולות מילה בתבנית הליטרלית: אותיות בסיס
-/// (U+05D0–U+05EA), ליגטורות וגרשיים (U+05F0–U+05F4) וצורות תצוגה
+/// (U+05D0–U+05EA), ליגטורות יידיש (U+05F0–U+05F2) וצורות תצוגה
 /// (U+FB1D–U+FB4F) — תואם את `_isHebrewLetter` של החיפוש המקומי בספר.
-const HEBREW_LETTER_CLASS: &str = r"א-תװ-״יִ-ﭏ";
+const HEBREW_LETTER_CLASS: &str = r"א-תװ-ײיִ-ﭏ";
+
+/// fragment גרש/גרשיים לבדיקת הגבול, בסמנטיקת הטוקנייזר: רצף-ציטוט חוקי
+/// הוא `Q = גרשיים | גרש אחד/שניים`, וכמה רצפים חוקיים המופרדים בסימנים
+/// צמודים משתרשרים — `Q (סימן+ Q)*` (רמב''ְ"ם הוא טוקן אחד; ראו
+/// test_quote_runs_split_by_marks_dedupe_to_single_gershayim). רצפים
+/// צמודים לא-חוקיים ("", ''', '") אינם חיבור — נשארים גבול.
+fn quote_boundary_fragment() -> String {
+    let q = format!(
+        "(?:[{g2}]|[{g1}]{{1,2}})",
+        g2 = "\"\u{05F4}\u{201C}\u{201D}",
+        g1 = "'\u{05F3}\u{2018}\u{2019}",
+    );
+    format!("(?:{q}(?:{m}+{q})*)", m = ATTACHED_MARKS_SET)
+}
 
 /// Builds the regex for highlighting *literal* in-book search matches (the
 /// simple/exact mode that scans the open book locally): the query phrase
@@ -469,29 +487,93 @@ pub fn build_literal_pattern(query: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
+    let last = words.len() - 1;
+    // מפריד בין מילים סובל גם מקף/פסק (הטקסט המוצג עשוי להכיל "אשר־שמע")
+    // — עקבי עם generate_highlight_pattern ולא תלוי בניקוי מקדים של הטקסט.
     let phrase = words
         .iter()
-        .map(|w| literal_charwise_pattern(w))
+        .enumerate()
+        .map(|(i, w)| literal_charwise_pattern(w, i == last))
         .collect::<Vec<_>>()
-        .join(r"\s+");
+        .join(r"[\s־׀|]+");
+    // גבול תלוי-הקשר: התאמה נפסלת אם לפניה אות (או אות+גרש/גרשיים — המילה
+    // ממשיכה מתוך רש״י), או אם אחריה אות (או גרש/גרשיים+אות). גרשיים שאחריו
+    // לא-אות (סוגר ציטוט) נשאר גבול — ״הרעתי״ מודגש. ה-lookahead מדלג בעצמו
+    // על סימנים צמודים שנותרו: [marks]* שבתבנית נסוג ב-backtracking ומשאיר
+    // ניקוד בין ההתאמה לאות הבאה (אמר בתוך אָמַרְתִּי) — הדילוג סוגר את הפרצה.
+    let qf = quote_boundary_fragment();
     Some(format!(
-        "(?<![{cls}])(?:{phrase})(?![{cls}])",
+        "(?<![{cls}]{marks}{qf}?{marks})(?:{phrase})(?!{marks}{qf}?{marks}[{cls}])",
         cls = HEBREW_LETTER_CLASS,
+        marks = ATTACHED_MARKS_CLASS,
     ))
 }
 
 /// תבנית תו-אחר-תו לביטוי ליטרלי: אחרי כל תו מותרים סימני ניקוד/טעמים
 /// (הטקסט המוצג מנוקד; השאילתה בדרך כלל לא), וגרש/גרשיים תופסים את שתי
 /// הצורות — הלועזית והעברית.
-fn literal_charwise_pattern(word: &str) -> String {
-    let mut out = String::with_capacity(word.len() * 4);
-    for ch in word.chars() {
-        match ch {
-            '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' => out.push_str(GERSHAYIM_DISPLAY_CLASS),
-            '\'' | '\u{05F3}' | '\u{2018}' | '\u{2019}' => out.push_str(GERESH_DISPLAY_CLASS),
-            _ => push_escaped_char(&mut out, ch),
+fn is_query_quote(ch: char) -> bool {
+    matches!(
+        ch,
+        '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' | '\'' | '\u{05F3}' | '\u{2018}' | '\u{2019}'
+    )
+}
+
+/// גרשיים בלבד (לא גרש): גרש סוגר יחיד (תוס׳) הוא חלק מהטוקן לפי
+/// הטוקנייזר ולפי generate_highlight_pattern, ולכן נשאר נצרך ומודגש;
+/// רק גרשיים סוגר של ציטוט הופך ל-lookahead.
+fn is_query_gershayim(ch: char) -> bool {
+    matches!(ch, '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}')
+}
+
+fn push_quote_class(out: &mut String, ch: char) {
+    match ch {
+        '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}' => out.push_str(GERSHAYIM_DISPLAY_CLASS),
+        _ => out.push_str(GERESH_DISPLAY_CLASS),
+    }
+}
+
+fn literal_charwise_pattern(word: &str, is_last_word: bool) -> String {
+    let total_chars = word.chars().count();
+    // רק במילה האחרונה, ורק גרשיים (לא גרש): גרשיים נגרר הופך ל-lookahead
+    // (מאומת אך לא נצרך/נצבע) — "הרעתי\u{05F4}" מדגיש "הרעתי" בלבד, כמו
+    // generate_highlight_pattern. גרש סוגר (תוס\u{05F3}) הוא חלק מהטוקן —
+    // נשאר נצרך. במילים לא-אחרונות הכל נצרך, אחרת המפריד שאחריהן היה פוגש
+    // גרש במקום רווח ו"ר\u{05F3} עקיבא" לא היה נמצא.
+    let mut trailing_quotes = 0;
+    if is_last_word {
+        for ch in word.chars().rev() {
+            if is_query_gershayim(ch) {
+                trailing_quotes += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    // מילה שכולה גרש/גרשיים — אין ליבה; משאירים הכל נצרך (מקרה קצה).
+    let core_len = if trailing_quotes == total_chars {
+        total_chars
+    } else {
+        total_chars - trailing_quotes
+    };
+
+    // כל תו מוסיף את ATTACHED_MARKS_CLASS (~25 בתים) ואולי מחלקת גרש/גרשיים;
+    // הקצאה מראש נדיבה מונעת reallocations בלולאה.
+    let mut out = String::with_capacity(word.len() * 30);
+    for ch in word.chars().take(core_len) {
+        if is_query_quote(ch) {
+            push_quote_class(&mut out, ch);
+        } else {
+            push_escaped_char(&mut out, ch);
         }
         out.push_str(ATTACHED_MARKS_CLASS);
+    }
+    if core_len < total_chars {
+        out.push_str("(?=");
+        for ch in word.chars().skip(core_len) {
+            push_quote_class(&mut out, ch);
+        }
+        out.push(')');
     }
     out
 }
@@ -501,6 +583,11 @@ fn literal_charwise_pattern(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_marks_set_matches_class() {
+        assert_eq!(format!("{ATTACHED_MARKS_SET}*"), ATTACHED_MARKS_CLASS);
+    }
 
     #[test]
     fn attached_marks_class_equals_tokenizer_attached_set() {
@@ -547,9 +634,22 @@ mod tests {
         }
 
         #[test]
+        fn quote_boundary_is_context_dependent() {
+            // גרש/גרשיים אינם אות: ״הרעתי״ מודגש. אך בין אותיות (רש״י) הם
+            // חלק מהטוקן — ה-lookaround פוסל התאמה שממשיכה דרך גרשיים לאות,
+            // מדלג בעצמו על ניקוד שנותר, ומכיר גם בזוג-גרשים ('') כגרשיים.
+            let p = build_literal_pattern("הרעתי").unwrap();
+            let letters = super::super::HEBREW_LETTER_CLASS;
+            let marks = super::super::ATTACHED_MARKS_CLASS;
+            let qf = super::super::quote_boundary_fragment();
+            assert!(p.starts_with(&format!("(?<![{letters}]{marks}{qf}?{marks})")));
+            assert!(p.ends_with(&format!("(?!{marks}{qf}?{marks}[{letters}])")));
+        }
+
+        #[test]
         fn multi_word_joined_by_whitespace() {
             let p = build_literal_pattern("  כל   היום  ").unwrap();
-            assert!(p.contains(r"\s+"));
+            assert!(p.contains(r"[\s"));
         }
 
         #[test]
@@ -566,6 +666,48 @@ mod tests {
             let geresh = build_literal_pattern("תוס'").unwrap();
             assert_eq!(geresh, build_literal_pattern("תוס\u{2019}").unwrap());
             assert!(geresh.contains(super::super::GERESH_DISPLAY_CLASS));
+        }
+
+        #[test]
+        fn trailing_gershayim_is_lookahead_not_consumed() {
+            // גרשיים נגרר בשאילתה מאומת ב-lookahead — אינו נצרך ולכן לא נכלל
+            // ב-group(0) ולא נצבע (כמו generate_highlight_pattern).
+            let p = build_literal_pattern("הרעתי\"").unwrap();
+            assert!(p.contains("(?="), "trailing gershayim must be a lookahead");
+            // גרשיים פנימי (ראשי-תיבות) נשאר נצרך ומודגש.
+            let acronym = build_literal_pattern("רש\"י").unwrap();
+            assert!(
+                !acronym.contains("(?="),
+                "internal gershayim must stay consuming"
+            );
+        }
+
+        #[test]
+        fn trailing_geresh_stays_consumed() {
+            // גרש סוגר יחיד (תוס׳) הוא חלק מהטוקן לפי הטוקנייזר ולפי
+            // generate_highlight_pattern — נשאר נצרך ומודגש, לא lookahead.
+            let p = build_literal_pattern("תוס\u{05F3}").unwrap();
+            assert!(
+                !p.contains("(?="),
+                "trailing single geresh must stay consumed"
+            );
+        }
+
+        #[test]
+        fn lookahead_only_on_last_word() {
+            // גרש במילה לא-אחרונה ("ר׳ עקיבא") נצרך — אחרת המפריד שאחריו יפגוש
+            // גרש במקום רווח והביטוי לא יימצא.
+            let p = build_literal_pattern("ר\u{05F3} עקיבא").unwrap();
+            assert!(
+                !p.contains("(?="),
+                "non-final abbrev geresh must be consumed, not a lookahead"
+            );
+        }
+
+        #[test]
+        fn word_separator_tolerates_maqaf() {
+            let p = build_literal_pattern("אשר שמע").unwrap();
+            assert!(p.contains('\u{05BE}'), "separator must tolerate maqaf");
         }
 
         #[test]
