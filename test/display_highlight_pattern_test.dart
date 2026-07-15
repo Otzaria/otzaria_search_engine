@@ -212,6 +212,24 @@ Future<void> main() async {
         expect(match!.group(0), 'הרעתי');
       });
 
+      test('גרש סוגר לקסיקלי (תוס׳) נשאר בהדגשה', () {
+        final match = compileLiteral('תוס׳').firstMatch('כתבו תוס׳ שם');
+        expect(match, isNotNull);
+        expect(match!.group(0), 'תוס׳');
+      });
+
+      test('גרשיים פנימי אינו גבול — "רש" לא מתאים בתוך רש״י', () {
+        expect(compileLiteral('רש').hasMatch('אמר רש״י כאן'), isFalse);
+      });
+
+      test('גרש פנימי אינו גבול — "ד" לא מתאים בתוך ד׳אש', () {
+        expect(compileLiteral('ד').hasMatch('ד׳אש'), isFalse);
+      });
+
+      test('אחרי גרשיים פנימי אינו גבול — "י" לא מתאים בתוך רש״י', () {
+        expect(compileLiteral('י').hasMatch('רש״י'), isFalse);
+      });
+
       test('גרשיים פנימי (ראשי-תיבות) נשאר בהדגשה', () {
         final match = compileLiteral('רש"י').firstMatch('אמר רש״י כאן');
         expect(match, isNotNull);
