@@ -174,4 +174,74 @@ Future<void> main() async {
         ? false
         : 'ספריית המנוע הנייטיבית לא נמצאה — הריצו cargo build בתיקיית rust',
   );
+
+  RegExp compileLiteral(String query) {
+    final pattern = generateLiteralHighlightPattern(query: query);
+    return RegExp(pattern!, caseSensitive: false, unicode: true);
+  }
+
+  group(
+    'generateLiteralHighlightPattern',
+    () {
+      test('מדגיש מילה צמודה לגרשיים של ציטוט (״הרעתי״)', () {
+        final regex = compileLiteral('הרעתי');
+        const text = 'דכתיב: ״ואשר הרעתי״.';
+        final match = regex.firstMatch(text);
+        expect(match, isNotNull);
+        expect(match!.group(0), 'הרעתי');
+      });
+
+      test('מדגיש מילה מנוקדת צמודה לגרשיים', () {
+        final regex = compileLiteral('הרעתי');
+        expect(regex.hasMatch('דִּכְתִיב: ״וַאֲשֶׁר הֲרֵעֹתִי״.'), isTrue);
+      });
+
+      test('גרש (׳) הוא גבול מילה', () {
+        expect(compileLiteral('ר').hasMatch('ר׳ עקיבא'), isTrue);
+      });
+
+      test('ליגטורת יידיש נשארת אות — מונעת התאמה חלקית', () {
+        expect(compileLiteral('שמע').hasMatch('שמעװ'), isFalse);
+      });
+
+      test('גרשיים נגרר בשאילתה מאומת אך לא נכלל בהדגשה', () {
+        final match = compileLiteral(
+          'הרעתי"',
+        ).firstMatch('דכתיב: ״ואשר הרעתי״.');
+        expect(match, isNotNull);
+        expect(match!.group(0), 'הרעתי');
+      });
+
+      test('גרשיים פנימי (ראשי-תיבות) נשאר בהדגשה', () {
+        final match = compileLiteral('רש"י').firstMatch('אמר רש״י כאן');
+        expect(match, isNotNull);
+        expect(match!.group(0), 'רש״י');
+      });
+
+      test('ביטוי רב-מילים עם גרש פנימי (ר׳ עקיבא) נמצא', () {
+        final match = compileLiteral(
+          'ר׳ עקיבא',
+        ).firstMatch('אמר ר׳ עקיבא שלום');
+        expect(match, isNotNull);
+        expect(match!.group(0), 'ר׳ עקיבא');
+      });
+
+      test('מפריד המילים סובל מקף עברי בטקסט גולמי', () {
+        expect(compileLiteral('אשר שמע').hasMatch('אשר־שמע משה'), isTrue);
+      });
+
+      test('שאילתה ריקה או רווחים בלבד מחזירה null', () {
+        for (final query in ['', '   ']) {
+          expect(
+            generateLiteralHighlightPattern(query: query),
+            isNull,
+            reason: 'query: "$query"',
+          );
+        }
+      });
+    },
+    skip: engineReady
+        ? false
+        : 'ספריית המנוע הנייטיבית לא נמצאה — הריצו cargo build בתיקיית rust',
+  );
 }
