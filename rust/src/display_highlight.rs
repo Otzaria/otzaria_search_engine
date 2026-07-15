@@ -455,18 +455,18 @@ pub fn build_display_highlight_from_terms(
 /// (U+FB1D–U+FB4F) — תואם את `_isHebrewLetter` של החיפוש המקומי בספר.
 const HEBREW_LETTER_CLASS: &str = r"א-תװ-ײיִ-ﭏ";
 
-/// fragment גרש/גרשיים לבדיקת הגבול, בסמנטיקת הטוקנייזר: גרשיים יחיד,
-/// גרש/זוג-גרשים ('' ≡ גרשיים) עם סימנים צמודים אופציונליים ביניהם, או
-/// זוג-גרשיים המופרד בסימן צמוד (רמב\"ֿ\"ם מתקפל לגרשיים — ראו
+/// fragment גרש/גרשיים לבדיקת הגבול, בסמנטיקת הטוקנייזר: רצף-ציטוט חוקי
+/// הוא `Q = גרשיים | גרש אחד/שניים`, וכמה רצפים חוקיים המופרדים בסימנים
+/// צמודים משתרשרים — `Q (סימן+ Q)*` (רמב''ְ"ם הוא טוקן אחד; ראו
 /// test_quote_runs_split_by_marks_dedupe_to_single_gershayim). רצפים
-/// לא-תקינים (\"\" או ''' נקיים) אינם חיבור — נשארים גבול.
+/// צמודים לא-חוקיים ("", ''', '") אינם חיבור — נשארים גבול.
 fn quote_boundary_fragment() -> String {
-    format!(
-        "(?:[{g2}]{m}+[{g2}]|[{g2}]|[{g1}]{m}*[{g1}]?)",
+    let q = format!(
+        "(?:[{g2}]|[{g1}]{{1,2}})",
         g2 = "\"\u{05F4}\u{201C}\u{201D}",
         g1 = "'\u{05F3}\u{2018}\u{2019}",
-        m = ATTACHED_MARKS_SET,
-    )
+    );
+    format!("(?:{q}(?:{m}+{q})*)", m = ATTACHED_MARKS_SET)
 }
 
 /// Builds the regex for highlighting *literal* in-book search matches (the

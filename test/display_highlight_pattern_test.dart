@@ -256,6 +256,31 @@ Future<void> main() async {
       test('רצפי ציטוט לא-תקינים נשארים גבול', () {
         expect(compileLiteral('אב').hasMatch('אב""ג'), isTrue);
         expect(compileLiteral('אב').hasMatch("אב'''ג"), isTrue);
+        expect(compileLiteral('אב').hasMatch('אב\'"ג'), isTrue);
+      });
+
+      test('רצפי-ציטוט חוקיים המשורשרים בסימנים צמודים — טוקן אחד', () {
+        // Q (סימן+ Q)* — כמו הטוקנייזר (רמב''ְ"ם הוא טוקן אחד).
+        const chained = [
+          'אב\'\'ְ"ג',
+          'אב״ָ׳׳ג',
+          'אב\'ֿ״ג',
+          'אב״ֿ׳ג',
+          'אב״ֿ״ֿ״ג',
+          'אב\'ֿ\'ֿ\'ג',
+        ];
+        for (final text in chained) {
+          expect(
+            compileLiteral('אב').hasMatch(text),
+            isFalse,
+            reason: 'אב בתוך $text',
+          );
+          expect(
+            compileLiteral('ג').hasMatch(text),
+            isFalse,
+            reason: 'ג בתוך $text',
+          );
+        }
       });
 
       test('מילה מנוקדת שלמה עדיין נמצאת', () {
