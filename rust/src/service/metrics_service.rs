@@ -20,7 +20,8 @@ pub struct MetricsService {
 impl MetricsService {
     pub fn record_search(&self, duration_ms: u64, cache_hit: bool) {
         self.total_searches.fetch_add(1, Ordering::Relaxed);
-        self.total_search_time_ms.fetch_add(duration_ms, Ordering::Relaxed);
+        self.total_search_time_ms
+            .fetch_add(duration_ms, Ordering::Relaxed);
         if cache_hit {
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
         } else {
