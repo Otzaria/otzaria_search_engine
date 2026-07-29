@@ -49,8 +49,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 lru = "0.12"
 rayon = "1.10"
 
-# Optional dependency: fetched from local path or git repository during compilation
-otzaria-semantic-search = { path = "../../otzaria-semantic-search", optional = true }
+# Optional dependency: fetched from git repository during compilation
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", optional = true }
 
 [patch.crates-io]
 tantivy-fst = { path = "vendor/tantivy-fst" }
