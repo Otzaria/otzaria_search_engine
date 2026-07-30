@@ -375,7 +375,23 @@ pub struct SemanticRemoveResult {
 pub struct SemanticSearchResult {
     pub title: String,
     pub reference: String,
-    pub text: String,
+    /// The display string, in the same format every other search API in this
+    /// engine returns: HTML-escaped, painted with `HighlightConfig`'s
+    /// prefix/postfix where the lexical query matched, and bounded by its
+    /// `max_chars`. It is never a raw unbounded line, on either the sidecar or
+    /// the fallback path — the app's snippet parser can treat both alike.
+    ///
+    /// The sidecar path paints against the mark-free stored `text` field,
+    /// because that is the copy the sidecar indexes and hydration reads. A
+    /// vocalized query therefore selects documents with marks but still shows
+    /// (and highlights) the mark-free line; the lexical fallback shows the
+    /// vocalized copy. Use [`SearchEngine::get_document_by_id`] when the full,
+    /// unabridged line is needed.
+    pub snippet_html: String,
+    /// Whether `snippet_html` carries highlight markup. False for a purely
+    /// semantic hit, whose line matched no query term — the UI can then avoid
+    /// promising the user a lexical match that is not there.
+    pub is_highlighted: bool,
     pub id: u64,
     pub segment: u64,
     pub is_pdf: bool,
@@ -414,10 +430,145 @@ pub struct SemanticSearchResponse {
     pub truncated: bool,
 }
 
+/// The four inputs that decide which vectors a sidecar session holds. Kept
+/// beside the open engine so [`SearchEngine::configure_semantic`] can tell a
+/// harmless repeat call from a real change of model or library root — see that
+/// method for why the difference matters.
 #[cfg(feature = "semantic-integration")]
-type SemanticRuntime = Option<OtzariaHybridEngine>;
+#[derive(Clone, PartialEq, Eq)]
+struct SemanticConfigKey {
+    root_dir: PathBuf,
+    model_path: PathBuf,
+    model_id: String,
+    embedding_dim: u32,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl SemanticConfigKey {
+    fn from_input(config: &SemanticConfigInput) -> Self {
+        Self {
+            root_dir: PathBuf::from(&config.root_dir),
+            model_path: PathBuf::from(&config.model_path),
+            model_id: config.model_id.clone(),
+            embedding_dim: config.embedding_dim,
+        }
+    }
+
+    /// Names the fields that differ, so a refused reconfiguration says which
+    /// input changed instead of only that something did.
+    fn changed_fields(&self, other: &Self) -> String {
+        let mut changed = Vec::new();
+        if self.root_dir != other.root_dir {
+            changed.push("root_dir");
+        }
+        if self.model_path != other.model_path {
+            changed.push("model_path");
+        }
+        if self.model_id != other.model_id {
+            changed.push("model_id");
+        }
+        if self.embedding_dim != other.embedding_dim {
+            changed.push("embedding_dim");
+        }
+        changed.join(", ")
+    }
+}
+
+/// An open sidecar session: the engine plus the configuration that produced it.
+#[cfg(feature = "semantic-integration")]
+struct ConfiguredSemantic {
+    engine: OtzariaHybridEngine,
+    config: SemanticConfigKey,
+}
+
+#[cfg(feature = "semantic-integration")]
+type SemanticRuntime = Option<ConfiguredSemantic>;
 #[cfg(not(feature = "semantic-integration"))]
 type SemanticRuntime = ();
+
+/// What the lexical half of a sidecar search produces: the scored candidates
+/// fusion consumes, the corpus-wide count for the response envelope, and the
+/// inputs needed to paint the *final page* the way the lexical API paints its
+/// own results.
+#[cfg(feature = "semantic-integration")]
+struct SemanticLexicalPhase {
+    candidates: Vec<SidecarLexicalCandidate>,
+    total_count: u32,
+    truncated: bool,
+    /// `None` in `SemanticOnly`, where no lexical query is executed and every
+    /// result therefore gets an unhighlighted (but still bounded) snippet.
+    highlight: Option<SemanticHighlight>,
+}
+
+/// A lexical query kept alive past its own execution so snippets can be built
+/// after fusion and pagination rather than for the whole candidate window.
+#[cfg(feature = "semantic-integration")]
+struct SemanticHighlight {
+    /// Drives both fragment selection and term painting.
+    query: Box<dyn Query>,
+    phrase: Option<PhraseHighlight>,
+}
+
+/// Paints one page of sidecar results. Built once per page — creating the
+/// generator resolves the doc-frequency of every highlight term — and only when
+/// there is a page to paint.
+#[cfg(feature = "semantic-integration")]
+struct SemanticSnippetPainter {
+    searcher: Searcher,
+    generator: SnippetGenerator,
+    phrase: Option<PhraseHighlight>,
+    hl: HighlightConfig,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl SemanticSnippetPainter {
+    /// Returns the display markup for `text` and whether it carries highlights.
+    ///
+    /// Mirrors [`SearchEngine::build_results_with_generator`]: tantivy's
+    /// term-based highlighter picks the fragment, and a phrase plan re-derives
+    /// the painting so only complete in-order occurrences stay painted. A
+    /// fragment only exists when at least one query term matched, so an empty
+    /// result means this line is a purely semantic hit — it then falls back to a
+    /// bounded escaped snippet instead of an unbounded raw line.
+    fn paint(&self, text: &str) -> (String, bool) {
+        let mut snippet = self.generator.snippet(text);
+        snippet.set_snippet_prefix_postfix(&self.hl.highlight_prefix, &self.hl.highlight_postfix);
+        let html = match self.phrase.as_ref() {
+            Some(phrase) => SearchEngine::phrase_filtered_snippet_html(
+                &self.searcher,
+                snippet.fragment(),
+                phrase,
+                &self.hl,
+            )
+            .unwrap_or_else(|| snippet.to_html()),
+            None => snippet.to_html(),
+        };
+        if html.is_empty() {
+            return (bounded_plain_snippet(text, self.hl.max_chars), false);
+        }
+        (html, true)
+    }
+}
+
+/// A display-safe stand-in for a snippet: HTML-escaped and cut to the same
+/// budget the snippet generator applies, so a line no query term matched still
+/// crosses FFI as bounded markup instead of a raw full line.
+///
+/// The budget is in bytes, matching tantivy's own `max_num_chars`; the cut
+/// lands on a UTF-8 char boundary so multi-byte Hebrew is never split.
+fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
+    let budget = max_chars as usize;
+    if text.len() <= budget {
+        return htmlescape::encode_minimal(text);
+    }
+    let mut end = budget;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut html = htmlescape::encode_minimal(&text[..end]);
+    html.push('…');
+    html
+}
 
 /// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
 pub enum SearchScope {
@@ -1687,29 +1838,58 @@ impl SearchEngine {
 
     // ── Semantic sidecar API ────────────────────────────────────────────────
 
-    /// Open (or re-open) the semantic sidecar. The sidecar owns semantic
-    /// fusion; this method only wires it to the already-open Tantivy engine.
-    /// When this crate was built without the optional semantic feature it is a
+    /// Open the semantic sidecar and wire it to the already-open Tantivy
+    /// engine. The sidecar owns semantic fusion; Tantivy stays owned here. When
+    /// this crate was built without the optional semantic feature this is a
     /// no-op that returns an explicit Disabled status.
+    ///
+    /// **The sidecar's vector store is in-memory** (check
+    /// [`SemanticStatus::vectors_persisted`]): vectors live only for the
+    /// lifetime of this session and must be rebuilt after a restart. Opening an
+    /// engine re-reads the on-disk manifest and drops every book record whose
+    /// vectors did not survive, so a *re-open* discards the session's semantic
+    /// index. This method therefore does not re-open:
+    ///
+    /// - Called again with the same inputs it is a no-op returning the current
+    ///   status, so a caller that configures defensively cannot lose an index.
+    /// - Called with different inputs while a session is open it fails and says
+    ///   which input changed. Switching model or library root is an explicit
+    ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
     pub fn configure_semantic(&mut self, config: SemanticConfigInput) -> Result<SemanticStatus> {
         #[cfg(feature = "semantic-integration")]
         {
-            let root_dir = PathBuf::from(config.root_dir);
+            let requested = SemanticConfigKey::from_input(&config);
+            if let Some(active) = &self.semantic_runtime {
+                if active.config == requested {
+                    return Ok(self.semantic_status());
+                }
+                return Err(anyhow::anyhow!(
+                    "the semantic sidecar is already configured and {} changed; the vector \
+                     store is in-memory, so re-opening would discard the vectors indexed in \
+                     this session. Call disable_semantic() first if that is intended",
+                    active.config.changed_fields(&requested)
+                ));
+            }
+
             let mut semantic_config = SemanticConfig {
-                root_dir: root_dir.clone(),
-                model_path: PathBuf::from(config.model_path),
-                embedding_model_id: config.model_id,
-                embedding_dim: config.embedding_dim,
+                root_dir: requested.root_dir.clone(),
+                model_path: requested.model_path.clone(),
+                embedding_model_id: requested.model_id.clone(),
+                embedding_dim: requested.embedding_dim,
                 ..SemanticConfig::default()
             };
-            semantic_config.store.embedding_dim = config.embedding_dim;
-            semantic_config.store.db_path = root_dir.join("vectors");
+            // Both dimensions must agree or the sidecar refuses the config, and
+            // the store's path is derived from our root rather than the
+            // sidecar's own default root.
+            semantic_config.store.embedding_dim = requested.embedding_dim;
+            semantic_config.store.db_path = requested.root_dir.join("vectors");
 
             let engine = SemanticEngine::open(semantic_config)
                 .map_err(|err| anyhow::anyhow!("failed to open semantic sidecar: {err}"))?;
-            self.semantic_runtime = Some(OtzariaHybridEngine::new(HybridCoordinator::new(Some(
-                engine,
-            ))));
+            self.semantic_runtime = Some(ConfiguredSemantic {
+                engine: OtzariaHybridEngine::new(HybridCoordinator::new(Some(engine))),
+                config: requested,
+            });
             Ok(self.semantic_status())
         }
 
@@ -1722,7 +1902,11 @@ impl SearchEngine {
 
     /// Remove the configured sidecar without touching its on-disk files.
     /// This is useful when an app switches library roots or wants lexical-only
-    /// operation for the current session.
+    /// operation for the current session, and it is the explicit way to allow a
+    /// subsequent [`Self::configure_semantic`] with different inputs.
+    ///
+    /// Because the vector store is in-memory, this drops the session's vectors:
+    /// re-configuring afterwards needs a full semantic re-index.
     pub fn disable_semantic(&mut self) {
         #[cfg(feature = "semantic-integration")]
         {
@@ -1730,11 +1914,22 @@ impl SearchEngine {
         }
     }
 
-    #[frb(sync)]
+    /// The open sidecar engine, or `None` when semantic search has not been
+    /// configured in this session.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_engine(&self) -> Option<&OtzariaHybridEngine> {
+        self.semantic_runtime.as_ref().map(|active| &active.engine)
+    }
+
+    /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
+    /// sidecar's engine lock, which indexing holds for the duration of one
+    /// book's embedding run; a synchronous binding would block the calling Dart
+    /// isolate for that whole time. Progress polling is the expected caller, so
+    /// it must not be able to freeze the UI.
     pub fn semantic_status(&self) -> SemanticStatus {
         #[cfg(feature = "semantic-integration")]
         {
-            if let Some(runtime) = &self.semantic_runtime {
+            if let Some(runtime) = self.semantic_engine() {
                 let status = runtime.get_semantic_status();
                 return SemanticStatus {
                     enabled: true,
@@ -1763,13 +1958,19 @@ impl SearchEngine {
     /// Index or replace semantic vectors for complete books. The caller should
     /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
     /// be the global Tantivy document ids so semantic-only results can hydrate.
+    ///
+    /// Takes `&self` on purpose. It mutates only the sidecar, which serializes
+    /// indexing behind its own mutex and releases the engine lock between
+    /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
+    /// lock on the whole engine for the entire run, blocking every concurrent
+    /// *lexical* search for as long as the library takes to embed.
     pub fn semantic_index_books(
-        &mut self,
+        &self,
         books: Vec<SemanticBookInput>,
     ) -> Result<SemanticIndexingSummary> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = &self.semantic_runtime else {
+            let Some(runtime) = self.semantic_engine() else {
                 return Ok(SemanticIndexingSummary {
                     enabled: false,
                     books_indexed: 0,
@@ -1833,7 +2034,7 @@ impl SearchEngine {
     pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = &self.semantic_runtime else {
+            let Some(runtime) = self.semantic_engine() else {
                 return Ok(Self::semantic_disabled_diff());
             };
             let fingerprints = self.get_book_fingerprints()?;
@@ -1861,13 +2062,15 @@ impl SearchEngine {
 
     /// Remove vector records for books previously reported as `removed_books`.
     /// This never deletes lexical Tantivy documents.
+    ///
+    /// `&self` for the same reason as [`Self::semantic_index_books`].
     pub fn remove_semantic_books(
-        &mut self,
+        &self,
         source_book_keys: Vec<String>,
     ) -> Result<SemanticRemoveResult> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = &self.semantic_runtime else {
+            let Some(runtime) = self.semantic_engine() else {
                 return Ok(SemanticRemoveResult {
                     enabled: false,
                     vectors_removed: 0,
@@ -1895,10 +2098,12 @@ impl SearchEngine {
 
     /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
     /// documents are untouched, so a full semantic rebuild can follow safely.
-    pub fn reset_semantic_index(&mut self) -> Result<SemanticResetResult> {
+    ///
+    /// `&self` for the same reason as [`Self::semantic_index_books`].
+    pub fn reset_semantic_index(&self) -> Result<SemanticResetResult> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = &self.semantic_runtime else {
+            let Some(runtime) = self.semantic_engine() else {
                 return Ok(SemanticResetResult {
                     enabled: false,
                     vectors_removed: 0,
@@ -1943,7 +2148,7 @@ impl SearchEngine {
         let started = Instant::now();
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = &self.semantic_runtime else {
+            let Some(runtime) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
                     &facets,
@@ -1966,46 +2171,55 @@ impl SearchEngine {
             let requested_window = offset.saturating_add(limit.saturating_mul(2)).max(1);
             let candidate_window_capped = requested_window > MAX_SEMANTIC_CANDIDATE_WINDOW;
             let candidate_window = requested_window.min(MAX_SEMANTIC_CANDIDATE_WINDOW);
-            let (lexical_candidates, lexical_total_count, truncated) =
-                if matches!(retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
-                    // Semantic-only discards BM25 candidates in the coordinator.
-                    // Count lexically for the response envelope, but do not pay
-                    // to materialize and hydrate a TopDocs window that is unused.
-                    let count = match lexical_mode {
-                        SemanticLexicalMode::Exact => self.count_exact_with_status(
-                            query.clone(),
-                            facets.clone(),
-                            match_nikud,
-                            match_taamim,
-                        )?,
-                        SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
-                            query.clone(),
-                            facets.clone(),
-                            fuzzy_max_distance,
-                            match_nikud,
-                            match_taamim,
-                        )?,
-                    };
-                    (Vec::new(), count.count, count.truncated)
-                } else {
-                    match lexical_mode {
-                        SemanticLexicalMode::Exact => self.semantic_exact_lexical_candidates(
-                            &query,
-                            &facets,
-                            candidate_window,
-                            match_nikud,
-                            match_taamim,
-                        )?,
-                        SemanticLexicalMode::Fuzzy => self.semantic_fuzzy_lexical_candidates(
-                            &query,
-                            &facets,
-                            candidate_window,
-                            fuzzy_max_distance,
-                            match_nikud,
-                            match_taamim,
-                        )?,
-                    }
+            let SemanticLexicalPhase {
+                candidates: lexical_candidates,
+                total_count: lexical_total_count,
+                truncated,
+                highlight,
+            } = if matches!(retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
+                // Semantic-only discards BM25 candidates in the coordinator.
+                // Count lexically for the response envelope, but do not pay
+                // to materialize and hydrate a TopDocs window that is unused.
+                let count = match lexical_mode {
+                    SemanticLexicalMode::Exact => self.count_exact_with_status(
+                        query.clone(),
+                        facets.clone(),
+                        match_nikud,
+                        match_taamim,
+                    )?,
+                    SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
+                        query.clone(),
+                        facets.clone(),
+                        fuzzy_max_distance,
+                        match_nikud,
+                        match_taamim,
+                    )?,
                 };
+                SemanticLexicalPhase {
+                    candidates: Vec::new(),
+                    total_count: count.count,
+                    truncated: count.truncated,
+                    highlight: None,
+                }
+            } else {
+                match lexical_mode {
+                    SemanticLexicalMode::Exact => self.semantic_exact_lexical_candidates(
+                        &query,
+                        &facets,
+                        candidate_window,
+                        match_nikud,
+                        match_taamim,
+                    )?,
+                    SemanticLexicalMode::Fuzzy => self.semantic_fuzzy_lexical_candidates(
+                        &query,
+                        &facets,
+                        candidate_window,
+                        fuzzy_max_distance,
+                        match_nikud,
+                        match_taamim,
+                    )?,
+                }
+            };
             let result = runtime
                 .search(SidecarSearchRequest {
                     query,
@@ -2029,24 +2243,57 @@ impl SearchEngine {
                 })
                 .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
 
-            let mut results = Vec::with_capacity(result.results.len());
-            let mut stale_items_dropped = 0u32;
+            // Phase 1 — drop stale primaries across the whole window, keeping
+            // the hydrated document so the surviving page needs no second
+            // lookup. Only a `needs_hydration` item can be stale: a lexical
+            // candidate came from this same searcher in this same request, so it
+            // is live by construction and needs no existence check.
+            //
+            // This has to precede pagination, or a dropped record would leave a
+            // hole on one page and shift the next.
+            let mut surviving = Vec::with_capacity(result.results.len());
+            let mut stale_primaries_dropped = 0u32;
             for item in result.results {
-                let hydrated = if item.needs_hydration {
-                    self.get_document_by_id(item.id)?
-                } else {
-                    None
-                };
-                // A semantic-only record whose Tantivy document disappeared is
-                // stale. Never send its old metadata to Dart: a failed or
-                // delayed sidecar cleanup must not resurrect deleted content.
-                if item.needs_hydration && hydrated.is_none() {
-                    stale_items_dropped = stale_items_dropped.saturating_add(1);
+                if !item.needs_hydration {
+                    surviving.push((item, None));
                     continue;
                 }
+                match self.get_document_by_id(item.id)? {
+                    Some(document) => surviving.push((item, Some(document))),
+                    // A semantic record whose Tantivy document disappeared is
+                    // stale. Never send its old metadata to Dart: a failed or
+                    // delayed sidecar cleanup must not resurrect deleted
+                    // content.
+                    None => stale_primaries_dropped = stale_primaries_dropped.saturating_add(1),
+                }
+            }
 
+            // Phase 2 — paginate *before* the per-result work whose cost is
+            // proportional to the page: sibling hydration is one Tantivy lookup
+            // each and snippet painting tokenizes the line. Doing either for the
+            // whole candidate window would waste work that grows linearly with
+            // `offset`.
+            let page: Vec<_> = surviving
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
+
+            let painter = match highlight {
+                Some(highlight) if !page.is_empty() => {
+                    Some(self.semantic_snippet_painter(highlight)?)
+                }
+                _ => None,
+            };
+            // Same budget the lexical API's default highlight uses, so both
+            // paths bound the display string identically.
+            let snippet_budget = HighlightConfig::default().max_chars;
+
+            let mut results = Vec::with_capacity(page.len());
+            let mut stale_siblings_dropped = 0u32;
+            for (item, hydrated) in page {
                 let original_merged_count = item.merged_count;
-                let mut stale_siblings_dropped = 0u32;
+                let mut page_stale_siblings = 0u32;
                 let mut merged = Vec::with_capacity(item.merged.len());
                 for sibling in item.merged {
                     match self.get_document_by_id(sibling.id)? {
@@ -2058,42 +2305,43 @@ impl SearchEngine {
                             is_pdf: document.is_pdf,
                             file_path: document.file_path,
                         }),
-                        None => {
-                            stale_siblings_dropped = stale_siblings_dropped.saturating_add(1);
-                            stale_items_dropped = stale_items_dropped.saturating_add(1);
-                        }
+                        None => page_stale_siblings = page_stale_siblings.saturating_add(1),
                     }
                 }
+                stale_siblings_dropped = stale_siblings_dropped.saturating_add(page_stale_siblings);
 
-                let title = hydrated
-                    .as_ref()
-                    .map(|document| document.title.clone())
-                    .unwrap_or(item.title);
-                let reference = hydrated
-                    .as_ref()
-                    .map(|document| document.reference.clone())
-                    .unwrap_or(item.reference);
-                let text = hydrated
-                    .as_ref()
-                    .map(|document| document.text.clone())
-                    .unwrap_or(item.text);
-                let segment = hydrated
-                    .as_ref()
-                    .map(|document| document.segment)
-                    .unwrap_or(item.segment);
-                let is_pdf = hydrated
-                    .as_ref()
-                    .map(|document| document.is_pdf)
-                    .unwrap_or(item.is_pdf);
-                let file_path = hydrated
-                    .as_ref()
-                    .map(|document| document.file_path.clone())
-                    .unwrap_or(item.file_path);
+                // Prefer Tantivy's copy for a hydrated item and move the fields
+                // out of whichever record wins, rather than cloning them.
+                let (title, reference, text, segment, is_pdf, file_path) = match hydrated {
+                    Some(document) => (
+                        document.title,
+                        document.reference,
+                        document.text,
+                        document.segment,
+                        document.is_pdf,
+                        document.file_path,
+                    ),
+                    None => (
+                        item.title,
+                        item.reference,
+                        item.text,
+                        item.segment,
+                        item.is_pdf,
+                        item.file_path,
+                    ),
+                };
+                let (snippet_html, is_highlighted) = match painter.as_ref() {
+                    Some(painter) => painter.paint(&text),
+                    // `SemanticOnly` runs no lexical query, so there is nothing
+                    // to paint with — the line still crosses FFI bounded.
+                    None => (bounded_plain_snippet(&text, snippet_budget), false),
+                };
 
                 results.push(SemanticSearchResult {
                     title,
                     reference,
-                    text,
+                    snippet_html,
+                    is_highlighted,
                     id: item.id,
                     segment,
                     is_pdf,
@@ -2102,7 +2350,7 @@ impl SearchEngine {
                     // list. Preserve its full group count and subtract only
                     // stale siblings that were actually observed in that list.
                     merged_count: original_merged_count
-                        .saturating_sub(stale_siblings_dropped)
+                        .saturating_sub(page_stale_siblings)
                         .max(1),
                     merged,
                     lexical_score: item.lexical_score,
@@ -2116,17 +2364,27 @@ impl SearchEngine {
                     needs_hydration: false,
                 });
             }
-            let results = results
-                .into_iter()
-                .skip(offset as usize)
-                .take(limit as usize)
-                .collect();
             let mut fallback_reason = result.fallback_reason;
-            if stale_items_dropped > 0 {
+            // Primaries and siblings are counted and reported separately: the
+            // first are whole result cards removed from the candidate window,
+            // the second are group members missing from the cards on this page
+            // only — siblings are hydrated after pagination, so their count is
+            // page-scoped while the primary count covers the window.
+            if stale_primaries_dropped > 0 {
                 let stale_reason = format!(
-                    "dropped {stale_items_dropped} stale semantic result(s) missing from Tantivy; \
-                     candidate counts may still include stale records; rebuild or reconcile the \
-                     semantic index"
+                    "dropped {stale_primaries_dropped} stale semantic result(s) missing from \
+                     Tantivy; candidate counts may still include stale records; rebuild or \
+                     reconcile the semantic index"
+                );
+                fallback_reason = Some(match fallback_reason {
+                    Some(reason) => format!("{reason}; {stale_reason}"),
+                    None => stale_reason,
+                });
+            }
+            if stale_siblings_dropped > 0 {
+                let stale_reason = format!(
+                    "dropped {stale_siblings_dropped} stale grouped sibling(s) missing from \
+                     Tantivy on this page; rebuild or reconcile the semantic index"
                 );
                 fallback_reason = Some(match fallback_reason {
                     Some(reason) => format!("{reason}; {stale_reason}"),
@@ -2309,28 +2567,48 @@ impl SearchEngine {
                 grouping,
             )?,
         };
+        let hl = HighlightConfig::default();
         let results = page
             .results
             .into_iter()
             .enumerate()
-            .map(|(rank, item)| SemanticSearchResult {
-                title: item.title,
-                reference: item.reference,
-                text: item.text,
-                id: item.id,
-                segment: item.segment,
-                is_pdf: item.is_pdf,
-                file_path: item.file_path,
-                merged_count: item.merged_count,
-                merged: item.merged,
-                lexical_score: None,
-                semantic_score: None,
-                // Tantivy's legacy display API does not expose its score. Keep
-                // the existing relevance order observable without pretending a
-                // synthetic value is a BM25 score.
-                fused_score: 1.0 / (rank.saturating_add(1) as f32),
-                source: SemanticResultSource::Lexical,
-                needs_hydration: false,
+            .map(|(rank, item)| {
+                // `SearchResult::text` is snippet HTML when the highlighter
+                // painted the line, and the raw stored line when it painted
+                // nothing (a bare fuzzy automaton exposes no static terms to the
+                // generator). Only the latter needs escaping and bounding, so
+                // the semantic envelope carries the same kind of value on both
+                // paths. Detection is by the prefix the highlighter inserts:
+                // painted output has every literal `<` escaped, so the marker
+                // can only be real markup — and a corpus line that happens to
+                // contain it verbatim is passed through exactly as the existing
+                // lexical API already passes it through.
+                let is_highlighted = item.text.contains(&hl.highlight_prefix);
+                let snippet_html = if is_highlighted {
+                    item.text
+                } else {
+                    bounded_plain_snippet(&item.text, hl.max_chars)
+                };
+                SemanticSearchResult {
+                    title: item.title,
+                    reference: item.reference,
+                    snippet_html,
+                    is_highlighted,
+                    id: item.id,
+                    segment: item.segment,
+                    is_pdf: item.is_pdf,
+                    file_path: item.file_path,
+                    merged_count: item.merged_count,
+                    merged: item.merged,
+                    lexical_score: None,
+                    semantic_score: None,
+                    // Tantivy's legacy display API does not expose its score.
+                    // Keep the existing relevance order observable without
+                    // pretending a synthetic value is a BM25 score.
+                    fused_score: 1.0 / (rank.saturating_add(1) as f32),
+                    source: SemanticResultSource::Lexical,
+                    needs_hydration: false,
+                }
             })
             .collect();
         Ok(SemanticSearchResponse {
@@ -3420,7 +3698,8 @@ impl SearchEngine {
 
     /// Collect scored, ungrouped Tantivy hits for the semantic coordinator.
     /// This bypasses snippet construction: the coordinator needs original line
-    /// text and actual BM25 scores, while formatting happens after fusion.
+    /// text and actual BM25 scores, while painting happens after fusion and
+    /// pagination — see [`SemanticLexicalPhase::highlight`].
     #[cfg(feature = "semantic-integration")]
     fn semantic_exact_lexical_candidates(
         &self,
@@ -3429,10 +3708,27 @@ impl SearchEngine {
         limit: u32,
         match_nikud: bool,
         match_taamim: bool,
-    ) -> Result<(Vec<SidecarLexicalCandidate>, u32, bool)> {
+    ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (query, truncated) = self.build_exact_query(query, facets, &voc)?;
-        self.semantic_candidates_from_query(query, limit, truncated)
+        let (search_query, truncated) = self.build_exact_query(query, facets, &voc)?;
+
+        // Retrieval honours the vocalization flags, but painting is always
+        // mark-free over the stored `text` field: that is the copy the sidecar
+        // indexes and hydration reads back, so a vocalized highlight query would
+        // expose no terms for it and leave every line unpainted. Facets are
+        // dropped here — they filter documents, never highlights.
+        let plain = VocalizedFlags::new(false, false);
+        let (display_query, _) = self.build_exact_query(query, &[], &plain)?;
+        let searcher = self.index_reader.searcher();
+        let HighlightPlan {
+            query: plan_query,
+            phrase,
+        } = Self::resolve_highlight(&searcher, |s| self.exact_highlight_plan(s, query, &plain));
+        let highlight = SemanticHighlight {
+            query: plan_query.unwrap_or(display_query),
+            phrase,
+        };
+        self.semantic_candidates_from_query(search_query, limit, truncated, Some(highlight))
     }
 
     #[cfg(feature = "semantic-integration")]
@@ -3444,18 +3740,56 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
-    ) -> Result<(Vec<SidecarLexicalCandidate>, u32, bool)> {
+    ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (query, truncated) = if voc.any() {
+        let token_texts = self.index_token_texts(query)?;
+        let (search_query, truncated) = if voc.any() {
             self.build_fuzzy_query_vocalized(query, facets, max_distance, &voc)?
         } else {
-            let token_texts = self.index_token_texts(query)?;
             (
                 self.build_fuzzy_search_query(&token_texts, facets, max_distance, true)?,
                 false,
             )
         };
-        self.semantic_candidates_from_query(query, limit, truncated)
+
+        // Mark-free for the same reason as the exact path. A fuzzy automaton
+        // exposes no static terms, so without the materialized highlight query
+        // there is nothing to paint with and the page falls back to bounded
+        // plain snippets.
+        let searcher = self.index_reader.searcher();
+        let HighlightPlan {
+            query: plan_query,
+            phrase,
+        } = Self::resolve_highlight(&searcher, |s| {
+            self.fuzzy_highlight_plan(s, &token_texts, max_distance)
+        });
+        let highlight = plan_query.map(|query| SemanticHighlight { query, phrase });
+        self.semantic_candidates_from_query(search_query, limit, truncated, highlight)
+    }
+
+    /// Build the painter for one page of sidecar results. Separate from
+    /// candidate collection on purpose: creating the generator resolves the
+    /// doc-frequency of every highlight term, so it happens once, after
+    /// pagination, and only when there is a page to paint.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_snippet_painter(
+        &self,
+        highlight: SemanticHighlight,
+    ) -> Result<SemanticSnippetPainter> {
+        let searcher = self.index_reader.searcher();
+        let hl = HighlightConfig::default();
+        let generator = Self::make_snippet_generator(
+            &searcher,
+            highlight.query.as_ref(),
+            self.schema.get_field("text")?,
+            &hl,
+        )?;
+        Ok(SemanticSnippetPainter {
+            searcher,
+            generator,
+            phrase: highlight.phrase,
+            hl,
+        })
     }
 
     #[cfg(feature = "semantic-integration")]
@@ -3464,7 +3798,8 @@ impl SearchEngine {
         query: Box<dyn Query>,
         limit: u32,
         truncated: bool,
-    ) -> Result<(Vec<SidecarLexicalCandidate>, u32, bool)> {
+        highlight: Option<SemanticHighlight>,
+    ) -> Result<SemanticLexicalPhase> {
         let searcher = self.index_reader.searcher();
         let collector = TopDocs::with_limit(limit as usize).order_by_score();
         let (hits, total_count): (Vec<(Score, DocAddress)>, usize) =
@@ -3529,7 +3864,12 @@ impl SearchEngine {
                 bm25_score: score,
             });
         }
-        Ok((candidates, total_count as u32, truncated))
+        Ok(SemanticLexicalPhase {
+            candidates,
+            total_count: total_count as u32,
+            truncated,
+            highlight,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

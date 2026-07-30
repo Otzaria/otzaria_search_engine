@@ -3059,19 +3059,19 @@ fn wire__crate__api__search_engine__SearchEngine_remove_semantic_books_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok =
                             crate::api::search_engine::SearchEngine::remove_semantic_books(
-                                &mut *api_that_guard,
+                                &*api_that_guard,
                                 api_source_book_keys,
                             )?;
                         Ok(output_ok)
@@ -3114,19 +3114,19 @@ fn wire__crate__api__search_engine__SearchEngine_reset_semantic_index_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok =
                             crate::api::search_engine::SearchEngine::reset_semantic_index(
-                                &mut *api_that_guard,
+                                &*api_that_guard,
                             )?;
                         Ok(output_ok)
                     })(),
@@ -4493,19 +4493,19 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
                                 vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
+                                    &api_that, 0, false,
                                 )],
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
                                 _ => unreachable!(),
                             }
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
+                        let api_that_guard = api_that_guard.unwrap();
                         let output_ok =
                             crate::api::search_engine::SearchEngine::semantic_index_books(
-                                &mut *api_that_guard,
+                                &*api_that_guard,
                                 api_books,
                             )?;
                         Ok(output_ok)
@@ -4570,15 +4570,16 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_semantic_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_semantic_status",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -4594,26 +4595,28 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_status_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Result::<_, ()>::Ok(
-                    crate::api::search_engine::SearchEngine::semantic_status(&*api_that_guard),
-                )?;
-                Ok(output_ok)
-            })())
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Result::<_, ()>::Ok(
+                        crate::api::search_engine::SearchEngine::semantic_status(&*api_that_guard),
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -6633,7 +6636,8 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResult {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_title = <String>::sse_decode(deserializer);
         let mut var_reference = <String>::sse_decode(deserializer);
-        let mut var_text = <String>::sse_decode(deserializer);
+        let mut var_snippetHtml = <String>::sse_decode(deserializer);
+        let mut var_isHighlighted = <bool>::sse_decode(deserializer);
         let mut var_id = <u64>::sse_decode(deserializer);
         let mut var_segment = <u64>::sse_decode(deserializer);
         let mut var_isPdf = <bool>::sse_decode(deserializer);
@@ -6650,7 +6654,8 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResult {
         return crate::api::search_engine::SemanticSearchResult {
             title: var_title,
             reference: var_reference,
-            text: var_text,
+            snippet_html: var_snippetHtml,
+            is_highlighted: var_isHighlighted,
             id: var_id,
             segment: var_segment,
             is_pdf: var_isPdf,
@@ -6843,6 +6848,7 @@ fn pde_ffi_dispatcher_primary_impl(
 73 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
 74 => wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(port, ptr, rust_vec_len, data_len),
 75 => wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(port, ptr, rust_vec_len, data_len),
+76 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(port, ptr, rust_vec_len, data_len),
 78 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
 81 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
 82 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
@@ -6876,11 +6882,6 @@ fn pde_ffi_dispatcher_sync_impl(
             data_len,
         ),
         51 => wire__crate__api__search_engine__SearchEngine_new_impl(ptr, rust_vec_len, data_len),
-        76 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
         77 => wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_impl(
             ptr,
             rust_vec_len,
@@ -7743,7 +7744,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticSearch
         [
             self.title.into_into_dart().into_dart(),
             self.reference.into_into_dart().into_dart(),
-            self.text.into_into_dart().into_dart(),
+            self.snippet_html.into_into_dart().into_dart(),
+            self.is_highlighted.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.segment.into_into_dart().into_dart(),
             self.is_pdf.into_into_dart().into_dart(),
@@ -8795,7 +8797,8 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResult {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.title, serializer);
         <String>::sse_encode(self.reference, serializer);
-        <String>::sse_encode(self.text, serializer);
+        <String>::sse_encode(self.snippet_html, serializer);
+        <bool>::sse_encode(self.is_highlighted, serializer);
         <u64>::sse_encode(self.id, serializer);
         <u64>::sse_encode(self.segment, serializer);
         <bool>::sse_encode(self.is_pdf, serializer);

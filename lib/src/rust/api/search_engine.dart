@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `DfaWrapper`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `TermCacheKey`, `WordMatch`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
 
@@ -272,10 +272,23 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 
-  /// Open (or re-open) the semantic sidecar. The sidecar owns semantic
-  /// fusion; this method only wires it to the already-open Tantivy engine.
-  /// When this crate was built without the optional semantic feature it is a
+  /// Open the semantic sidecar and wire it to the already-open Tantivy
+  /// engine. The sidecar owns semantic fusion; Tantivy stays owned here. When
+  /// this crate was built without the optional semantic feature this is a
   /// no-op that returns an explicit Disabled status.
+  ///
+  /// **The sidecar's vector store is in-memory** (check
+  /// [`SemanticStatus::vectors_persisted`]): vectors live only for the
+  /// lifetime of this session and must be rebuilt after a restart. Opening an
+  /// engine re-reads the on-disk manifest and drops every book record whose
+  /// vectors did not survive, so a *re-open* discards the session's semantic
+  /// index. This method therefore does not re-open:
+  ///
+  /// - Called again with the same inputs it is a no-op returning the current
+  ///   status, so a caller that configures defensively cannot lose an index.
+  /// - Called with different inputs while a session is open it fails and says
+  ///   which input changed. Switching model or library root is an explicit
+  ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   });
@@ -511,7 +524,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Remove the configured sidecar without touching its on-disk files.
   /// This is useful when an app switches library roots or wants lexical-only
-  /// operation for the current session.
+  /// operation for the current session, and it is the explicit way to allow a
+  /// subsequent [`Self::configure_semantic`] with different inputs.
+  ///
+  /// Because the vector store is in-memory, this drops the session's vectors:
+  /// re-configuring afterwards needs a full semantic re-index.
   Future<void> disableSemantic();
 
   /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
@@ -710,12 +727,16 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Remove vector records for books previously reported as `removed_books`.
   /// This never deletes lexical Tantivy documents.
+  ///
+  /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticRemoveResult> removeSemanticBooks({
     required List<String> sourceBookKeys,
   });
 
   /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
   /// documents are untouched, so a full semantic rebuild can follow safely.
+  ///
+  /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticResetResult> resetSemanticIndex();
 
   /// Discard all pending writes since the last commit.
@@ -1019,6 +1040,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Index or replace semantic vectors for complete books. The caller should
   /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
   /// be the global Tantivy document ids so semantic-only results can hydrate.
+  ///
+  /// Takes `&self` on purpose. It mutates only the sidecar, which serializes
+  /// indexing behind its own mutex and releases the engine lock between
+  /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
+  /// lock on the whole engine for the entire run, blocking every concurrent
+  /// *lexical* search for as long as the library takes to embed.
   Future<SemanticIndexingSummary> semanticIndexBooks({
     required List<SemanticBookInput> books,
   });
@@ -1028,7 +1055,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// `unverifiable_books` rather than treated as an up-to-date PDF.
   Future<SemanticIndexDiff> semanticIndexDiff();
 
-  SemanticStatus semanticStatus();
+  /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
+  /// sidecar's engine lock, which indexing holds for the duration of one
+  /// book's embedding run; a synchronous binding would block the calling Dart
+  /// isolate for that whole time. Progress polling is the expected caller, so
+  /// it must not be able to freeze the UI.
+  Future<SemanticStatus> semanticStatus();
 
   /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
   /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
@@ -1982,7 +2014,25 @@ class SemanticSearchResponse {
 class SemanticSearchResult {
   final String title;
   final String reference;
-  final String text;
+
+  /// The display string, in the same format every other search API in this
+  /// engine returns: HTML-escaped, painted with `HighlightConfig`'s
+  /// prefix/postfix where the lexical query matched, and bounded by its
+  /// `max_chars`. It is never a raw unbounded line, on either the sidecar or
+  /// the fallback path — the app's snippet parser can treat both alike.
+  ///
+  /// The sidecar path paints against the mark-free stored `text` field,
+  /// because that is the copy the sidecar indexes and hydration reads. A
+  /// vocalized query therefore selects documents with marks but still shows
+  /// (and highlights) the mark-free line; the lexical fallback shows the
+  /// vocalized copy. Use [`SearchEngine::get_document_by_id`] when the full,
+  /// unabridged line is needed.
+  final String snippetHtml;
+
+  /// Whether `snippet_html` carries highlight markup. False for a purely
+  /// semantic hit, whose line matched no query term — the UI can then avoid
+  /// promising the user a lexical match that is not there.
+  final bool isHighlighted;
   final BigInt id;
   final BigInt segment;
   final bool isPdf;
@@ -2000,7 +2050,8 @@ class SemanticSearchResult {
   const SemanticSearchResult({
     required this.title,
     required this.reference,
-    required this.text,
+    required this.snippetHtml,
+    required this.isHighlighted,
     required this.id,
     required this.segment,
     required this.isPdf,
@@ -2018,7 +2069,8 @@ class SemanticSearchResult {
   int get hashCode =>
       title.hashCode ^
       reference.hashCode ^
-      text.hashCode ^
+      snippetHtml.hashCode ^
+      isHighlighted.hashCode ^
       id.hashCode ^
       segment.hashCode ^
       isPdf.hashCode ^
@@ -2038,7 +2090,8 @@ class SemanticSearchResult {
           runtimeType == other.runtimeType &&
           title == other.title &&
           reference == other.reference &&
-          text == other.text &&
+          snippetHtml == other.snippetHtml &&
+          isHighlighted == other.isHighlighted &&
           id == other.id &&
           segment == other.segment &&
           isPdf == other.isPdf &&

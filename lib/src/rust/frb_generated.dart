@@ -838,7 +838,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchEngine that,
   });
 
-  SemanticStatus crateApiSearchEngineSearchEngineSemanticStatus({
+  Future<SemanticStatus> crateApiSearchEngineSearchEngineSemanticStatus({
     required SearchEngine that,
   });
 
@@ -3862,7 +3862,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that,
             serializer,
           );
@@ -3902,7 +3902,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that,
             serializer,
           );
@@ -5582,7 +5582,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that,
             serializer,
           );
@@ -5650,18 +5650,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  SemanticStatus crateApiSearchEngineSearchEngineSemanticStatus({
+  Future<SemanticStatus> crateApiSearchEngineSearchEngineSemanticStatus({
     required SearchEngine that,
   }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 76)!;
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 76,
+            port: port_,
+          );
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_status,
@@ -7327,23 +7332,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticSearchResult dco_decode_semantic_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return SemanticSearchResult(
       title: dco_decode_String(arr[0]),
       reference: dco_decode_String(arr[1]),
-      text: dco_decode_String(arr[2]),
-      id: dco_decode_u_64(arr[3]),
-      segment: dco_decode_u_64(arr[4]),
-      isPdf: dco_decode_bool(arr[5]),
-      filePath: dco_decode_String(arr[6]),
-      mergedCount: dco_decode_u_32(arr[7]),
-      merged: dco_decode_list_merged_sibling(arr[8]),
-      lexicalScore: dco_decode_opt_box_autoadd_f_32(arr[9]),
-      semanticScore: dco_decode_opt_box_autoadd_f_32(arr[10]),
-      fusedScore: dco_decode_f_32(arr[11]),
-      source: dco_decode_semantic_result_source(arr[12]),
-      needsHydration: dco_decode_bool(arr[13]),
+      snippetHtml: dco_decode_String(arr[2]),
+      isHighlighted: dco_decode_bool(arr[3]),
+      id: dco_decode_u_64(arr[4]),
+      segment: dco_decode_u_64(arr[5]),
+      isPdf: dco_decode_bool(arr[6]),
+      filePath: dco_decode_String(arr[7]),
+      mergedCount: dco_decode_u_32(arr[8]),
+      merged: dco_decode_list_merged_sibling(arr[9]),
+      lexicalScore: dco_decode_opt_box_autoadd_f_32(arr[10]),
+      semanticScore: dco_decode_opt_box_autoadd_f_32(arr[11]),
+      fusedScore: dco_decode_f_32(arr[12]),
+      source: dco_decode_semantic_result_source(arr[13]),
+      needsHydration: dco_decode_bool(arr[14]),
     );
   }
 
@@ -8679,7 +8685,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_title = sse_decode_String(deserializer);
     var var_reference = sse_decode_String(deserializer);
-    var var_text = sse_decode_String(deserializer);
+    var var_snippetHtml = sse_decode_String(deserializer);
+    var var_isHighlighted = sse_decode_bool(deserializer);
     var var_id = sse_decode_u_64(deserializer);
     var var_segment = sse_decode_u_64(deserializer);
     var var_isPdf = sse_decode_bool(deserializer);
@@ -8694,7 +8701,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SemanticSearchResult(
       title: var_title,
       reference: var_reference,
-      text: var_text,
+      snippetHtml: var_snippetHtml,
+      isHighlighted: var_isHighlighted,
       id: var_id,
       segment: var_segment,
       isPdf: var_isPdf,
@@ -9948,7 +9956,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.title, serializer);
     sse_encode_String(self.reference, serializer);
-    sse_encode_String(self.text, serializer);
+    sse_encode_String(self.snippetHtml, serializer);
+    sse_encode_bool(self.isHighlighted, serializer);
     sse_encode_u_64(self.id, serializer);
     sse_encode_u_64(self.segment, serializer);
     sse_encode_bool(self.isPdf, serializer);
@@ -10237,10 +10246,23 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<void> commit() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(that: this);
 
-  /// Open (or re-open) the semantic sidecar. The sidecar owns semantic
-  /// fusion; this method only wires it to the already-open Tantivy engine.
-  /// When this crate was built without the optional semantic feature it is a
+  /// Open the semantic sidecar and wire it to the already-open Tantivy
+  /// engine. The sidecar owns semantic fusion; Tantivy stays owned here. When
+  /// this crate was built without the optional semantic feature this is a
   /// no-op that returns an explicit Disabled status.
+  ///
+  /// **The sidecar's vector store is in-memory** (check
+  /// [`SemanticStatus::vectors_persisted`]): vectors live only for the
+  /// lifetime of this session and must be rebuilt after a restart. Opening an
+  /// engine re-reads the on-disk manifest and drops every book record whose
+  /// vectors did not survive, so a *re-open* discards the session's semantic
+  /// index. This method therefore does not re-open:
+  ///
+  /// - Called again with the same inputs it is a no-op returning the current
+  ///   status, so a caller that configures defensively cannot lose an index.
+  /// - Called with different inputs while a session is open it fails and says
+  ///   which input changed. Switching model or library root is an explicit
+  ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineConfigureSemantic(
@@ -10652,7 +10674,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   /// Remove the configured sidecar without touching its on-disk files.
   /// This is useful when an app switches library roots or wants lexical-only
-  /// operation for the current session.
+  /// operation for the current session, and it is the explicit way to allow a
+  /// subsequent [`Self::configure_semantic`] with different inputs.
+  ///
+  /// Because the vector store is in-memory, this drops the session's vectors:
+  /// re-configuring afterwards needs a full semantic re-index.
   Future<void> disableSemantic() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineDisableSemantic(that: this);
 
@@ -10970,6 +10996,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   /// Remove vector records for books previously reported as `removed_books`.
   /// This never deletes lexical Tantivy documents.
+  ///
+  /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticRemoveResult> removeSemanticBooks({
     required List<String> sourceBookKeys,
   }) =>
@@ -10980,6 +11008,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
   /// documents are untouched, so a full semantic rebuild can follow safely.
+  ///
+  /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticResetResult> resetSemanticIndex() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineResetSemanticIndex(that: this);
 
@@ -11526,6 +11556,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Index or replace semantic vectors for complete books. The caller should
   /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
   /// be the global Tantivy document ids so semantic-only results can hydrate.
+  ///
+  /// Takes `&self` on purpose. It mutates only the sidecar, which serializes
+  /// indexing behind its own mutex and releases the engine lock between
+  /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
+  /// lock on the whole engine for the entire run, blocking every concurrent
+  /// *lexical* search for as long as the library takes to embed.
   Future<SemanticIndexingSummary> semanticIndexBooks({
     required List<SemanticBookInput> books,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticIndexBooks(
@@ -11539,7 +11575,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<SemanticIndexDiff> semanticIndexDiff() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSemanticIndexDiff(that: this);
 
-  SemanticStatus semanticStatus() => RustLib.instance.api
+  /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
+  /// sidecar's engine lock, which indexing holds for the duration of one
+  /// book's embedding run; a synchronous binding would block the calling Dart
+  /// isolate for that whole time. Progress polling is the expected caller, so
+  /// it must not be able to freeze the UI.
+  Future<SemanticStatus> semanticStatus() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSemanticStatus(that: this);
 
   /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
