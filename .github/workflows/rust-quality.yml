@@ -1,0 +1,123 @@
+name: Rust and Semantic Quality
+
+on:
+  push:
+    paths:
+      - ".github/workflows/rust-quality.yml"
+      - "rust/**"
+      - "lib/src/rust/**"
+      - "flutter_rust_bridge.yaml"
+      - "pubspec.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/rust-quality.yml"
+      - "rust/**"
+      - "lib/src/rust/**"
+      - "flutter_rust_bridge.yaml"
+      - "pubspec.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-semantic-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-tests:
+    name: Rust tests (${{ matrix.features }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - default
+          - semantic-mock
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+
+      - name: Check
+        if: matrix.features == 'default'
+        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+
+      - name: Check semantic mock integration
+        if: matrix.features == 'semantic-mock'
+        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+      - name: Test
+        if: matrix.features == 'default'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets
+
+      - name: Test semantic mock integration
+        if: matrix.features == 'semantic-mock'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+      - name: Clippy
+        if: matrix.features == 'default'
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets
+
+      - name: Clippy semantic mock integration
+        if: matrix.features == 'semantic-mock'
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+  real-backend-build:
+    name: Real semantic backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile the production semantic backend
+        run: cargo check --manifest-path rust/Cargo.toml --locked --lib --features semantic
+
+  generated-bindings:
+    name: FRB bindings and Flutter tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Install pinned FRB generator
+        run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
+
+      - name: Verify generated bindings are current
+        shell: bash
+        run: |
+          flutter_rust_bridge_codegen generate
+          sed -i 's/[ \t]*$//' rust/src/frb_generated.rs
+          git diff --exit-code
+
+      - name: Dart format
+        run: dart format --output=none --set-exit-if-changed lib
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Flutter tests
+        run: flutter test
