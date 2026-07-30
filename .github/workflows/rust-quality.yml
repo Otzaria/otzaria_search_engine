@@ -124,10 +124,20 @@ jobs:
             lib/src/rust/api/search_engine.dart
 
       - name: Dart format
-        run: dart format --output=none --set-exit-if-changed lib
+        run: dart format --output=none --set-exit-if-changed lib test
 
       - name: Flutter analyze
         run: flutter analyze
 
+      # Without this the FFI suites find no library and skip themselves, and the
+      # job goes green having tested nothing across the bridge.
+      - name: Build the native library the FFI tests load
+        run: cargo build --manifest-path rust/Cargo.toml --locked --lib
+
       - name: Flutter tests
+        # Turns a missing native library from a skip into a failure. Skipping is
+        # for contributors who have not run `cargo build`; in CI it would hide
+        # exactly what this job exists to check.
+        env:
+          OTZARIA_REQUIRE_NATIVE: "1"
         run: flutter test
