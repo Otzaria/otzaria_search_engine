@@ -355,6 +355,53 @@ fn an_unpainted_line_is_bounded_and_flagged_rather_than_returned_whole() {
     assert!(hit.snippet_html.starts_with("בראשית ברא אלהים"));
 }
 
+#[test]
+fn a_semantic_hit_that_fails_the_phrase_is_not_painted_as_a_lexical_match() {
+    // The query words are present but reversed and non-adjacent, so the exact
+    // phrase query does not match this line: it can only reach the page through
+    // vector similarity, with no BM25 score.
+    let lines = vec![line(9_200, "שמות ד:כז", "אהרן הכהן משה רבנו", 1)];
+    let (engine, _root) = fixture(&lines);
+
+    let response = exact(&engine, "משה אהרן", SemanticRetrievalMode::Hybrid);
+
+    assert_eq!(response.executed_mode, SemanticExecutedMode::Hybrid);
+    assert_eq!(response.results.len(), 1);
+    let hit = &response.results[0];
+    assert_eq!(hit.source, SemanticResultSource::Semantic);
+    assert!(
+        hit.lexical_score.is_none(),
+        "the phrase query must not have matched this line"
+    );
+    // Both words are in the line and the term highlighter would gladly paint
+    // them, but no complete in-order occurrence exists and nothing lexical
+    // vouched for this result — so claiming a highlight would assert a phrase
+    // match that is not there.
+    assert!(
+        !hit.is_highlighted,
+        "a phrase-failing semantic hit must not be painted: {}",
+        hit.snippet_html
+    );
+    assert!(!hit.snippet_html.contains("<font color=red>"));
+    assert_eq!(hit.snippet_html, "אהרן הכהן משה רבנו");
+}
+
+#[test]
+fn a_lexical_phrase_match_is_still_painted() {
+    // The same two words, now adjacent and in query order: Tantivy matches the
+    // phrase, so painting is licensed and must still happen.
+    let lines = vec![line(9_201, "שמות ד:כז", "וילך משה אהרן המדברה", 1)];
+    let (engine, _root) = fixture(&lines);
+
+    let response = exact(&engine, "משה אהרן", SemanticRetrievalMode::Hybrid);
+
+    assert_eq!(response.results.len(), 1);
+    let hit = &response.results[0];
+    assert!(hit.lexical_score.is_some());
+    assert!(hit.is_highlighted);
+    assert!(hit.snippet_html.contains("<font color=red>"));
+}
+
 // ── Stale sidecar records ────────────────────────────────────────────────────
 
 #[test]

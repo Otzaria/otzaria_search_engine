@@ -31,13 +31,20 @@ separately reports the hard candidate-window cap.
 ### The display contract
 
 `SemanticSearchResult.snippetHtml` is the display string, in the same format
-every other search API here returns: HTML-escaped, painted with the default
-`HighlightConfig` markup where the lexical query matched, and bounded by its
-`max_chars`. This holds on the sidecar path and on the lexical fallback alike, so
-the app's snippet parser cannot tell which one served a page, and a purely
-semantic hit never arrives as a raw unbounded line. `isHighlighted` says whether
-markup is present — it is false for a semantic hit whose line matched no query
-term. Use `getDocumentById` when the full line is needed.
+every other search API here returns: HTML-escaped and painted with the default
+`HighlightConfig` markup where the lexical query matched. `max_chars` bounds how
+much of the line is shown, with markup and escaping added on top. This holds on
+the sidecar path and on the lexical fallback alike, so the app's snippet parser
+cannot tell which one served a page, and a purely semantic hit never arrives as a
+raw unbounded line. Use `getDocumentById` when the full line is needed.
+
+`isHighlighted` says whether markup is present, and it never overstates the
+match. A multi-word query carries a phrase constraint: when the chosen fragment
+holds no complete in-order occurrence, the lexical API falls back to painting the
+individual words, which is sound only because Tantivy already proved the document
+satisfies the phrase query. A result that reached the page through vector
+similarity alone never passed that query, so it is left unpainted rather than
+have its scattered words suggest a phrase match.
 
 Snippets are built after fusion and pagination, for the returned page only. The
 sidecar path paints against the mark-free stored `text` field, since that is the

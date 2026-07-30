@@ -2016,10 +2016,11 @@ class SemanticSearchResult {
   final String reference;
 
   /// The display string, in the same format every other search API in this
-  /// engine returns: HTML-escaped, painted with `HighlightConfig`'s
-  /// prefix/postfix where the lexical query matched, and bounded by its
-  /// `max_chars`. It is never a raw unbounded line, on either the sidecar or
-  /// the fallback path — the app's snippet parser can treat both alike.
+  /// engine returns: HTML-escaped and painted with `HighlightConfig`'s
+  /// prefix/postfix where the lexical query matched. It is never a raw
+  /// unbounded line, on either the sidecar or the fallback path — the app's
+  /// snippet parser can treat both alike. `max_chars` bounds how much of the
+  /// line is shown; markup and escaping are added on top of that.
   ///
   /// The sidecar path paints against the mark-free stored `text` field,
   /// because that is the copy the sidecar indexes and hydration reads. A

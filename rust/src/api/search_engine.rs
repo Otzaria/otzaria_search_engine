@@ -376,10 +376,11 @@ pub struct SemanticSearchResult {
     pub title: String,
     pub reference: String,
     /// The display string, in the same format every other search API in this
-    /// engine returns: HTML-escaped, painted with `HighlightConfig`'s
-    /// prefix/postfix where the lexical query matched, and bounded by its
-    /// `max_chars`. It is never a raw unbounded line, on either the sidecar or
-    /// the fallback path — the app's snippet parser can treat both alike.
+    /// engine returns: HTML-escaped and painted with `HighlightConfig`'s
+    /// prefix/postfix where the lexical query matched. It is never a raw
+    /// unbounded line, on either the sidecar or the fallback path — the app's
+    /// snippet parser can treat both alike. `max_chars` bounds how much of the
+    /// line is shown; markup and escaping are added on top of that.
     ///
     /// The sidecar path paints against the mark-free stored `text` field,
     /// because that is the copy the sidecar indexes and hydration reads. A
@@ -530,7 +531,15 @@ impl SemanticSnippetPainter {
     /// fragment only exists when at least one query term matched, so an empty
     /// result means this line is a purely semantic hit — it then falls back to a
     /// bounded escaped snippet instead of an unbounded raw line.
-    fn paint(&self, text: &str) -> (String, bool) {
+    ///
+    /// `lexically_confirmed` is what makes the phrase fallback honest. When the
+    /// filter finds no complete in-order occurrence, the lexical API paints the
+    /// individual terms instead — sound there, because Tantivy already proved the
+    /// document satisfies the phrase query, so the fragment merely failed to
+    /// contain a whole occurrence. A purely semantic candidate never passed that
+    /// query: painting its scattered words would assert a phrase match that does
+    /// not exist. Such a result is left unpainted instead.
+    fn paint(&self, text: &str, lexically_confirmed: bool) -> (String, bool) {
         let mut snippet = self.generator.snippet(text);
         snippet.set_snippet_prefix_postfix(&self.hl.highlight_prefix, &self.hl.highlight_postfix);
         let html = match self.phrase.as_ref() {
@@ -540,22 +549,28 @@ impl SemanticSnippetPainter {
                 phrase,
                 &self.hl,
             )
-            .unwrap_or_else(|| snippet.to_html()),
-            None => snippet.to_html(),
+            .or_else(|| lexically_confirmed.then(|| snippet.to_html())),
+            // No phrase constraint: every occurrence of every query word is a
+            // real match of that word, whichever retrieval path found the line,
+            // so term painting states nothing untrue.
+            None => Some(snippet.to_html()),
         };
-        if html.is_empty() {
-            return (bounded_plain_snippet(text, self.hl.max_chars), false);
+        match html {
+            Some(html) if !html.is_empty() => (html, true),
+            _ => (bounded_plain_snippet(text, self.hl.max_chars), false),
         }
-        (html, true)
     }
 }
 
-/// A display-safe stand-in for a snippet: HTML-escaped and cut to the same
-/// budget the snippet generator applies, so a line no query term matched still
-/// crosses FFI as bounded markup instead of a raw full line.
+/// A display-safe stand-in for a snippet: a bounded, HTML-escaped prefix, so a
+/// line that cannot be painted still crosses FFI as markup instead of a raw full
+/// line.
 ///
-/// The budget is in bytes, matching tantivy's own `max_num_chars`; the cut
-/// lands on a UTF-8 char boundary so multi-byte Hebrew is never split.
+/// `max_chars` bounds the *source* line, in bytes, matching tantivy's own
+/// `max_num_chars`; the cut lands on a UTF-8 char boundary so multi-byte Hebrew
+/// is never split. Escaping happens after the cut, so the returned string can be
+/// longer than the budget when the line is dense in `&` or `<` — the bound is on
+/// how much text is shown, not on the byte length of its encoding.
 fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     let budget = max_chars as usize;
     if text.len() <= budget {
@@ -2331,7 +2346,10 @@ impl SearchEngine {
                     ),
                 };
                 let (snippet_html, is_highlighted) = match painter.as_ref() {
-                    Some(painter) => painter.paint(&text),
+                    // A BM25 score is present exactly when Tantivy returned this
+                    // line for the lexical query, which is what licenses the
+                    // phrase-fallback term painting inside `paint`.
+                    Some(painter) => painter.paint(&text, item.lexical_score.is_some()),
                     // `SemanticOnly` runs no lexical query, so there is nothing
                     // to paint with — the line still crosses FFI bounded.
                     None => (bounded_plain_snippet(&text, snippet_budget), false),
