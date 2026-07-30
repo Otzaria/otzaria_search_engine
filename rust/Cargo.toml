@@ -64,7 +64,7 @@ rayon = "1.10"
 # The semantic sidecar's persisted-vector format and llama bindings are part of
 # the index identity.  A branch dependency can silently change either; pin the
 # exact reviewed revision and retain it in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "3c32eae399a70554b53f8290366c05d2063f7ef4", optional = true }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "75401aeb0f2c6f9661171fc1c0669c5947ffaeb3", optional = true }
 
 # Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
 # regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).
