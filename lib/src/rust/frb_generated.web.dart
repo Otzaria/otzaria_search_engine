@@ -122,6 +122,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BenchmarkResult dco_decode_box_autoadd_benchmark_result(dynamic raw);
 
   @protected
+  double dco_decode_box_autoadd_f_32(dynamic raw);
+
+  @protected
   HighlightConfig dco_decode_box_autoadd_highlight_config(dynamic raw);
 
   @protected
@@ -132,6 +135,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw);
+
+  @protected
+  SemanticConfigInput dco_decode_box_autoadd_semantic_config_input(dynamic raw);
+
+  @protected
+  SemanticGroupingMode dco_decode_box_autoadd_semantic_grouping_mode(
+    dynamic raw,
+  );
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
@@ -147,6 +158,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DocumentInput dco_decode_document_input(dynamic raw);
+
+  @protected
+  double dco_decode_f_32(dynamic raw);
 
   @protected
   double dco_decode_f_64(dynamic raw);
@@ -224,6 +238,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SearchResult> dco_decode_list_search_result(dynamic raw);
 
   @protected
+  List<SemanticBookInput> dco_decode_list_semantic_book_input(dynamic raw);
+
+  @protected
+  List<SemanticBookLineInput> dco_decode_list_semantic_book_line_input(
+    dynamic raw,
+  );
+
+  @protected
+  List<SemanticSearchResult> dco_decode_list_semantic_search_result(
+    dynamic raw,
+  );
+
+  @protected
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
@@ -239,6 +266,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw);
 
   @protected
+  double? dco_decode_opt_box_autoadd_f_32(dynamic raw);
+
+  @protected
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw);
 
   @protected
@@ -249,6 +279,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
+
+  @protected
+  SemanticGroupingMode? dco_decode_opt_box_autoadd_semantic_grouping_mode(
+    dynamic raw,
+  );
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
@@ -305,6 +340,51 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchStreamUpdate dco_decode_search_stream_update(dynamic raw);
+
+  @protected
+  SemanticBookInput dco_decode_semantic_book_input(dynamic raw);
+
+  @protected
+  SemanticBookLineInput dco_decode_semantic_book_line_input(dynamic raw);
+
+  @protected
+  SemanticConfigInput dco_decode_semantic_config_input(dynamic raw);
+
+  @protected
+  SemanticExecutedMode dco_decode_semantic_executed_mode(dynamic raw);
+
+  @protected
+  SemanticGroupingMode dco_decode_semantic_grouping_mode(dynamic raw);
+
+  @protected
+  SemanticIndexDiff dco_decode_semantic_index_diff(dynamic raw);
+
+  @protected
+  SemanticIndexingSummary dco_decode_semantic_indexing_summary(dynamic raw);
+
+  @protected
+  SemanticLexicalMode dco_decode_semantic_lexical_mode(dynamic raw);
+
+  @protected
+  SemanticRemoveResult dco_decode_semantic_remove_result(dynamic raw);
+
+  @protected
+  SemanticResetResult dco_decode_semantic_reset_result(dynamic raw);
+
+  @protected
+  SemanticResultSource dco_decode_semantic_result_source(dynamic raw);
+
+  @protected
+  SemanticRetrievalMode dco_decode_semantic_retrieval_mode(dynamic raw);
+
+  @protected
+  SemanticSearchResponse dco_decode_semantic_search_response(dynamic raw);
+
+  @protected
+  SemanticSearchResult dco_decode_semantic_search_result(dynamic raw);
+
+  @protected
+  SemanticStatus dco_decode_semantic_status(dynamic raw);
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
@@ -430,6 +510,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  double sse_decode_box_autoadd_f_32(SseDeserializer deserializer);
+
+  @protected
   HighlightConfig sse_decode_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   );
@@ -450,6 +533,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticConfigInput sse_decode_box_autoadd_semantic_config_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticGroupingMode sse_decode_box_autoadd_semantic_grouping_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
@@ -465,6 +558,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DocumentInput sse_decode_document_input(SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
   double sse_decode_f_64(SseDeserializer deserializer);
@@ -568,6 +664,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticBookInput> sse_decode_list_semantic_book_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticBookLineInput> sse_decode_list_semantic_book_line_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticSearchResult> sse_decode_list_semantic_search_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
 
   @protected
@@ -587,6 +698,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  double? sse_decode_opt_box_autoadd_f_32(SseDeserializer deserializer);
+
+  @protected
   HighlightConfig? sse_decode_opt_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   );
@@ -603,6 +717,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult? sse_decode_opt_box_autoadd_search_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticGroupingMode? sse_decode_opt_box_autoadd_semantic_grouping_mode(
     SseDeserializer deserializer,
   );
 
@@ -669,6 +788,79 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchStreamUpdate sse_decode_search_stream_update(
     SseDeserializer deserializer,
   );
+
+  @protected
+  SemanticBookInput sse_decode_semantic_book_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticBookLineInput sse_decode_semantic_book_line_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticConfigInput sse_decode_semantic_config_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticExecutedMode sse_decode_semantic_executed_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticGroupingMode sse_decode_semantic_grouping_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticIndexDiff sse_decode_semantic_index_diff(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticIndexingSummary sse_decode_semantic_indexing_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticLexicalMode sse_decode_semantic_lexical_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRemoveResult sse_decode_semantic_remove_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticResetResult sse_decode_semantic_reset_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticResultSource sse_decode_semantic_result_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRetrievalMode sse_decode_semantic_retrieval_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticSearchResponse sse_decode_semantic_search_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticSearchResult sse_decode_semantic_search_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticStatus sse_decode_semantic_status(SseDeserializer deserializer);
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
@@ -825,6 +1017,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_f_32(double self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_highlight_config(
     HighlightConfig self,
     SseSerializer serializer,
@@ -849,6 +1044,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_semantic_config_input(
+    SemanticConfigInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_grouping_mode(
+    SemanticGroupingMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -865,6 +1072,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_document_input(DocumentInput self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_f_64(double self, SseSerializer serializer);
@@ -993,6 +1203,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_semantic_book_input(
+    List<SemanticBookInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_semantic_book_line_input(
+    List<SemanticBookLineInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_semantic_search_result(
+    List<SemanticSearchResult> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
 
   @protected
@@ -1012,6 +1240,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     BenchmarkResult? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_box_autoadd_f_32(double? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_highlight_config(
@@ -1034,6 +1265,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_search_result(
     SearchResult? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_grouping_mode(
+    SemanticGroupingMode? self,
     SseSerializer serializer,
   );
 
@@ -1118,6 +1355,96 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_search_stream_update(
     SearchStreamUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_book_input(
+    SemanticBookInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_book_line_input(
+    SemanticBookLineInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_config_input(
+    SemanticConfigInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_executed_mode(
+    SemanticExecutedMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_grouping_mode(
+    SemanticGroupingMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_index_diff(
+    SemanticIndexDiff self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_indexing_summary(
+    SemanticIndexingSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_lexical_mode(
+    SemanticLexicalMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_remove_result(
+    SemanticRemoveResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_reset_result(
+    SemanticResetResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_result_source(
+    SemanticResultSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_retrieval_mode(
+    SemanticRetrievalMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_search_response(
+    SemanticSearchResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_search_result(
+    SemanticSearchResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_status(
+    SemanticStatus self,
     SseSerializer serializer,
   );
 

@@ -8,12 +8,28 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = []
-semantic = ["dep:otzaria-semantic-search"]
+# Keep the inference backend opt-in for the application, but make the feature
+# boundary explicit: enabling our semantic integration must enable the only
+# production embedding backend in the sidecar as well.  The sidecar deliberately
+# has no default backend, so omitting this propagation would compile a binary
+# that can never serve a semantic query.
+semantic = ["semantic-real"]
+# Internal gate for code that talks to the sidecar. Both concrete backends turn
+# it on; `semantic` remains the backwards-compatible production alias.
+semantic-integration = ["dep:otzaria-semantic-search"]
+semantic-real = ["semantic-integration", "otzaria-semantic-search/llama-backend"]
+# CI and adapter integration tests use the sidecar's deterministic test backend
+# without compiling GGUF/llama.cpp. Production builds must use `semantic` (or
+# `semantic-real`); neither default nor mock builds can silently select it.
+semantic-mock = ["semantic-integration", "otzaria-semantic-search/mock-embedding"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 
 [lints.clippy]
+# The search APIs are exposed through flutter_rust_bridge, whose generated
+# bindings mirror each function's signature, so wide parameter lists are
+# inherent and cannot be bundled into a struct without breaking the bindings.
 too_many_arguments = "allow"
 
 [[bin]]
@@ -26,31 +42,33 @@ flutter_rust_bridge = "=2.12.0"
 tempfile = "3.27.0"
 tantivy= "=0.26.1"
 tantivy-fst = "=0.5.0"
+# Same crate/version tantivy 0.26 builds FuzzyTermQuery automatons from, so
+# fuzzy highlight-term collection matches the query's term expansion exactly.
 levenshtein_automata = "0.2.1"
 jieba-rs = "0.10.1"
 anyhow = "1.0.102"
 once_cell = "1.21.4"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_derive = "1.0"
 serde_json = "1.0.150"
 htmlescape = "0.3.1"
-tokio = { version = "1.52.3", features = [ "test-util", "macros", "rt-multi-thread"] }
-tokio-util = "0.7"
-async-trait = "0.1"
-thiserror = "2.0"
-tracing = "0.1"
-dashmap = "6.1"
-smallvec = "1.13"
 log = "0.4.32"
-futures = "0.3.32"
-async-stream = "0.3.6"
 unicode-segmentation = "1.13.3"
+# Lexical (MagicDictionary) approximate-search path. `bundled` compiles SQLite
+# from source so there is no system libsqlite dependency on Android/iOS.
 rusqlite = { version = "0.32", features = ["bundled"] }
 lru = "0.12"
+# מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
+# מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
 
-# Optional dependency: fetched from git repository during compilation
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", optional = true }
+# The semantic sidecar's persisted-vector format and llama bindings are part of
+# the index identity.  A branch dependency can silently change either; pin the
+# exact reviewed revision and retain it in Cargo.lock for reproducible builds.
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "3c32eae399a70554b53f8290366c05d2063f7ef4", optional = true }
 
+# Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
+# regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).
+# The patch applies to the whole dependency graph, so tantivy's own
+# RegexPhraseQuery compiles against the raised cap too.
 [patch.crates-io]
 tantivy-fst = { path = "vendor/tantivy-fst" }

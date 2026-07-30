@@ -45,7 +45,10 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 19
+        // The semantic backend is compiled by the prebuilt workflow with
+        // ANDROID_PLATFORM=21; advertising support below that level would let
+        // API 19/20 applications install an incompatible native artifact.
+        minSdkVersion 21
     }
 }
 

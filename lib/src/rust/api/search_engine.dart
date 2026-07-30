@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `merge_group`, `merge`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `DfaWrapper`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SiblingFields`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `eq`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `DfaWrapper`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `TermCacheKey`, `WordMatch`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -272,6 +272,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 
+  /// Open (or re-open) the semantic sidecar. The sidecar owns semantic
+  /// fusion; this method only wires it to the already-open Tantivy engine.
+  /// When this crate was built without the optional semantic feature it is a
+  /// no-op that returns an explicit Disabled status.
+  Future<SemanticStatus> configureSemantic({
+    required SemanticConfigInput config,
+  });
+
   /// Bare hit count. Drops the single-word truncation flag: a broad query
   /// (e.g. `.*ספר`) that overflows its collection budget returns a partial
   /// count with no signal. Not suitable for UI that must tell the user the
@@ -501,6 +509,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// commit.
   Future<void> deleteDocumentsByFilePaths({required List<String> filePaths});
 
+  /// Remove the configured sidecar without touching its on-disk files.
+  /// This is useful when an app switches library roots or wants lexical-only
+  /// operation for the current session.
+  Future<void> disableSemantic();
+
   /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
   /// paints the index terms within `max_distance` edits of each query token,
   /// plus the dictionary morphological forms when a magic dictionary is
@@ -694,6 +707,16 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Delete all documents matching a title. Does not commit.
   /// Kept for backward compatibility – prefer delete_document_by_id.
   Future<void> removeDocumentsByTitle({required String title});
+
+  /// Remove vector records for books previously reported as `removed_books`.
+  /// This never deletes lexical Tantivy documents.
+  Future<SemanticRemoveResult> removeSemanticBooks({
+    required List<String> sourceBookKeys,
+  });
+
+  /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
+  /// documents are untouched, so a full semantic rebuild can follow safely.
+  Future<SemanticResetResult> resetSemanticIndex();
 
   /// Discard all pending writes since the last commit.
   Future<void> rollback();
@@ -952,6 +975,22 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
   });
 
+  /// Search through the sidecar exactly once. Tantivy supplies scored lexical
+  /// candidates; `OtzariaHybridEngine` alone performs hybrid fusion/grouping.
+  /// Semantic-only items are hydrated from Tantivy before crossing FFI.
+  Future<SemanticSearchResponse> searchSemantic({
+    required String query,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required SemanticLexicalMode lexicalMode,
+    required int fuzzyMaxDistance,
+    required SemanticRetrievalMode retrievalMode,
+    SemanticGroupingMode? grouping,
+    required bool matchNikud,
+    required bool matchTaamim,
+  });
+
   /// Stream search results in chunks of `chunk_size` documents.
   ///
   /// The TopDocs phase (scoring and ranking) completes upfront – this is
@@ -976,6 +1015,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
     required int chunkSize,
   });
+
+  /// Index or replace semantic vectors for complete books. The caller should
+  /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
+  /// be the global Tantivy document ids so semantic-only results can hydrate.
+  Future<SemanticIndexingSummary> semanticIndexBooks({
+    required List<SemanticBookInput> books,
+  });
+
+  /// Compare the semantic manifest with the book fingerprints stored in the
+  /// lexical index. A `contentHash` of zero is deliberately surfaced as
+  /// `unverifiable_books` rather than treated as an up-to-date PDF.
+  Future<SemanticIndexDiff> semanticIndexDiff();
+
+  SemanticStatus semanticStatus();
 
   /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
   /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
@@ -1596,6 +1649,473 @@ class SearchStreamUpdate {
           results == other.results &&
           truncated == other.truncated &&
           groupCount == other.groupCount;
+}
+
+class SemanticBookInput {
+  final String sourceBookKey;
+  final String title;
+
+  /// The lexical engine's book content hash, or a caller-provided canonical
+  /// source fingerprint for PDFs. Zero means it cannot be verified.
+  final BigInt contentFingerprint;
+  final bool isPdf;
+  final String topics;
+  final List<String> extraFacets;
+  final List<SemanticBookLineInput> lines;
+
+  const SemanticBookInput({
+    required this.sourceBookKey,
+    required this.title,
+    required this.contentFingerprint,
+    required this.isPdf,
+    required this.topics,
+    required this.extraFacets,
+    required this.lines,
+  });
+
+  @override
+  int get hashCode =>
+      sourceBookKey.hashCode ^
+      title.hashCode ^
+      contentFingerprint.hashCode ^
+      isPdf.hashCode ^
+      topics.hashCode ^
+      extraFacets.hashCode ^
+      lines.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticBookInput &&
+          runtimeType == other.runtimeType &&
+          sourceBookKey == other.sourceBookKey &&
+          title == other.title &&
+          contentFingerprint == other.contentFingerprint &&
+          isPdf == other.isPdf &&
+          topics == other.topics &&
+          extraFacets == other.extraFacets &&
+          lines == other.lines;
+}
+
+class SemanticBookLineInput {
+  final BigInt lineId;
+  final BigInt sectionId;
+  final String text;
+  final BigInt lineHash;
+  final String reference;
+  final BigInt segment;
+
+  const SemanticBookLineInput({
+    required this.lineId,
+    required this.sectionId,
+    required this.text,
+    required this.lineHash,
+    required this.reference,
+    required this.segment,
+  });
+
+  @override
+  int get hashCode =>
+      lineId.hashCode ^
+      sectionId.hashCode ^
+      text.hashCode ^
+      lineHash.hashCode ^
+      reference.hashCode ^
+      segment.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticBookLineInput &&
+          runtimeType == other.runtimeType &&
+          lineId == other.lineId &&
+          sectionId == other.sectionId &&
+          text == other.text &&
+          lineHash == other.lineHash &&
+          reference == other.reference &&
+          segment == other.segment;
+}
+
+/// Configuration needed to open the semantic sidecar. The model itself is
+/// loaded lazily when indexing begins, so configuration is cheap; searches
+/// report a degraded state until indexing has loaded the model and produced
+/// vectors, instead of making the lexical engine unusable.
+class SemanticConfigInput {
+  final String rootDir;
+  final String modelPath;
+  final String modelId;
+  final int embeddingDim;
+
+  const SemanticConfigInput({
+    required this.rootDir,
+    required this.modelPath,
+    required this.modelId,
+    required this.embeddingDim,
+  });
+
+  @override
+  int get hashCode =>
+      rootDir.hashCode ^
+      modelPath.hashCode ^
+      modelId.hashCode ^
+      embeddingDim.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticConfigInput &&
+          runtimeType == other.runtimeType &&
+          rootDir == other.rootDir &&
+          modelPath == other.modelPath &&
+          modelId == other.modelId &&
+          embeddingDim == other.embeddingDim;
+}
+
+enum SemanticExecutedMode { disabled, hybrid, semanticOnly, lexicalOnly }
+
+enum SemanticGroupingMode { sameSection, identicalText }
+
+class SemanticIndexDiff {
+  final bool enabled;
+  final List<String> newBooks;
+  final List<String> changedBooks;
+  final List<String> unverifiableBooks;
+  final List<String> removedBooks;
+  final bool modelMismatch;
+  final bool chunkingMismatch;
+  final bool normalizationMismatch;
+
+  const SemanticIndexDiff({
+    required this.enabled,
+    required this.newBooks,
+    required this.changedBooks,
+    required this.unverifiableBooks,
+    required this.removedBooks,
+    required this.modelMismatch,
+    required this.chunkingMismatch,
+    required this.normalizationMismatch,
+  });
+
+  @override
+  int get hashCode =>
+      enabled.hashCode ^
+      newBooks.hashCode ^
+      changedBooks.hashCode ^
+      unverifiableBooks.hashCode ^
+      removedBooks.hashCode ^
+      modelMismatch.hashCode ^
+      chunkingMismatch.hashCode ^
+      normalizationMismatch.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticIndexDiff &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          newBooks == other.newBooks &&
+          changedBooks == other.changedBooks &&
+          unverifiableBooks == other.unverifiableBooks &&
+          removedBooks == other.removedBooks &&
+          modelMismatch == other.modelMismatch &&
+          chunkingMismatch == other.chunkingMismatch &&
+          normalizationMismatch == other.normalizationMismatch;
+}
+
+class SemanticIndexingSummary {
+  final bool enabled;
+  final int booksIndexed;
+  final int booksSkipped;
+  final int booksEmpty;
+  final int chunksWritten;
+
+  const SemanticIndexingSummary({
+    required this.enabled,
+    required this.booksIndexed,
+    required this.booksSkipped,
+    required this.booksEmpty,
+    required this.chunksWritten,
+  });
+
+  @override
+  int get hashCode =>
+      enabled.hashCode ^
+      booksIndexed.hashCode ^
+      booksSkipped.hashCode ^
+      booksEmpty.hashCode ^
+      chunksWritten.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticIndexingSummary &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          booksIndexed == other.booksIndexed &&
+          booksSkipped == other.booksSkipped &&
+          booksEmpty == other.booksEmpty &&
+          chunksWritten == other.chunksWritten;
+}
+
+enum SemanticLexicalMode { exact, fuzzy }
+
+class SemanticRemoveResult {
+  final bool enabled;
+  final int vectorsRemoved;
+
+  const SemanticRemoveResult({
+    required this.enabled,
+    required this.vectorsRemoved,
+  });
+
+  @override
+  int get hashCode => enabled.hashCode ^ vectorsRemoved.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticRemoveResult &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          vectorsRemoved == other.vectorsRemoved;
+}
+
+class SemanticResetResult {
+  final bool enabled;
+  final int vectorsRemoved;
+
+  const SemanticResetResult({
+    required this.enabled,
+    required this.vectorsRemoved,
+  });
+
+  @override
+  int get hashCode => enabled.hashCode ^ vectorsRemoved.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticResetResult &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          vectorsRemoved == other.vectorsRemoved;
+}
+
+enum SemanticResultSource { lexical, semantic, both }
+
+enum SemanticRetrievalMode { hybrid, semanticOnly, lexicalOnly }
+
+/// Result envelope for semantic/hybrid searches. `lexical_total_count` is the
+/// truthful corpus-wide Tantivy count; `total_count` is the sidecar candidate
+/// fusion count and must not be presented as a corpus-wide semantic total.
+class SemanticSearchResponse {
+  final List<SemanticSearchResult> results;
+  final int totalCount;
+  final int lexicalTotalCount;
+  final int? groupCount;
+
+  /// Whether `total_count`/`group_count` are exact. Sidecar-backed searches
+  /// report candidate-window counts, not a corpus-wide semantic total, and
+  /// may also exclude stale records during Tantivy hydration.
+  /// `lexical_total_count` uses `truncated` as its accuracy signal instead.
+  final bool countsAreExact;
+  final SemanticRetrievalMode requestedMode;
+  final SemanticExecutedMode executedMode;
+  final bool semanticAvailable;
+  final String? fallbackReason;
+  final BigInt latencyMs;
+
+  /// The sidecar input window hit its hard memory-safety ceiling. This is
+  /// separate from `truncated`, which belongs to lexical term expansion.
+  final bool candidateWindowTruncated;
+  final bool truncated;
+
+  const SemanticSearchResponse({
+    required this.results,
+    required this.totalCount,
+    required this.lexicalTotalCount,
+    this.groupCount,
+    required this.countsAreExact,
+    required this.requestedMode,
+    required this.executedMode,
+    required this.semanticAvailable,
+    this.fallbackReason,
+    required this.latencyMs,
+    required this.candidateWindowTruncated,
+    required this.truncated,
+  });
+
+  @override
+  int get hashCode =>
+      results.hashCode ^
+      totalCount.hashCode ^
+      lexicalTotalCount.hashCode ^
+      groupCount.hashCode ^
+      countsAreExact.hashCode ^
+      requestedMode.hashCode ^
+      executedMode.hashCode ^
+      semanticAvailable.hashCode ^
+      fallbackReason.hashCode ^
+      latencyMs.hashCode ^
+      candidateWindowTruncated.hashCode ^
+      truncated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticSearchResponse &&
+          runtimeType == other.runtimeType &&
+          results == other.results &&
+          totalCount == other.totalCount &&
+          lexicalTotalCount == other.lexicalTotalCount &&
+          groupCount == other.groupCount &&
+          countsAreExact == other.countsAreExact &&
+          requestedMode == other.requestedMode &&
+          executedMode == other.executedMode &&
+          semanticAvailable == other.semanticAvailable &&
+          fallbackReason == other.fallbackReason &&
+          latencyMs == other.latencyMs &&
+          candidateWindowTruncated == other.candidateWindowTruncated &&
+          truncated == other.truncated;
+}
+
+class SemanticSearchResult {
+  final String title;
+  final String reference;
+  final String text;
+  final BigInt id;
+  final BigInt segment;
+  final bool isPdf;
+  final String filePath;
+  final int mergedCount;
+  final List<MergedSibling> merged;
+  final double? lexicalScore;
+  final double? semanticScore;
+  final double fusedScore;
+  final SemanticResultSource source;
+
+  /// False after successful Tantivy hydration of a semantic-only item.
+  final bool needsHydration;
+
+  const SemanticSearchResult({
+    required this.title,
+    required this.reference,
+    required this.text,
+    required this.id,
+    required this.segment,
+    required this.isPdf,
+    required this.filePath,
+    required this.mergedCount,
+    required this.merged,
+    this.lexicalScore,
+    this.semanticScore,
+    required this.fusedScore,
+    required this.source,
+    required this.needsHydration,
+  });
+
+  @override
+  int get hashCode =>
+      title.hashCode ^
+      reference.hashCode ^
+      text.hashCode ^
+      id.hashCode ^
+      segment.hashCode ^
+      isPdf.hashCode ^
+      filePath.hashCode ^
+      mergedCount.hashCode ^
+      merged.hashCode ^
+      lexicalScore.hashCode ^
+      semanticScore.hashCode ^
+      fusedScore.hashCode ^
+      source.hashCode ^
+      needsHydration.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticSearchResult &&
+          runtimeType == other.runtimeType &&
+          title == other.title &&
+          reference == other.reference &&
+          text == other.text &&
+          id == other.id &&
+          segment == other.segment &&
+          isPdf == other.isPdf &&
+          filePath == other.filePath &&
+          mergedCount == other.mergedCount &&
+          merged == other.merged &&
+          lexicalScore == other.lexicalScore &&
+          semanticScore == other.semanticScore &&
+          fusedScore == other.fusedScore &&
+          source == other.source &&
+          needsHydration == other.needsHydration;
+}
+
+/// A serializable, feature-independent projection of sidecar status. It is
+/// intentionally available without the `semantic` Cargo feature so Dart can
+/// render an explicit Disabled state rather than silently falling back.
+class SemanticStatus {
+  final bool enabled;
+  final bool available;
+  final bool modelLoaded;
+  final int indexedBookCount;
+  final int vectorCount;
+  final String modelId;
+  final int embeddingDim;
+  final String? embeddingBackend;
+  final String vectorBackend;
+  final bool vectorsPersisted;
+  final String? needsFullReindex;
+  final String? lastError;
+
+  const SemanticStatus({
+    required this.enabled,
+    required this.available,
+    required this.modelLoaded,
+    required this.indexedBookCount,
+    required this.vectorCount,
+    required this.modelId,
+    required this.embeddingDim,
+    this.embeddingBackend,
+    required this.vectorBackend,
+    required this.vectorsPersisted,
+    this.needsFullReindex,
+    this.lastError,
+  });
+
+  @override
+  int get hashCode =>
+      enabled.hashCode ^
+      available.hashCode ^
+      modelLoaded.hashCode ^
+      indexedBookCount.hashCode ^
+      vectorCount.hashCode ^
+      modelId.hashCode ^
+      embeddingDim.hashCode ^
+      embeddingBackend.hashCode ^
+      vectorBackend.hashCode ^
+      vectorsPersisted.hashCode ^
+      needsFullReindex.hashCode ^
+      lastError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticStatus &&
+          runtimeType == other.runtimeType &&
+          enabled == other.enabled &&
+          available == other.available &&
+          modelLoaded == other.modelLoaded &&
+          indexedBookCount == other.indexedBookCount &&
+          vectorCount == other.vectorCount &&
+          modelId == other.modelId &&
+          embeddingDim == other.embeddingDim &&
+          embeddingBackend == other.embeddingBackend &&
+          vectorBackend == other.vectorBackend &&
+          vectorsPersisted == other.vectorsPersisted &&
+          needsFullReindex == other.needsFullReindex &&
+          lastError == other.lastError;
 }
 
 /// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).

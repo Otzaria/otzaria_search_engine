@@ -40,6 +40,22 @@ use crate::lexicons::{
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::api::hybrid_search::{
+    OtzariaHybridEngine, SearchRequest as SidecarSearchRequest,
+};
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::hybrid::coordinator::HybridCoordinator;
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::types::{
+    BookForIndexing as SidecarBookForIndexing, BookLine as SidecarBookLine,
+    GroupingMode as SidecarGroupingMode, LexicalCandidate as SidecarLexicalCandidate,
+    ResultSource as SidecarResultSource, SearchFilters as SidecarSearchFilters,
+    SearchMode as SidecarSearchMode,
+};
+
 // ── Public data types ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -235,6 +251,173 @@ pub struct IndexCompatibility {
     pub metadata_path: String,
     pub reason: Option<String>,
 }
+
+// ── Semantic sidecar FFI API ─────────────────────────────────────────────────
+//
+// The lexical query mode and the retrieval mode deliberately have separate
+// types. The former says how Tantivy interprets the text; the latter says which
+// retrieval paths the sidecar may use. Keeping that boundary here prevents a
+// caller from accidentally treating e.g. a fuzzy query as a semantic mode.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticLexicalMode {
+    Exact,
+    Fuzzy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticRetrievalMode {
+    Hybrid,
+    SemanticOnly,
+    LexicalOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticGroupingMode {
+    SameSection,
+    IdenticalText,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticExecutedMode {
+    Disabled,
+    Hybrid,
+    SemanticOnly,
+    LexicalOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticResultSource {
+    Lexical,
+    Semantic,
+    Both,
+}
+
+/// Configuration needed to open the semantic sidecar. The model itself is
+/// loaded lazily when indexing begins, so configuration is cheap; searches
+/// report a degraded state until indexing has loaded the model and produced
+/// vectors, instead of making the lexical engine unusable.
+pub struct SemanticConfigInput {
+    pub root_dir: String,
+    pub model_path: String,
+    pub model_id: String,
+    pub embedding_dim: u32,
+}
+
+/// A serializable, feature-independent projection of sidecar status. It is
+/// intentionally available without the `semantic` Cargo feature so Dart can
+/// render an explicit Disabled state rather than silently falling back.
+pub struct SemanticStatus {
+    pub enabled: bool,
+    pub available: bool,
+    pub model_loaded: bool,
+    pub indexed_book_count: u32,
+    pub vector_count: u32,
+    pub model_id: String,
+    pub embedding_dim: u32,
+    pub embedding_backend: Option<String>,
+    pub vector_backend: String,
+    pub vectors_persisted: bool,
+    pub needs_full_reindex: Option<String>,
+    pub last_error: Option<String>,
+}
+
+pub struct SemanticBookLineInput {
+    pub line_id: u64,
+    pub section_id: u64,
+    pub text: String,
+    pub line_hash: u64,
+    pub reference: String,
+    pub segment: u64,
+}
+
+pub struct SemanticBookInput {
+    pub source_book_key: String,
+    pub title: String,
+    /// The lexical engine's book content hash, or a caller-provided canonical
+    /// source fingerprint for PDFs. Zero means it cannot be verified.
+    pub content_fingerprint: u64,
+    pub is_pdf: bool,
+    pub topics: String,
+    pub extra_facets: Vec<String>,
+    pub lines: Vec<SemanticBookLineInput>,
+}
+
+pub struct SemanticIndexingSummary {
+    pub enabled: bool,
+    pub books_indexed: u32,
+    pub books_skipped: u32,
+    pub books_empty: u32,
+    pub chunks_written: u32,
+}
+
+pub struct SemanticIndexDiff {
+    pub enabled: bool,
+    pub new_books: Vec<String>,
+    pub changed_books: Vec<String>,
+    pub unverifiable_books: Vec<String>,
+    pub removed_books: Vec<String>,
+    pub model_mismatch: bool,
+    pub chunking_mismatch: bool,
+    pub normalization_mismatch: bool,
+}
+
+pub struct SemanticResetResult {
+    pub enabled: bool,
+    pub vectors_removed: u32,
+}
+
+pub struct SemanticRemoveResult {
+    pub enabled: bool,
+    pub vectors_removed: u32,
+}
+
+pub struct SemanticSearchResult {
+    pub title: String,
+    pub reference: String,
+    pub text: String,
+    pub id: u64,
+    pub segment: u64,
+    pub is_pdf: bool,
+    pub file_path: String,
+    pub merged_count: u32,
+    pub merged: Vec<MergedSibling>,
+    pub lexical_score: Option<f32>,
+    pub semantic_score: Option<f32>,
+    pub fused_score: f32,
+    pub source: SemanticResultSource,
+    /// False after successful Tantivy hydration of a semantic-only item.
+    pub needs_hydration: bool,
+}
+
+/// Result envelope for semantic/hybrid searches. `lexical_total_count` is the
+/// truthful corpus-wide Tantivy count; `total_count` is the sidecar candidate
+/// fusion count and must not be presented as a corpus-wide semantic total.
+pub struct SemanticSearchResponse {
+    pub results: Vec<SemanticSearchResult>,
+    pub total_count: u32,
+    pub lexical_total_count: u32,
+    pub group_count: Option<u32>,
+    /// Whether `total_count`/`group_count` are exact. Sidecar-backed searches
+    /// report candidate-window counts, not a corpus-wide semantic total, and
+    /// may also exclude stale records during Tantivy hydration.
+    /// `lexical_total_count` uses `truncated` as its accuracy signal instead.
+    pub counts_are_exact: bool,
+    pub requested_mode: SemanticRetrievalMode,
+    pub executed_mode: SemanticExecutedMode,
+    pub semantic_available: bool,
+    pub fallback_reason: Option<String>,
+    pub latency_ms: u64,
+    /// The sidecar input window hit its hard memory-safety ceiling. This is
+    /// separate from `truncated`, which belongs to lexical term expansion.
+    pub candidate_window_truncated: bool,
+    pub truncated: bool,
+}
+
+#[cfg(feature = "semantic-integration")]
+type SemanticRuntime = Option<OtzariaHybridEngine>;
+#[cfg(not(feature = "semantic-integration"))]
+type SemanticRuntime = ();
 
 /// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
 pub enum SearchScope {
@@ -1260,6 +1443,12 @@ const VOC_FUZZY_MAX_EXPANSIONS: u32 = 20_000;
 /// fuzzy/typo expansion (the Levenshtein scan runs on mark-free bases).
 const VOC_VARIANTS_PER_TOKEN: usize = 128;
 
+/// Mirrors the pinned sidecar's semantic candidate ceiling. Applying the same
+/// bound before constructing Tantivy's `TopDocs` collector prevents hostile or
+/// accidental `limit`/`offset` values from driving an unbounded allocation.
+#[cfg(feature = "semantic-integration")]
+const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
+
 pub struct SearchEngine {
     schema: Schema,
     index: Index,
@@ -1287,6 +1476,10 @@ pub struct SearchEngine {
     /// Bulk-indexing mode (see [`SearchEngine::set_bulk_indexing`]): while
     /// on, the live writer (and any lazily-reopened one) uses `NoMergePolicy`.
     bulk_indexing: bool,
+    /// Optional semantic sidecar. It owns vector retrieval, fusion, grouping
+    /// and semantic-index lifecycle; Tantivy remains owned by this engine.
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    semantic_runtime: SemanticRuntime,
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -1398,6 +1591,10 @@ impl SearchEngine {
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
             bulk_indexing: false,
+            #[cfg(feature = "semantic-integration")]
+            semantic_runtime: None,
+            #[cfg(not(feature = "semantic-integration"))]
+            semantic_runtime: (),
         }
     }
 
@@ -1486,6 +1683,670 @@ impl SearchEngine {
     #[frb(sync)]
     pub fn has_acronyms_dictionary(&self) -> bool {
         self.acronym_dict.is_some()
+    }
+
+    // ── Semantic sidecar API ────────────────────────────────────────────────
+
+    /// Open (or re-open) the semantic sidecar. The sidecar owns semantic
+    /// fusion; this method only wires it to the already-open Tantivy engine.
+    /// When this crate was built without the optional semantic feature it is a
+    /// no-op that returns an explicit Disabled status.
+    pub fn configure_semantic(&mut self, config: SemanticConfigInput) -> Result<SemanticStatus> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let root_dir = PathBuf::from(config.root_dir);
+            let mut semantic_config = SemanticConfig {
+                root_dir: root_dir.clone(),
+                model_path: PathBuf::from(config.model_path),
+                embedding_model_id: config.model_id,
+                embedding_dim: config.embedding_dim,
+                ..SemanticConfig::default()
+            };
+            semantic_config.store.embedding_dim = config.embedding_dim;
+            semantic_config.store.db_path = root_dir.join("vectors");
+
+            let engine = SemanticEngine::open(semantic_config)
+                .map_err(|err| anyhow::anyhow!("failed to open semantic sidecar: {err}"))?;
+            self.semantic_runtime = Some(OtzariaHybridEngine::new(HybridCoordinator::new(Some(
+                engine,
+            ))));
+            Ok(self.semantic_status())
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = config;
+            Ok(Self::semantic_disabled_status())
+        }
+    }
+
+    /// Remove the configured sidecar without touching its on-disk files.
+    /// This is useful when an app switches library roots or wants lexical-only
+    /// operation for the current session.
+    pub fn disable_semantic(&mut self) {
+        #[cfg(feature = "semantic-integration")]
+        {
+            self.semantic_runtime = None;
+        }
+    }
+
+    #[frb(sync)]
+    pub fn semantic_status(&self) -> SemanticStatus {
+        #[cfg(feature = "semantic-integration")]
+        {
+            if let Some(runtime) = &self.semantic_runtime {
+                let status = runtime.get_semantic_status();
+                return SemanticStatus {
+                    enabled: true,
+                    available: status.available,
+                    model_loaded: status.model_loaded,
+                    indexed_book_count: status.indexed_book_count,
+                    vector_count: status.vector_count,
+                    model_id: status.model_id,
+                    embedding_dim: status.embedding_dim,
+                    embedding_backend: status.embedding_backend,
+                    vector_backend: status.vector_backend,
+                    vectors_persisted: status.vectors_persisted,
+                    needs_full_reindex: status.needs_full_reindex,
+                    last_error: status.last_error,
+                };
+            }
+            Self::semantic_not_configured_status()
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            Self::semantic_disabled_status()
+        }
+    }
+
+    /// Index or replace semantic vectors for complete books. The caller should
+    /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
+    /// be the global Tantivy document ids so semantic-only results can hydrate.
+    pub fn semantic_index_books(
+        &mut self,
+        books: Vec<SemanticBookInput>,
+    ) -> Result<SemanticIndexingSummary> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let Some(runtime) = &self.semantic_runtime else {
+                return Ok(SemanticIndexingSummary {
+                    enabled: false,
+                    books_indexed: 0,
+                    books_skipped: 0,
+                    books_empty: 0,
+                    chunks_written: 0,
+                });
+            };
+            let sidecar_books: Vec<SidecarBookForIndexing> = books
+                .into_iter()
+                .map(|book| SidecarBookForIndexing {
+                    source_book_key: book.source_book_key,
+                    title: book.title,
+                    content_fingerprint: book.content_fingerprint,
+                    is_pdf: book.is_pdf,
+                    topics: book.topics,
+                    extra_facets: book.extra_facets,
+                    lines: book
+                        .lines
+                        .into_iter()
+                        .map(|line| SidecarBookLine {
+                            line_id: line.line_id,
+                            section_id: line.section_id,
+                            text: line.text,
+                            line_hash: line.line_hash,
+                            reference: line.reference,
+                            segment: line.segment,
+                        })
+                        .collect(),
+                })
+                .collect();
+            let summary = runtime
+                .index_books(&sidecar_books)
+                .map_err(|err| anyhow::anyhow!("semantic indexing failed: {err}"))?;
+            let summary = summary.unwrap_or_default();
+            Ok(SemanticIndexingSummary {
+                enabled: true,
+                books_indexed: summary.books_indexed,
+                books_skipped: summary.books_skipped,
+                books_empty: summary.books_empty,
+                chunks_written: summary.chunks_written,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = books;
+            Ok(SemanticIndexingSummary {
+                enabled: false,
+                books_indexed: 0,
+                books_skipped: 0,
+                books_empty: 0,
+                chunks_written: 0,
+            })
+        }
+    }
+
+    /// Compare the semantic manifest with the book fingerprints stored in the
+    /// lexical index. A `contentHash` of zero is deliberately surfaced as
+    /// `unverifiable_books` rather than treated as an up-to-date PDF.
+    pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let Some(runtime) = &self.semantic_runtime else {
+                return Ok(Self::semantic_disabled_diff());
+            };
+            let fingerprints = self.get_book_fingerprints()?;
+            let Some(diff) = runtime.get_semantic_index_diff_from_lexical_hashes(&fingerprints)
+            else {
+                return Ok(Self::semantic_disabled_diff());
+            };
+            Ok(SemanticIndexDiff {
+                enabled: true,
+                new_books: diff.new_books,
+                changed_books: diff.changed_books,
+                unverifiable_books: diff.unverifiable_books,
+                removed_books: diff.removed_books,
+                model_mismatch: diff.model_mismatch,
+                chunking_mismatch: diff.chunking_mismatch,
+                normalization_mismatch: diff.normalization_mismatch,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            Ok(Self::semantic_disabled_diff())
+        }
+    }
+
+    /// Remove vector records for books previously reported as `removed_books`.
+    /// This never deletes lexical Tantivy documents.
+    pub fn remove_semantic_books(
+        &mut self,
+        source_book_keys: Vec<String>,
+    ) -> Result<SemanticRemoveResult> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let Some(runtime) = &self.semantic_runtime else {
+                return Ok(SemanticRemoveResult {
+                    enabled: false,
+                    vectors_removed: 0,
+                });
+            };
+            let removed = runtime
+                .remove_semantic_books(&source_book_keys)
+                .map_err(|err| anyhow::anyhow!("semantic remove failed: {err}"))?
+                .unwrap_or(0);
+            Ok(SemanticRemoveResult {
+                enabled: true,
+                vectors_removed: removed,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = source_book_keys;
+            Ok(SemanticRemoveResult {
+                enabled: false,
+                vectors_removed: 0,
+            })
+        }
+    }
+
+    /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
+    /// documents are untouched, so a full semantic rebuild can follow safely.
+    pub fn reset_semantic_index(&mut self) -> Result<SemanticResetResult> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let Some(runtime) = &self.semantic_runtime else {
+                return Ok(SemanticResetResult {
+                    enabled: false,
+                    vectors_removed: 0,
+                });
+            };
+            let removed = runtime
+                .reset_semantic_index()
+                .map_err(|err| anyhow::anyhow!("semantic reset failed: {err}"))?
+                .unwrap_or(0);
+            Ok(SemanticResetResult {
+                enabled: true,
+                vectors_removed: removed,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            Ok(SemanticResetResult {
+                enabled: false,
+                vectors_removed: 0,
+            })
+        }
+    }
+
+    /// Search through the sidecar exactly once. Tantivy supplies scored lexical
+    /// candidates; `OtzariaHybridEngine` alone performs hybrid fusion/grouping.
+    /// Semantic-only items are hydrated from Tantivy before crossing FFI.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_semantic(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        lexical_mode: SemanticLexicalMode,
+        fuzzy_max_distance: u8,
+        retrieval_mode: SemanticRetrievalMode,
+        grouping: Option<SemanticGroupingMode>,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<SemanticSearchResponse> {
+        let started = Instant::now();
+        #[cfg(feature = "semantic-integration")]
+        {
+            let Some(runtime) = &self.semantic_runtime else {
+                return self.semantic_lexical_fallback_response(
+                    &query,
+                    &facets,
+                    limit,
+                    offset,
+                    lexical_mode,
+                    fuzzy_max_distance,
+                    retrieval_mode,
+                    grouping,
+                    match_nikud,
+                    match_taamim,
+                    Some("semantic sidecar has not been configured".to_string()),
+                    started.elapsed().as_millis() as u64,
+                );
+            };
+            // Ask the coordinator for a prefix wider than the requested page,
+            // then hydrate/filter before applying the caller's pagination.
+            // This lets a few stale sidecar records be skipped without leaving
+            // avoidable holes or shifting offsets between adjacent pages.
+            let requested_window = offset.saturating_add(limit.saturating_mul(2)).max(1);
+            let candidate_window_capped = requested_window > MAX_SEMANTIC_CANDIDATE_WINDOW;
+            let candidate_window = requested_window.min(MAX_SEMANTIC_CANDIDATE_WINDOW);
+            let (lexical_candidates, lexical_total_count, truncated) =
+                if matches!(retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
+                    // Semantic-only discards BM25 candidates in the coordinator.
+                    // Count lexically for the response envelope, but do not pay
+                    // to materialize and hydrate a TopDocs window that is unused.
+                    let count = match lexical_mode {
+                        SemanticLexicalMode::Exact => self.count_exact_with_status(
+                            query.clone(),
+                            facets.clone(),
+                            match_nikud,
+                            match_taamim,
+                        )?,
+                        SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
+                            query.clone(),
+                            facets.clone(),
+                            fuzzy_max_distance,
+                            match_nikud,
+                            match_taamim,
+                        )?,
+                    };
+                    (Vec::new(), count.count, count.truncated)
+                } else {
+                    match lexical_mode {
+                        SemanticLexicalMode::Exact => self.semantic_exact_lexical_candidates(
+                            &query,
+                            &facets,
+                            candidate_window,
+                            match_nikud,
+                            match_taamim,
+                        )?,
+                        SemanticLexicalMode::Fuzzy => self.semantic_fuzzy_lexical_candidates(
+                            &query,
+                            &facets,
+                            candidate_window,
+                            fuzzy_max_distance,
+                            match_nikud,
+                            match_taamim,
+                        )?,
+                    }
+                };
+            let result = runtime
+                .search(SidecarSearchRequest {
+                    query,
+                    lexical_candidates,
+                    limit: Some(candidate_window),
+                    offset: Some(0),
+                    grouping: grouping.map(|value| match value {
+                        SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
+                        SemanticGroupingMode::IdenticalText => SidecarGroupingMode::IdenticalText,
+                    }),
+                    filters: Some(SidecarSearchFilters {
+                        book_paths: None,
+                        facets: (!facets.is_empty()).then_some(facets),
+                        include_pdf: None,
+                    }),
+                    force_mode: Some(match retrieval_mode {
+                        SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
+                        SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
+                        SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
+                    }),
+                })
+                .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
+
+            let mut results = Vec::with_capacity(result.results.len());
+            let mut stale_items_dropped = 0u32;
+            for item in result.results {
+                let hydrated = if item.needs_hydration {
+                    self.get_document_by_id(item.id)?
+                } else {
+                    None
+                };
+                // A semantic-only record whose Tantivy document disappeared is
+                // stale. Never send its old metadata to Dart: a failed or
+                // delayed sidecar cleanup must not resurrect deleted content.
+                if item.needs_hydration && hydrated.is_none() {
+                    stale_items_dropped = stale_items_dropped.saturating_add(1);
+                    continue;
+                }
+
+                let original_merged_count = item.merged_count;
+                let mut stale_siblings_dropped = 0u32;
+                let mut merged = Vec::with_capacity(item.merged.len());
+                for sibling in item.merged {
+                    match self.get_document_by_id(sibling.id)? {
+                        Some(document) => merged.push(MergedSibling {
+                            title: document.title,
+                            reference: document.reference,
+                            id: document.id,
+                            segment: document.segment,
+                            is_pdf: document.is_pdf,
+                            file_path: document.file_path,
+                        }),
+                        None => {
+                            stale_siblings_dropped = stale_siblings_dropped.saturating_add(1);
+                            stale_items_dropped = stale_items_dropped.saturating_add(1);
+                        }
+                    }
+                }
+
+                let title = hydrated
+                    .as_ref()
+                    .map(|document| document.title.clone())
+                    .unwrap_or(item.title);
+                let reference = hydrated
+                    .as_ref()
+                    .map(|document| document.reference.clone())
+                    .unwrap_or(item.reference);
+                let text = hydrated
+                    .as_ref()
+                    .map(|document| document.text.clone())
+                    .unwrap_or(item.text);
+                let segment = hydrated
+                    .as_ref()
+                    .map(|document| document.segment)
+                    .unwrap_or(item.segment);
+                let is_pdf = hydrated
+                    .as_ref()
+                    .map(|document| document.is_pdf)
+                    .unwrap_or(item.is_pdf);
+                let file_path = hydrated
+                    .as_ref()
+                    .map(|document| document.file_path.clone())
+                    .unwrap_or(item.file_path);
+
+                results.push(SemanticSearchResult {
+                    title,
+                    reference,
+                    text,
+                    id: item.id,
+                    segment,
+                    is_pdf,
+                    file_path,
+                    // The sidecar intentionally caps the materialized sibling
+                    // list. Preserve its full group count and subtract only
+                    // stale siblings that were actually observed in that list.
+                    merged_count: original_merged_count
+                        .saturating_sub(stale_siblings_dropped)
+                        .max(1),
+                    merged,
+                    lexical_score: item.lexical_score,
+                    semantic_score: item.semantic_score,
+                    fused_score: item.fused_score,
+                    source: match item.source {
+                        SidecarResultSource::Lexical => SemanticResultSource::Lexical,
+                        SidecarResultSource::Semantic => SemanticResultSource::Semantic,
+                        SidecarResultSource::Both => SemanticResultSource::Both,
+                    },
+                    needs_hydration: false,
+                });
+            }
+            let results = results
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
+            let mut fallback_reason = result.fallback_reason;
+            if stale_items_dropped > 0 {
+                let stale_reason = format!(
+                    "dropped {stale_items_dropped} stale semantic result(s) missing from Tantivy; \
+                     candidate counts may still include stale records; rebuild or reconcile the \
+                     semantic index"
+                );
+                fallback_reason = Some(match fallback_reason {
+                    Some(reason) => format!("{reason}; {stale_reason}"),
+                    None => stale_reason,
+                });
+            }
+            if candidate_window_capped {
+                let cap_reason = format!(
+                    "semantic candidate window capped at {MAX_SEMANTIC_CANDIDATE_WINDOW} \
+                     (requested {requested_window})"
+                );
+                fallback_reason = Some(match fallback_reason {
+                    Some(reason) => format!("{reason}; {cap_reason}"),
+                    None => cap_reason,
+                });
+            }
+            Ok(SemanticSearchResponse {
+                results,
+                // These remain stable across pages. They deliberately retain
+                // the sidecar's candidate-set semantics instead of subtracting
+                // only the stale records that happened to occur on this page.
+                total_count: result.total_count,
+                lexical_total_count,
+                group_count: result.group_count,
+                counts_are_exact: false,
+                requested_mode: retrieval_mode,
+                executed_mode: match result.search_mode {
+                    SidecarSearchMode::Hybrid => SemanticExecutedMode::Hybrid,
+                    SidecarSearchMode::SemanticOnly => SemanticExecutedMode::SemanticOnly,
+                    SidecarSearchMode::LexicalOnly => SemanticExecutedMode::LexicalOnly,
+                },
+                semantic_available: result.semantic_available,
+                fallback_reason,
+                latency_ms: started.elapsed().as_millis() as u64,
+                candidate_window_truncated: candidate_window_capped,
+                truncated,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            self.semantic_lexical_fallback_response(
+                &query,
+                &facets,
+                limit,
+                offset,
+                lexical_mode,
+                fuzzy_max_distance,
+                retrieval_mode,
+                grouping,
+                match_nikud,
+                match_taamim,
+                Some("semantic support is not compiled into this build".to_string()),
+                started.elapsed().as_millis() as u64,
+            )
+        }
+    }
+
+    #[cfg(not(feature = "semantic-integration"))]
+    fn semantic_disabled_status() -> SemanticStatus {
+        SemanticStatus {
+            enabled: false,
+            available: false,
+            model_loaded: false,
+            indexed_book_count: 0,
+            vector_count: 0,
+            model_id: String::new(),
+            embedding_dim: 0,
+            embedding_backend: None,
+            vector_backend: String::new(),
+            vectors_persisted: false,
+            needs_full_reindex: None,
+            last_error: Some("semantic support is not compiled into this build".to_string()),
+        }
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_not_configured_status() -> SemanticStatus {
+        SemanticStatus {
+            enabled: false,
+            available: false,
+            model_loaded: false,
+            indexed_book_count: 0,
+            vector_count: 0,
+            model_id: String::new(),
+            embedding_dim: 0,
+            embedding_backend: None,
+            vector_backend: String::new(),
+            vectors_persisted: false,
+            needs_full_reindex: None,
+            last_error: Some("semantic sidecar has not been configured".to_string()),
+        }
+    }
+
+    fn semantic_disabled_diff() -> SemanticIndexDiff {
+        SemanticIndexDiff {
+            enabled: false,
+            new_books: Vec::new(),
+            changed_books: Vec::new(),
+            unverifiable_books: Vec::new(),
+            removed_books: Vec::new(),
+            model_mismatch: false,
+            chunking_mismatch: false,
+            normalization_mismatch: false,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn semantic_lexical_fallback_response(
+        &self,
+        query: &str,
+        facets: &[String],
+        limit: u32,
+        offset: u32,
+        lexical_mode: SemanticLexicalMode,
+        fuzzy_max_distance: u8,
+        requested_mode: SemanticRetrievalMode,
+        grouping: Option<SemanticGroupingMode>,
+        match_nikud: bool,
+        match_taamim: bool,
+        fallback_reason: Option<String>,
+        latency_ms: u64,
+    ) -> Result<SemanticSearchResponse> {
+        if matches!(requested_mode, SemanticRetrievalMode::SemanticOnly) {
+            let count = match lexical_mode {
+                SemanticLexicalMode::Exact => self.count_exact_with_status(
+                    query.to_string(),
+                    facets.to_vec(),
+                    match_nikud,
+                    match_taamim,
+                )?,
+                SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
+                    query.to_string(),
+                    facets.to_vec(),
+                    fuzzy_max_distance,
+                    match_nikud,
+                    match_taamim,
+                )?,
+            };
+            return Ok(SemanticSearchResponse {
+                results: Vec::new(),
+                total_count: 0,
+                lexical_total_count: count.count,
+                group_count: None,
+                counts_are_exact: true,
+                requested_mode,
+                executed_mode: SemanticExecutedMode::SemanticOnly,
+                semantic_available: false,
+                fallback_reason,
+                latency_ms,
+                candidate_window_truncated: false,
+                truncated: count.truncated,
+            });
+        }
+
+        let grouping = grouping.map(|value| match value {
+            SemanticGroupingMode::SameSection => ResultGrouping::SameSection,
+            SemanticGroupingMode::IdenticalText => ResultGrouping::IdenticalText,
+        });
+        let page = match lexical_mode {
+            SemanticLexicalMode::Exact => self.search_and_count_exact(
+                query.to_string(),
+                facets.to_vec(),
+                limit,
+                offset,
+                ResultsOrder::Relevance,
+                match_nikud,
+                match_taamim,
+                grouping,
+            )?,
+            SemanticLexicalMode::Fuzzy => self.search_and_count_fuzzy(
+                query.to_string(),
+                facets.to_vec(),
+                limit,
+                offset,
+                fuzzy_max_distance,
+                ResultsOrder::Relevance,
+                match_nikud,
+                match_taamim,
+                grouping,
+            )?,
+        };
+        let results = page
+            .results
+            .into_iter()
+            .enumerate()
+            .map(|(rank, item)| SemanticSearchResult {
+                title: item.title,
+                reference: item.reference,
+                text: item.text,
+                id: item.id,
+                segment: item.segment,
+                is_pdf: item.is_pdf,
+                file_path: item.file_path,
+                merged_count: item.merged_count,
+                merged: item.merged,
+                lexical_score: None,
+                semantic_score: None,
+                // Tantivy's legacy display API does not expose its score. Keep
+                // the existing relevance order observable without pretending a
+                // synthetic value is a BM25 score.
+                fused_score: 1.0 / (rank.saturating_add(1) as f32),
+                source: SemanticResultSource::Lexical,
+                needs_hydration: false,
+            })
+            .collect();
+        Ok(SemanticSearchResponse {
+            total_count: page.total_count,
+            lexical_total_count: page.total_count,
+            group_count: page.group_count,
+            counts_are_exact: !page.truncated,
+            results,
+            requested_mode,
+            executed_mode: SemanticExecutedMode::LexicalOnly,
+            semantic_available: false,
+            fallback_reason,
+            latency_ms,
+            candidate_window_truncated: false,
+            truncated: page.truncated,
+        })
     }
 
     // ── Write API ──────────────────────────────────────────────────────────────
@@ -2555,6 +3416,120 @@ impl SearchEngine {
             truncated,
             grouping.as_ref(),
         )
+    }
+
+    /// Collect scored, ungrouped Tantivy hits for the semantic coordinator.
+    /// This bypasses snippet construction: the coordinator needs original line
+    /// text and actual BM25 scores, while formatting happens after fusion.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_exact_lexical_candidates(
+        &self,
+        query: &str,
+        facets: &[String],
+        limit: u32,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<(Vec<SidecarLexicalCandidate>, u32, bool)> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (query, truncated) = self.build_exact_query(query, facets, &voc)?;
+        self.semantic_candidates_from_query(query, limit, truncated)
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_fuzzy_lexical_candidates(
+        &self,
+        query: &str,
+        facets: &[String],
+        limit: u32,
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<(Vec<SidecarLexicalCandidate>, u32, bool)> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (query, truncated) = if voc.any() {
+            self.build_fuzzy_query_vocalized(query, facets, max_distance, &voc)?
+        } else {
+            let token_texts = self.index_token_texts(query)?;
+            (
+                self.build_fuzzy_search_query(&token_texts, facets, max_distance, true)?,
+                false,
+            )
+        };
+        self.semantic_candidates_from_query(query, limit, truncated)
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_candidates_from_query(
+        &self,
+        query: Box<dyn Query>,
+        limit: u32,
+        truncated: bool,
+    ) -> Result<(Vec<SidecarLexicalCandidate>, u32, bool)> {
+        let searcher = self.index_reader.searcher();
+        let collector = TopDocs::with_limit(limit as usize).order_by_score();
+        let (hits, total_count): (Vec<(Score, DocAddress)>, usize) =
+            searcher.search(&*query, &(collector, Count))?;
+
+        let title_f = self.schema.get_field("title")?;
+        let reference_f = self.schema.get_field("reference")?;
+        let text_f = self.schema.get_field("text")?;
+        let id_f = self.schema.get_field("id")?;
+        let segment_f = self.schema.get_field("segment")?;
+        let is_pdf_f = self.schema.get_field("isPdf")?;
+        let file_path_f = self.schema.get_field("filePath")?;
+
+        let mut candidates = Vec::with_capacity(hits.len());
+        for (score, address) in hits {
+            let document = searcher.doc::<TantivyDocument>(address)?;
+            let reader = searcher.segment_reader(address.segment_ord);
+            let fast = reader.fast_fields();
+            let section_id = fast
+                .u64("sectionId")?
+                .first(address.doc_id)
+                .unwrap_or_default();
+            let line_hash = fast
+                .u64("lineHash")?
+                .first(address.doc_id)
+                .unwrap_or_default();
+            candidates.push(SidecarLexicalCandidate {
+                title: document
+                    .get_first(title_f)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                reference: document
+                    .get_first(reference_f)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                text: document
+                    .get_first(text_f)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                line_id: document
+                    .get_first(id_f)
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or_default(),
+                section_id,
+                line_hash,
+                segment: document
+                    .get_first(segment_f)
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or_default(),
+                is_pdf: document
+                    .get_first(is_pdf_f)
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or_default(),
+                file_path: document
+                    .get_first(file_path_f)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                bm25_score: score,
+            });
+        }
+        Ok((candidates, total_count as u32, truncated))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7547,6 +8522,44 @@ mod tests {
                 id, "title", "ref", "/root", text, 0, false, file_path, None, None, None,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn semantic_status_is_explicit_before_configuration() {
+        let (engine, _dir) = make_engine();
+        let status = engine.semantic_status();
+        assert!(!status.enabled);
+        assert!(!status.available);
+        assert!(status.last_error.is_some());
+    }
+
+    #[test]
+    fn hybrid_request_falls_back_to_ranked_lexical_results_with_reason() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 41, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let response = engine
+            .search_semantic(
+                "שלום".to_string(),
+                Vec::new(),
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                1,
+                SemanticRetrievalMode::Hybrid,
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(response.executed_mode, SemanticExecutedMode::LexicalOnly);
+        assert_eq!(response.lexical_total_count, 1);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, 41);
+        assert_eq!(response.results[0].source, SemanticResultSource::Lexical);
+        assert!(response.fallback_reason.is_some());
     }
 
     fn disable_auto_merge(engine: &SearchEngine) {
