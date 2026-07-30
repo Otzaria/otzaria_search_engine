@@ -111,7 +111,17 @@ jobs:
         run: |
           flutter_rust_bridge_codegen generate
           sed -i 's/[ \t]*$//' rust/src/frb_generated.rs
-          git diff --exit-code
+          git diff --exit-code -- \
+            rust/src/frb_generated.rs \
+            lib/src/rust/frb_generated.dart \
+            lib/src/rust/frb_generated.io.dart \
+            lib/src/rust/frb_generated.web.dart
+          # FRB includes rustc-internal trait method names in this generated
+          # header comment. They vary across stable toolchains without changing
+          # the API or ABI, so ignore only that volatile comment line.
+          git diff --exit-code \
+            --ignore-matching-lines='^// These .* ignored' -- \
+            lib/src/rust/api/search_engine.dart
 
       - name: Dart format
         run: dart format --output=none --set-exit-if-changed lib
