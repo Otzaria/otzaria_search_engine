@@ -15,11 +15,14 @@ import 'native_library.dart';
 /// a `BigInt` — decodes on this side of the wire. A regression in any of those
 /// is invisible to `cargo test`.
 ///
-/// No sidecar is configured here, so these expectations hold whether the library
-/// was built with or without the semantic feature: the fallback contract is the
-/// same either way.
+/// The first group configures no sidecar, so its expectations hold whether the
+/// library was built with or without the semantic feature: the fallback
+/// contract is the same either way. The second drives a configured one, which
+/// is the only way to prove that `SemanticConfigInput` and `SemanticBookInput`
+/// cross *into* Rust correctly and that semantic scores come back.
 Future<void> main() async {
   final skipReason = await initNativeEngine();
+  final sidecarSkipReason = skipReason ?? await semanticSidecarSkipReason();
 
   group('semantic FFI', () {
     late Directory indexDir;
@@ -182,4 +185,169 @@ Future<void> main() async {
       expect((results[3] as SemanticStatus).enabled, isFalse);
     });
   }, skip: skipReason ?? false);
+
+  group('semantic FFI with a configured sidecar', () {
+    const bookKey = '/library/bereshit.json';
+    const text = 'בראשית ברא אלהים';
+    final lineId = BigInt.from(9001);
+    final sectionId = BigInt.from(42);
+
+    late Directory root;
+    late SearchEngine engine;
+
+    setUp(() async {
+      root = Directory.systemTemp.createTempSync('otzaria_ffi_mock');
+      engine = SearchEngine(
+        path: (Directory('${root.path}/tantivy')..createSync()).path,
+      );
+      await engine.addDocument(
+        id: lineId,
+        title: 'בראשית',
+        reference: 'בראשית א:א',
+        topics: '/תורה',
+        text: text,
+        segment: BigInt.from(2),
+        isPdf: false,
+        filePath: bookKey,
+        sectionId: sectionId,
+      );
+      await engine.commit();
+
+      final model = File('${root.path}/mock.gguf');
+      writeStubGguf(model);
+      final status = await engine.configureSemantic(
+        config: SemanticConfigInput(
+          rootDir: '${root.path}/semantic',
+          modelPath: model.path,
+          modelId: 'test-mock',
+          embeddingDim: 64,
+        ),
+      );
+      expect(status.enabled, isTrue, reason: 'the sidecar should be open');
+
+      final indexed = await engine.semanticIndexBooks(
+        books: [
+          SemanticBookInput(
+            sourceBookKey: bookKey,
+            title: 'בראשית',
+            contentFingerprint: BigInt.from(123),
+            isPdf: false,
+            topics: '/תורה',
+            extraFacets: const [],
+            lines: [
+              SemanticBookLineInput(
+                lineId: lineId,
+                sectionId: sectionId,
+                text: text,
+                lineHash: BigInt.from(1001),
+                reference: 'בראשית א:א',
+                segment: BigInt.from(2),
+              ),
+            ],
+          ),
+        ],
+      );
+      expect(indexed.enabled, isTrue);
+      expect(indexed.booksIndexed, 1);
+      expect(indexed.chunksWritten, greaterThan(0));
+    });
+
+    tearDown(() {
+      try {
+        root.deleteSync(recursive: true);
+      } on FileSystemException {
+        // Left for the OS to reclaim.
+      }
+    });
+
+    test('the configured sidecar reports itself across the bridge', () async {
+      final status = await engine.semanticStatus();
+
+      expect(status.enabled, isTrue);
+      expect(status.available, isTrue);
+      expect(status.modelId, 'test-mock');
+      expect(status.embeddingDim, 64);
+      expect(status.indexedBookCount, 1);
+      expect(status.vectorCount, greaterThan(0));
+      // The in-memory store is the documented contract the app has to honour.
+      expect(status.vectorsPersisted, isFalse);
+    });
+
+    test('a hybrid search really fuses both halves', () async {
+      final response = await engine.searchSemantic(
+        query: 'בראשית ברא',
+        facets: const [],
+        limit: 10,
+        offset: 0,
+        lexicalMode: SemanticLexicalMode.exact,
+        fuzzyMaxDistance: 0,
+        retrievalMode: SemanticRetrievalMode.hybrid,
+        matchNikud: false,
+        matchTaamim: false,
+      );
+
+      expect(response.executedMode, SemanticExecutedMode.hybrid);
+      expect(response.semanticAvailable, isTrue);
+      expect(response.fallbackReason, isNull);
+      expect(response.results, hasLength(1));
+
+      final hit = response.results.single;
+      expect(hit.id, lineId);
+      // Only the BM25 half can populate this, and it survived fusion.
+      expect(hit.lexicalScore, isNotNull);
+      expect(
+        hit.source,
+        anyOf(SemanticResultSource.lexical, SemanticResultSource.both),
+      );
+      expect(hit.isHighlighted, isTrue);
+      expect(hit.snippetHtml, contains('<font color=red>'));
+    });
+
+    test('a semantic-only search returns a hydrated hit', () async {
+      final response = await engine.searchSemantic(
+        query: 'בראשית ברא',
+        facets: const [],
+        limit: 10,
+        offset: 0,
+        lexicalMode: SemanticLexicalMode.exact,
+        fuzzyMaxDistance: 0,
+        retrievalMode: SemanticRetrievalMode.semanticOnly,
+        matchNikud: false,
+        matchTaamim: false,
+      );
+
+      expect(response.executedMode, SemanticExecutedMode.semanticOnly);
+      expect(response.semanticAvailable, isTrue);
+      expect(response.results, hasLength(1));
+
+      final hit = response.results.single;
+      expect(hit.id, lineId);
+      // A double the Rust side computed, decoded on this side of the wire.
+      expect(hit.semanticScore, isNotNull);
+      expect(hit.needsHydration, isFalse);
+      // Hydration pulled the row from Tantivy, and nothing claims a lexical
+      // match the query never made.
+      expect(hit.snippetHtml, text);
+      expect(hit.isHighlighted, isFalse);
+    });
+
+    test('the index diff sees the indexed book', () async {
+      final diff = await engine.semanticIndexDiff();
+
+      expect(diff.enabled, isTrue);
+      expect(diff.newBooks, isEmpty);
+      expect(diff.changedBooks, isEmpty);
+      expect(diff.modelMismatch, isFalse);
+    });
+
+    test('removing the book empties the semantic index', () async {
+      final removed = await engine.removeSemanticBooks(
+        sourceBookKeys: const [bookKey],
+      );
+
+      expect(removed.enabled, isTrue);
+      expect(removed.vectorsRemoved, greaterThan(0));
+      expect((await engine.semanticStatus()).indexedBookCount, 0);
+    });
+  }, skip: sidecarSkipReason ?? false);
 }

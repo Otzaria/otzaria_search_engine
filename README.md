@@ -10,9 +10,29 @@ The native library can optionally link
 [`otzaria-semantic-search`](https://github.com/Otzaria/otzaria-semantic-search)
 into the same Flutter Rust Bridge library as Tantivy:
 
-- `semantic` / `semantic-real` builds the production `llama.cpp` backend.
+- `semantic` / `semantic-real` builds the production `llama.cpp` backend —
+  except on 32-bit ARM (`armv7-linux-androideabi`), where the sidecar excludes
+  it by target. `llama-cpp-sys-2` cannot build for that target, and a Q4 0.6B
+  model would be unusable on it regardless. The feature stays on and the build
+  succeeds, but there is no backend behind it. See "Builds without a backend".
 - `semantic-mock` selects the deterministic test backend and must not be used
-  in an application release.
+  in an application release. CI builds the library with it so the Dart FFI
+  suite can drive a configured sidecar.
+
+### Builds without a backend
+
+A `semantic` build on 32-bit ARM compiles the integration but has no embedding
+backend. `available` — not `enabled` — is the flag that says so:
+
+| call | on such a build |
+| --- | --- |
+| `configureSemantic` | succeeds: `enabled: true`, `available: false`, `embeddingBackend: null` |
+| `searchSemantic` | falls back to lexical with an explicit `fallbackReason` |
+| `semanticIndexDiff` | reports `enabled: true` and lists the books as new |
+| `semanticIndexBooks` | **throws** — there is nothing to embed with |
+
+So a caller must gate indexing on `available`, not on `enabled` or on a
+non-empty diff. Search needs no such guard: it degrades on its own.
 - The dependency is pinned in `rust/Cargo.toml` and `rust/Cargo.lock`; a moving
   branch must not be used because model and vector-index identity depend on the
   exact implementation.
