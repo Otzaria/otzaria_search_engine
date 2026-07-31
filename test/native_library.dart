@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 
@@ -70,9 +71,25 @@ void writeStubGguf(File file) {
 }
 
 /// Returns why the sidecar round-trip cannot run (`null` when it can), by
-/// asking the library itself: a build without `semantic-mock`/`semantic`
-/// accepts `configureSemantic` and reports a disabled sidecar rather than
-/// failing, so the returned status is the only honest probe.
+/// making the library prove it: the probe indexes one line and then reads the
+/// status back.
+///
+/// Nothing cheaper distinguishes the builds. `configureSemantic` succeeds on a
+/// library with no embedding backend compiled in — the state 32-bit ARM ships —
+/// and `enabled` is `true` there too. `available` is the flag that separates
+/// them, but the model loads lazily, so immediately after configuring it is
+/// `false` on a *working* build as well:
+///
+/// | after | mock build | backend-less build |
+/// | --- | --- | --- |
+/// | `configureSemantic` | `available: false` | `available: false` |
+/// | `semanticIndexBooks` | `available: true`, `mock-hash-v1` | throws |
+///
+/// Checking `available` before indexing would therefore skip the whole suite on
+/// a build that can run it perfectly well.
+///
+/// The backend must be the mock: these tests assert the deterministic vectors
+/// it produces, and the stub GGUF is not a model a real backend could load.
 ///
 /// Same rule as [initNativeEngine]: skipping is a local convenience, never a
 /// CI one.
@@ -84,27 +101,59 @@ Future<String?> semanticSidecarSkipReason() async {
     );
     final model = File('${probe.path}/mock.gguf');
     writeStubGguf(model);
-    final status = await engine.configureSemantic(
-      config: SemanticConfigInput(
-        rootDir: '${probe.path}/semantic',
-        modelPath: model.path,
-        modelId: 'probe',
-        embeddingDim: 64,
-      ),
-    );
-    if (status.enabled) {
-      return null;
+
+    String? failure;
+    try {
+      await engine.configureSemantic(
+        config: SemanticConfigInput(
+          rootDir: '${probe.path}/semantic',
+          modelPath: model.path,
+          modelId: 'probe',
+          embeddingDim: 64,
+        ),
+      );
+      await engine.semanticIndexBooks(
+        books: [
+          SemanticBookInput(
+            sourceBookKey: '/probe.json',
+            title: 'probe',
+            contentFingerprint: BigInt.one,
+            isPdf: false,
+            topics: '/probe',
+            extraFacets: const [],
+            lines: [
+              SemanticBookLineInput(
+                lineId: BigInt.one,
+                sectionId: BigInt.one,
+                text: 'בראשית ברא אלהים',
+                lineHash: BigInt.one,
+                reference: 'probe',
+                segment: BigInt.one,
+              ),
+            ],
+          ),
+        ],
+      );
+      final status = await engine.semanticStatus();
+      if (status.available && status.embeddingBackend == MockBackend.id) {
+        return null;
+      }
+      failure =
+          'available=${status.available} '
+          'embeddingBackend=${status.embeddingBackend}';
+    } on AnyhowException catch (error) {
+      failure = error.message.trim();
     }
 
     const message =
-        'הספרייה הנייטיבית נבנתה ללא sidecar — הריצו '
+        'הספרייה הנייטיבית נבנתה ללא ${MockBackend.id} — הריצו '
         'cargo build --features semantic-mock בתיקיית rust';
     if (Platform.environment.containsKey('OTZARIA_REQUIRE_NATIVE')) {
       fail(
         '$message\n'
         'OTZARIA_REQUIRE_NATIVE is set, so the semantic round trip may not be '
         'skipped: the fallback suites alone prove nothing about indexing or '
-        'hybrid retrieval across the bridge. Reported: ${status.lastError}',
+        'hybrid retrieval across the bridge. Reported: $failure',
       );
     }
     return message;
@@ -115,4 +164,9 @@ Future<String?> semanticSidecarSkipReason() async {
       // Left for the OS to reclaim.
     }
   }
+}
+
+/// The sidecar's deterministic stand-in, the only backend these tests accept.
+abstract final class MockBackend {
+  static const id = 'mock-hash-v1';
 }

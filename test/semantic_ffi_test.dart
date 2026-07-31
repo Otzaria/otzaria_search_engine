@@ -293,12 +293,12 @@ Future<void> main() async {
 
       final hit = response.results.single;
       expect(hit.id, lineId);
-      // Only the BM25 half can populate this, and it survived fusion.
+      // Both halves reached the fusion and both scores survived it. Accepting a
+      // lexical-only source here would let the suite pass with the semantic
+      // half silently contributing nothing.
+      expect(hit.source, SemanticResultSource.both);
       expect(hit.lexicalScore, isNotNull);
-      expect(
-        hit.source,
-        anyOf(SemanticResultSource.lexical, SemanticResultSource.both),
-      );
+      expect(hit.semanticScore, isNotNull);
       expect(hit.isHighlighted, isTrue);
       expect(hit.snippetHtml, contains('<font color=red>'));
     });
