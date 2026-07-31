@@ -45,10 +45,9 @@ android {
     }
 
     defaultConfig {
-        // The semantic backend is compiled by the prebuilt workflow with
-        // ANDROID_PLATFORM=21; advertising support below that level would let
-        // API 19/20 applications install an incompatible native artifact.
-        minSdkVersion 21
+        // Matches ANDROID_PLATFORM in the prebuilt workflow. 23 because
+        // llama.cpp calls `posix_madvise`, which bionic only exposes from API 23.
+        minSdkVersion 23
     }
 }
 

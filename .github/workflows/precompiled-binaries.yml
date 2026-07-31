@@ -105,7 +105,7 @@ jobs:
             --manifest-dir ../../rust \
             --android-sdk-location "${ANDROID_SDK_ROOT}" \
             --android-ndk-version "${ANDROID_NDK_VERSION}" \
-            --android-min-sdk-version 21 \
+            --android-min-sdk-version 23 \
             --target x86_64-apple-darwin \
             --target aarch64-apple-darwin \
             --target aarch64-apple-ios \
