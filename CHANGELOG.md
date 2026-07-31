@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.7.0 – 2026-07-31 – חיפוש סמנטי היברידי
+
+### Added
+
+- **חיבור החיפוש הסמנטי ל-`SearchEngine` דרך FFI** – משטח API חדש
+  ותוספתי לחלוטין; אף קריאה קיימת לא שונתה. הסיידקר
+  [`otzaria-semantic-search`](https://github.com/Otzaria/otzaria-semantic-search)
+  נקשר לאותה ספרייה נייטיבית של Tantivy, ונעוץ ל-revision מדויק ב-
+  `rust/Cargo.toml` ו-`rust/Cargo.lock` — זהות המודל והאינדקס תלויה במימוש
+  המדויק, ולכן ענף נייד אסור.
+
+  - **מחזור חיים**: `configureSemantic` / `disableSemantic` / `semanticStatus`.
+    קריאה חוזרת ל-`configureSemantic` עם אותם קלטים היא no-op שמחזירה את
+    הסטטוס; עם קלטים שונים היא **נכשלת ומציינת איזה שדה השתנה**, כי מאגר
+    הווקטורים הוא בזיכרון ופתיחה מחדש הייתה מוחקת אותו בשקט. החלפת מודל או
+    ספרייה היא מעשה מפורש: `disableSemantic` תחילה.
+  - **אינדוקס**: `semanticIndexBooks` / `semanticIndexDiff` /
+    `removeSemanticBooks` / `resetSemanticIndex`. כולם מקבלים `&self` בצד
+    Rust, כך ש-flutter_rust_bridge אינו נועל את המנוע כולו — חיפוש לקסיקלי
+    ו-polling של סטטוס נשארים רספונסיביים לאורך אינדוקס של ספרייה שלמה.
+  - **חיפוש**: `searchSemantic` עם `SemanticRetrievalMode`
+    (`hybrid` / `semanticOnly` / `lexicalOnly`), נפרד מ-`SemanticLexicalMode`
+    (`exact` / `fuzzy`) — פרשנות לקסיקלית ומצב אחזור הם שני צירים שונים.
+    בקשת `hybrid` נופלת ל-Tantivy עם `fallbackReason` מפורש כשהסמנטי לא
+    זמין; בקשת `semanticOnly` לעולם אינה מתחזה לתוצאה לקסיקלית.
+
+- **חוזה תצוגה מפורש בתוצאה** – `snippetHtml` תמיד מכיל טקסט להצגה, ולצידו
+  `isHighlighted` שאומר אם הוא נצבע. תוצאה סמנטית שלא עמדה בביטוי הלקסיקלי
+  מקבלת קטע טקסט נקי ו-`isHighlighted == false`, במקום להיצבע כאילו נמצאה
+  לקסיקלית. `SemanticResultSource` (`lexical` / `semantic` / `both`) מוסיף
+  לכל תוצאה את מקורה.
+
+### Changed
+
+- **`minSdkVersion` הועלה מ-21 ל-23** – *שינוי שובר לצרכנים שתומכים ב-API 21
+  או 22.* `llama.cpp` קורא ל-`posix_madvise`, ש-bionic חושף רק מ-API 23.
+  התואם ל-`ANDROID_PLATFORM` שבו נבנים הבינארים המוכנים. אפליקציות על
+  `flutter.minSdkVersion` (24) אינן מושפעות.
+
+- **הפיצ'ר `semantic` פעיל בבניות הצרכן** (`rust/cargokit.yaml`) – בדרך כלל
+  שקוף, כי הבינארים המוכנים מורדים משוחררים וחתומים. בנייה מקומית שנופלת
+  אחורה (crate hash ללא artifacts) מקמפלת `llama.cpp` ולכן **דורשת cmake**.
+
+- **ב-ARM 32-ביט (`armv7-linux-androideabi`) אין embedding backend** –
+  `llama-cpp-sys-2` אינו נבנה ליעד הזה, ומודל 0.6B ב-Q4 אינו שמיש עליו
+  ממילא. הבנייה מצליחה והחיפוש מתדרדר לבדו ללקסיקלי, אבל `semanticIndexBooks`
+  **זורק** שם. הדגל לבדיקה לפני אינדוקס הוא `available` — לא `enabled`, ולא
+  diff לא-ריק. ראו "Builds without a backend" ב-README.
+
 ## 0.6.9 – 2026-07-15
 
 ## 0.6.8 – 2026-07-14 – חיפוש מתקדם מורחב, facets ממדיים ושדרוג ביצועי אינדוקס
