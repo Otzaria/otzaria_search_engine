@@ -6,6 +6,23 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+default = []
+# Keep the inference backend opt-in for the application, but make the feature
+# boundary explicit: enabling our semantic integration must enable the only
+# production embedding backend in the sidecar as well.  The sidecar deliberately
+# has no default backend, so omitting this propagation would compile a binary
+# that can never serve a semantic query.
+semantic = ["semantic-real"]
+# Internal gate for code that talks to the sidecar. Both concrete backends turn
+# it on; `semantic` remains the backwards-compatible production alias.
+semantic-integration = ["dep:otzaria-semantic-search"]
+semantic-real = ["semantic-integration", "otzaria-semantic-search/llama-backend"]
+# CI and adapter integration tests use the sidecar's deterministic test backend
+# without compiling GGUF/llama.cpp. Production builds must use `semantic` (or
+# `semantic-real`); neither default nor mock builds can silently select it.
+semantic-mock = ["semantic-integration", "otzaria-semantic-search/mock-embedding"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 
@@ -32,13 +49,9 @@ jieba-rs = "0.10.1"
 anyhow = "1.0.102"
 once_cell = "1.21.4"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_derive = "1.0"
 serde_json = "1.0.150"
 htmlescape = "0.3.1"
-tokio = { version = "1.52.3", features = [ "test-util", "macros"] }
 log = "0.4.32"
-futures = "0.3.32"
-async-stream = "0.3.6"
 unicode-segmentation = "1.13.3"
 # Lexical (MagicDictionary) approximate-search path. `bundled` compiles SQLite
 # from source so there is no system libsqlite dependency on Android/iOS.
@@ -47,6 +60,11 @@ lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
+
+# The semantic sidecar's persisted-vector format and llama bindings are part of
+# the index identity.  A branch dependency can silently change either; pin the
+# exact reviewed revision and retain it in Cargo.lock for reproducible builds.
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "75401aeb0f2c6f9661171fc1c0669c5947ffaeb3", optional = true }
 
 # Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
 # regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).

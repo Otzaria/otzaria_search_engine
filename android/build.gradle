@@ -45,7 +45,9 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 19
+        // Matches ANDROID_PLATFORM in the prebuilt workflow. 23 because
+        // llama.cpp calls `posix_madvise`, which bionic only exposes from API 23.
+        minSdkVersion 23
     }
 }
 

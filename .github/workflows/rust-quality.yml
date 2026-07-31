@@ -1,0 +1,161 @@
+name: Rust and Semantic Quality
+
+on:
+  push:
+    paths:
+      - ".github/workflows/rust-quality.yml"
+      - "rust/**"
+      - "lib/**"
+      - "test/**"
+      - "flutter_rust_bridge.yaml"
+      - "pubspec.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/rust-quality.yml"
+      - "rust/**"
+      - "lib/**"
+      - "test/**"
+      - "flutter_rust_bridge.yaml"
+      - "pubspec.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-semantic-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-tests:
+    name: Rust tests (${{ matrix.features }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - default
+          - semantic-mock
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+
+      - name: Check
+        if: matrix.features == 'default'
+        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+
+      - name: Check semantic mock integration
+        if: matrix.features == 'semantic-mock'
+        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+      # The sidecar compiled with no embedding backend behind it. Every
+      # `llama-backend` gate in the sidecar is paired with `not(target_arch =
+      # "arm")`, so this is the cfg state 32-bit ARM builds, and nothing else in
+      # this workflow compiles it.
+      - name: Check the backend-less integration
+        if: matrix.features == 'default'
+        run: >
+          cargo check --manifest-path rust/Cargo.toml --locked --lib
+          --features semantic-integration
+
+      - name: Test
+        if: matrix.features == 'default'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets
+
+      - name: Test semantic mock integration
+        if: matrix.features == 'semantic-mock'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+      - name: Clippy
+        if: matrix.features == 'default'
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets
+
+      - name: Clippy semantic mock integration
+        if: matrix.features == 'semantic-mock'
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+  real-backend-build:
+    name: Real semantic backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile the production semantic backend
+        run: cargo check --manifest-path rust/Cargo.toml --locked --lib --features semantic
+
+  generated-bindings:
+    name: FRB bindings and Flutter tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Install pinned FRB generator
+        run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
+
+      - name: Verify generated bindings are current
+        shell: bash
+        run: |
+          flutter_rust_bridge_codegen generate
+          sed -i 's/[ \t]*$//' rust/src/frb_generated.rs
+          git diff --exit-code -- \
+            rust/src/frb_generated.rs \
+            lib/src/rust/frb_generated.dart \
+            lib/src/rust/frb_generated.io.dart \
+            lib/src/rust/frb_generated.web.dart
+          # FRB includes rustc-internal trait method names in this generated
+          # header comment. They vary across stable toolchains without changing
+          # the API or ABI, so ignore only that volatile comment line.
+          git diff --exit-code \
+            --ignore-matching-lines='^// These .* ignored' -- \
+            lib/src/rust/api/search_engine.dart
+
+      - name: Dart format
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      # Without this the FFI suites find no library and skip themselves, and the
+      # job goes green having tested nothing across the bridge. `semantic-mock`
+      # so the suites can configure a sidecar and exercise indexing and hybrid
+      # retrieval, not only the disabled-sidecar fallback; it is the sidecar's
+      # deterministic backend, so no GGUF or llama.cpp is built here.
+      - name: Build the native library the FFI tests load
+        run: >
+          cargo build --manifest-path rust/Cargo.toml --locked --lib
+          --features semantic-mock
+
+      - name: Flutter tests
+        # Turns a missing native library, or one built without the sidecar, from
+        # a skip into a failure. Skipping is for contributors who have not run
+        # `cargo build`; in CI it would hide exactly what this job exists to
+        # check.
+        env:
+          OTZARIA_REQUIRE_NATIVE: "1"
+        run: flutter test

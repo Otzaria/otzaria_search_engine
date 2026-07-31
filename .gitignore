@@ -27,7 +27,6 @@ migrate_working_dir/
 **/doc/api/
 .dart_tool/
 build/
-rust/Cargo.lock
 
 # Rust build/analyzer artifacts (רק rust/target היה מוחרג; ה-target בשורש נוצר ע"י rust-analyzer)
 /target/
