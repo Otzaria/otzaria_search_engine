@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.1 – 2026-08-02 – תיקון קישור ב-Apple
+
+### Fixed
+
+- **בנייה ל-macOS/iOS נכשלה בשלב הקישור.** 0.7.0 הביאה איתה את llama.cpp,
+  ושתי תלויות נייטיביות שלו לא הוצהרו בשום מקום. cargokit בונה `staticlib`,
+  ולכן ההצהרות `cargo:rustc-link-lib` של `llama-cpp-sys-2` לא מגיעות ללינקר
+  של Xcode כלל. שתי הבעיות התגלו רק בקישור של אפליקציה — ה-CI של הבינאריים
+  המוכנים מייצר את הארכיון בלבד ואף פעם לא מלנקק אפליקציה מולו.
+
+  - **frameworks חסרים ב-podspec** (`macos/`, `ios/`): ggml משתמש ב-vDSP
+    (Accelerate) ו-Metal, והקוד עצמו הוא C++. נוספו `s.libraries = 'c++'`
+    ו-`s.frameworks = 'Accelerate', 'Metal', 'MetalKit', 'Foundation'`.
+    בלעדיהם חסרו מאות סמלים מסוג `_vDSP_*`, `_MTL*` ו-`___cxa_*`.
+  - **`common` של llama.cpp נבנה שלא לצורך**: הסיידקר נעוץ מחדש ל-revision
+    שמכבה אותו. `llama-cpp-2` הצהיר על `llama-cpp-sys-2` בלי
+    `default-features = false`, וה-default של sys הוא `["common"]` — מה
+    שגרר את `download.cpp` ואת `cpp-httplib` שאף פעם לא מקושרת, ולכן נשארו
+    12 סמלי `httplib::*` בלתי פתורים. הקוד הזה לא היה נגיש מ-Rust מלכתחילה.
+    זהות הווקטורים נשמרה (token ids זהים, worst cosine 0.9961), והארכיון
+    ל-Apple קטן ב-~13MB.
+
 ## 0.7.0 – 2026-07-31 – חיפוש סמנטי היברידי
 
 ### Added

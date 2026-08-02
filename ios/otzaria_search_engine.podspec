@@ -25,8 +25,12 @@ A new Flutter FFI plugin project.
   s.dependency 'Flutter'
   s.platform = :ios, '11.0'
 
-  # Flutter.framework does not contain a i386 slice.
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
+  # ggml/llama.cpp שבתוך libsearch_engine.a הוא C++ שמשתמש ב-vDSP וב-Metal.
+  # cargokit בונה staticlib, כך שהצהרות cargo:rustc-link-lib של llama-cpp-sys-2
+  # לא מגיעות ללינקר של Xcode - חובה להצהיר עליהן כאן.
+  s.libraries = 'c++'
+  s.frameworks = 'Accelerate', 'Metal', 'MetalKit', 'Foundation'
+
   s.swift_version = '5.0'
 
   s.script_phase = {

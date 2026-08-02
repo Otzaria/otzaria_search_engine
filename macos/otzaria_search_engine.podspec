@@ -24,8 +24,13 @@ A new Flutter FFI plugin project.
   s.source_files     = 'Classes/**/*'
   s.dependency 'FlutterMacOS'
 
+  # ggml/llama.cpp שבתוך libsearch_engine.a הוא C++ שמשתמש ב-vDSP וב-Metal.
+  # cargokit בונה staticlib, כך שהצהרות cargo:rustc-link-lib של llama-cpp-sys-2
+  # לא מגיעות ללינקר של Xcode - חובה להצהיר עליהן כאן.
+  s.libraries = 'c++'
+  s.frameworks = 'Accelerate', 'Metal', 'MetalKit', 'Foundation'
+
   s.platform = :osx, '10.11'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.swift_version = '5.0'
 
   s.script_phase = {
