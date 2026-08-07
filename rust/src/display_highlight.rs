@@ -18,9 +18,16 @@
 //! * Every Hebrew base letter in a query word may be followed by attached
 //!   nikud/cantillation marks in the text ([`ATTACHED_MARKS_CLASS`]).
 //! * A trailing geresh matches both the ASCII and the Hebrew form.
-//! * Words are joined by [`WORD_SEPARATOR`] — whitespace, Hebrew marks,
-//!   HTML tags, or punctuation — optionally allowing up to the configured
-//!   spacing count of intermediate words between adjacent query words.
+//! * Words are joined by [`WORD_SEPARATOR`], optionally allowing up to the
+//!   configured spacing count of intermediate words ([`INTERMEDIATE_WORD`])
+//!   between adjacent query words. Both are built from the three disjoint
+//!   classes below, which are derived from the tokeniser's own predicates —
+//!   so gap counting follows the index token-for-token in every case those
+//!   predicates decide. Two known gaps remain, because the tokeniser looks at
+//!   *sequences* while a character class cannot: a run of two or more
+//!   gershayim breaks a token in the index (`רמב""ם` is two tokens) but counts
+//!   as one word here, and characters outside [`SEPARATOR_DOMAIN`] default to
+//!   word content.
 //! * A word with a morphological option (prefixes/suffixes/partial) keeps the
 //!   plain root pattern but is flagged as not eligible for the word-boundary
 //!   check, so the root may highlight inside a longer inflected word.
@@ -30,10 +37,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use once_cell::sync::Lazy;
+
 use crate::hebrew_query::{
-    aramaic_root_variants, generate_spelling_variations, normalize_for_index, split_query_words,
-    word_flags_at, WordFlags, MAX_SPELLING_BRANCHES,
+    aramaic_root_variants, generate_spelling_variations, is_word_mark, normalize_for_index,
+    split_query_words, word_flags_at, WordFlags, MAX_SPELLING_BRANCHES,
 };
+use crate::hebrew_tokenizer::continues_token;
 
 // ── Output type ────────────────────────────────────────────────────────────
 
@@ -68,10 +78,115 @@ pub(crate) const ATTACHED_MARKS_CLASS: &str =
 const ATTACHED_MARKS_SET: &str =
     "[\u{0300}-\u{036F}\u{0591}-\u{05BD}\u{05BF}\u{05C1}\u{05C2}\u{05C4}\u{05C5}\u{05C7}]";
 
-/// Separator between adjacent query words in displayed text: whitespace,
-/// Hebrew marks, HTML tags (so markup between words is not a mismatch), or
-/// punctuation.
-const WORD_SEPARATOR: &str = r#"(?:\s|[֑-ׇ̀-ͯ]|<[^>]*>|[.,:;!?'"״׳‘’“”־\-–—()\[\]{}])+"#;
+/// טווחי התווים שמהם נגזרות מחלקות המפרידים. מחוץ להם ברירת המחדל היא
+/// "תו מילה" — נכון לאותיות של כתבים אחרים (`is_alphanumeric`), ומפספס רק
+/// סימני פיסוק אקזוטיים. הטווחים: ASCII + Latin-1, סימנים משולבים והבלוק
+/// העברי, ערבית (תעתיק ערבית-יהודית), פיסוק כללי עד Supplemental Punctuation
+/// (מקפים טיפוגרפיים כמו `⸗` U+2E17 ו-`−` U+2212), צורות תצוגה עבריות,
+/// ופיסוק fullwidth.
+const SEPARATOR_DOMAIN: &[(u32, u32)] = &[
+    (0x0009, 0x00FF),
+    (0x0300, 0x06FF),
+    (0x2000, 0x2E7F),
+    (0xFB00, 0xFB4F),
+    (0xFF00, 0xFFEF),
+];
+
+/// גוף מחלקת תווים (בלי הסוגריים) של כל תו בטווחי [`SEPARATOR_DOMAIN`]
+/// שעבורו `keep` מחזיר `false`. הטווחים מכווצים ל-`a-b` והתווים
+/// נמלטים כ-`\uXXXX`, כדי שהתבנית תישאר קצרה וחוקית ב-`RegExp` של Dart.
+fn class_body_excluding(keep: impl Fn(char) -> bool) -> String {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for &(start, end) in SEPARATOR_DOMAIN {
+        for code in start..=end {
+            let Some(c) = char::from_u32(code) else {
+                continue;
+            };
+            if keep(c) {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(run) if run.1 + 1 == code => run.1 = code,
+                _ => runs.push((code, code)),
+            }
+        }
+    }
+
+    let mut body = String::new();
+    for (start, end) in runs {
+        body.push_str(&escape_in_class(start));
+        // טווח בן שני תווים אינו חוסך דבר על פני שניהם בנפרד.
+        if end > start + 1 {
+            body.push('-');
+        } else if end == start + 1 {
+            body.push_str(&escape_in_class(end));
+            continue;
+        } else {
+            continue;
+        }
+        body.push_str(&escape_in_class(end));
+    }
+    body
+}
+
+fn escape_in_class(code: u32) -> String {
+    format!("\\u{code:04X}")
+}
+
+/// שלוש מחלקות תווים **זרות זו לזו** שמכסות יחד כל תו, ונגזרות מהפרדיקטים
+/// של הטוקנייזר. הזרות היא תנאי הכרחי: כשמחלקת המילה ומחלקת המפריד חופפות,
+/// `SEP(?:WORD SEP){0,n}` הופך דו-משמעי, ו-`RegExp` של Dart (מנוע עם
+/// backtracking) נתקע על שורה שאינה מתאימה — עשרות שניות ב-thread הראשי.
+///
+/// * [ALNUM_CLASS] — אות או ספרה; רק כאן טוקן יכול להתחיל ולהסתיים.
+/// * [SOFT_CHAR_CLASS] — סימן צמוד, פיסוק שקוף או גרש/גרשיים: ממשיך טוקן
+///   אך לעולם אינו פותח אותו.
+/// * [BREAK_CHAR_CLASS] — כל השאר: שובר טוקן.
+static ALNUM_CLASS: Lazy<String> =
+    Lazy::new(|| format!("[^{}]", class_body_excluding(is_alnum_char)));
+
+static SOFT_CHAR_CLASS: Lazy<String> = Lazy::new(|| {
+    format!(
+        "[{}]",
+        class_body_excluding(|c| !(continues_token(c) && !is_alnum_char(c)))
+    )
+});
+
+static BREAK_CHAR_CLASS: Lazy<String> = Lazy::new(|| {
+    format!(
+        "[{}]",
+        class_body_excluding(|c| continues_token(c) || is_markup_char(c))
+    )
+});
+
+/// אות או ספרה — לא סימן צמוד. סימני ניקוד מסווגים ב-Unicode כ-alphabetic,
+/// ובלי ההחרגה הם היו נחשבים פותחי-טוקן.
+fn is_alnum_char(c: char) -> bool {
+    c.is_alphanumeric() && !is_word_mark(c)
+}
+
+/// `<` ו-`>` מטופלים רק כתג שלם ([`HTML_TAG`]) ולא כתווים בודדים בשום
+/// מחלקה, כדי שהחלופות יישארו זרות וכדי שאותיות שבתוך תג לא ייחשבו למילה.
+fn is_markup_char(c: char) -> bool {
+    c == '<' || c == '>'
+}
+
+/// תג HTML — אינו שובר טוקן (התגים מוסרים לפני האינדוקס בלי רווח, ולכן
+/// `מי<b>לה` הוא טוקן אחד) ואינו מפריד בפני עצמו.
+const HTML_TAG: &str = "<[^>]*>";
+
+/// מפריד בין שתי מילות שאילתה סמוכות: חייב לכלול לפחות שובר-טוקן אחד, ולפניו
+/// ואחריו מותרים סימנים רכים ותגים. `תדע. זרעך` מתאים (הנקודה שקופה
+/// והרווח שובר), ואילו `תדע<b>זרעך` אינו מתאים — האינדקס רואה שם טוקן אחד
+/// ולכן גם החיפוש אינו מוצא אותו.
+static WORD_SEPARATOR: Lazy<String> = Lazy::new(|| {
+    format!(
+        "(?:{soft}|{tag})*{brk}(?:{soft}|{brk}|{tag})*",
+        soft = &*SOFT_CHAR_CLASS,
+        brk = &*BREAK_CHAR_CLASS,
+        tag = HTML_TAG,
+    )
+});
 
 /// Cumulative per-word pattern length budget. Display patterns are ~3× longer
 /// than index-term patterns (each letter carries a marks class), so this is
@@ -81,6 +196,22 @@ const WORD_SEPARATOR: &str = r#"(?:\s|[֑-ׇ̀-ͯ]|<[^>]*>|[.,:;!?'"״׳‘’�
 /// `RegExp` gets slow while extra branches stop adding visible highlights.
 const MAX_DISPLAY_PATTERN_CHARS: usize = 12_000;
 
+/// מילה שלמה אחת בין שתי מילות השאילתה, כפי שהטוקנייזר של האינדקס מודד
+/// אותה: פותחת ומסתיימת באות/ספרה, ובתוכה מותרים סימנים רכים ותגים
+/// (`רמב״ם`, `פ.ב.י`, `מי<b>לה` — טוקן אחד).
+///
+/// ספירה לפי רווחים (`\S+`) אינה שקולה: `כי־גר` הוא שתי מילים באינדקס, ולכן
+/// היא הדגישה `תדע כי־גר יהיה זרעך` במרווח 2 בעוד החיפוש דורש 3 — מילים
+/// מודגשות לצד "אין תוצאות".
+static INTERMEDIATE_WORD: Lazy<String> = Lazy::new(|| {
+    format!(
+        "{alnum}(?:(?:{soft}|{tag})*{alnum})*",
+        alnum = &*ALNUM_CLASS,
+        soft = &*SOFT_CHAR_CLASS,
+        tag = HTML_TAG,
+    )
+});
+
 /// Separator allowing up to `max_intermediate_words` whole words between two
 /// adjacent query words (the "מרווח בין מילים" search option).
 fn separator_with_spacing(max_intermediate_words: u32) -> String {
@@ -88,8 +219,9 @@ fn separator_with_spacing(max_intermediate_words: u32) -> String {
         WORD_SEPARATOR.to_string()
     } else {
         format!(
-            "{sep}(?:\\S+{sep}){{0,{n}}}",
-            sep = WORD_SEPARATOR,
+            "{sep}(?:{word}{sep}){{0,{n}}}",
+            sep = &*WORD_SEPARATOR,
+            word = &*INTERMEDIATE_WORD,
             n = max_intermediate_words
         )
     }
@@ -488,14 +620,16 @@ pub fn build_literal_pattern(query: &str) -> Option<String> {
         return None;
     }
     let last = words.len() - 1;
-    // מפריד בין מילים סובל גם מקף/פסק (הטקסט המוצג עשוי להכיל "אשר־שמע")
-    // — עקבי עם generate_highlight_pattern ולא תלוי בניקוי מקדים של הטקסט.
+    // המפריד בין המילים הוא אותו [`WORD_SEPARATOR`] של החיפוש המתקדם: מה
+    // שהאינדקס רואה כשני טוקנים סמוכים חייב להיות מודגש גם במסלול המקומי.
+    // רשימה מצומצמת (רווח/מקף/פסק) החטיאה פיסוק דבוק — `תדע, זרעך` נמצא
+    // בחיפוש הגלובלי ולא הודגש בספר.
     let phrase = words
         .iter()
         .enumerate()
         .map(|(i, w)| literal_charwise_pattern(w, i == last))
         .collect::<Vec<_>>()
-        .join(r"[\s־׀|]+");
+        .join(&WORD_SEPARATOR);
     // גבול תלוי-הקשר: התאמה נפסלת אם לפניה אות (או אות+גרש/גרשיים — המילה
     // ממשיכה מתוך רש״י), או אם אחריה אות (או גרש/גרשיים+אות). גרשיים שאחריו
     // לא-אות (סוגר ציטוט) נשאר גבול — ״הרעתי״ מודגש. ה-lookahead מדלג בעצמו
@@ -647,9 +781,12 @@ mod tests {
         }
 
         #[test]
-        fn multi_word_joined_by_whitespace() {
+        fn multi_word_joined_by_the_shared_separator() {
+            // אותו מפריד של החיפוש המתקדם, כדי שמה שהאינדקס רואה כשני
+            // טוקנים סמוכים (רווח, מקף, פיסוק דבוק) יודגש גם כאן.
+            // ההתאמה עצמה נבדקת בצד Dart — ל-`regex` אין lookbehind.
             let p = build_literal_pattern("  כל   היום  ").unwrap();
-            assert!(p.contains(r"[\s"));
+            assert!(p.contains(&*super::super::WORD_SEPARATOR));
         }
 
         #[test]
@@ -706,8 +843,12 @@ mod tests {
 
         #[test]
         fn word_separator_tolerates_maqaf() {
-            let p = build_literal_pattern("אשר שמע").unwrap();
-            assert!(p.contains('\u{05BE}'), "separator must tolerate maqaf");
+            // `אשר־שמע` בטקסט המוצג הוא שני טוקנים באינדקס, ולכן המקף חייב
+            // להיות בתוך מחלקת המפריד.
+            assert!(
+                super::super::BREAK_CHAR_CLASS.contains("\\u05BE"),
+                "separator must tolerate maqaf"
+            );
         }
 
         #[test]
@@ -760,7 +901,7 @@ mod tests {
     fn multi_word_joined_by_separator() {
         let hl = build("שלום עולם");
         assert_eq!(hl.word_patterns.len(), 2);
-        assert!(hl.combined_pattern.contains(WORD_SEPARATOR));
+        assert!(hl.combined_pattern.contains(&*WORD_SEPARATOR));
         assert!(!hl.combined_pattern.contains("\\S+"));
     }
 
@@ -775,6 +916,178 @@ mod tests {
         )
         .unwrap();
         assert!(hl.combined_pattern.contains("{0,2}"));
+    }
+
+    /// מספר המילים שהטוקנייזר של האינדקס מוצא ב-`text` — מקור האמת שאליו
+    /// ספירת המילים המתווכות בהדגשה חייבת להתאים.
+    fn tokenizer_word_count(text: &str) -> usize {
+        let mut count = 0;
+        let mut pos = 0;
+        while let Some((_, end)) = crate::hebrew_tokenizer::next_token_boundaries(text, pos) {
+            count += 1;
+            pos = end;
+        }
+        count
+    }
+
+    /// המרווח המזערי שבו התבנית מתאימה את `text`, או `None` עד `max`.
+    fn min_matching_distance(query: &str, text: &str, max: u32) -> Option<u32> {
+        for distance in 0..=max {
+            let hl = build_display_highlight(
+                query,
+                distance,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+            let re = regex::Regex::new(&hl.combined_pattern).unwrap();
+            if re.is_match(text) {
+                return Some(distance);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_three_classes_partition_every_char_by_tokenizer_rules() {
+        // המחלקות נגזרות מהפרדיקטים של הטוקנייזר, והטסט אוכף גם את הגזירה
+        // וגם את הזרות שביניהן — הזרות היא מה שמונע התפוצצות backtracking.
+        let alnum = regex::Regex::new(&format!("^{}$", &*ALNUM_CLASS)).unwrap();
+        let soft = regex::Regex::new(&format!("^{}$", &*SOFT_CHAR_CLASS)).unwrap();
+        let brk = regex::Regex::new(&format!("^{}$", &*BREAK_CHAR_CLASS)).unwrap();
+
+        for &(start, end) in SEPARATOR_DOMAIN {
+            for code in start..=end {
+                let Some(c) = char::from_u32(code) else {
+                    continue;
+                };
+                let text = c.to_string();
+                let in_alnum = alnum.is_match(&text);
+                let in_soft = soft.is_match(&text);
+                let in_break = brk.is_match(&text);
+
+                assert_eq!(
+                    in_alnum,
+                    is_alnum_char(c),
+                    "U+{code:04X} disagrees with is_alnum_char"
+                );
+                assert_eq!(
+                    in_soft,
+                    continues_token(c) && !is_alnum_char(c),
+                    "U+{code:04X} disagrees with continues_token"
+                );
+                assert_eq!(
+                    in_break,
+                    !continues_token(c) && !is_markup_char(c),
+                    "U+{code:04X} disagrees with continues_token"
+                );
+                // `<`/`>` שייכים לחלופת התג בלבד ולכן אינם בשום מחלקה;
+                // כל תו אחר שייך לאחת בדיוק.
+                assert_eq!(
+                    [in_alnum, in_soft, in_break]
+                        .iter()
+                        .filter(|member| **member)
+                        .count(),
+                    if is_markup_char(c) { 0 } else { 1 },
+                    "U+{code:04X} class membership"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn intermediate_word_is_counted_like_the_tokenizer() {
+        // כל מקרה: הפער בין "תדע" ל"זרעך". המרווח המזערי שבו ההדגשה מתאימה
+        // חייב להיות מספר הטוקנים שהטוקנייזר מוצא באותו פער.
+        let gaps = [
+            "אחת",
+            "אחת שתים",
+            // מקף, קו אנכי וסוף-פסוק מפרידים — הבאג שגרם להדגשה בלי תוצאות.
+            "כי־גר יהיה",
+            "אל־משה",
+            "אחת|שתים",
+            "אחת׃שתים",
+            "אחת,שתים",
+            "אחת;שתים",
+            "אחת(שתים)",
+            "אחת/שתים",
+            "אחת=שתים",
+            "אחת_שתים",
+            // גרש/גרשיים, נקודה וסוגריים מרובעים אינם שוברים טוקן.
+            "רמב״ם",
+            "תוס'",
+            "פ.ב.י",
+            "3.14",
+            "יב[ע]ר",
+            // ניקוד וטעמים צמודים אינם שוברים מילה.
+            "יָדֹעַ",
+        ];
+
+        for gap in gaps {
+            let text = format!("תדע {gap} זרעך");
+            let expected = tokenizer_word_count(gap) as u32;
+            assert_eq!(
+                min_matching_distance("תדע זרעך", &text, expected + 2),
+                Some(expected),
+                "טקסט {text:?}: הפער {gap:?} הוא {expected} מילים באינדקס"
+            );
+        }
+    }
+
+    #[test]
+    fn html_tag_inside_a_word_does_not_split_it() {
+        // התגים מוסרים לפני האינדוקס, ולכן `כי<b>גר` הוא טוקן אחד.
+        assert_eq!(
+            min_matching_distance("תדע זרעך", "תדע כי<b>גר זרעך", 3),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn pattern_length_stays_bounded() {
+        // התבנית מהודרת ב-Dart ומוחזקת שם במטמון; אורך חריג היה מייקר את
+        // ההידור בכל שאילתה חדשה. חמש מילים במרווח 30 הוא הרע ביותר בפועל.
+        let hl = build_display_highlight(
+            "אמר רבי יוחנן משום שמעון",
+            30,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(
+            hl.combined_pattern.len() < 40_000,
+            "pattern too long: {}",
+            hl.combined_pattern.len()
+        );
+    }
+
+    #[test]
+    fn tag_alone_between_the_words_never_matches() {
+        // `strip_html_for_indexing` מוחק את התג בלי רווח, ולכן `תדע<b>זרעך`
+        // הוא טוקן אחד באינדקס והחיפוש לא ימצא אותו באף מרווח — ההדגשה
+        // חייבת להתנהג כך גם היא, אחרת יש הדגשה בלי תוצאה.
+        assert_eq!(min_matching_distance("תדע זרעך", "תדע<b>זרעך", 4), None);
+        // תג עם רווח בתוכו הוא כן מפריד: האינדקס רואה שני טוקנים סמוכים.
+        assert_eq!(
+            min_matching_distance("תדע זרעך", "תדע<b> </b>זרעך", 4),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn adjacent_words_match_across_transparent_punctuation() {
+        // "תדע." + "זרעך" הם שני טוקנים סמוכים באינדקס (הנקודה נשמטת),
+        // ולכן ההדגשה חייבת להתאים כבר במרווח 0.
+        for text in ["תדע. זרעך", "תדע, זרעך", "תדע<b> </b>זרעך", "תדע׃ זרעך"]
+        {
+            assert_eq!(
+                min_matching_distance("תדע זרעך", text, 2),
+                Some(0),
+                "טקסט {text:?}: המילים סמוכות באינדקס"
+            );
+        }
     }
 
     #[test]
@@ -1000,7 +1313,7 @@ mod tests {
         assert_eq!(hl.word_patterns.len(), 2);
         assert_eq!(hl.word_patterns[0], charwise("שלום"));
         assert_eq!(hl.word_patterns[1], charwise("עולם"));
-        assert!(hl.combined_pattern.contains(WORD_SEPARATOR));
+        assert!(hl.combined_pattern.contains(&*WORD_SEPARATOR));
     }
 
     #[test]

@@ -277,6 +277,30 @@ Future<void> main() async {
       expect(compileLiteral('אשר שמע').hasMatch('אשר־שמע משה'), isTrue);
     });
 
+    test('פיסוק דבוק בין המילים — כמו טוקנים סמוכים באינדקס', () {
+      // `strip_html_for_indexing` והטוקנייזר משמיטים את הפיסוק, ולכן
+      // `תדע, זרעך` הוא ביטוי סמוך באינדקס. מפריד צר (רווח/מקף בלבד)
+      // החטיא אותו: החיפוש הגלובלי מצא, וההדגשה בספר לא.
+      final pattern = compileLiteral('תדע זרעך');
+      for (final text in [
+        'תדע זרעך',
+        'תדע   זרעך',
+        'תדע, זרעך',
+        'תדע. זרעך',
+        'תדע: זרעך',
+        'תדע; זרעך',
+        'תדע (זרעך)',
+        'תדע<b> </b>זרעך',
+        'תדע ׀ זרעך',
+      ]) {
+        expect(pattern.hasMatch(text), isTrue, reason: text);
+      }
+    });
+
+    test('מילים דבוקות ללא מפריד אינן מתאימות', () {
+      expect(compileLiteral('תדע זרעך').hasMatch('תדעזרעך'), isFalse);
+    });
+
     test('שאילתה ריקה או רווחים בלבד מחזירה null', () {
       for (final query in ['', '   ']) {
         expect(

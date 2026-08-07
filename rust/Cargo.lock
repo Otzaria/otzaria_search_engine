@@ -1709,6 +1709,7 @@ dependencies = [
  "once_cell",
  "otzaria-semantic-search",
  "rayon",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

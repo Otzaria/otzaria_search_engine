@@ -13585,6 +13585,83 @@ mod tests {
         assert_eq!(ids, vec![id_base + 4, id_base + 7]);
     }
 
+    /// שקילות בין מה שהחיפוש מוצא לבין מה שההדגשה בספר הפתוח מסמנת.
+    ///
+    /// שני הצדדים סופרים "כמה מילים מותר בין מילות השאילתה": החיפוש לפי
+    /// עמדות הטוקנים באינדקס, וההדגשה לפי תבנית רגקס על טקסט התצוגה. סטייה
+    /// ביניהם מציגה למשתמש מילים מודגשות לצד "אין תוצאות" (או ההפוך).
+    #[test]
+    fn display_highlight_distance_matches_search_distance() {
+        let (mut engine, _dir) = make_engine();
+        // כל שורה: פער אחר בין "תדע" ל"זרעך" — כולל מקף, גרשיים וניקוד.
+        let lines = [
+            "תדע זרעך",
+            "תדע אחת זרעך",
+            "תדע אחת שתים זרעך",
+            "תדע כי־גר יהיה זרעך",
+            "תדע רמב\u{05F4}ם זרעך",
+            "תֵּדַע יָדֹעַ זַרְעֲךָ",
+        ];
+        engine
+            .add_text_book(
+                "ספר הבדיקה".to_string(),
+                "/root".to_string(),
+                "/books/highlight_parity.txt".to_string(),
+                9,
+                0,
+                lines.join("\n"),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        for (index, line) in lines.iter().enumerate() {
+            let mut found_by_search: Option<u32> = None;
+            let mut found_by_highlight: Option<u32> = None;
+            for distance in 0..=4u32 {
+                if found_by_search.is_none() {
+                    let hits = search_advanced_default(
+                        &engine,
+                        "תדע זרעך".to_string(),
+                        vec!["/root".to_string()],
+                        100,
+                        0,
+                        distance,
+                        HashMap::new(),
+                        HashMap::new(),
+                        HashMap::new(),
+                        ResultsOrder::Catalogue,
+                        false,
+                        false,
+                        SearchScope::WordDistance,
+                    )
+                    .unwrap();
+                    if hits.iter().any(|hit| hit.segment as usize == index) {
+                        found_by_search = Some(distance);
+                    }
+                }
+                if found_by_highlight.is_none() {
+                    let highlight = crate::display_highlight::build_display_highlight(
+                        "תדע זרעך",
+                        distance,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &HashMap::new(),
+                    )
+                    .unwrap();
+                    let pattern = regex::Regex::new(&highlight.combined_pattern).unwrap();
+                    if pattern.is_match(line) {
+                        found_by_highlight = Some(distance);
+                    }
+                }
+            }
+            assert_eq!(
+                found_by_highlight, found_by_search,
+                "שורה {line:?}: החיפוש וההדגשה חייבים להתאים באותו מרווח"
+            );
+        }
+    }
+
     #[test]
     fn word_match_count_matches_search() {
         let (engine, _dir, _id_base) = scope_engine();

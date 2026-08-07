@@ -66,6 +66,11 @@ rayon = "1.10"
 # exact reviewed revision and retain it in Cargo.lock for reproducible builds.
 otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "d9de678341ea4fd81919037fa732c4a8dd0e5bf5", optional = true }
 
+[dev-dependencies]
+# הידור התבניות שהמודול הזה מחזיר, כדי לבדוק אותן על טקסט אמיתי ולא רק
+# להשוות מחרוזות. אותה גרסה שכבר בגרף התלויות של tantivy.
+regex = "1.13.1"
+
 # Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
 # regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).
 # The patch applies to the whole dependency graph, so tantivy's own
