@@ -763,7 +763,7 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // ממדיים (author/era/base על שדה topics) — שינויי סכימה/תוכן שמחייבים
 // העלאת גרסה לפני פרסום (את lineHash בדיקת ההתאימות תתפוס גם לבדה;
 // את ה-facets הממדיים — לא, כמו הטוקן נטול-הגרשיים לעיל).
-const INDEX_SCHEMA_VERSION: u32 = 3;
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
@@ -2053,8 +2053,14 @@ impl SearchEngine {
                 return Ok(Self::semantic_disabled_diff());
             };
             let fingerprints = self.get_book_fingerprints()?;
-            let Some(diff) = runtime.get_semantic_index_diff_from_lexical_hashes(&fingerprints)
-            else {
+            // The sidecar now separates "the semantic path is off" from "the comparison
+            // itself failed": the first is `Ok(None)`, the second an error. Collapsing
+            // them would report a broken manifest as a disabled feature, and the app
+            // would offer indexing as the fix.
+            let diff = runtime
+                .get_semantic_index_diff_from_lexical_hashes(&fingerprints)
+                .map_err(|err| anyhow::anyhow!("semantic index diff failed: {err}"))?;
+            let Some(diff) = diff else {
                 return Ok(Self::semantic_disabled_diff());
             };
             Ok(SemanticIndexDiff {
@@ -2255,6 +2261,11 @@ impl SearchEngine {
                         SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
                         SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
                     }),
+                    // Both are per-request overrides the sidecar added; `None` keeps its
+                    // configured profile and flags, which is what this call has always
+                    // used. Choosing either from here is S5's decision, not a repin's.
+                    profile: None,
+                    feature_flags: None,
                 })
                 .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
 
@@ -3188,6 +3199,18 @@ impl SearchEngine {
     }
 
     /// Delete a document by its numeric id. Does not commit.
+    /// A snapshot of the index for the semantic builder to read the corpus from.
+    ///
+    /// `pub(crate)`, so flutter_rust_bridge never sees it: Dart has no use for a
+    /// `Searcher`, and the corpus port is a Rust-to-Rust contract with the sidecar. One
+    /// call is one snapshot — see [`TantivyCorpus`](crate::semantic_corpus::TantivyCorpus),
+    /// which holds it for a whole build precisely so a reload cannot move the corpus
+    /// underneath one.
+    #[cfg(feature = "semantic-integration")]
+    pub(crate) fn corpus_searcher(&self) -> Searcher {
+        self.index_reader.searcher()
+    }
+
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
         let id_f = self.schema.get_field("id").unwrap();
         self.writer_mut()?

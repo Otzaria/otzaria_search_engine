@@ -60,11 +60,15 @@ lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
+# `corpus_id` is a SHA-256 over the documents an artifact is built from. Same crate and
+# major version the semantic sidecar hashes with, so the two sides cannot disagree about
+# what SHA-256 means.
+sha2 = "0.10"
 
 # The semantic sidecar's persisted-vector format and llama bindings are part of
 # the index identity.  A branch dependency can silently change either; pin the
 # exact reviewed revision and retain it in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "d9de678341ea4fd81919037fa732c4a8dd0e5bf5", optional = true }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "36a9ededa344300fad674682e482470e47fff507", optional = true }
 
 [dev-dependencies]
 # הידור התבניות שהמודול הזה מחזיר, כדי לבדוק אותן על טקסט אמיתי ולא רק
