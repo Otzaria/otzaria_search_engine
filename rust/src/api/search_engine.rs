@@ -1617,6 +1617,11 @@ const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
 pub struct SearchEngine {
     schema: Schema,
+    /// The directory this engine opened. Retained only so a build can ask whether the
+    /// index it is about to read is one this version reads — see
+    /// [`Self::index_compatibility`].
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    index_path: PathBuf,
     index: Index,
     index_writer: Option<IndexWriter>,
     writer_heap_size: usize,
@@ -1746,6 +1751,7 @@ impl SearchEngine {
 
         SearchEngine {
             schema,
+            index_path: PathBuf::from(path),
             index,
             index_writer,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
@@ -3199,6 +3205,16 @@ impl SearchEngine {
     }
 
     /// Delete a document by its numeric id. Does not commit.
+    /// Whether the index this engine opened is one this build reads.
+    ///
+    /// `pub(crate)`: the FFI already exposes [`check_index_compatibility`] by path. This is
+    /// the same answer for the directory already open, so a build does not have to be told
+    /// again where it is.
+    #[cfg(feature = "semantic-integration")]
+    pub(crate) fn index_compatibility(&self) -> IndexCompatibility {
+        check_index_compatibility_path(&self.index_path)
+    }
+
     /// A snapshot of the index for the semantic builder to read the corpus from.
     ///
     /// `pub(crate)`, so flutter_rust_bridge never sees it: Dart has no use for a

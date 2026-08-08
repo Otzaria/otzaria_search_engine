@@ -52,7 +52,7 @@ use otzaria_semantic_search::semantic::versioning::{CorpusIdentity, ModelIdentit
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tantivy::schema::{Facet, OwnedValue, Value};
+use tantivy::schema::{Facet, Value};
 use tantivy::{DocAddress, Searcher, TantivyDocument};
 
 /// The id scheme this crate builds, and the only one this adapter can order a book under.
@@ -67,8 +67,10 @@ pub const DOCUMENT_ID_SCHEME_VERSION: u32 = 1;
 /// Version the digest below was computed under.
 ///
 /// Folded into `corpus_id` itself, so a change to *what* is hashed cannot silently produce
-/// a value that compares equal to one computed the old way.
-const CORPUS_ID_VERSION: u32 = 1;
+/// a value that compares equal to one computed the old way. Version 2 covers every field of
+/// a line; version 1 covered only the id, the book key and the text, and therefore did not
+/// move when a re-section changed what a short line embedded.
+const CORPUS_ID_VERSION: u32 = 2;
 
 /// Where one line lives in the snapshot.
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +108,22 @@ impl TantivyCorpus {
         library_version: impl Into<String>,
         chunking: ChunkerConfig,
     ) -> Result<Self> {
+        // The schema version an artifact declares has to be one something checked, not this
+        // build's constant repeated back. `SearchEngine` validates its index's metadata
+        // against `INDEX_SCHEMA_VERSION` when it opens it; asking again here is what turns
+        // that into a precondition of building rather than a fact about the binary.
+        let compatibility = engine.index_compatibility();
+        if !compatibility.compatible {
+            anyhow::bail!(
+                "the index at {} is not one this build reads (status {}, schema {:?}, \
+                 required {}): {}",
+                compatibility.metadata_path,
+                compatibility.status,
+                compatibility.found_schema_version,
+                compatibility.required_schema_version,
+                compatibility.reason.as_deref().unwrap_or("no reason given")
+            );
+        }
         Self::open(engine.corpus_searcher(), library_version, chunking)
     }
 
@@ -115,7 +133,13 @@ impl TantivyCorpus {
     /// here that no index can report about itself. Everything else is read or derived:
     /// `corpus_id` from the documents, the schema version from this build, and the id
     /// scheme from the code that composes the ids.
-    pub fn open(
+    ///
+    /// `pub(crate)`, so the only way in is [`Self::from_engine`]. A bare `Searcher` carries
+    /// no evidence that the index it came from is one this build can read — the schema it
+    /// would then be labelled with is this crate's constant, not a value anything checked —
+    /// and an artifact labelled with an unverified schema version is an artifact that opens
+    /// against the wrong index.
+    pub(crate) fn open(
         searcher: Searcher,
         library_version: impl Into<String>,
         chunking: ChunkerConfig,
@@ -193,30 +217,34 @@ impl TantivyCorpus {
         for lines in books.values_mut() {
             lines.sort_unstable();
         }
+        ensure_ids_encode_positions(&books)?;
 
-        let corpus_id = compute_corpus_id(&searcher, &books, &locations)?;
-        let identity = CorpusIdentity {
-            corpus_id,
-            library_version: library_version.into(),
-            tantivy_schema_version: crate::api::search_engine::INDEX_SCHEMA_VERSION,
-            document_id_scheme_version: DOCUMENT_ID_SCHEME_VERSION,
-        };
-
-        log::info!(
-            "Semantic corpus opened over {} live line(s) in {} book(s); corpus_id {}",
-            expected,
-            books.len(),
-            identity.corpus_id
-        );
-
-        Ok(Self {
+        // Built with a placeholder identity, because deriving `corpus_id` means reading
+        // every line through the same strict reader the build will use — which is a method
+        // on the corpus, not a second way to read a document.
+        let mut corpus = Self {
             searcher,
-            identity,
+            identity: CorpusIdentity {
+                corpus_id: String::new(),
+                library_version: library_version.into(),
+                tantivy_schema_version: crate::api::search_engine::INDEX_SCHEMA_VERSION,
+                document_id_scheme_version: DOCUMENT_ID_SCHEME_VERSION,
+            },
             chunking,
             books,
             locations,
             plan: RefCell::new(None),
-        })
+        };
+        corpus.identity.corpus_id = compute_corpus_id(&corpus)?;
+
+        log::info!(
+            "Semantic corpus opened over {} live line(s) in {} book(s); corpus_id {}",
+            expected,
+            corpus.books.len(),
+            corpus.identity.corpus_id
+        );
+
+        Ok(corpus)
     }
 
     /// How many lines the snapshot holds. Reported before a build starts, so an index that
@@ -233,74 +261,95 @@ impl TantivyCorpus {
         let Some(location) = self.locations.get(&line_id) else {
             return Ok(None);
         };
-        let address = location.address;
-        let document: TantivyDocument =
-            self.searcher
-                .doc(address)
-                .map_err(|error| PackError::Corpus {
-                    reason: format!("reading line {line_id}: {error}"),
-                })?;
+        self.read_at(location.address, line_id)
+            .map(Some)
+            .map_err(|reason| PackError::Corpus { reason })
+    }
+
+    /// Every field of one line, or an explanation of which one the index could not answer.
+    ///
+    /// **Nothing here defaults.** A missing text is not `""`, a missing column is not `0`
+    /// and a missing `isPdf` is not `false`: each of those is a value the artifact would
+    /// then carry, that the packer would verify against the same fabricated value, and that
+    /// the application would filter and group by. A document the index counts but cannot
+    /// describe has to stop the build.
+    ///
+    /// `contentHash` is the one field where `0` is a real answer — a PDF has no fingerprint
+    /// in the library database — which is exactly why "the column has no value for this
+    /// document" and "the value is zero" must not collapse into each other.
+    fn read_at(&self, address: DocAddress, line_id: u64) -> Result<CorpusLine, String> {
+        let document: TantivyDocument = self
+            .searcher
+            .doc(address)
+            .map_err(|error| format!("reading line {line_id}: {error}"))?;
         let reader = self.searcher.segment_reader(address.segment_ord);
         let doc = address.doc_id;
         let schema = self.searcher.schema();
 
-        let text = |name: &str| -> Result<String, PackError> {
-            let field = schema.get_field(name).map_err(|error| PackError::Corpus {
-                reason: format!("schema has no {name}: {error}"),
-            })?;
-            Ok(document
-                .get_first(field)
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string())
+        /// One stored value, or a named failure. Multi-valued is refused with the rest: a
+        /// second `title` on a document would make "the title" depend on insertion order.
+        fn stored<'a>(
+            schema: &tantivy::schema::Schema,
+            document: &'a TantivyDocument,
+            name: &str,
+            line_id: u64,
+        ) -> Result<tantivy::schema::document::CompactDocValue<'a>, String> {
+            let field = schema
+                .get_field(name)
+                .map_err(|error| format!("the schema has no {name} field: {error}"))?;
+            let mut values = document.get_all(field);
+            let first = values
+                .next()
+                .ok_or_else(|| format!("line {line_id} carries no {name}"))?;
+            if values.next().is_some() {
+                return Err(format!("line {line_id} carries more than one {name}"));
+            }
+            Ok(first)
+        }
+
+        let text_field = |name: &str| -> Result<String, String> {
+            stored(schema, &document, name, line_id)?
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("line {line_id} carries a {name} that is not text"))
         };
-        let stored_u64 = |name: &str| -> Result<u64, PackError> {
-            let field = schema.get_field(name).map_err(|error| PackError::Corpus {
-                reason: format!("schema has no {name}: {error}"),
-            })?;
-            Ok(document
-                .get_first(field)
-                .and_then(|value| value.as_u64())
-                .unwrap_or_default())
+        let stored_u64 = |name: &str| -> Result<u64, String> {
+            stored(schema, &document, name, line_id)?
+                .as_u64()
+                .ok_or_else(|| format!("line {line_id} carries a {name} that is not a u64"))
+        };
+        let stored_bool = |name: &str| -> Result<bool, String> {
+            stored(schema, &document, name, line_id)?
+                .as_bool()
+                .ok_or_else(|| format!("line {line_id} carries a {name} that is not a bool"))
         };
         // `sectionId`, `lineHash` and `contentHash` are FAST and **not stored**, so they
         // come off the columnar readers rather than out of the document. Reading them from
-        // the stored document would silently yield zero for all three.
-        let column_u64 = |name: &str| -> Result<u64, PackError> {
-            let column = reader
+        // the stored document yields nothing at all — which, defaulted, is a zero in every
+        // record of every artifact.
+        let column_u64 = |name: &str| -> Result<u64, String> {
+            reader
                 .fast_fields()
                 .u64(name)
-                .map_err(|error| PackError::Corpus {
-                    reason: format!("reading the {name} column: {error}"),
-                })?;
-            Ok(column.first(doc).unwrap_or_default())
+                .map_err(|error| format!("reading the {name} column: {error}"))?
+                .first(doc)
+                .ok_or_else(|| format!("line {line_id} has no {name} in the column"))
         };
 
-        let facets = self
-            .read_facets(address)
-            .map_err(|error| PackError::Corpus {
-                reason: format!("reading the facets of line {line_id}: {error}"),
-            })?;
-
-        let is_pdf = schema
-            .get_field("isPdf")
-            .ok()
-            .and_then(|field| document.get_first(field))
-            .map(|value| matches!(OwnedValue::from(value), OwnedValue::Bool(true)))
-            .unwrap_or(false);
-
-        Ok(Some(CorpusLine {
-            source_book_key: text("filePath")?,
-            title: text("title")?,
-            reference: text("reference")?,
+        Ok(CorpusLine {
+            source_book_key: text_field("filePath")?,
+            title: text_field("title")?,
+            reference: text_field("reference")?,
             section_id: column_u64("sectionId")?,
             segment: stored_u64("segment")?,
-            is_pdf,
+            is_pdf: stored_bool("isPdf")?,
             line_hash: column_u64("lineHash")?,
             content_hash: column_u64("contentHash")?,
-            facets,
-            text: text("text")?,
-        }))
+            facets: self
+                .read_facets(address)
+                .map_err(|error| format!("reading the facets of line {line_id}: {error}"))?,
+            text: text_field("text")?,
+        })
     }
 
     /// Every facet path on a document, sorted and deduplicated.
@@ -382,64 +431,100 @@ impl CorpusBooks for TantivyCorpus {
     }
 }
 
-/// A deterministic digest of the documents this snapshot holds.
+/// A deterministic digest of the corpus this snapshot holds.
 ///
-/// **What it covers, and why that is the line drawn.** For every live document, in
-/// ascending `line_id`: the id, the book it belongs to, and its text. Those three are what
-/// a semantic result *is* — an id the application resolves back to a book and a passage —
-/// so an index whose ids or text moved must produce a different value, and a semantic
-/// artifact built from the old one must be refused.
+/// **Every field of every line, not just its text.** `corpus_id` is the *only* thing
+/// standing between an installed artifact and an index that has moved: on a device there is
+/// no join against Tantivy — [`OfficialSemanticIndex::open`] compares identities and then
+/// reads vectors. So anything that changes what a vector means, or what the application
+/// does with the result, has to change this value:
 ///
-/// Metadata (title, reference, facets) is deliberately outside. It is compared record by
-/// record when an artifact is validated, and at query time the application hydrates it from
-/// Tantivy rather than from the artifact, so a re-titled book is not a reason to rebuild
-/// six million vectors.
+/// * `text` and `section_id` decide what was embedded — a short line takes its context from
+///   its neighbours *in the same section*, so a re-sectioned book embeds different text.
+/// * `facets` and `is_pdf` are what the sidecar filters on, before any hydration.
+/// * `line_hash` is what `IdenticalText` grouping collapses on, and `section_id` is what
+///   `SameSection` groups by.
+/// * `title` and `reference` are displayed from Tantivy at query time, but they are also
+///   stored in the artifact and compared record by record when it is validated — and "the
+///   build machine would have caught it" is not a guarantee an installation has.
 ///
-/// Every field is length-prefixed, so no two different corpora can serialize to the same
-/// bytes by moving a boundary — `("a", "bc")` and `("ab", "c")` are different inputs here.
-fn compute_corpus_id(
-    searcher: &Searcher,
-    books: &BTreeMap<String, Vec<u64>>,
-    locations: &HashMap<u64, Location>,
-) -> Result<String> {
-    let schema = searcher.schema();
-    let text_field = schema
-        .get_field("text")
-        .context("the `text` field is required to derive a corpus_id")?;
-
+/// The cost of the wider digest is that re-titling a book invalidates its vectors. That is
+/// the right default: repacking metadata without re-running inference is a future
+/// optimization, and silently accepting stale metadata is not.
+///
+/// Every field is length-prefixed through the canonical JSON of [`CorpusLine`], so no two
+/// different corpora serialize to the same bytes by moving a boundary.
+fn compute_corpus_id(corpus: &TantivyCorpus) -> Result<String> {
     // Ascending id globally, so the value does not depend on how segments are laid out or
     // on the order books happen to be enumerated in.
-    let mut ordered: Vec<(u64, &str)> = Vec::with_capacity(locations.len());
-    for (book_key, lines) in books {
-        ordered.extend(lines.iter().map(|line_id| (*line_id, book_key.as_str())));
-    }
+    let mut ordered: Vec<u64> = corpus.locations.keys().copied().collect();
     ordered.sort_unstable();
 
     let mut hasher = Sha256::new();
     hasher.update(CORPUS_ID_VERSION.to_le_bytes());
     hasher.update((ordered.len() as u64).to_le_bytes());
 
-    let feed = |hasher: &mut Sha256, bytes: &[u8]| {
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(bytes);
-    };
-
-    for (line_id, book_key) in ordered {
-        let location = locations
-            .get(&line_id)
-            .expect("every ordered id came from `locations`");
-        let document: TantivyDocument = searcher.doc(location.address)?;
-        let text = document
-            .get_first(text_field)
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-
-        hasher.update(line_id.to_le_bytes());
-        feed(&mut hasher, book_key.as_bytes());
-        feed(&mut hasher, text.as_bytes());
+    for line_id in ordered {
+        let address = corpus.locations[&line_id].address;
+        let line = corpus
+            .read_at(address, line_id)
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        feed_line(&mut hasher, line_id, &line)?;
     }
 
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// One line's contribution to the digest: its id, and the canonical JSON of everything the
+/// corpus says about it.
+///
+/// Serde emits a struct's fields in declaration order, so this is stable for a given
+/// [`CorpusLine`] — and a field *added* to that struct changes every `corpus_id`, which is
+/// correct: a field worth storing in an artifact is a field worth invalidating one over.
+fn feed_line(hasher: &mut Sha256, line_id: u64, line: &CorpusLine) -> Result<()> {
+    let canonical = serde_json::to_vec(line)?;
+    hasher.update(line_id.to_le_bytes());
+    hasher.update((canonical.len() as u64).to_le_bytes());
+    hasher.update(&canonical);
+    Ok(())
+}
+
+/// Refuse a snapshot whose ids were not composed the way this adapter reads them.
+///
+/// A book's lines come back in ascending `line_id` because scheme 1 puts the line's
+/// position in the low half. `add_text_book` composes ids that way, but the public
+/// `add_document` API accepts any `u64` — so an index can hold ids that do not encode a
+/// position at all, and this adapter would still declare `document_id_scheme_version = 1`
+/// and hand the chunker neighbours in an order nobody chose.
+///
+/// What is checked is the structure the ordering depends on: every line of a book shares one
+/// high half, no two books share one, and no line sits at position zero.
+///
+/// **Contiguity is deliberately not required.** Deleting a line leaves a gap, and a corpus
+/// with a deleted line is a normal corpus — demanding `1..=n` would refuse it.
+fn ensure_ids_encode_positions(books: &BTreeMap<String, Vec<u64>>) -> Result<()> {
+    let mut owner: HashMap<u32, &str> = HashMap::new();
+    for (book_key, lines) in books {
+        let high = (lines[0] >> 32) as u32;
+        if let Some(other) = owner.insert(high, book_key.as_str()) {
+            anyhow::bail!(
+                "books {other:?} and {book_key:?} share the id prefix {high}: their lines                  interleave, and neither book's order survives"
+            );
+        }
+        for line_id in lines {
+            if (line_id >> 32) as u32 != high {
+                anyhow::bail!(
+                    "book {book_key:?} holds line {line_id}, whose id prefix is not {high}:                      these ids were not composed by document_id_scheme_version                      {DOCUMENT_ID_SCHEME_VERSION}"
+                );
+            }
+            if *line_id as u32 == 0 {
+                anyhow::bail!(
+                    "line {line_id} in {book_key:?} sits at position 0, and positions are                      1-based under document_id_scheme_version {DOCUMENT_ID_SCHEME_VERSION}"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -633,19 +718,89 @@ mod tests {
         );
     }
 
-    /// `corpus_id` exists to answer one question: are these the same documents? So it must
-    /// move when a line's text moves, and stay put when something the application hydrates
-    /// from Tantivy anyway is relabelled.
+    /// **Every field of a line reaches the digest**, and a field added to `CorpusLine`
+    /// reaches it without anyone remembering to add it here.
+    ///
+    /// Driven off the *serialized* line rather than a hand-written list, for the same reason
+    /// the identity fields are: a list can be forgotten. On a device there is no join
+    /// against Tantivy — the installation compares `CorpusIdentity` and then reads vectors —
+    /// so a field left out of this digest is a field an index can change under a shipped
+    /// artifact with nothing anywhere noticing. `section_id` decides what a short line
+    /// embeds; `facets` and `is_pdf` are filtered on before hydration; `line_hash` and
+    /// `section_id` are what grouping collapses on.
     #[test]
-    fn the_corpus_id_tracks_the_documents_and_not_their_labels() {
+    fn every_field_of_a_line_reaches_the_digest() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine_with_books(&dir);
+        let corpus = corpus(&engine);
+        let line_id = corpus.book_line_ids(GENESIS).unwrap()[0];
+        let line = corpus.line(line_id).unwrap().unwrap();
+
+        let digest_of = |line: &CorpusLine| {
+            let mut hasher = Sha256::new();
+            feed_line(&mut hasher, line_id, line).unwrap();
+            format!("{:x}", hasher.finalize())
+        };
+        let baseline = digest_of(&line);
+        assert_eq!(
+            baseline,
+            digest_of(&line),
+            "the digest is a function of the line"
+        );
+
+        let serialized: serde_json::Map<String, serde_json::Value> =
+            match serde_json::to_value(&line).unwrap() {
+                serde_json::Value::Object(map) => map,
+                other => panic!("a corpus line serializes to an object, got {other:?}"),
+            };
+        assert!(!serialized.is_empty());
+
+        for (field, value) in &serialized {
+            let mut changed = serialized.clone();
+            changed.insert(field.clone(), disturb(value));
+            let changed: CorpusLine =
+                serde_json::from_value(serde_json::Value::Object(changed)).unwrap();
+            assert_ne!(
+                digest_of(&changed),
+                baseline,
+                "changing {field} must change corpus_id: nothing on a device would catch it"
+            );
+        }
+
+        // The id itself, which is not part of the serialized line.
+        let mut hasher = Sha256::new();
+        feed_line(&mut hasher, line_id + 1, &line).unwrap();
+        assert_ne!(format!("{:x}", hasher.finalize()), baseline);
+    }
+
+    /// Produce a different value of the same JSON type.
+    fn disturb(value: &serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::String(text) => Value::String(format!("{text}!")),
+            Value::Bool(flag) => Value::Bool(!flag),
+            Value::Number(number) => {
+                Value::Number(serde_json::Number::from(number.as_u64().unwrap_or(0) + 1))
+            }
+            Value::Array(items) => {
+                let mut items = items.clone();
+                items.push(Value::String("/disturbed".to_string()));
+                Value::Array(items)
+            }
+            other => panic!("no disturbance defined for {other:?}"),
+        }
+    }
+
+    /// `corpus_id` is a property of the corpus, not of a run: the same library built twice
+    /// produces the same value, and a word changed in one line does not.
+    #[test]
+    fn the_corpus_id_is_reproducible_and_moves_with_the_documents() {
         let first = TempDir::new().unwrap();
         let baseline = corpus(&engine_with_books(&first))
             .identity()
             .unwrap()
             .corpus_id;
 
-        // Same documents, built again from scratch: the digest is a property of the corpus
-        // and not of a run.
         let repeat = TempDir::new().unwrap();
         assert_eq!(
             corpus(&engine_with_books(&repeat))
@@ -655,39 +810,10 @@ mod tests {
             baseline
         );
 
-        // A different title, the same texts. The artifact's records are compared against
-        // the corpus field by field when it is validated, and at query time the title comes
-        // out of Tantivy — so this must not invalidate six million vectors.
-        let retitled = TempDir::new().unwrap();
-        let mut engine = SearchEngine::new(retitled.path().to_str().unwrap());
-        engine
-            .add_text_book(
-                "בראשית — מהדורה מחודשת".to_string(),
-                "/מקרא/תורה".to_string(),
-                GENESIS.to_string(),
-                0,
-                0,
-                GENESIS_TEXT.to_string(),
-                Some(vec!["/era/תנך".to_string()]),
-            )
-            .unwrap();
-        engine
-            .add_text_book(
-                "משנה ברכות".to_string(),
-                "/משנה/זרעים".to_string(),
-                BERACHOT.to_string(),
-                1,
-                0,
-                BERACHOT_TEXT.to_string(),
-                None,
-            )
-            .unwrap();
-        engine.commit().unwrap();
-        assert_eq!(corpus(&engine).identity().unwrap().corpus_id, baseline);
-
-        // One word changed in one line. Every vector built from that line is now wrong.
-        let edited = TempDir::new().unwrap();
-        let mut engine = SearchEngine::new(edited.path().to_str().unwrap());
+        // Through the index this time rather than through a synthesized line: a facet added
+        // to a book changes what the sidecar filters on, and must invalidate its vectors.
+        let refaceted = TempDir::new().unwrap();
+        let mut engine = SearchEngine::new(refaceted.path().to_str().unwrap());
         engine
             .add_text_book(
                 "בראשית".to_string(),
@@ -695,8 +821,8 @@ mod tests {
                 GENESIS.to_string(),
                 0,
                 0,
-                GENESIS_TEXT.replace("השמים", "השמיים"),
-                Some(vec!["/era/תנך".to_string()]),
+                GENESIS_TEXT.to_string(),
+                Some(vec!["/era/תנך".to_string(), "/author/משה".to_string()]),
             )
             .unwrap();
         engine
@@ -762,6 +888,183 @@ mod tests {
             }
             other => panic!("a corpus must not certify coverage for another recipe, got {other:?}"),
         }
+    }
+
+    /// A document the index counts but cannot describe must stop the build.
+    ///
+    /// Written straight to Tantivy, past the engine's own document builder, because that is
+    /// the only way this shape occurs: a schema change, a partially-written segment, or an
+    /// index some other tool wrote. It is counted by `num_docs`, so the enumeration
+    /// cross-check agrees with it — and every defaulted field would then be a real value in
+    /// a real artifact, verified by the packer against the same fabrication and filtered on
+    /// by the application.
+    #[test]
+    fn a_document_missing_a_required_field_is_refused_rather_than_defaulted() {
+        use tantivy::{Index, TantivyDocument};
+
+        let dir = TempDir::new().unwrap();
+        let engine = engine_with_books(&dir);
+        // The next position in Berachot, so the id scheme check still passes.
+        let maimed_id = corpus(&engine).book_line_ids(BERACHOT).unwrap()[0] + 1;
+        drop(engine);
+
+        // Reopened directly. The tokenizers this schema names are registered on the
+        // engine's own `Index`, so a bare reopen has to re-register something under those
+        // names before it can write; what it tokenizes with is irrelevant here.
+        let index = Index::open_in_dir(dir.path()).unwrap();
+        for name in ["hebrew", "hebrew_vocalized"] {
+            index.tokenizers().register(
+                name,
+                tantivy::tokenizer::TextAnalyzer::from(
+                    tantivy::tokenizer::SimpleTokenizer::default(),
+                ),
+            );
+        }
+        let schema = index.schema();
+        let field = |name: &str| schema.get_field(name).unwrap();
+
+        let mut writer = index.writer(50_000_000).unwrap();
+        let mut maimed = TantivyDocument::new();
+        maimed.add_text(field("text"), "שורה ארוכה דיה כדי לעמוד בפני עצמה");
+        maimed.add_text(field("reference"), "ref");
+        maimed.add_text(field("title"), "משנה ברכות");
+        maimed.add_text(field("filePath"), BERACHOT);
+        maimed.add_u64(field("id"), maimed_id);
+        maimed.add_u64(field("segment"), 1);
+        // Everything else present, so the refusal below can only be about the one field
+        // that is not — otherwise this would pass for the wrong reason.
+        for name in ["sectionId", "lineHash", "contentHash", "generationSort"] {
+            maimed.add_u64(field(name), 1);
+        }
+        // `isPdf` deliberately absent. Defaulted it would read as `false` — a filterable
+        // value the application acts on, invented here and then verified against itself.
+        maimed.add_facet(
+            field("topics"),
+            tantivy::schema::Facet::from_text("/משנה/זרעים").unwrap(),
+        );
+        writer.add_document(maimed).unwrap();
+        writer.commit().unwrap();
+        drop(writer);
+
+        let engine = SearchEngine::new(dir.path().to_str().unwrap());
+        // Refused at `open`, not at the line: deriving `corpus_id` reads every document
+        // through the same strict reader, so a corpus that cannot describe itself never
+        // becomes one a build can start from. The document is counted by `num_docs`, so
+        // the enumeration cross-check agrees with it and would never have seen it.
+        let error = expect_refusal(&engine, "a document with no isPdf must be refused");
+        assert!(
+            error.contains("isPdf") && error.contains(&maimed_id.to_string()),
+            "the refusal names the field and the line: {error}"
+        );
+    }
+
+    /// Open a corpus expecting a refusal. `TantivyCorpus` has no `Debug`, and giving it
+    /// one just so `expect_err` compiles would put a `Searcher` and a book map in a panic
+    /// message.
+    fn expect_refusal(engine: &SearchEngine, what: &str) -> String {
+        match TantivyCorpus::from_engine(engine, "v", ChunkerConfig::default()) {
+            Err(error) => format!("{error}"),
+            Ok(_) => panic!("{what}"),
+        }
+    }
+
+    /// The ordering this adapter performs is only correct because the ids encode a
+    /// position — and the public `add_document` accepts any `u64` at all.
+    ///
+    /// Without this check a caller could hand the engine ids from another scheme (or none),
+    /// and a build would sort a book's lines into an order nobody chose, hand the chunker
+    /// neighbours that never surrounded a line, and still stamp
+    /// `document_id_scheme_version = 1` on the artifact.
+    #[test]
+    fn ids_that_do_not_encode_a_position_are_refused() {
+        // Two books sharing a prefix: their lines interleave, and neither book's order
+        // survives the sort.
+        let shared = TempDir::new().unwrap();
+        let mut engine = SearchEngine::new(shared.path().to_str().unwrap());
+        for (id, path) in [(1u64 << 32 | 1, GENESIS), (1u64 << 32 | 2, BERACHOT)] {
+            engine
+                .add_document(
+                    id,
+                    "t",
+                    "r",
+                    "/root",
+                    "שורה ארוכה דיה לעמוד בפני עצמה",
+                    0,
+                    false,
+                    path,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        engine.commit().unwrap();
+        let error = expect_refusal(&engine, "two books cannot share an id prefix");
+        assert!(error.contains("share the id prefix"), "{error}");
+
+        // One book whose lines come from two prefixes: the low halves are no longer
+        // positions within one book.
+        let mixed = TempDir::new().unwrap();
+        let mut engine = SearchEngine::new(mixed.path().to_str().unwrap());
+        for id in [1u64 << 32 | 1, 2u64 << 32 | 1] {
+            engine
+                .add_document(
+                    id,
+                    "t",
+                    "r",
+                    "/root",
+                    "שורה ארוכה דיה לעמוד בפני עצמה",
+                    0,
+                    false,
+                    GENESIS,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        engine.commit().unwrap();
+        let error = expect_refusal(&engine, "a book's ids must share one prefix");
+        assert!(error.contains("id prefix is not"), "{error}");
+
+        // Position zero: ids are 1-based, so a zero low half is not a position at all.
+        let zero = TempDir::new().unwrap();
+        let mut engine = SearchEngine::new(zero.path().to_str().unwrap());
+        engine
+            .add_document(
+                1u64 << 32,
+                "t",
+                "r",
+                "/root",
+                "שורה ארוכה דיה לעמוד בפני עצמה",
+                0,
+                false,
+                GENESIS,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        let error = expect_refusal(&engine, "position 0 does not exist under scheme 1");
+        assert!(error.contains("position 0"), "{error}");
+    }
+
+    /// A gap left by a deleted line is not a broken id scheme.
+    ///
+    /// Contiguity is deliberately not required: a corpus a book was deleted from is an
+    /// ordinary corpus, and demanding `1..=n` would refuse it.
+    #[test]
+    fn a_gap_left_by_a_deletion_is_still_a_valid_id_scheme() {
+        let dir = TempDir::new().unwrap();
+        let mut engine = engine_with_books(&dir);
+        let middle = corpus(&engine).book_line_ids(GENESIS).unwrap()[1];
+        engine.delete_document_by_id(middle).unwrap();
+        engine.commit().unwrap();
+
+        let corpus = corpus(&engine);
+        assert_eq!(corpus.line_count(), 4);
+        assert!(!corpus.book_line_ids(GENESIS).unwrap().contains(&middle));
     }
 
     /// **S4b's acceptance gate, without Dart:** a Tantivy index and a model in, a full

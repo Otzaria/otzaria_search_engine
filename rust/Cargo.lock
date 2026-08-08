@@ -1187,6 +1187,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "llama-cpp-2"
 version = "0.1.153"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=bb8ea831eb6a37ffee7f185ce3c5293f3280e2ac#bb8ea831eb6a37ffee7f185ce3c5293f3280e2ac"
 dependencies = [
  "encoding_rs",
  "enumflags2",
@@ -1398,6 +1399,7 @@ dependencies = [
 [[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=bb8ea831eb6a37ffee7f185ce3c5293f3280e2ac#bb8ea831eb6a37ffee7f185ce3c5293f3280e2ac"
 dependencies = [
  "llama-cpp-2",
  "llama-cpp-sys-2",
