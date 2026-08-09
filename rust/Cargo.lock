@@ -665,7 +665,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1187,7 +1187,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "llama-cpp-2"
 version = "0.1.153"
-source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=d9de678341ea4fd81919037fa732c4a8dd0e5bf5#d9de678341ea4fd81919037fa732c4a8dd0e5bf5"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=e836ea6cac05e695efdb03ef227e78cd1a624149#e836ea6cac05e695efdb03ef227e78cd1a624149"
 dependencies = [
  "encoding_rs",
  "enumflags2",
@@ -1399,7 +1399,7 @@ dependencies = [
 [[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
-source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=d9de678341ea4fd81919037fa732c4a8dd0e5bf5#d9de678341ea4fd81919037fa732c4a8dd0e5bf5"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=e836ea6cac05e695efdb03ef227e78cd1a624149#e836ea6cac05e695efdb03ef227e78cd1a624149"
 dependencies = [
  "llama-cpp-2",
  "llama-cpp-sys-2",
@@ -1670,7 +1670,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1713,6 +1713,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tantivy",
  "tantivy-fst",
  "tempfile",
@@ -2002,7 +2003,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2292,7 +2293,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

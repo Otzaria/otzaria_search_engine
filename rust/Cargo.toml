@@ -36,6 +36,13 @@ too_many_arguments = "allow"
 name = "benchmark_cli"
 path = "src/bin/benchmark_cli.rs"
 
+# The build-machine entry point for S4b. Compiles in every configuration — without a
+# semantic backend it prints why it cannot run rather than failing to exist, so a release
+# pipeline discovers the missing feature from the binary instead of from cargo.
+[[bin]]
+name = "build_semantic_artifact"
+path = "src/bin/build_semantic_artifact.rs"
+
 [dependencies]
 env_logger = "0.11.10"
 flutter_rust_bridge = "=2.12.0"
@@ -60,11 +67,15 @@ lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
+# `corpus_id` is a SHA-256 over the documents an artifact is built from. Same crate and
+# major version the semantic sidecar hashes with, so the two sides cannot disagree about
+# what SHA-256 means.
+sha2 = "0.10"
 
 # The semantic sidecar's persisted-vector format and llama bindings are part of
 # the index identity.  A branch dependency can silently change either; pin the
 # exact reviewed revision and retain it in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "d9de678341ea4fd81919037fa732c4a8dd0e5bf5", optional = true }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "e836ea6cac05e695efdb03ef227e78cd1a624149", optional = true }
 
 [dev-dependencies]
 # הידור התבניות שהמודול הזה מחזיר, כדי לבדוק אותן על טקסט אמיתי ולא רק

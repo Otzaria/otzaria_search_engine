@@ -763,7 +763,7 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // ממדיים (author/era/base על שדה topics) — שינויי סכימה/תוכן שמחייבים
 // העלאת גרסה לפני פרסום (את lineHash בדיקת ההתאימות תתפוס גם לבדה;
 // את ה-facets הממדיים — לא, כמו הטוקן נטול-הגרשיים לעיל).
-const INDEX_SCHEMA_VERSION: u32 = 3;
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 3;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
@@ -827,6 +827,24 @@ type SchemaFields = (
     Field,
     Field,
 );
+
+/// The high half of every document id in one book: `(catalogue_order + 1) << 32`.
+///
+/// Refuses the last catalogue position rather than computing it. `u32::MAX + 1` is `2^32`,
+/// and shifting that left by 32 overflows a `u64` — wrapping to a base of **zero** in
+/// release, which is not a catalogue position at all: every book at position 0 would share
+/// its prefix with the raw ordinals, and `semantic_corpus` would refuse the whole index for
+/// an id scheme it could not order. One unusable position out of four billion, named here
+/// instead of discovered there.
+fn catalogue_id_base(catalogue_order: u32) -> Result<u64> {
+    if catalogue_order == u32::MAX {
+        anyhow::bail!(
+            "catalogue_order {catalogue_order} is the one value that cannot form a document \
+             id: (catalogue_order + 1) << 32 overflows u64"
+        );
+    }
+    Ok((u64::from(catalogue_order) + 1) << 32)
+}
 
 fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
     (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
@@ -1617,6 +1635,11 @@ const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
 pub struct SearchEngine {
     schema: Schema,
+    /// The directory this engine opened. Retained only so a build can ask whether the
+    /// index it is about to read is one this version reads — see
+    /// [`Self::index_compatibility`].
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    index_path: PathBuf,
     index: Index,
     index_writer: Option<IndexWriter>,
     writer_heap_size: usize,
@@ -1746,6 +1769,7 @@ impl SearchEngine {
 
         SearchEngine {
             schema,
+            index_path: PathBuf::from(path),
             index,
             index_writer,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
@@ -2053,8 +2077,14 @@ impl SearchEngine {
                 return Ok(Self::semantic_disabled_diff());
             };
             let fingerprints = self.get_book_fingerprints()?;
-            let Some(diff) = runtime.get_semantic_index_diff_from_lexical_hashes(&fingerprints)
-            else {
+            // The sidecar now separates "the semantic path is off" from "the comparison
+            // itself failed": the first is `Ok(None)`, the second an error. Collapsing
+            // them would report a broken manifest as a disabled feature, and the app
+            // would offer indexing as the fix.
+            let diff = runtime
+                .get_semantic_index_diff_from_lexical_hashes(&fingerprints)
+                .map_err(|err| anyhow::anyhow!("semantic index diff failed: {err}"))?;
+            let Some(diff) = diff else {
                 return Ok(Self::semantic_disabled_diff());
             };
             Ok(SemanticIndexDiff {
@@ -2255,6 +2285,11 @@ impl SearchEngine {
                         SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
                         SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
                     }),
+                    // Both are per-request overrides the sidecar added; `None` keeps its
+                    // configured profile and flags, which is what this call has always
+                    // used. Choosing either from here is S5's decision, not a repin's.
+                    profile: None,
+                    feature_flags: None,
                 })
                 .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
 
@@ -2894,7 +2929,7 @@ impl SearchEngine {
             generation_order,
             extra_facets.clone(),
         );
-        let id_base = (u64::from(catalogue_order) + 1) << 32;
+        let id_base = catalogue_id_base(catalogue_order)?;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
@@ -3033,7 +3068,7 @@ impl SearchEngine {
             .iter()
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
-        let id_base = (u64::from(catalogue_order) + 1) << 32;
+        let id_base = catalogue_id_base(catalogue_order)?;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -3188,6 +3223,28 @@ impl SearchEngine {
     }
 
     /// Delete a document by its numeric id. Does not commit.
+    /// Whether the index this engine opened is one this build reads.
+    ///
+    /// `pub(crate)`: the FFI already exposes [`check_index_compatibility`] by path. This is
+    /// the same answer for the directory already open, so a build does not have to be told
+    /// again where it is.
+    #[cfg(feature = "semantic-integration")]
+    pub(crate) fn index_compatibility(&self) -> IndexCompatibility {
+        check_index_compatibility_path(&self.index_path)
+    }
+
+    /// A snapshot of the index for the semantic builder to read the corpus from.
+    ///
+    /// `pub(crate)`, so flutter_rust_bridge never sees it: Dart has no use for a
+    /// `Searcher`, and the corpus port is a Rust-to-Rust contract with the sidecar. One
+    /// call is one snapshot — see [`TantivyCorpus`](crate::semantic_corpus::TantivyCorpus),
+    /// which holds it for a whole build precisely so a reload cannot move the corpus
+    /// underneath one.
+    #[cfg(feature = "semantic-integration")]
+    pub(crate) fn corpus_searcher(&self) -> Searcher {
+        self.index_reader.searcher()
+    }
+
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
         let id_f = self.schema.get_field("id").unwrap();
         self.writer_mut()?

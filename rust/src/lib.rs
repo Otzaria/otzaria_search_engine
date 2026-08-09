@@ -18,3 +18,8 @@ mod magic;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
 mod lexicons;
+// The lexical index seen as the semantic builder's corpus (S4b). At the crate root, not
+// under `api`: it is a Rust-to-Rust port between this engine and the semantic sidecar, and
+// flutter_rust_bridge must not generate bindings for it — Dart never supplies a corpus.
+#[cfg(feature = "semantic-integration")]
+pub mod semantic_corpus;
