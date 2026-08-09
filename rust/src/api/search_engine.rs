@@ -3245,6 +3245,7 @@ impl SearchEngine {
         self.index_reader.searcher()
     }
 
+    /// Delete a document by its numeric id. Does not commit.
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
         let id_f = self.schema.get_field("id").unwrap();
         self.writer_mut()?
