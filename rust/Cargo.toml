@@ -75,7 +75,7 @@ sha2 = "0.10"
 # The semantic sidecar's persisted-vector format and llama bindings are part of
 # the index identity.  A branch dependency can silently change either; pin the
 # exact reviewed revision and retain it in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "bb8ea831eb6a37ffee7f185ce3c5293f3280e2ac", optional = true }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "e836ea6cac05e695efdb03ef227e78cd1a624149", optional = true }
 
 [dev-dependencies]
 # הידור התבניות שהמודול הזה מחזיר, כדי לבדוק אותן על טקסט אמיתי ולא רק
