@@ -52,8 +52,9 @@ use otzaria_semantic_search::semantic::versioning::{CorpusIdentity, ModelIdentit
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 use tantivy::schema::{Facet, Value};
-use tantivy::{DocAddress, Searcher, TantivyDocument};
+use tantivy::{DocAddress, Index, ReloadPolicy, Searcher, TantivyDocument};
 
 /// The id scheme this crate builds, and the only one this adapter can order a book under.
 ///
@@ -99,6 +100,41 @@ pub struct TantivyCorpus {
 }
 
 impl TantivyCorpus {
+    /// Open an index directory for reading, and describe it.
+    ///
+    /// **The read-only way in, and the one a build uses.** [`Self::from_engine`] goes
+    /// through [`SearchEngine`](crate::api::search_engine::SearchEngine), which is the
+    /// *writer's* door: it calls `Index::open_or_create`, opens an `IndexWriter`, and may
+    /// stamp fresh metadata onto the directory. For a build that is four faults at once —
+    /// a mistyped path creates an empty index instead of reporting that there is none, a
+    /// legacy-compatible index is silently re-stamped, a writer lock is held for the hours
+    /// a build takes, and an incompatible schema panics before anything can report it.
+    ///
+    /// This opens the directory, and nothing else. Compatibility is checked *first*, so an
+    /// index this build cannot read is a `Result` rather than a panic from inside tantivy.
+    pub fn from_index_path(
+        index_path: &Path,
+        library_version: impl Into<String>,
+        chunking: ChunkerConfig,
+    ) -> Result<Self> {
+        let compatibility =
+            crate::api::search_engine::check_index_compatibility(index_path.display().to_string());
+        ensure_compatible(&compatibility)?;
+
+        // `open_in_dir`, never `open_or_create`: a path that holds no index is an error to
+        // report, not an index to invent.
+        let index = Index::open_in_dir(index_path)
+            .with_context(|| format!("opening the index at {}", index_path.display()))?;
+        // No `IndexWriter`, and therefore no lock: nothing here writes, and a build that
+        // held the writer for its whole run would block every other tool on the machine.
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .with_context(|| format!("reading the index at {}", index_path.display()))?;
+        Self::open(reader.searcher(), library_version, chunking)
+    }
+
     /// Take the engine's current snapshot and describe it.
     ///
     /// The entry point a build uses. One call is one snapshot, held for the whole build —
@@ -112,18 +148,7 @@ impl TantivyCorpus {
         // build's constant repeated back. `SearchEngine` validates its index's metadata
         // against `INDEX_SCHEMA_VERSION` when it opens it; asking again here is what turns
         // that into a precondition of building rather than a fact about the binary.
-        let compatibility = engine.index_compatibility();
-        if !compatibility.compatible {
-            anyhow::bail!(
-                "the index at {} is not one this build reads (status {}, schema {:?}, \
-                 required {}): {}",
-                compatibility.metadata_path,
-                compatibility.status,
-                compatibility.found_schema_version,
-                compatibility.required_schema_version,
-                compatibility.reason.as_deref().unwrap_or("no reason given")
-            );
-        }
+        ensure_compatible(&engine.index_compatibility())?;
         Self::open(engine.corpus_searcher(), library_version, chunking)
     }
 
@@ -163,13 +188,10 @@ impl TantivyCorpus {
             let mut key = String::new();
             for doc in reader.doc_ids_alive() {
                 scanned += 1;
-                let line_id = ids.first(doc).with_context(|| {
-                    format!("document {doc} in segment {segment_ord} carries no id")
-                })?;
-                let term_ord = paths
-                    .term_ords(doc)
-                    .next()
-                    .with_context(|| format!("line {line_id} carries no filePath"))?;
+                let line_id = exactly_one(ids.values_for_doc(doc), "id", u64::from(doc))
+                    .map_err(|reason| anyhow::anyhow!("in segment {segment_ord}: {reason}"))?;
+                let term_ord = exactly_one(paths.term_ords(doc), "filePath", line_id)
+                    .map_err(|reason| anyhow::anyhow!("{reason}"))?;
                 key.clear();
                 if !paths.ord_to_str(term_ord, &mut key)? {
                     anyhow::bail!("line {line_id} has a filePath ordinal with no string");
@@ -327,14 +349,31 @@ impl TantivyCorpus {
         // come off the columnar readers rather than out of the document. Reading them from
         // the stored document yields nothing at all — which, defaulted, is a zero in every
         // record of every artifact.
+        //
+        // `values_for_doc` rather than `first`: a columnar field is multi-valued in
+        // tantivy whatever the schema suggests, and `first` answers "at least one" — so a
+        // document carrying two `sectionId`s would silently contribute whichever the
+        // column happened to hold first, and the artifact would group by it.
         let column_u64 = |name: &str| -> Result<u64, String> {
-            reader
+            let column = reader
                 .fast_fields()
                 .u64(name)
-                .map_err(|error| format!("reading the {name} column: {error}"))?
-                .first(doc)
-                .ok_or_else(|| format!("line {line_id} has no {name} in the column"))
+                .map_err(|error| format!("reading the {name} column: {error}"))?;
+            exactly_one(column.values_for_doc(doc), name, line_id)
         };
+
+        // The id the enumeration keyed this line by, read back from the document itself.
+        // The scan takes it from the `id` column and this takes it from the stored field;
+        // a document whose two copies disagree would be filed under one id and describe
+        // another, and every record built from it would name the wrong line.
+        let stored_id = stored(schema, &document, "id", line_id)?
+            .as_u64()
+            .ok_or_else(|| format!("line {line_id} carries an id that is not a u64"))?;
+        if stored_id != line_id {
+            return Err(format!(
+                "the line enumerated as {line_id} stores the id {stored_id}"
+            ));
+        }
 
         Ok(CorpusLine {
             source_book_key: text_field("filePath")?,
@@ -489,6 +528,40 @@ fn feed_line(hasher: &mut Sha256, line_id: u64, line: &CorpusLine) -> Result<()>
     Ok(())
 }
 
+/// Refuse an index this build does not read, before anything opens it.
+fn ensure_compatible(compatibility: &crate::api::search_engine::IndexCompatibility) -> Result<()> {
+    if compatibility.compatible {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "this index is not one this build reads (status {}, schema {:?}, required {}): {}",
+        compatibility.status,
+        compatibility.found_schema_version,
+        compatibility.required_schema_version,
+        compatibility.reason.as_deref().unwrap_or("no reason given")
+    )
+}
+
+/// One value, or a named refusal.
+///
+/// "At least one" is not the check that matters. Every columnar field in tantivy is
+/// multi-valued underneath, whatever the schema implies, so a document carrying two
+/// `sectionId`s or two `id`s has one of them chosen by storage layout — and an artifact
+/// built from it describes a line nobody can point at.
+fn exactly_one<T>(
+    mut values: impl Iterator<Item = T>,
+    field: &str,
+    line_id: u64,
+) -> Result<T, String> {
+    let first = values
+        .next()
+        .ok_or_else(|| format!("line {line_id} has no {field}"))?;
+    if values.next().is_some() {
+        return Err(format!("line {line_id} carries more than one {field}"));
+    }
+    Ok(first)
+}
+
 /// Refuse a snapshot whose ids were not composed the way this adapter reads them.
 ///
 /// A book's lines come back in ascending `line_id` because scheme 1 puts the line's
@@ -506,6 +579,18 @@ fn ensure_ids_encode_positions(books: &BTreeMap<String, Vec<u64>>) -> Result<()>
     let mut owner: HashMap<u32, &str> = HashMap::new();
     for (book_key, lines) in books {
         let high = (lines[0] >> 32) as u32;
+        // Scheme 1 composes the high half as `catalogue_order + 1`, so zero is not a
+        // catalogue position at all — it is what a raw ordinal looks like when nothing
+        // composed it, and `line_id = 1` would otherwise be accepted and stamped as
+        // scheme 1.
+        if high == 0 {
+            anyhow::bail!(
+                "book {book_key:?} holds line {} with an id prefix of 0, and prefixes are \
+                 catalogue_order + 1 under document_id_scheme_version \
+                 {DOCUMENT_ID_SCHEME_VERSION}",
+                lines[0]
+            );
+        }
         if let Some(other) = owner.insert(high, book_key.as_str()) {
             anyhow::bail!(
                 "books {other:?} and {book_key:?} share the id prefix {high}: their lines                  interleave, and neither book's order survives"
@@ -956,6 +1041,115 @@ mod tests {
             error.contains("isPdf") && error.contains(&maimed_id.to_string()),
             "the refusal names the field and the line: {error}"
         );
+    }
+
+    /// A columnar field is multi-valued underneath whatever the schema suggests, so
+    /// "the first value" is a choice storage makes, not one anybody wrote down.
+    ///
+    /// Two `id`s file a line under one number while it describes another; two `sectionId`s
+    /// pick which section a short line borrows context from, and which bucket the
+    /// application groups it into. Neither is visible afterwards.
+    #[test]
+    fn a_document_with_two_values_in_a_single_valued_field_is_refused() {
+        use tantivy::{Index, TantivyDocument};
+
+        for (field_name, expected) in [("id", "id"), ("sectionId", "sectionId")] {
+            let dir = TempDir::new().unwrap();
+            let engine = engine_with_books(&dir);
+            let next_id = corpus(&engine).book_line_ids(BERACHOT).unwrap()[0] + 1;
+            drop(engine);
+
+            let index = Index::open_in_dir(dir.path()).unwrap();
+            for name in ["hebrew", "hebrew_vocalized"] {
+                index.tokenizers().register(
+                    name,
+                    tantivy::tokenizer::TextAnalyzer::from(
+                        tantivy::tokenizer::SimpleTokenizer::default(),
+                    ),
+                );
+            }
+            let schema = index.schema();
+            let field = |name: &str| schema.get_field(name).unwrap();
+
+            let mut writer = index.writer(50_000_000).unwrap();
+            let mut doubled = TantivyDocument::new();
+            doubled.add_text(field("text"), "שורה ארוכה דיה כדי לעמוד בפני עצמה");
+            doubled.add_text(field("reference"), "ref");
+            doubled.add_text(field("title"), "משנה ברכות");
+            doubled.add_text(field("filePath"), BERACHOT);
+            doubled.add_bool(field("isPdf"), false);
+            doubled.add_u64(field("id"), next_id);
+            doubled.add_u64(field("segment"), 1);
+            for name in ["sectionId", "lineHash", "contentHash", "generationSort"] {
+                doubled.add_u64(field(name), 1);
+            }
+            // The second value, on the field under test.
+            doubled.add_u64(field(field_name), 99);
+            doubled.add_facet(
+                field("topics"),
+                tantivy::schema::Facet::from_text("/משנה/זרעים").unwrap(),
+            );
+            writer.add_document(doubled).unwrap();
+            writer.commit().unwrap();
+            drop(writer);
+
+            let engine = SearchEngine::new(dir.path().to_str().unwrap());
+            let error = expect_refusal(&engine, "a doubled field must be refused");
+            assert!(
+                error.contains("more than one") && error.contains(expected),
+                "the refusal names the field: {error}"
+            );
+        }
+    }
+
+    /// The one catalogue position that cannot form an id is refused where the id is formed.
+    ///
+    /// `(u32::MAX + 1) << 32` overflows a `u64` and wraps to a base of zero in release —
+    /// which the corpus would then refuse as "no catalogue prefix", for a whole index,
+    /// blaming the reader for something the writer did.
+    #[test]
+    fn the_last_catalogue_position_is_refused_where_the_id_is_composed() {
+        let dir = TempDir::new().unwrap();
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        let refused = engine.add_text_book(
+            "ספר אחרון".to_string(),
+            "/מקרא".to_string(),
+            GENESIS.to_string(),
+            u32::MAX,
+            0,
+            "שורה ארוכה דיה לעמוד בפני עצמה".to_string(),
+            None,
+        );
+        let error = refused.expect_err("the last catalogue position cannot form an id");
+        assert!(format!("{error}").contains("overflows u64"), "{error}");
+    }
+
+    /// Scheme 1 composes the high half as `catalogue_order + 1`, so a prefix of zero is not
+    /// a catalogue position — it is what a bare ordinal looks like when nothing composed
+    /// it. `line_id = 1` would otherwise be accepted and stamped as scheme 1.
+    #[test]
+    fn an_id_with_no_catalogue_prefix_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        engine
+            .add_document(
+                1,
+                "t",
+                "r",
+                "/root",
+                "שורה ארוכה דיה לעמוד בפני עצמה",
+                0,
+                false,
+                GENESIS,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let error = expect_refusal(&engine, "an id with no catalogue prefix must be refused");
+        assert!(error.contains("id prefix of 0"), "{error}");
     }
 
     /// Open a corpus expecting a refusal. `TantivyCorpus` has no `Debug`, and giving it

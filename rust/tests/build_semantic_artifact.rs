@@ -198,3 +198,103 @@ fn the_build_binary_refuses_a_backend_whose_vectors_mean_nothing() {
     );
     assert!(!out.exists(), "a refused build writes nothing");
 }
+
+/// Every file in a directory, by name, size and modification time.
+///
+/// Enough to catch a writer lock file appearing, a metadata sidecar being re-stamped, or a
+/// segment being rewritten — the three ways going through `SearchEngine` would have touched
+/// an index it was only supposed to read.
+fn snapshot(dir: &Path) -> Vec<(String, u64, std::time::SystemTime)> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let meta = entry.metadata().unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                meta.len(),
+                meta.modified().unwrap(),
+            )
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// **The build reads the index and does not touch it** — on the way through, and on the way
+/// out of a failure.
+///
+/// `SearchEngine::new` is the writer's door: `open_or_create`, an `IndexWriter`, and a
+/// metadata file it may stamp. A build that went through it would create an index for a
+/// mistyped path, re-stamp a legacy-compatible one, and hold the writer lock for hours.
+///
+/// **Stated plainly: on an index that already exists and is already current, the writer
+/// path happens to leave the files alone, so this test passes either way today.** It is
+/// here as the guard for the day that stops being true — the case that discriminates now
+/// is `a_path_that_holds_no_index_is_reported_rather_than_populated`.
+#[test]
+fn the_build_leaves_the_index_byte_for_byte_untouched() {
+    let fixture = fixture();
+    let index = fixture.index.path();
+    let before = snapshot(index);
+    assert!(!before.is_empty(), "the fixture wrote a real index");
+
+    let ok = run(
+        &fixture,
+        &fixture.work.path().join("artifact"),
+        &["--allow-non-semantic"],
+    );
+    assert!(ok.status.success());
+    assert_eq!(
+        snapshot(index),
+        before,
+        "a successful build wrote to the index"
+    );
+
+    // And on the failing path, where a half-opened index is easiest to leave behind.
+    let refused = run(&fixture, &fixture.work.path().join("refused"), &[]);
+    assert!(!refused.status.success());
+    assert_eq!(
+        snapshot(index),
+        before,
+        "a refused build wrote to the index"
+    );
+}
+
+/// A path with no index is a fault to report, not an index to create.
+///
+/// `Index::open_or_create` would leave a brand-new empty index behind and the build would
+/// then fail for the wrong reason — "the recipe embeds no line" instead of "there is no
+/// index here", with a directory that now looks like one.
+#[test]
+fn a_path_that_holds_no_index_is_reported_rather_than_populated() {
+    let fixture = fixture();
+    let empty = TempDir::new().unwrap();
+
+    let work = fixture.work.path();
+    let built = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"))
+        .args([
+            "--index",
+            empty.path().to_str().unwrap(),
+            "--library-version",
+            LIBRARY_VERSION,
+            "--model",
+            work.join("model.json").to_str().unwrap(),
+            "--model-file",
+            work.join("model.gguf").to_str().unwrap(),
+            "--chunking",
+            work.join("chunking.json").to_str().unwrap(),
+            "--out",
+            work.join("nothing").to_str().unwrap(),
+            "--allow-non-semantic",
+        ])
+        .output()
+        .expect("the build binary runs");
+
+    assert!(!built.status.success());
+    assert_eq!(
+        std::fs::read_dir(empty.path()).unwrap().count(),
+        0,
+        "a missing index must not be created by a tool that only reads"
+    );
+}

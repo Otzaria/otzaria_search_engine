@@ -37,9 +37,8 @@ fn main() {
     use otzaria_semantic_search::distribution::corpus::CorpusIndex;
     use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
     use otzaria_semantic_search::semantic::versioning::ModelIdentity;
-    use search_engine::api::search_engine::SearchEngine;
     use search_engine::semantic_corpus::TantivyCorpus;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process;
 
     let args: Vec<String> = std::env::args().collect();
@@ -87,14 +86,17 @@ fn main() {
                 process::exit(1);
             });
 
-    // The index is opened read-only in every sense that matters: nothing below writes to
-    // it, and the corpus takes one snapshot of it for the whole build.
-    let engine = SearchEngine::new(&index_path);
-    let corpus = TantivyCorpus::from_engine(&engine, library_version, chunking.clone())
-        .unwrap_or_else(|error| {
-            eprintln!("Could not read the corpus at {index_path}: {error:#}");
-            process::exit(1);
-        });
+    // Read-only, and literally so: `from_index_path` checks compatibility, opens the
+    // directory with `open_in_dir` and never asks for a writer. Going through
+    // `SearchEngine` here would create an index for a mistyped path, re-stamp metadata on
+    // a legacy-compatible one, hold the writer lock for the whole build, and panic on an
+    // incompatible schema instead of reporting it.
+    let corpus =
+        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
+            .unwrap_or_else(|error| {
+                eprintln!("Could not read the corpus at {index_path}: {error:#}");
+                process::exit(1);
+            });
     println!(
         "Corpus: {} line(s) across {} book(s)\ncorpus_id: {}",
         corpus.line_count(),

@@ -828,6 +828,24 @@ type SchemaFields = (
     Field,
 );
 
+/// The high half of every document id in one book: `(catalogue_order + 1) << 32`.
+///
+/// Refuses the last catalogue position rather than computing it. `u32::MAX + 1` is `2^32`,
+/// and shifting that left by 32 overflows a `u64` — wrapping to a base of **zero** in
+/// release, which is not a catalogue position at all: every book at position 0 would share
+/// its prefix with the raw ordinals, and `semantic_corpus` would refuse the whole index for
+/// an id scheme it could not order. One unusable position out of four billion, named here
+/// instead of discovered there.
+fn catalogue_id_base(catalogue_order: u32) -> Result<u64> {
+    if catalogue_order == u32::MAX {
+        anyhow::bail!(
+            "catalogue_order {catalogue_order} is the one value that cannot form a document \
+             id: (catalogue_order + 1) << 32 overflows u64"
+        );
+    }
+    Ok((u64::from(catalogue_order) + 1) << 32)
+}
+
 fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
     (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
 }
@@ -2911,7 +2929,7 @@ impl SearchEngine {
             generation_order,
             extra_facets.clone(),
         );
-        let id_base = (u64::from(catalogue_order) + 1) << 32;
+        let id_base = catalogue_id_base(catalogue_order)?;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
@@ -3050,7 +3068,7 @@ impl SearchEngine {
             .iter()
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
-        let id_base = (u64::from(catalogue_order) + 1) << 32;
+        let id_base = catalogue_id_base(catalogue_order)?;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
