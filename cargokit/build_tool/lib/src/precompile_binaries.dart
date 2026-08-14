@@ -129,6 +129,7 @@ class PrecompileBinaries {
         if (!file.existsSync()) {
           throw Exception('Missing artifact: ${file.path}');
         }
+        _verifyLinuxGlibcFloor(target, file);
 
         final data = file.readAsBytesSync();
         final create = CreateReleaseAsset(
@@ -174,6 +175,28 @@ class PrecompileBinaries {
     tempDir.deleteSync(recursive: true);
   }
 
+  static void _verifyLinuxGlibcFloor(Target target, File file) {
+    if (!target.rust.endsWith('-unknown-linux-gnu')) {
+      return;
+    }
+
+    final result = Process.runSync('objdump', ['-T', file.path]);
+    if (result.exitCode != 0) {
+      throw Exception('Unable to inspect ${file.path}: ${result.stderr}');
+    }
+
+    for (final match
+        in RegExp(r'GLIBC_(\d+)\.(\d+)').allMatches(result.stdout.toString())) {
+      final major = int.parse(match.group(1)!);
+      final minor = int.parse(match.group(2)!);
+      if (major > 2 || major == 2 && minor > 36) {
+        throw Exception(
+          '${file.path} requires GLIBC_$major.$minor; Linux artifacts must support GLIBC_2.36.',
+        );
+      }
+    }
+  }
+
   static Future<Release> getOrCreateRelease({
     required RepositoriesService repo,
     required RepositorySlug repositorySlug,
@@ -201,8 +224,7 @@ class PrecompileBinaries {
             ));
       } on GitHubError catch (e) {
         if (e.toString().contains('already_exists')) {
-          _log.info(
-              'Release was created concurrently - re-fetching $tagName');
+          _log.info('Release was created concurrently - re-fetching $tagName');
           release = await repo.getReleaseByTagName(repositorySlug, tagName);
         } else {
           rethrow;

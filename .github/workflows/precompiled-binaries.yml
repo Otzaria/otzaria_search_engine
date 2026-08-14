@@ -120,6 +120,8 @@ jobs:
     name: Publish Linux (${{ matrix.target }})
     needs: prepare-release
     runs-on: ${{ matrix.runs_on }}
+    container:
+      image: debian:bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +131,16 @@ jobs:
           - runs_on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     steps:
+      - name: Install container build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils build-essential ca-certificates cmake curl git libclang-dev \
+            pkg-config unzip xz-utils
+          git config --global --add safe.directory '*'
+
       - uses: actions/checkout@v4
 
       - uses: dart-lang/setup-dart@v1
