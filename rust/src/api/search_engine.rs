@@ -121,6 +121,12 @@ pub struct DocumentInput {
     /// current library source. `None`/`0` means "no fingerprint recorded"
     /// (e.g. PDF books).
     pub content_hash: Option<u64>,
+    /// Text-only fingerprint ([`compute_content_fingerprint`] over the raw
+    /// book text) for the `textHash` column — unlike `content_hash` it does
+    /// not shift when catalogue order or other metadata changes, so
+    /// [`SearchEngine::get_book_text_fingerprints`] detects content drift
+    /// only. `None`/`0` means "no fingerprint recorded".
+    pub text_hash: Option<u64>,
     /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
     /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
     /// פשוט לא תשתתף בחיפוש מנוקד. מסלול [`SearchEngine::add_text_book`]
@@ -763,7 +769,10 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // ממדיים (author/era/base על שדה topics) — שינויי סכימה/תוכן שמחייבים
 // העלאת גרסה לפני פרסום (את lineHash בדיקת ההתאימות תתפוס גם לבדה;
 // את ה-facets הממדיים — לא, כמו הטוקן נטול-הגרשיים לעיל).
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 3;
+//
+// v4: נוסף השדה `textHash` (FAST) — חתימת טקסט-בלבד לצד החתימה הקנונית,
+// כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 4;
 const TANTIVY_INDEX_VERSION: &str = "0.26.1";
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
@@ -811,8 +820,10 @@ const FUZZY_BOOST_FUZZY: Score = 1.0;
 
 /// The schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics,
-/// contentHash, textVocalized, sectionId, generationSort, lineHash)`.
+/// contentHash, textHash, textVocalized, sectionId, generationSort,
+/// lineHash)`.
 type SchemaFields = (
+    Field,
     Field,
     Field,
     Field,
@@ -1004,14 +1015,14 @@ pub fn is_probably_garbage_pdf_text(normalized_text: String) -> bool {
 }
 
 /// 64-bit content fingerprint (FNV-1a over UTF-8 bytes) of a book's raw
-/// source text. Stamp it on every [`DocumentInput`] of the book at indexing
-/// time; recompute it from the current library source and compare against
-/// [`SearchEngine::get_book_fingerprints`] to detect books whose content
-/// changed without reindexing everything.
+/// source text. The whole-book indexing paths ([`SearchEngine::add_text_book`])
+/// stamp it on the `textHash` column; recompute it from the current library
+/// source and compare against [`SearchEngine::get_book_text_fingerprints`]
+/// to detect books whose *content* changed without reindexing everything.
 ///
-/// שימו לב: מסלולי האינדוקס ([`SearchEngine::add_text_book`]) חותמים את
-/// החתימה **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata —
-/// השוואה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
+/// שימו לב: [`SearchEngine::get_book_fingerprints`] מחזיר את החתימה
+/// **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata (סדר קטלוגי
+/// וכו') — השוואה שלה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
 ///
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
 /// Deliberately hashes the *raw* text (before normalization/tokenization) so
@@ -1552,6 +1563,9 @@ fn current_schema() -> Schema {
     // a book. FAST-only: read columnar by get_book_fingerprints, never searched
     // or returned. 0 = no fingerprint recorded.
     schema_builder.add_u64_field("contentHash", FAST);
+    // חתימת טקסט-בלבד של הספר (content_fingerprint על הטקסט הגולמי), זהה על
+    // כל מסמכי הספר. FAST בלבד — נקראת עמודתית ע"י get_book_text_fingerprints.
+    schema_builder.add_u64_field("textHash", FAST);
     // מזהה סעיף: כל השורות שתחת אותה כותרת (אותו בלוק reference) נושאות
     // אותו ערך, ייחודי גלובלית — id_base של הספר + אינדקס בלוק הכותרת
     // (ב-PDF: מספר העמוד). FAST בלבד: מסלול "תחת אותה כותרת"
@@ -2714,6 +2728,7 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_hash_f,
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
@@ -2731,6 +2746,7 @@ impl SearchEngine {
             file_path_f    => _file_path,
             topics_f       => topics_facet,
             content_hash_f => 0u64,
+            text_hash_f    => 0u64,
             section_id_f   => _section_id.unwrap_or(_id),
             generation_sort_f => generation_sort_key(
                 _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
@@ -2772,6 +2788,7 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_hash_f,
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
@@ -2792,6 +2809,7 @@ impl SearchEngine {
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
                 content_hash_f => doc.content_hash.unwrap_or(0),
+                text_hash_f    => doc.text_hash.unwrap_or(0),
                 section_id_f   => doc.section_id.unwrap_or(doc.id),
                 generation_sort_f => generation_sort_key(
                     doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
@@ -2909,6 +2927,7 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_hash_f,
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
@@ -2929,6 +2948,7 @@ impl SearchEngine {
             generation_order,
             extra_facets.clone(),
         );
+        let text_hash = content_fingerprint(text);
         let id_base = catalogue_id_base(catalogue_order)?;
         let writer = self.writer_mut()?;
 
@@ -2987,6 +3007,7 @@ impl SearchEngine {
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
                 content_hash_f => content_hash,
+                text_hash_f    => text_hash,
                 // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
                 // בין ספרים, אז המזהה ייחודי גלובלית.
                 section_id_f   => id_base + u64::from(reference_of_line[segment]),
@@ -3055,6 +3076,7 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_hash_f,
             // PDF אינו משתתף בחיפוש מנוקד: ניקוד שמגיע מ-OCR אינו אמין,
             // והנרמול של PDF ממילא מוחק אותו.
             _text_vocalized_f,
@@ -3111,6 +3133,7 @@ impl SearchEngine {
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
                 content_hash_f => 0u64,
+                text_hash_f    => 0u64,
                 // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
                 section_id_f   => id_base + u64::from(page.page_index),
                 generation_sort_f => generation_sort_key(generation_order, id),
@@ -3178,6 +3201,7 @@ impl SearchEngine {
             file_path_f,
             topics_f,
             content_hash_f,
+            text_hash_f,
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
@@ -3199,6 +3223,7 @@ impl SearchEngine {
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
                 content_hash_f => doc.content_hash.unwrap_or(0),
+                text_hash_f    => doc.text_hash.unwrap_or(0),
                 section_id_f   => doc.section_id.unwrap_or(doc.id),
                 generation_sort_f => generation_sort_key(
                     doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
@@ -3575,7 +3600,31 @@ impl SearchEngine {
     /// reindex) — callers should treat such books as changed or skip them.
     pub fn get_book_fingerprints(&self) -> Result<HashMap<String, u64>> {
         let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&AllQuery, &BookFingerprintCollector)?)
+        Ok(searcher.search(
+            &AllQuery,
+            &BookFingerprintCollector {
+                hash_column: "contentHash",
+            },
+        )?)
+    }
+
+    /// Text-only fingerprint per distinct `filePath` — the `textHash` column
+    /// ([`compute_content_fingerprint`] over the raw book text). Unlike
+    /// [`Self::get_book_fingerprints`] (the canonical fingerprint, which also
+    /// covers metadata such as catalogue order), this value shifts only when
+    /// the book's text itself changed — the right signal for content-drift
+    /// checks that must not be invalidated by adding/removing other books.
+    ///
+    /// A value of 0 means "unverifiable", same semantics as
+    /// [`Self::get_book_fingerprints`].
+    pub fn get_book_text_fingerprints(&self) -> Result<HashMap<String, u64>> {
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(
+            &AllQuery,
+            &BookFingerprintCollector {
+                hash_column: "textHash",
+            },
+        )?)
     }
 
     /// Fetch a single document by its numeric id. Returns None if not found.
@@ -5085,6 +5134,7 @@ impl SearchEngine {
             self.schema.get_field("filePath")?,
             self.schema.get_field("topics")?,
             self.schema.get_field("contentHash")?,
+            self.schema.get_field("textHash")?,
             self.schema.get_field("textVocalized")?,
             self.schema.get_field("sectionId")?,
             self.schema.get_field("generationSort")?,
@@ -8475,11 +8525,13 @@ impl SegmentCollector for GroupSegmentCollector {
 
 // ── BookFingerprintCollector ───────────────────────────────────────────────────
 
-/// Collects the `contentHash` fast-field value per `filePath` fast field.
+/// Collects a u64 fast-field value (`hash_column`) per `filePath` fast field.
 /// Per-segment work uses term ordinals; strings are decoded only in harvest().
 /// Documents of the same book that disagree on the hash collapse to 0
 /// ("unverifiable"), and 0 wins over any value when merging segments.
-struct BookFingerprintCollector;
+struct BookFingerprintCollector {
+    hash_column: &'static str,
+}
 
 struct BookFingerprintSegmentCollector {
     str_col: Option<tantivy::columnar::StrColumn>,
@@ -8498,7 +8550,7 @@ impl Collector for BookFingerprintCollector {
     ) -> tantivy::Result<BookFingerprintSegmentCollector> {
         let str_col = reader.fast_fields().str("filePath")?;
         // אינדקסים מלפני הוספת השדה: אין עמודה — כל הספרים "לא ניתנים לאימות".
-        let hash_col = reader.fast_fields().u64("contentHash").ok();
+        let hash_col = reader.fast_fields().u64(self.hash_column).ok();
         Ok(BookFingerprintSegmentCollector {
             str_col,
             hash_col,
@@ -9188,6 +9240,14 @@ mod tests {
                 ]),
             ),
         );
+
+        // חתימת הטקסט-בלבד נחתמה גם היא, זהה לחישוב הציבורי — ובניגוד
+        // לקנונית, אינה תלויה בסדר הקטלוגי או בשאר ה-metadata.
+        let text_fingerprints = engine.get_book_text_fingerprints().unwrap();
+        assert_eq!(
+            text_fingerprints.get("/books/bereshit.txt"),
+            Some(&compute_content_fingerprint(text.to_string()))
+        );
     }
 
     #[test]
@@ -9222,6 +9282,7 @@ mod tests {
                 is_pdf: false,
                 file_path: "/books/b.txt".to_string(),
                 content_hash: None,
+                text_hash: None,
                 text_vocalized: Some("<b>בְּרֵאשִׁית</b>  בָּרָא אלהים".to_string()),
                 section_id: None,
                 generation_order: None,
@@ -9239,6 +9300,7 @@ mod tests {
                 is_pdf: false,
                 file_path: "/books/c.txt".to_string(),
                 content_hash: None,
+                text_hash: None,
                 text_vocalized: Some("<b>בְּרֵאשִׁית</b>  בָּרָא אלהים".to_string()),
                 section_id: None,
                 generation_order: None,
@@ -9366,6 +9428,11 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 None,
             ))
+        );
+        let text_fingerprints = engine.get_book_text_fingerprints().unwrap();
+        assert_eq!(
+            text_fingerprints.get("/books/bereshit.txt"),
+            Some(&compute_content_fingerprint(text.to_string()))
         );
     }
 
@@ -10558,6 +10625,7 @@ mod tests {
             is_pdf: false,
             file_path: file_path.to_string(),
             content_hash: hash,
+            text_hash: hash,
             text_vocalized: None,
             section_id: None,
             generation_order: None,
@@ -10657,6 +10725,42 @@ mod tests {
 
         let fingerprints = engine.get_book_fingerprints().unwrap();
         assert_eq!(fingerprints.get("id:1"), Some(&0));
+    }
+
+    #[test]
+    fn text_fingerprint_survives_catalogue_order_change() {
+        // מהות ההפרדה בין החתימות: אינדוקס-מחדש בסדר קטלוגי אחר (ספר נוסף
+        // לספרייה) משנה את הקנונית אך לא את חתימת הטקסט — כך אימות דריפט
+        // תוכן אינו נפסל משינויי קטלוג (issue Otzaria#828).
+        let text = "<h1>ספר</h1>\nשורה של תוכן";
+        let (mut engine, _dir) = make_engine();
+        let index = |engine: &mut SearchEngine, order: u32| {
+            engine
+                .add_text_book(
+                    "ספר".to_string(),
+                    "/root".to_string(),
+                    "id:1".to_string(),
+                    order,
+                    DEFAULT_GENERATION_ORDER,
+                    text.to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+        };
+
+        index(&mut engine, 5);
+        let canonical_before = engine.get_book_fingerprints().unwrap()["id:1"];
+        let text_before = engine.get_book_text_fingerprints().unwrap()["id:1"];
+
+        engine.delete_documents_by_file_path("id:1").unwrap();
+        index(&mut engine, 6);
+        let canonical_after = engine.get_book_fingerprints().unwrap()["id:1"];
+        let text_after = engine.get_book_text_fingerprints().unwrap()["id:1"];
+
+        assert_ne!(canonical_before, canonical_after);
+        assert_eq!(text_before, text_after);
+        assert_eq!(text_after, compute_content_fingerprint(text.to_string()));
     }
 
     #[test]

@@ -4,6 +4,17 @@
 
 ### Added
 
+- **עמודת `textHash` + `get_book_text_fingerprints` — חתימת טקסט-בלבד לצד
+  החתימה הקנונית** (Otzaria#828). החתימה הקנונית (`contentHash`) כוללת את
+  הסדר הקטלוגי, ולכן הוספת ספר אחד לספרייה פוסלת אותה לכל הספרים שאחריו —
+  אימות דריפט תוכן שנשען עליה חסם פתיחת תוצאות תקינות. מסלולי הספר השלם
+  (`add_text_book`/`add_text_book_bytes`) חותמים כעת גם
+  `compute_content_fingerprint` על הטקסט הגולמי בעמודה נפרדת, ו-
+  `get_book_text_fingerprints` קורא אותה עמודתית (0 = לא ניתן לאימות, כמו
+  ב-`get_book_fingerprints`). ל-`DocumentInput` נוסף `text_hash` אופציונלי
+  למסלולי ה-batch. שינוי סכימה: `INDEX_SCHEMA_VERSION` הועלה ל-4 — אינדקסים
+  קיימים ייבנו מחדש.
+
 - **`semantic_corpus::TantivyCorpus` — מימוש `CorpusIndex` ו-`CorpusBooks` מעל
   אינדקס Tantivy חי.** ה-crate הסמנטי אינו מקשר Tantivy ואסור שיקשר — האינדקס,
   הסכמה וסכמת ה-IDs חיים כאן — ולכן ה-builder שלו מקבל את הקורפוס דרך פורט.
