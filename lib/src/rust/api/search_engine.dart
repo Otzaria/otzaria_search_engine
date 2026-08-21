@@ -1179,10 +1179,14 @@ class DocumentInput {
   final bool isPdf;
   final String filePath;
 
-  /// Book-level content fingerprint (see [`compute_content_fingerprint`]).
-  /// The same value is stamped on every document of a book, so
-  /// [`SearchEngine::get_book_fingerprints`] can compare an index against the
-  /// current library source. `None`/`0` means "no fingerprint recorded"
+  /// Book-level **canonical** fingerprint for the `contentHash` column —
+  /// [`compute_book_fingerprint`]: the raw text *plus* the metadata baked
+  /// into the index (title, topics, catalogue order, generation order,
+  /// extra facets). The same value is stamped on every document of a book,
+  /// so [`SearchEngine::get_book_fingerprints`] can compare an index
+  /// against the current library source, including metadata-only changes.
+  /// Never compare it against [`compute_content_fingerprint`] (text only) —
+  /// that is `text_hash` below. `None`/`0` means "no fingerprint recorded"
   /// (e.g. PDF books).
   final BigInt? contentHash;
 
