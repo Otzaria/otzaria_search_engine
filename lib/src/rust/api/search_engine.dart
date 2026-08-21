@@ -142,6 +142,15 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
 BigInt computeContentFingerprint({required String text}) => RustLib.instance.api
     .crateApiSearchEngineComputeContentFingerprint(text: text);
 
+/// [`compute_content_fingerprint`] על bytes גולמיים של UTF-8, אסינכרוני —
+/// גיבוב ספר שלם אסור שירוץ על ה-UI isolate של הקורא. UTF-8 לא-תקין
+/// מוחלף (lossy), בדיוק כמו במסלולי האינדוקס של הספר השלם, כך שהתוצאה
+/// שווה לגיבוב הטקסט המפוענח שנחתם בעמודת `textHash`.
+Future<BigInt> computeContentFingerprintBytes({required List<int> text}) =>
+    RustLib.instance.api.crateApiSearchEngineComputeContentFingerprintBytes(
+      text: text,
+    );
+
 /// חתימת האינדוקס הקנונית לספר טקסט: הטקסט הגולמי + כל ה-metadata שמוטבע
 /// באינדקס — כותרת, נתיב קטגוריה, סדר קטלוגי, סדר דורות וממדי הסינון.
 /// שינוי בכל אחד מהם, גם ללא שינוי טקסט, משנה את החתימה — כך שהשוואה מול

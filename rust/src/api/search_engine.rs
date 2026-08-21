@@ -1039,6 +1039,21 @@ pub fn compute_content_fingerprint(text: String) -> u64 {
     content_fingerprint(&text)
 }
 
+/// [`compute_content_fingerprint`] על bytes גולמיים של UTF-8, אסינכרוני —
+/// גיבוב ספר שלם אסור שירוץ על ה-UI isolate של הקורא. UTF-8 לא-תקין
+/// מוחלף (lossy), בדיוק כמו במסלולי האינדוקס של הספר השלם, כך שהתוצאה
+/// שווה לגיבוב הטקסט המפוענח שנחתם בעמודת `textHash`.
+pub fn compute_content_fingerprint_bytes(text: Vec<u8>) -> u64 {
+    let text = match String::from_utf8_lossy(&text) {
+        std::borrow::Cow::Borrowed(_) => {
+            // UTF-8 תקין — נטילת בעלות בלי העתקה נוספת.
+            unsafe { String::from_utf8_unchecked(text) }
+        }
+        std::borrow::Cow::Owned(fixed) => fixed,
+    };
+    content_fingerprint(&text)
+}
+
 fn content_fingerprint(text: &str) -> u64 {
     let mut fnv = Fnv::new();
     fnv.feed(text.as_bytes());
@@ -10616,6 +10631,22 @@ mod tests {
         assert_ne!(a, c);
         assert_ne!(a, 0);
         assert_ne!(compute_content_fingerprint(String::new()), 0);
+    }
+
+    #[test]
+    fn compute_content_fingerprint_bytes_matches_string_form() {
+        let text = "בראשית ברא אלהים";
+        assert_eq!(
+            compute_content_fingerprint_bytes(text.as_bytes().to_vec()),
+            compute_content_fingerprint(text.to_string()),
+        );
+        // UTF-8 קטוע — הפענוח ה-lossy זהה בשני הצדדים.
+        let mut broken = text.as_bytes().to_vec();
+        broken.truncate(broken.len() - 1);
+        assert_eq!(
+            compute_content_fingerprint_bytes(broken.clone()),
+            compute_content_fingerprint(String::from_utf8_lossy(&broken).into_owned()),
+        );
     }
 
     fn fingerprint_doc(id: u64, text: &str, file_path: &str, hash: Option<u64>) -> DocumentInput {
