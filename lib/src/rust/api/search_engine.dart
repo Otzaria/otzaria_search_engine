@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `DfaWrapper`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_grouped`, `compatibility`, `content_fingerprint`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_highlight_plan`, `generation_sort_key`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `stored_schema_mismatch`, `surface_stream_error`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `DfaWrapper`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `TermCacheKey`, `WordMatch`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `accept`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `can_match`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `is_match`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `start`
 
 IndexCompatibility checkIndexCompatibility({required String path}) => RustLib
     .instance
@@ -124,14 +124,14 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
     );
 
 /// 64-bit content fingerprint (FNV-1a over UTF-8 bytes) of a book's raw
-/// source text. Stamp it on every [`DocumentInput`] of the book at indexing
-/// time; recompute it from the current library source and compare against
-/// [`SearchEngine::get_book_fingerprints`] to detect books whose content
-/// changed without reindexing everything.
+/// source text. The whole-book indexing paths ([`SearchEngine::add_text_book`])
+/// stamp it on the `textHash` column; recompute it from the current library
+/// source and compare against [`SearchEngine::get_book_text_fingerprints`]
+/// to detect books whose *content* changed without reindexing everything.
 ///
-/// שימו לב: מסלולי האינדוקס ([`SearchEngine::add_text_book`]) חותמים את
-/// החתימה **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata —
-/// השוואה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
+/// שימו לב: [`SearchEngine::get_book_fingerprints`] מחזיר את החתימה
+/// **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata (סדר קטלוגי
+/// וכו') — השוואה שלה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
 ///
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
 /// Deliberately hashes the *raw* text (before normalization/tokenization) so
@@ -141,6 +141,15 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
 /// indexing isolate).
 BigInt computeContentFingerprint({required String text}) => RustLib.instance.api
     .crateApiSearchEngineComputeContentFingerprint(text: text);
+
+/// [`compute_content_fingerprint`] על bytes גולמיים של UTF-8, אסינכרוני —
+/// גיבוב ספר שלם אסור שירוץ על ה-UI isolate של הקורא. UTF-8 לא-תקין
+/// מוחלף (lossy), בדיוק כמו במסלולי האינדוקס של הספר השלם, כך שהתוצאה
+/// שווה לגיבוב הטקסט המפוענח שנחתם בעמודת `textHash`.
+Future<BigInt> computeContentFingerprintBytes({required List<int> text}) =>
+    RustLib.instance.api.crateApiSearchEngineComputeContentFingerprintBytes(
+      text: text,
+    );
 
 /// חתימת האינדוקס הקנונית לספר טקסט: הטקסט הגולמי + כל ה-metadata שמוטבע
 /// באינדקס — כותרת, נתיב קטגוריה, סדר קטלוגי, סדר דורות וממדי הסינון.
@@ -571,6 +580,28 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// a fingerprint (e.g. PDF), or its live documents disagree (partial
   /// reindex) — callers should treat such books as changed or skip them.
   Future<Map<String, BigInt>> getBookFingerprints();
+
+  /// Text-only fingerprint of **one** book, by its `filePath` key — the
+  /// single-book form of [`Self::get_book_text_fingerprints`]. A drift check
+  /// for one open book must not pay O(total documents): this runs a
+  /// `TermQuery` on `filePath` and reads `textHash` columnar from the
+  /// matching live documents only.
+  ///
+  /// `0` means "unverifiable", exactly as in the map form: the book has no
+  /// document in the index, was indexed without a text fingerprint (PDF), or
+  /// its live documents disagree (a partial reindex).
+  Future<BigInt> getBookTextFingerprint({required String filePath});
+
+  /// Text-only fingerprint per distinct `filePath` — the `textHash` column
+  /// ([`compute_content_fingerprint`] over the raw book text). Unlike
+  /// [`Self::get_book_fingerprints`] (the canonical fingerprint, which also
+  /// covers metadata such as catalogue order), this value shifts only when
+  /// the book's text itself changed — the right signal for content-drift
+  /// checks that must not be invalidated by adding/removing other books.
+  ///
+  /// A value of 0 means "unverifiable", same semantics as
+  /// [`Self::get_book_fingerprints`].
+  Future<Map<String, BigInt>> getBookTextFingerprints();
 
   /// Fetch a single document by its numeric id. Returns None if not found.
   /// The `text` field contains the raw stored text (no snippet/highlight).
@@ -1168,12 +1199,23 @@ class DocumentInput {
   final bool isPdf;
   final String filePath;
 
-  /// Book-level content fingerprint (see [`compute_content_fingerprint`]).
-  /// The same value is stamped on every document of a book, so
-  /// [`SearchEngine::get_book_fingerprints`] can compare an index against the
-  /// current library source. `None`/`0` means "no fingerprint recorded"
+  /// Book-level **canonical** fingerprint for the `contentHash` column —
+  /// [`compute_book_fingerprint`]: the raw text *plus* the metadata baked
+  /// into the index (title, topics, catalogue order, generation order,
+  /// extra facets). The same value is stamped on every document of a book,
+  /// so [`SearchEngine::get_book_fingerprints`] can compare an index
+  /// against the current library source, including metadata-only changes.
+  /// Never compare it against [`compute_content_fingerprint`] (text only) —
+  /// that is `text_hash` below. `None`/`0` means "no fingerprint recorded"
   /// (e.g. PDF books).
   final BigInt? contentHash;
+
+  /// Text-only fingerprint ([`compute_content_fingerprint`] over the raw
+  /// book text) for the `textHash` column — unlike `content_hash` it does
+  /// not shift when catalogue order or other metadata changes, so
+  /// [`SearchEngine::get_book_text_fingerprints`] detects content drift
+  /// only. `None`/`0` means "no fingerprint recorded".
+  final BigInt? textHash;
 
   /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
   /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
@@ -1205,6 +1247,7 @@ class DocumentInput {
     required this.isPdf,
     required this.filePath,
     this.contentHash,
+    this.textHash,
     this.textVocalized,
     this.sectionId,
     this.generationOrder,
@@ -1222,6 +1265,7 @@ class DocumentInput {
       isPdf.hashCode ^
       filePath.hashCode ^
       contentHash.hashCode ^
+      textHash.hashCode ^
       textVocalized.hashCode ^
       sectionId.hashCode ^
       generationOrder.hashCode ^
@@ -1241,6 +1285,7 @@ class DocumentInput {
           isPdf == other.isPdf &&
           filePath == other.filePath &&
           contentHash == other.contentHash &&
+          textHash == other.textHash &&
           textVocalized == other.textVocalized &&
           sectionId == other.sectionId &&
           generationOrder == other.generationOrder &&
