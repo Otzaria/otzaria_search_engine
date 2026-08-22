@@ -3646,6 +3646,25 @@ impl SearchEngine {
         )?)
     }
 
+    /// Text-only fingerprint of **one** book, by its `filePath` key — the
+    /// single-book form of [`Self::get_book_text_fingerprints`]. A drift check
+    /// for one open book must not pay O(total documents): this runs a
+    /// `TermQuery` on `filePath` and reads `textHash` columnar from the
+    /// matching live documents only.
+    ///
+    /// `0` means "unverifiable", exactly as in the map form: the book has no
+    /// document in the index, was indexed without a text fingerprint (PDF), or
+    /// its live documents disagree (a partial reindex).
+    pub fn get_book_text_fingerprint(&self, file_path: String) -> Result<u64> {
+        let file_path_f = self.schema.get_field("filePath")?;
+        let query = TermQuery::new(
+            Term::from_field_text(file_path_f, &file_path),
+            IndexRecordOption::Basic,
+        );
+        let searcher = self.index_reader.searcher();
+        Ok(searcher.search(&query, &SingleBookFingerprintCollector)?)
+    }
+
     /// Fetch a single document by its numeric id. Returns None if not found.
     /// The `text` field contains the raw stored text (no snippet/highlight).
     pub fn get_document_by_id(&self, id: u64) -> Result<Option<SearchResult>> {
@@ -8602,6 +8621,73 @@ impl Collector for BookFingerprintCollector {
     }
 }
 
+// ── SingleBookFingerprintCollector ────────────────────────────────────────────
+
+/// The `textHash` of the documents a single-book query matched. Documents that
+/// disagree collapse to 0 ("unverifiable"), and 0 wins over any value — same
+/// semantics as [`BookFingerprintCollector`], without touching `filePath`:
+/// the query already restricts the documents to one book.
+struct SingleBookFingerprintCollector;
+
+struct SingleBookFingerprintSegmentCollector {
+    hash_col: Option<tantivy::columnar::Column<u64>>,
+    fingerprint: Option<u64>,
+}
+
+impl Collector for SingleBookFingerprintCollector {
+    type Fruit = u64;
+    type Child = SingleBookFingerprintSegmentCollector;
+
+    fn for_segment(
+        &self,
+        _seg_ord: SegmentOrdinal,
+        reader: &SegmentReader,
+    ) -> tantivy::Result<SingleBookFingerprintSegmentCollector> {
+        Ok(SingleBookFingerprintSegmentCollector {
+            // אינדקסים מלפני הוספת השדה: אין עמודה — "לא ניתן לאימות".
+            hash_col: reader.fast_fields().u64("textHash").ok(),
+            fingerprint: None,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(&self, per_segment: Vec<Option<u64>>) -> tantivy::Result<u64> {
+        let mut merged: Option<u64> = None;
+        for hash in per_segment.into_iter().flatten() {
+            match merged {
+                None => merged = Some(hash),
+                Some(existing) if existing != hash => return Ok(0),
+                Some(_) => {}
+            }
+        }
+        Ok(merged.unwrap_or(0))
+    }
+}
+
+impl SegmentCollector for SingleBookFingerprintSegmentCollector {
+    type Fruit = Option<u64>;
+
+    fn collect(&mut self, doc_id: DocId, _score: Score) {
+        let hash = self
+            .hash_col
+            .as_ref()
+            .and_then(|col| col.first(doc_id))
+            .unwrap_or(0);
+        match self.fingerprint {
+            None => self.fingerprint = Some(hash),
+            Some(existing) if existing != hash => self.fingerprint = Some(0),
+            Some(_) => {}
+        }
+    }
+
+    fn harvest(self) -> Option<u64> {
+        self.fingerprint
+    }
+}
+
 impl SegmentCollector for BookFingerprintSegmentCollector {
     type Fruit = tantivy::Result<HashMap<String, u64>>;
 
@@ -10760,6 +10846,72 @@ mod tests {
 
         let fingerprints = engine.get_book_fingerprints().unwrap();
         assert_eq!(fingerprints.get("id:1"), Some(&0));
+    }
+
+    #[test]
+    fn get_book_text_fingerprint_matches_map_form_per_book() {
+        // בדיקת דריפט לספר אחד אינה משלמת O(total documents): ה-API הממוקד
+        // חייב להחזיר בדיוק את מה שצורת המפה מחזירה לאותו ספר.
+        let (mut engine, _dir) = make_engine();
+        let text_a = "<h1>ספר א</h1>\nשורה";
+        let text_b = "<h1>ספר ב</h1>\nשורה אחרת";
+        for (order, path, text) in [(1u32, "id:1", text_a), (2, "id:2", text_b)] {
+            engine
+                .add_text_book(
+                    "ספר".to_string(),
+                    "/root".to_string(),
+                    path.to_string(),
+                    order,
+                    DEFAULT_GENERATION_ORDER,
+                    text.to_string(),
+                    None,
+                )
+                .unwrap();
+        }
+        engine.commit().unwrap();
+
+        let map = engine.get_book_text_fingerprints().unwrap();
+        for (path, text) in [("id:1", text_a), ("id:2", text_b)] {
+            let single = engine.get_book_text_fingerprint(path.to_string()).unwrap();
+            assert_eq!(single, map[path]);
+            assert_eq!(single, compute_content_fingerprint(text.to_string()));
+        }
+
+        // ספר שאינו באינדקס — "לא ניתן לאימות", לא שגיאה.
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("id:404".to_string())
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn get_book_text_fingerprint_is_zero_for_conflicting_and_pdf_books() {
+        let (mut engine, _dir) = make_engine();
+        // שתי חתימות שונות לאותו filePath (אינדוקס חלקי) — לא ניתן לאימות.
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(1, "שורה א", "id:1", Some(11)),
+                fingerprint_doc(2, "שורה ב", "id:1", Some(22)),
+                // PDF-כמו: בלי חתימת טקסט.
+                fingerprint_doc(3, "עמוד", "C:/books/a.pdf", None),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("id:1".to_string())
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("C:/books/a.pdf".to_string())
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
