@@ -59,6 +59,17 @@ Future<void> main() async {
       );
     });
 
+    test('תג שבירה בין מילים הוא מפריד — כמו הרווח שהאינדוקס רואה', () {
+      // Otzaria/otzaria#949: `<br>` הופך לרווח באינדוקס, ולכן שתי מילים
+      // משני צדי מעבר שורה הן טוקנים סמוכים וההדגשה חייבת לתפוס אותן.
+      final regex = _compile(_pattern('תדע זרעך').combinedPattern);
+      expect(regex.hasMatch('תדע<br>זרעך'), isTrue);
+      expect(regex.hasMatch('תדע<br/>זרעך'), isTrue);
+      expect(regex.hasMatch('תדע</P><P>זרעך'), isTrue, reason: 'אדיש לרישיות');
+      // תג inline נשאר שקוף: בלעדיו המילים דבוקות לטוקן אחד — אין התאמה.
+      expect(regex.hasMatch('תדע<b>זרעך'), isFalse);
+    });
+
     test('מרווח מותאם מאפשר מילים ביניים עד הגבול', () {
       final hl = _pattern('כל היום', spacing: {'0-1': '1'});
       final regex = _compile(hl.combinedPattern);

@@ -41,7 +41,7 @@ use once_cell::sync::Lazy;
 
 use crate::hebrew_query::{
     aramaic_root_variants, generate_spelling_variations, is_word_mark, normalize_for_index,
-    split_query_words, word_flags_at, WordFlags, MAX_SPELLING_BRANCHES,
+    split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES, MAX_SPELLING_BRANCHES,
 };
 use crate::hebrew_tokenizer::continues_token;
 
@@ -165,26 +165,47 @@ fn is_alnum_char(c: char) -> bool {
     c.is_alphanumeric() && !is_word_mark(c)
 }
 
-/// `<` ו-`>` מטופלים רק כתג שלם ([`HTML_TAG`]) ולא כתווים בודדים בשום
-/// מחלקה, כדי שהחלופות יישארו זרות וכדי שאותיות שבתוך תג לא ייחשבו למילה.
+/// `<` ו-`>` מטופלים רק כתג שלם ([`INLINE_TAG`]/[`BREAKING_TAG`]) ולא כתווים
+/// בודדים בשום מחלקה, כדי שהחלופות יישארו זרות וכדי שאותיות שבתוך תג לא
+/// ייחשבו למילה.
 fn is_markup_char(c: char) -> bool {
     c == '<' || c == '>'
 }
 
-/// תג HTML — אינו שובר טוקן (התגים מוסרים לפני האינדוקס בלי רווח, ולכן
-/// `מי<b>לה` הוא טוקן אחד) ואינו מפריד בפני עצמו.
-const HTML_TAG: &str = "<[^>]*>";
+/// גוף תג שבירה, בלי `<`: `/` פותח אופציונלי, שם מהרשימה המשותפת עם
+/// האינדוקס, ואחרי השם `>` מיד או תו לא-אלפאנומרי ואז שאר התג. הארוכים
+/// קודם, שגם `pre` וגם `p` ייבחנו בסדר שממצה את החלופות.
+static BREAKING_TAG_BODY: Lazy<String> = Lazy::new(|| {
+    let mut names: Vec<&str> = BREAKING_TAG_NAMES.to_vec();
+    names.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+    format!(
+        "/?(?:{names})(?:[^>a-zA-Z0-9][^>]*)?>",
+        names = names.join("|")
+    )
+});
 
-/// מפריד בין שתי מילות שאילתה סמוכות: חייב לכלול לפחות שובר-טוקן אחד, ולפניו
-/// ואחריו מותרים סימנים רכים ותגים. `תדע. זרעך` מתאים (הנקודה שקופה
-/// והרווח שובר), ואילו `תדע<b>זרעך` אינו מתאים — האינדקס רואה שם טוקן אחד
-/// ולכן גם החיפוש אינו מוצא אותו.
+/// תג inline (`<b>`, `<span>`…) — אינו שובר טוקן: האינדוקס מוחק אותו בלי
+/// רווח, ולכן `מי<b>לה` הוא טוקן אחד. lookahead שלילי (נתמך ב-RegExp של
+/// Dart) מוציא ממנו את תגי השבירה, כך ששתי חלופות התג נשארות זרות —
+/// הזרות היא מה שמונע התפוצצות backtracking.
+static INLINE_TAG: Lazy<String> =
+    Lazy::new(|| format!("<(?!{body})[^>]*>", body = &*BREAKING_TAG_BODY));
+
+/// תג שבירה (`<br>`, `</p>`…) — האינדוקס ממיר אותו לרווח
+/// ([`BREAKING_TAG_NAMES`]), ולכן בהדגשה הוא שובר טוקן.
+static BREAKING_TAG: Lazy<String> = Lazy::new(|| format!("<{body}", body = &*BREAKING_TAG_BODY));
+
+/// מפריד בין שתי מילות שאילתה סמוכות: חייב לכלול לפחות שובר-טוקן אחד
+/// (תו שובר או תג שבירה), ולפניו ואחריו מותרים סימנים רכים ותגי inline.
+/// `תדע. זרעך` ו-`תדע<br>זרעך` מתאימים, ואילו `תדע<b>זרעך` אינו מתאים —
+/// האינדקס רואה שם טוקן אחד ולכן גם החיפוש אינו מוצא אותו.
 static WORD_SEPARATOR: Lazy<String> = Lazy::new(|| {
     format!(
-        "(?:{soft}|{tag})*{brk}(?:{soft}|{brk}|{tag})*",
+        "(?:{soft}|{tag})*(?:{brk}|{btag})(?:{soft}|{brk}|{tag}|{btag})*",
         soft = &*SOFT_CHAR_CLASS,
         brk = &*BREAK_CHAR_CLASS,
-        tag = HTML_TAG,
+        tag = &*INLINE_TAG,
+        btag = &*BREAKING_TAG,
     )
 });
 
@@ -197,8 +218,9 @@ static WORD_SEPARATOR: Lazy<String> = Lazy::new(|| {
 const MAX_DISPLAY_PATTERN_CHARS: usize = 12_000;
 
 /// מילה שלמה אחת בין שתי מילות השאילתה, כפי שהטוקנייזר של האינדקס מודד
-/// אותה: פותחת ומסתיימת באות/ספרה, ובתוכה מותרים סימנים רכים ותגים
-/// (`רמב״ם`, `פ.ב.י`, `מי<b>לה` — טוקן אחד).
+/// אותה: פותחת ומסתיימת באות/ספרה, ובתוכה מותרים סימנים רכים ותגי inline
+/// (`רמב״ם`, `פ.ב.י`, `מי<b>לה` — טוקן אחד). תג שבירה אינו מותר בתוך
+/// מילה — באינדקס הוא רווח.
 ///
 /// ספירה לפי רווחים (`\S+`) אינה שקולה: `כי־גר` הוא שתי מילים באינדקס, ולכן
 /// היא הדגישה `תדע כי־גר יהיה זרעך` במרווח 2 בעוד החיפוש דורש 3 — מילים
@@ -208,7 +230,7 @@ static INTERMEDIATE_WORD: Lazy<String> = Lazy::new(|| {
         "{alnum}(?:(?:{soft}|{tag})*{alnum})*",
         alnum = &*ALNUM_CLASS,
         soft = &*SOFT_CHAR_CLASS,
-        tag = HTML_TAG,
+        tag = &*INLINE_TAG,
     )
 });
 
@@ -941,8 +963,9 @@ mod tests {
                 &HashMap::new(),
             )
             .unwrap();
-            let re = regex::Regex::new(&hl.combined_pattern).unwrap();
-            if re.is_match(text) {
+            // fancy-regex: התבנית המשולבת כוללת lookahead, כמו ב-RegExp של Dart.
+            let re = fancy_regex::Regex::new(&hl.combined_pattern).unwrap();
+            if re.is_match(text).unwrap() {
                 return Some(distance);
             }
         }
@@ -1064,8 +1087,8 @@ mod tests {
     }
 
     #[test]
-    fn tag_alone_between_the_words_never_matches() {
-        // `strip_html_for_indexing` מוחק את התג בלי רווח, ולכן `תדע<b>זרעך`
+    fn inline_tag_alone_between_the_words_never_matches() {
+        // `strip_html_for_indexing` מוחק תג inline בלי רווח, ולכן `תדע<b>זרעך`
         // הוא טוקן אחד באינדקס והחיפוש לא ימצא אותו באף מרווח — ההדגשה
         // חייבת להתנהג כך גם היא, אחרת יש הדגשה בלי תוצאה.
         assert_eq!(min_matching_distance("תדע זרעך", "תדע<b>זרעך", 4), None);
@@ -1074,6 +1097,33 @@ mod tests {
             min_matching_distance("תדע זרעך", "תדע<b> </b>זרעך", 4),
             Some(0)
         );
+    }
+
+    #[test]
+    fn breaking_tag_between_the_words_is_a_separator() {
+        // תג שבירה הופך לרווח באינדוקס (Otzaria/otzaria#949), ולכן ההדגשה
+        // רואה בו מפריד — שתי המילים סמוכות.
+        for text in [
+            "תדע<br>זרעך",
+            "תדע<br/>זרעך",
+            "תדע<br />זרעך",
+            "תדע</p><p>זרעך",
+            "תדע<div class=\"x\">זרעך",
+        ] {
+            assert_eq!(
+                min_matching_distance("תדע זרעך", text, 2),
+                Some(0),
+                "טקסט {text:?}: תג השבירה הוא מפריד"
+            );
+        }
+        // מילה מתווכת שמופרדת בתג שבירה נספרת כמו באינדקס.
+        assert_eq!(
+            min_matching_distance("תדע זרעך", "תדע אחת<br>זרעך", 3),
+            Some(1)
+        );
+        // תג שבירה בתוך מילה מפצל אותה — `זר<br>עך` הם שני טוקנים באינדקס,
+        // ולכן המילה `זרעך` אינה מודגשת שם.
+        assert_eq!(min_matching_distance("תדע זרעך", "תדע זר<br>עך", 4), None);
     }
 
     #[test]

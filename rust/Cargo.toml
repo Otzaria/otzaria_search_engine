@@ -81,6 +81,10 @@ otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-s
 # הידור התבניות שהמודול הזה מחזיר, כדי לבדוק אותן על טקסט אמיתי ולא רק
 # להשוות מחרוזות. אותה גרסה שכבר בגרף התלויות של tantivy.
 regex = "1.13.1"
+# תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),
+# ש-RegExp של Dart תומך בו ו-`regex` לא — בבדיקות מהדרים אותן עם backtracking
+# כמו בצד ה-Dart.
+fancy-regex = "0.14"
 
 # Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
 # regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).

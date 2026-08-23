@@ -2986,7 +2986,18 @@ impl SearchEngine {
         for raw_line in &lines {
             if raw_line.starts_with("<h") {
                 update_reference_trail(&mut trail, raw_line);
-                references.push(hebrew_query::strip_html_for_indexing(&trail.join(", ")));
+                // כיווץ אחרי ההסרה: תג הכותרת עצמו (תג שבירה) הופך לרווח.
+                references.push(
+                    trail
+                        .iter()
+                        .map(|part| {
+                            hebrew_query::collapse_whitespace(
+                                &hebrew_query::strip_html_for_indexing(part),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
             }
             reference_of_line.push((references.len() - 1) as u32);
         }
@@ -9356,6 +9367,49 @@ mod tests {
     }
 
     #[test]
+    fn breaking_tag_in_a_line_keeps_the_words_separate() {
+        // Otzaria/otzaria#949: `<br>` בתוך שורה (ספרים אישיים מומרים) הדביק
+        // את שתי המילים לטוקן אחד — הן הוצגו דבוקות בתוצאות, וחיפוש של כל
+        // אחת מהן החטיא.
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book(
+                "חוזק יד".to_string(),
+                "/root".to_string(),
+                "/books/chozek.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                "יותר בכבוד המורים<br>כי אב הביאו לעולם".to_string(),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        for query in ["המורים", "כי", "המורים כי"] {
+            let results = engine
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(results.len(), 1, "query {query:?}");
+            // הטקסט השמור — שממנו נבנה קטע התוצאה — מופרד ברווח (תגי
+            // ההדגשה של המנוע עשויים לעטוף את ההתאמות).
+            let plain = results[0]
+                .text
+                .replace("<font color=red>", "")
+                .replace("</font>", "");
+            assert!(plain.contains("המורים כי"), "stored text: {plain}");
+        }
+    }
+
+    #[test]
     fn add_document_and_batch_normalize_like_add_text_book() {
         // ה-API הישירים חשופים ב-FFI — ההנחה "הקלט כבר מנורמל" נאכפת:
         // HTML מוסר, ניקוד מוסר מהשדה הרגיל, והעותק המנוקד נבנה מהגולמי.
@@ -13998,8 +14052,9 @@ mod tests {
                         &HashMap::new(),
                     )
                     .unwrap();
-                    let pattern = regex::Regex::new(&highlight.combined_pattern).unwrap();
-                    if pattern.is_match(line) {
+                    // fancy-regex: בתבנית המשולבת יש lookahead, כמו ב-Dart.
+                    let pattern = fancy_regex::Regex::new(&highlight.combined_pattern).unwrap();
+                    if pattern.is_match(line).unwrap() {
                         found_by_highlight = Some(distance);
                     }
                 }
