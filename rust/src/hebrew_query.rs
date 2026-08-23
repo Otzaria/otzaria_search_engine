@@ -534,7 +534,7 @@ pub fn sanitize_query(query: &str) -> String {
     collapse_whitespace(&buf)
 }
 
-fn collapse_whitespace(s: &str) -> String {
+pub(crate) fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev = false;
     for ch in s.chars() {
@@ -811,11 +811,79 @@ pub fn fold_presentation_forms(text: &str) -> String {
 // `HebrewTokenizer`, which treats the punctuation `sanitize_query` strips as
 // "transparent" (see `crate::hebrew_tokenizer`).
 
-/// Strips HTML tags and entities, mirroring the Dart `stripHtmlIfNeeded`:
-/// the four whitespace entities become a space first (so adjacent words are
-/// not merged), then `<…>` tags and remaining `&…;` entities are removed.
+/// שמות תגי HTML שהדפדפן מציג כהפרדה ויזואלית — מעבר שורה או גבול בלוק.
+/// באינדוקס הם הופכים לרווח, אחרת `המורים<br>כי` נטמע כטוקן אחד: מילים
+/// מוצגות דבוקות בתוצאות, וחיפוש של כל אחת מהן מחטיא (Otzaria/otzaria#949).
+/// תגי inline (`<b>`, `<span>`…) נשארים מחיקה נטו — `מי<b>לה` היא מילה אחת.
+pub(crate) const BREAKING_TAG_NAMES: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "caption",
+    "center",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "ul",
+];
+
+/// האם תוכן תג (`body` — התווים שבין `<` ל-`>`) הוא תג שבירה: `/` פותח
+/// אופציונלי, שם באדישות לרישיות, ואחריו רק תו שאינו אות/ספרה (או כלום).
+fn is_breaking_tag(body: &[char]) -> bool {
+    let mut idx = 0;
+    if idx < body.len() && body[idx] == '/' {
+        idx += 1;
+    }
+    let start = idx;
+    while idx < body.len() && body[idx].is_ascii_alphanumeric() {
+        idx += 1;
+    }
+    // השם הארוך ביותר בן 10 תווים (figcaption) — חריגה היא לא-תג מהר.
+    if idx == start || idx - start > 10 {
+        return false;
+    }
+    let name: String = body[start..idx]
+        .iter()
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    BREAKING_TAG_NAMES.contains(&name.as_str())
+}
+
+/// Strips HTML tags and entities like the Dart `stripHtmlIfNeeded`, with one
+/// deliberate divergence: breaking tags ([`BREAKING_TAG_NAMES`]) become a
+/// space, so words the reader sees on separate lines stay separate tokens.
+/// The whitespace entities become a space first (so adjacent words are not
+/// merged), then `<…>` tags and remaining `&…;` entities are removed.
 ///
-/// Char-based to match the Dart regex `<[^>]*>|&[^;]+;`: a `<` is dropped
+/// Char-based like the Dart regex `<[^>]*>|&[^;]+;`: a `<` is dropped
 /// through the next `>` (kept verbatim if unterminated); an `&` is dropped
 /// through the next `;` only if at least one non-`;` char precedes it.
 pub fn strip_html_for_indexing(text: &str) -> String {
@@ -844,6 +912,9 @@ pub fn strip_html_for_indexing(text: &str) -> String {
             '<' => {
                 // `<[^>]*>` — find the closing `>`; drop the whole span.
                 if let Some(close) = chars[i + 1..].iter().position(|&c| c == '>') {
+                    if is_breaking_tag(&chars[i + 1..i + 1 + close]) {
+                        out.push(' ');
+                    }
                     i += close + 2; // past the '>'
                 } else {
                     out.push('<'); // unterminated: regex would not match
@@ -2502,6 +2573,26 @@ mod tests {
             strip_html_for_indexing("<span dir=\"rtl\">טקסט</span>"),
             "טקסט"
         );
+    }
+
+    #[test]
+    fn strip_html_breaking_tags_become_a_space() {
+        // Otzaria/otzaria#949 — מעבר שורה שנמחק בלי רווח הדביק מילים.
+        assert_eq!(strip_html_for_indexing("המורים<br>כי"), "המורים כי");
+        assert_eq!(strip_html_for_indexing("המורים<br/>כי"), "המורים כי");
+        assert_eq!(strip_html_for_indexing("המורים<BR />כי"), "המורים כי");
+        assert_eq!(strip_html_for_indexing("א</p><p>ב"), "א  ב");
+        assert_eq!(strip_html_for_indexing("<td>א</td><td>ב</td>"), " א  ב ");
+        assert_eq!(
+            strip_html_for_indexing("<h2 class=\"x\">כותרת</h2>גוף"),
+            " כותרת גוף"
+        );
+        // תגי inline נשארים מחיקה נטו — מילה שפוצלה בעיצוב היא מילה אחת.
+        assert_eq!(strip_html_for_indexing("מי<b>לה"), "מילה");
+        assert_eq!(strip_html_for_indexing("מי<big>לה"), "מילה");
+        // שם תג ששבירה היא רק קידומת שלו אינו תג שבירה.
+        assert_eq!(strip_html_for_indexing("א<param>ב"), "אב");
+        assert_eq!(strip_html_for_indexing("א<h7>ב"), "אב");
     }
 
     #[test]
