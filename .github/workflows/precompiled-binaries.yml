@@ -193,6 +193,10 @@ jobs:
           "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
           "CC=clang-cl" >> $env:GITHUB_ENV
           "CXX=clang-cl" >> $env:GITHUB_ENV
+          # clang-cl, unlike MSVC, does not enable C++ exceptions by default.
+          # llama.cpp's GGUF reader uses try/catch, so pass the MSVC-compatible
+          # switch through cc-rs to CMake's C++ compilation flags.
+          "CXXFLAGS=/EHsc" >> $env:GITHUB_ENV
 
       - name: Install build tool dependencies
         working-directory: cargokit/build_tool
