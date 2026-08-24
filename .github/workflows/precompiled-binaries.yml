@@ -181,6 +181,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # llama.cpp rejects the Visual Studio/MSVC compiler for Windows ARM.
+      # The hosted ARM image includes LLVM and Ninja; selecting them here
+      # makes cmake-rs invoke clang-cl instead of its MSVC default.
+      - name: Configure LLVM for Windows ARM
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          clang-cl --version
+          ninja --version
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+          "CC=clang-cl" >> $env:GITHUB_ENV
+          "CXX=clang-cl" >> $env:GITHUB_ENV
+
       - name: Install build tool dependencies
         working-directory: cargokit/build_tool
         run: dart pub get
