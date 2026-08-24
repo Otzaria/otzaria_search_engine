@@ -47,6 +47,10 @@ class Target {
       flutter: 'windows-x64',
     ),
     Target(
+      rust: 'aarch64-pc-windows-msvc',
+      flutter: 'windows-arm64',
+    ),
+    Target(
       rust: 'x86_64-unknown-linux-gnu',
       flutter: 'linux-x64',
     ),
@@ -116,14 +120,27 @@ class Target {
         return [Target.forRustTriple('x86_64-unknown-linux-gnu')!];
       }
     }
+    if (Platform.isWindows) {
+      // Native C/C++ dependencies (such as llama.cpp) are not reliably
+      // cross-compiled by a standard Windows toolchain. Mirror the Linux
+      // behavior and publish only the host architecture by default.
+      return [
+        windowsHostTarget(Platform.environment['PROCESSOR_ARCHITECTURE']),
+      ];
+    }
     return all.where((target) {
-      if (Platform.isWindows) {
-        return target.rust.contains('-windows-');
-      } else if (Platform.isMacOS) {
+      if (Platform.isMacOS) {
         return target.darwinPlatform != null;
       }
       return false;
     }).toList(growable: false);
+  }
+
+  static Target windowsHostTarget(String? architecture) {
+    final triple = architecture?.toUpperCase() == 'ARM64'
+        ? 'aarch64-pc-windows-msvc'
+        : 'x86_64-pc-windows-msvc';
+    return Target.forRustTriple(triple)!;
   }
 
   @override

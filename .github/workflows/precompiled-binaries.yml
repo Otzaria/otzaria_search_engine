@@ -163,9 +163,17 @@ jobs:
             --target "${{ matrix.target }}"
 
   publish-windows:
-    name: Publish Windows
+    name: Publish Windows (${{ matrix.target }})
     needs: prepare-release
-    runs-on: windows-2022
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runs_on: windows-11-arm
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
 
@@ -187,7 +195,7 @@ jobs:
           dart run bin/build_tool.dart precompile-binaries
           --repository "${{ github.repository }}"
           --manifest-dir "../../rust"
-          --target x86_64-pc-windows-msvc
+          --target ${{ matrix.target }}
 
   verify:
     name: Verify published binaries
