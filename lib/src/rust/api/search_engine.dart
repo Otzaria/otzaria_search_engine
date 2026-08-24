@@ -1109,6 +1109,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// default; incremental indexing keeps normal merging.
   Future<void> setBulkIndexing({required bool enabled});
 
+  /// Economy indexing mode: shrinks the writer's memory budget to the
+  /// mobile footprint (50MB ⇒ tantivy caps itself at 3 indexing threads)
+  /// so the machine stays responsive during a long build; `false` restores
+  /// the platform default. The budget is fixed at writer creation, so a
+  /// live writer is swapped — pending documents are committed first and
+  /// nothing is lost. May be toggled mid-indexing; off by default.
+  Future<void> setEconomyIndexing({required bool enabled});
+
   /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
   /// search path. Returns `true` if the file opened and has the expected
   /// schema, `false` if it is missing or unusable — in which case the engine

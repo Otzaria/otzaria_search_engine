@@ -751,6 +751,9 @@ pub struct HighlightPattern {
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DEFAULT_WRITER_HEAP_SIZE: usize = 300_000_000;
+// Economy indexing (see `set_economy_indexing`): the mobile budget — 3
+// threads with small arenas — applied on demand on desktop too.
+const ECONOMY_WRITER_HEAP_SIZE: usize = 50_000_000;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
 // גרסה 3 (טרם פורסמה): המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים
@@ -3365,6 +3368,32 @@ impl SearchEngine {
             writer.set_merge_policy(Box::<tantivy::indexer::LogMergePolicy>::default());
         }
         debug!("bulk_indexing={enabled}");
+        Ok(())
+    }
+
+    /// Economy indexing mode: shrinks the writer's memory budget to the
+    /// mobile footprint (50MB ⇒ tantivy caps itself at 3 indexing threads)
+    /// so the machine stays responsive during a long build; `false` restores
+    /// the platform default. The budget is fixed at writer creation, so a
+    /// live writer is swapped — pending documents are committed first and
+    /// nothing is lost. May be toggled mid-indexing; off by default.
+    pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
+        let target = if enabled {
+            ECONOMY_WRITER_HEAP_SIZE
+        } else {
+            DEFAULT_WRITER_HEAP_SIZE
+        };
+        if target == self.writer_heap_size {
+            return Ok(());
+        }
+        self.writer_heap_size = target;
+        if let Some(mut writer) = self.index_writer.take() {
+            writer.commit()?;
+            writer.wait_merging_threads()?;
+            self.restore_writer()?;
+            self.index_reader.reload()?;
+        }
+        debug!("economy_indexing={enabled} (writer budget {target} bytes)");
         Ok(())
     }
 
@@ -9685,6 +9714,24 @@ mod tests {
         engine.optimize().unwrap();
         assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 1);
         assert_eq!(engine.get_document_count(), 3);
+    }
+
+    #[test]
+    fn economy_indexing_swaps_writer_without_losing_pending_docs() {
+        let (mut engine, _dir) = make_engine();
+        // מסמך שטרם עבר commit חייב לשרוד את החלפת ה-writer.
+        add(&mut engine, 1, "בראשית ברא", "/books/a.txt");
+        engine.set_economy_indexing(true).unwrap();
+        assert_eq!(engine.writer_heap_size, ECONOMY_WRITER_HEAP_SIZE);
+        assert_eq!(engine.get_document_count(), 1);
+
+        // גם בדרך חזרה, וגם כשמצב bulk פעיל — ה-writer החדש שומר NoMergePolicy.
+        engine.set_bulk_indexing(true).unwrap();
+        add(&mut engine, 2, "שלום עולם", "/books/a.txt");
+        engine.set_economy_indexing(false).unwrap();
+        assert_eq!(engine.writer_heap_size, DEFAULT_WRITER_HEAP_SIZE);
+        engine.set_economy_indexing(false).unwrap();
+        assert_eq!(engine.get_document_count(), 2);
     }
 
     #[test]
