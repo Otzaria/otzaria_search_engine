@@ -23,6 +23,7 @@ use tantivy::query::{
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
 use tantivy::snippet::SnippetGenerator;
+use tantivy::store::{Compressor, ZstdCompressor};
 use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, TextAnalyzer, TokenStream};
 use tantivy::{doc, DocAddress, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher};
 use tantivy::{schema::*, Index};
@@ -866,6 +867,29 @@ fn catalogue_id_base(catalogue_order: u32) -> Result<u64> {
 
 fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
     (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
+}
+
+fn decode_zstd_book_content(compressed: &[u8]) -> Result<Vec<u8>> {
+    let packed = zstd::stream::decode_all(compressed).context("invalid Zstandard book content")?;
+    let mut text = Vec::with_capacity(packed.len());
+    let mut offset = 0;
+    while offset < packed.len() {
+        let length_end = offset
+            .checked_add(4)
+            .filter(|end| *end <= packed.len())
+            .with_context(|| format!("truncated book line length at byte {offset}"))?;
+        let length = u32::from_le_bytes(packed[offset..length_end].try_into().unwrap()) as usize;
+        let line_end = length_end
+            .checked_add(length)
+            .filter(|end| *end <= packed.len())
+            .with_context(|| format!("truncated book line at byte {offset}"))?;
+        if offset != 0 {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(&packed[length_end..line_end]);
+        offset = line_end;
+    }
+    Ok(text)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1728,7 +1752,7 @@ impl SearchEngine {
         debug!("new path={}", path);
         let schema = current_schema();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = match Index::open_or_create(mmap_directory, schema.clone()) {
+        let mut index = match Index::open_or_create(mmap_directory, schema.clone()) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -1736,6 +1760,9 @@ impl SearchEngine {
             ),
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
+        index.settings_mut().docstore_compression = Compressor::Zstd(ZstdCompressor {
+            compression_level: Some(3),
+        });
         // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
         // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
         // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
@@ -2889,12 +2916,12 @@ impl SearchEngine {
         )
     }
 
-    /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
-    /// content from SQLite, which stores UTF-8 — passing the bytes through
+    /// [`Self::add_text_book`] over raw UTF-8 or a Zstandard frame. The app
+    /// reads book content from SQLite — passing the bytes through
     /// (SQLite BLOB → `Uint8List` → here) skips the UTF-8→UTF-16→UTF-8
     /// round-trip a Dart `String` costs on the bridge (~180ms/MB measured).
-    /// Invalid UTF-8 is replaced (lossy), never an error — matching what the
-    /// Dart decode would have produced.
+    /// Invalid UTF-8 is replaced (lossy), matching what the Dart decode would
+    /// have produced. A corrupt Zstandard frame returns an error.
     pub fn add_text_book_bytes(
         &mut self,
         title: String,
@@ -2905,6 +2932,11 @@ impl SearchEngine {
         text: Vec<u8>,
         extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
+        let text = if text.starts_with(&zstd::zstd_safe::MAGICNUMBER.to_le_bytes()) {
+            decode_zstd_book_content(&text)?
+        } else {
+            text
+        };
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
                 // Valid UTF-8 — take ownership without re-copying.
@@ -9568,60 +9600,142 @@ mod tests {
         assert_eq!(search_ids(&mut engine, &garbage), Vec::<u64>::new());
     }
 
+    fn pack_book_lines(lines: &[&str]) -> Vec<u8> {
+        let mut packed = Vec::new();
+        for &line in lines {
+            packed.extend_from_slice(&(line.len() as u32).to_le_bytes());
+            packed.extend_from_slice(line.as_bytes());
+        }
+        packed
+    }
+
     #[test]
-    fn add_text_book_bytes_matches_string_path() {
-        // מסלול הבייטים (SQLite BLOB → Uint8List) חייב לייצר בדיוק את אותם
-        // מסמכים ואותה טביעת אצבע כמו מסלול ה-String.
-        let text =
-            "<h1>ספר בראשית</h1>\n<h2>פרק א</h2>\nבְּרֵאשִׁית ברא אלהים\n<h2>פרק ב</h2>\nויכלו השמים";
+    fn add_text_book_bytes_accepts_raw_and_zstd_content() {
+        let lines = [
+            "<h1>ספר בראשית</h1>",
+            "",
+            "<h2>פרק א</h2>",
+            "בְּרֵאשִׁית ברא אלהים\nשורה משובצת",
+            "<h2>פרק ב</h2>",
+            "ויכלו השמים",
+        ];
+        let text = lines.join("\n");
+        let packed = pack_book_lines(&lines);
+        let split = packed.len() / 2;
+        let mut zstd = zstd::stream::encode_all(&packed[..split], 3).unwrap();
+        zstd.extend(zstd::stream::encode_all(&packed[split..], 3).unwrap());
+
+        for bytes in [text.as_bytes().to_vec(), zstd] {
+            let (mut engine, dir) = make_engine();
+            assert_eq!(
+                engine.index.settings().docstore_compression,
+                Compressor::Zstd(ZstdCompressor {
+                    compression_level: Some(3)
+                })
+            );
+            let added = engine
+                .add_text_book_bytes(
+                    "בראשית".to_string(),
+                    "/root".to_string(),
+                    "/books/bereshit.txt".to_string(),
+                    5,
+                    DEFAULT_GENERATION_ORDER,
+                    bytes,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(added, text.split('\n').count() as u32);
+            engine.commit().unwrap();
+            let metadata: JsonValue =
+                serde_json::from_str(&fs::read_to_string(dir.path().join("meta.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                metadata["index_settings"]["docstore_compression"],
+                "zstd(compression_level=3)"
+            );
+
+            let results = engine
+                .search_exact(
+                    "ויכלו".to_string(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].reference, "ספר בראשית, פרק ב");
+            assert_eq!(results[0].id, ((5u64 + 1) << 32) + u64::from(added));
+
+            let embedded = engine
+                .search_exact(
+                    "משובצת".to_string(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(embedded.len(), 1);
+            assert_eq!(embedded[0].reference, "ספר בראשית, פרק א");
+
+            let fingerprints = engine.get_book_fingerprints().unwrap();
+            assert_eq!(
+                fingerprints.get("/books/bereshit.txt"),
+                Some(&compute_book_fingerprint(
+                    text.to_string(),
+                    "בראשית".to_string(),
+                    "/root".to_string(),
+                    5,
+                    DEFAULT_GENERATION_ORDER,
+                    None,
+                ))
+            );
+            let text_fingerprints = engine.get_book_text_fingerprints().unwrap();
+            assert_eq!(
+                text_fingerprints.get("/books/bereshit.txt"),
+                Some(&compute_content_fingerprint(text.to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn add_text_book_bytes_rejects_corrupt_zstd_content() {
         let (mut engine, _dir) = make_engine();
-        let added = engine
-            .add_text_book_bytes(
-                "בראשית".to_string(),
-                "/root".to_string(),
-                "/books/bereshit.txt".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
-                text.as_bytes().to_vec(),
-                None,
-            )
-            .unwrap();
-        assert_eq!(added, 5);
-        engine.commit().unwrap();
+        let mut invalid_frame = zstd::zstd_safe::MAGICNUMBER.to_le_bytes().to_vec();
+        invalid_frame.extend_from_slice(b"not a frame");
+        let mut truncated_line = 20u32.to_le_bytes().to_vec();
+        truncated_line.extend_from_slice(b"short");
+        let truncated_line = zstd::stream::encode_all(truncated_line.as_slice(), 3).unwrap();
+        let mut trailing_bytes = pack_book_lines(&["valid"]);
+        trailing_bytes.extend_from_slice(&[1, 2]);
+        let trailing_bytes = zstd::stream::encode_all(trailing_bytes.as_slice(), 3).unwrap();
 
-        let results = engine
-            .search_exact(
-                "ויכלו".to_string(),
-                vec![],
-                10,
-                0,
-                ResultsOrder::Catalogue,
-                false,
-                false,
-                None,
-            )
-            .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].reference, "ספר בראשית, פרק ב");
-        assert_eq!(results[0].id, ((5u64 + 1) << 32) + 5);
-
-        let fingerprints = engine.get_book_fingerprints().unwrap();
-        assert_eq!(
-            fingerprints.get("/books/bereshit.txt"),
-            Some(&compute_book_fingerprint(
-                text.to_string(),
-                "בראשית".to_string(),
-                "/root".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
-                None,
-            ))
-        );
-        let text_fingerprints = engine.get_book_text_fingerprints().unwrap();
-        assert_eq!(
-            text_fingerprints.get("/books/bereshit.txt"),
-            Some(&compute_content_fingerprint(text.to_string()))
-        );
+        for (bytes, expected) in [
+            (invalid_frame, "invalid Zstandard book content"),
+            (truncated_line, "truncated book line at byte 0"),
+            (trailing_bytes, "truncated book line length"),
+        ] {
+            let error = engine
+                .add_text_book_bytes(
+                    "broken".to_string(),
+                    "/root".to_string(),
+                    "/books/broken.zst".to_string(),
+                    5,
+                    DEFAULT_GENERATION_ORDER,
+                    bytes,
+                    None,
+                )
+                .unwrap_err();
+            assert!(format!("{error:#}").contains(expected));
+        }
+        assert_eq!(engine.get_document_count(), 0);
     }
 
     #[test]

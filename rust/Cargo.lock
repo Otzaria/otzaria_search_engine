@@ -1745,6 +1745,7 @@ dependencies = [
  "tantivy-fst",
  "tempfile",
  "unicode-segmentation",
+ "zstd",
 ]
 
 [[package]]
@@ -1925,6 +1926,7 @@ dependencies = [
  "typetag",
  "uuid",
  "winapi",
+ "zstd",
 ]
 
 [[package]]
