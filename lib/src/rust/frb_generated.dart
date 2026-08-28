@@ -10392,12 +10392,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     extraFacets: extraFacets,
   );
 
-  /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
-  /// content from SQLite, which stores UTF-8 — passing the bytes through
+  /// [`Self::add_text_book`] over raw UTF-8 or a Zstandard frame. The app
+  /// reads book content from SQLite — passing the bytes through
   /// (SQLite BLOB → `Uint8List` → here) skips the UTF-8→UTF-16→UTF-8
   /// round-trip a Dart `String` costs on the bridge (~180ms/MB measured).
-  /// Invalid UTF-8 is replaced (lossy), never an error — matching what the
-  /// Dart decode would have produced.
+  /// Invalid UTF-8 is replaced (lossy), matching what the Dart decode would
+  /// have produced. A corrupt Zstandard frame returns an error.
   Future<int> addTextBookBytes({
     required String title,
     required String topics,
