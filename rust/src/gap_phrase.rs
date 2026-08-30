@@ -21,13 +21,29 @@
 //! consumer — top-k collection, counting, per-book counting, facet counting,
 //! boolean composition with the facet filter — sees the verified doc set with
 //! no special-casing.
+//!
+//! [`TermListPhraseQuery`] is the expansion-safe sibling: instead of wrapping
+//! a `RegexPhraseQuery` (whose weight *errors* when the matched-term count
+//! crosses `max_expansions`), it is built from term sets the engine already
+//! materialized under its collection budgets — one `Vec<Term>` per word
+//! position. Candidate documents are driven by a plain boolean AND of
+//! per-position `TermSetQuery`s (a recall superset of any phrase occurrence),
+//! and the same [`GapVerifiedScorer`] then admits only documents with an
+//! in-order occurrence inside the per-pair allowances. No joined DFA is ever
+//! compiled and no expansion ceiling exists to overflow, so this path
+//! *degrades* (the materialization budgets truncate from the back) instead of
+//! failing — the engine uses it whenever a phrase's expansions outgrow the
+//! exact `RegexPhraseQuery` path.
+
+use std::sync::Arc;
 
 use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{
-    EmptyScorer, EnableScoring, Explanation, Query, RegexPhraseQuery, Scorer, Weight,
+    BooleanQuery, EmptyScorer, EnableScoring, Explanation, Occur, Query, RegexPhraseQuery, Scorer,
+    TermSetQuery, Weight,
 };
 use tantivy::schema::{Field, IndexRecordOption};
-use tantivy::{DocId, DocSet, Score, SegmentReader, TantivyError, TERMINATED};
+use tantivy::{DocId, DocSet, Score, SegmentReader, TantivyError, Term, TERMINATED};
 
 /// A phrase query whose matches are verified position-by-position against
 /// per-pair intermediate-word allowances. See the module docs.
@@ -130,6 +146,111 @@ impl Weight for GapVerifiedWeight {
 
     fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
         self.inner.explain(reader, doc)
+    }
+}
+
+/// A phrase query built from pre-materialized term sets — one per word
+/// position — with per-pair gap allowances. See the module docs: this is the
+/// degrade path for phrases whose expansions outgrow `RegexPhraseQuery`'s
+/// hard `max_expansions` ceiling.
+#[derive(Clone, Debug)]
+pub(crate) struct TermListPhraseQuery {
+    /// The field whose positional postings verify candidates — the same
+    /// field the terms were materialized from.
+    field: Field,
+    /// The index terms each word position matched (every position holds at
+    /// least one term; an empty position means the caller should have built
+    /// an `EmptyQuery` instead).
+    position_terms: Vec<Arc<Vec<Term>>>,
+    /// `gaps[i]` = allowed intermediate words between words `i` and `i+1`.
+    gaps: Vec<u32>,
+}
+
+impl TermListPhraseQuery {
+    pub(crate) fn new(field: Field, position_terms: Vec<Arc<Vec<Term>>>, gaps: Vec<u32>) -> Self {
+        debug_assert_eq!(gaps.len() + 1, position_terms.len());
+        debug_assert!(position_terms.iter().all(|terms| !terms.is_empty()));
+        Self {
+            field,
+            position_terms,
+            gaps,
+        }
+    }
+
+    /// The candidate driver: a document can only contain the phrase if every
+    /// position's term set matches it somewhere — a plain boolean AND of
+    /// per-position `TermSetQuery`s, which never compiles a DFA and has no
+    /// expansion ceiling. The verifier then trims this recall superset down
+    /// to real in-order, within-allowance occurrences.
+    fn driver(&self) -> BooleanQuery {
+        let clauses: Vec<(Occur, Box<dyn Query>)> = self
+            .position_terms
+            .iter()
+            .map(|terms| {
+                (
+                    Occur::Must,
+                    Box::new(TermSetQuery::new(terms.iter().cloned())) as Box<dyn Query>,
+                )
+            })
+            .collect();
+        BooleanQuery::new(clauses)
+    }
+}
+
+impl Query for TermListPhraseQuery {
+    fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        Ok(Box::new(TermListPhraseWeight {
+            driver: self.driver().weight(enable_scoring)?,
+            field: self.field,
+            position_terms: self.position_terms.clone(),
+            gaps: self.gaps.clone(),
+        }))
+    }
+}
+
+struct TermListPhraseWeight {
+    driver: Box<dyn Weight>,
+    field: Field,
+    position_terms: Vec<Arc<Vec<Term>>>,
+    gaps: Vec<u32>,
+}
+
+impl Weight for TermListPhraseWeight {
+    fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        let inner = self.driver.scorer(reader, boost)?;
+        let inverted = reader.inverted_index(self.field)?;
+        // Positional postings for every materialized term that exists in
+        // this segment. Bounded by the materialization budgets the caller
+        // already enforced — the collection that produced `position_terms`
+        // is the cost guard, not a second ceiling here.
+        let mut word_postings = Vec::with_capacity(self.position_terms.len());
+        for terms in &self.position_terms {
+            let mut postings = Vec::new();
+            for term in terms.iter() {
+                if let Some(term_info) = inverted.get_term_info(term)? {
+                    postings.push(inverted.read_postings_from_terminfo(
+                        &term_info,
+                        IndexRecordOption::WithFreqsAndPositions,
+                    )?);
+                }
+            }
+            if postings.is_empty() {
+                // A word with no matching term in this segment can never
+                // form a phrase here (and the AND driver cannot match
+                // either).
+                return Ok(Box::new(EmptyScorer));
+            }
+            word_postings.push(postings);
+        }
+        Ok(Box::new(GapVerifiedScorer::new(
+            inner,
+            word_postings,
+            self.gaps.clone(),
+        )))
+    }
+
+    fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
+        self.driver.explain(reader, doc)
     }
 }
 

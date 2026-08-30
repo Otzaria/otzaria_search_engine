@@ -124,9 +124,14 @@ const MAX_PATTERN_CHARS: usize = 6_000;
 /// states — inside the vendored 8 192-state cap with margin.
 const MAX_TYPO_VARIATIONS: usize = 64;
 
-/// Phrase-path variation cap without typo tolerance (spelling/morphological
-/// combos are naturally smaller, so a tighter budget still covers them fully).
-const MAX_NORMAL_VARIATIONS: usize = 48;
+/// Phrase-path variation cap without typo tolerance. Raised 48→96 together
+/// with the spelling-branch caps: the degrade phrase engine compiles each
+/// branch as its own small DFA, so the joined-DFA state cap no longer bounds
+/// how many branches a phrase word may carry — the exact phrase path
+/// pre-compiles its joined pattern and falls back to the degrade engine when
+/// the branch set is too rich for one DFA. The char budget below still trims
+/// the joined form the exact path and the highlight automatons consume.
+const MAX_NORMAL_VARIATIONS: usize = 96;
 
 /// Per-word branch budgets, chosen by query shape.
 ///
@@ -161,17 +166,34 @@ const SINGLE_WORD_BUDGET: VariationBudget = VariationBudget {
 /// Cap on כתיב מלא/חסר branches folded into one pattern. The generator is
 /// 2^n in the count of optional ו/י letters; this keeps it polynomial.
 /// Shared with the display-highlight builder so search and highlighting fan
-/// out identically.
-pub(crate) const MAX_SPELLING_BRANCHES: usize = 16;
+/// out identically. Raised 16→32 once the phrase path gained its degrade
+/// engine: overflow anywhere downstream now truncates by priority instead of
+/// erroring, so the cap costs only linear scan time (one FST scan per branch
+/// per segment, cached across a search's repeated engine calls).
+pub(crate) const MAX_SPELLING_BRANCHES: usize = 32;
 
-/// `max_expansions` ceiling for the phrase path (`RegexPhraseQuery`).
+/// Cap on כתיב מלא/חסר variants that fan through the *grammatical*
+/// morphological builders (prefix group / suffix alternation around every
+/// variant — denser patterns per branch than the plain window builders).
+/// Historically 4–10 depending on the combo, sized against the joined-DFA
+/// state cap; unified at 16 now that the search side compiles per branch and
+/// the exact phrase path pre-checks its joined DFA before use. The
+/// display-highlight builder fans out at [`MAX_SPELLING_BRANCHES`] (a
+/// superset), so every variant the search matches still highlights.
+const MAX_GRAMMATICAL_SPELLING_BRANCHES: usize = 16;
+
+/// `max_expansions` ceiling for the phrase path.
 ///
-/// tantivy enforces it cumulatively across all word positions *before*
-/// loading postings, and its doc_freq bucketing contains the post-expansion
-/// cost — so the ceiling guards the memory of materialized expansions, not
-/// scan time. Half of tantivy's own default (16 384) as a conservative first
-/// step; overflowing it surfaces tantivy's `InvalidArgument` to the caller
-/// (unlike the single-word path, which degrades instead of erroring).
+/// tantivy's `RegexPhraseQuery` enforces it cumulatively across all word
+/// positions per segment and *errors* on overflow — so the engine's phrase
+/// builder (`phrase_query_with_degrade`) pre-counts each position's matches
+/// and uses this value only as the switch between execution engines: at or
+/// under it the historical `RegexPhraseQuery` runs (identical scoring and
+/// behavior, provably unable to trip tantivy's ceiling); over it the
+/// term-list degrade path runs instead, which has per-*position* budgets and
+/// truncates (highest-priority branches first) rather than erroring. Since
+/// overflow no longer fails the query, the value is purely a "stay on the
+/// well-trodden tantivy path while it is cheap" threshold.
 const PHRASE_MAX_EXPANSIONS: u32 = 8_192;
 
 /// Term-count ceiling for a single vocalized word with no expansion options.
@@ -1517,7 +1539,7 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
                 aramaic_prefix_pattern
             };
             let aramaic_branch = if flags.spelling {
-                join_spelling(variant, 10, aramaic_builder)
+                join_spelling(variant, MAX_GRAMMATICAL_SPELLING_BRANCHES, aramaic_builder)
             } else {
                 aramaic_builder(variant)
             };
@@ -1559,15 +1581,27 @@ fn word_to_pattern_base(root: &str, flags: &WordFlags) -> String {
         if flags.prefix && flags.suffix {
             join_spelling(root, MAX_SPELLING_BRANCHES, partial_word_pattern)
         } else if flags.gram_prefix && flags.gram_suffix {
-            join_spelling(root, 4, full_morphological_pattern)
+            join_spelling(
+                root,
+                MAX_GRAMMATICAL_SPELLING_BRANCHES,
+                full_morphological_pattern,
+            )
         } else if flags.prefix {
             join_spelling(root, MAX_SPELLING_BRANCHES, user_prefix_pattern)
         } else if flags.suffix {
             join_spelling(root, MAX_SPELLING_BRANCHES, user_suffix_pattern)
         } else if flags.gram_prefix {
-            join_spelling(root, 10, grammatical_prefix_pattern)
+            join_spelling(
+                root,
+                MAX_GRAMMATICAL_SPELLING_BRANCHES,
+                grammatical_prefix_pattern,
+            )
         } else if flags.gram_suffix {
-            join_spelling(root, 6, grammatical_suffix_pattern)
+            join_spelling(
+                root,
+                MAX_GRAMMATICAL_SPELLING_BRANCHES,
+                grammatical_suffix_pattern,
+            )
         } else if flags.partial {
             join_spelling(root, MAX_SPELLING_BRANCHES, partial_word_pattern)
         } else {
@@ -2107,19 +2141,26 @@ fn build_word_regex(
     if kept.is_empty() {
         return WordPattern::Literal(escape_regex(word));
     }
-    // Final safety net (phrase path only): if the joined form — the one
-    // `RegexPhraseQuery` compiles as a single DFA — still exceeds the budget
-    // (a single oversized branch, or branch totals that pass but overflow
-    // once `(?:`/`)`/pipes are added), fall back to a plain literal (always
-    // compiles).
+    // Final safety net (phrase path only): the branch totals passed the
+    // budget, but the joined form the exact phrase path / highlight
+    // automatons compile also carries `(?:`/`)`/pipe separators. Drop the
+    // lowest-priority branches until the joined form fits — never nuke the
+    // whole option set. Only a *single* branch that alone exceeds the budget
+    // (impossible for the builders above, possible for a hostile string-API
+    // pattern) still falls back to the plain literal, which always compiles.
     if let Some(max_chars) = budget.max_pattern_chars {
-        let joined_chars = kept.iter().map(|b| b.chars().count()).sum::<usize>()
-            + if kept.len() == 1 {
-                0
-            } else {
-                kept.len() - 1 + "(?:)".len()
-            };
-        if joined_chars > max_chars {
+        let joined_chars = |kept: &[String]| {
+            kept.iter().map(|b| b.chars().count()).sum::<usize>()
+                + if kept.len() == 1 {
+                    0
+                } else {
+                    kept.len() - 1 + "(?:)".len()
+                }
+        };
+        while kept.len() > 1 && joined_chars(&kept) > max_chars {
+            kept.pop();
+        }
+        if joined_chars(&kept) > max_chars {
             return WordPattern::Literal(escape_regex(word));
         }
     }
@@ -2399,9 +2440,10 @@ fn prepare_advanced_query_impl(
 ///   values. A single word combining typo with a morphological/partial
 ///   option uses the (much higher) morphological ceilings — its relaxed
 ///   branch set legitimately matches many terms.
-/// - **Phrase** (`RegexPhraseQuery`): tantivy enforces the ceiling itself,
-///   cumulatively across positions, and overflow is an error — one flat
-///   ceiling at half the tantivy default (see [`PHRASE_MAX_EXPANSIONS`]).
+/// - **Phrase**: one flat ceiling (see [`PHRASE_MAX_EXPANSIONS`]) that the
+///   engine's phrase builder uses as the switch between the exact
+///   `RegexPhraseQuery` engine and the term-list degrade path — overflow
+///   selects the degrade path instead of erroring.
 fn compute_max_expansions(
     words: &[String],
     search_options: &HashMap<String, HashMap<String, bool>>,
