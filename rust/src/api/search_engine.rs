@@ -5505,17 +5505,42 @@ impl SearchEngine {
         text_field: Field,
         max_expansions: u32,
     ) -> Result<(Box<dyn Query>, bool)> {
+        // Materialize every *distinct* branch set once, in parallel: the
+        // per-position FST scans are independent of each other and dominate
+        // the build time of a wide phrase query, and a repeated query word
+        // (positions matter, the scan does not) maps back to the same set.
+        use rayon::prelude::*;
+        let mut unique_branches: Vec<&[String]> = Vec::new();
+        let mut set_index: Vec<usize> = Vec::with_capacity(regex_terms.len());
+        for pattern in regex_terms {
+            let branches = pattern.branches();
+            match unique_branches.iter().position(|u| *u == branches) {
+                Some(i) => set_index.push(i),
+                None => {
+                    set_index.push(unique_branches.len());
+                    unique_branches.push(branches);
+                }
+            }
+        }
+        let unique_sets: Vec<CachedTermSet> = unique_branches
+            .par_iter()
+            .copied()
+            .map(|branches| {
+                self.materialize_term_set(
+                    branches,
+                    &[],
+                    text_field,
+                    PHRASE_POSITION_MAX_EXPANSIONS,
+                    PHRASE_POSITION_POSTINGS_BUDGET,
+                )
+            })
+            .collect::<Result<_>>()?;
+
         let mut total_terms: usize = 0;
         let mut truncated = false;
         let mut position_terms: Vec<Arc<Vec<Term>>> = Vec::with_capacity(regex_terms.len());
-        for pattern in regex_terms {
-            let entry = self.materialize_term_set(
-                pattern.branches(),
-                &[],
-                text_field,
-                PHRASE_POSITION_MAX_EXPANSIONS,
-                PHRASE_POSITION_POSTINGS_BUDGET,
-            )?;
+        for &set_i in &set_index {
+            let entry = &unique_sets[set_i];
             if entry.terms.is_empty() {
                 // A word with no matching index term anywhere — the phrase
                 // can never match, regardless of the other positions.
@@ -5523,7 +5548,7 @@ impl SearchEngine {
             }
             total_terms = total_terms.saturating_add(entry.terms.len());
             truncated |= entry.truncated;
-            position_terms.push(entry.terms);
+            position_terms.push(entry.terms.clone());
         }
 
         if !truncated && total_terms <= max_expansions as usize {
@@ -5542,7 +5567,7 @@ impl SearchEngine {
             // joined form outgrowing the DFA limits.
             if joined.iter().all(|p| tantivy_fst::Regex::new(p).is_ok()) {
                 let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-                let mut phrase_query = RegexPhraseQuery::new(text_field, joined.clone());
+                let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
                 phrase_query.set_slop(slop_budget);
                 phrase_query.set_max_expansions(max_expansions);
                 if slop_budget == 0 {
@@ -5550,11 +5575,14 @@ impl SearchEngine {
                     // for the position verifier to trim.
                     return Ok((Box::new(phrase_query), false));
                 }
+                // The verifier reads positions from the materialized term
+                // sets (untruncated here, so they cover exactly what the
+                // phrase automatons match) — no per-call dictionary rescan.
                 return Ok((
                     Box::new(GapVerifiedPhraseQuery::new(
                         phrase_query,
                         text_field,
-                        joined,
+                        position_terms,
                         gaps.to_vec(),
                     )),
                     false,
@@ -5638,11 +5666,16 @@ impl SearchEngine {
                 }
             }
         }
+        // Every distinct word materializes independently (same scans, same
+        // cache) — fan them out over the pool like the phrase path does.
+        use rayon::prelude::*;
+        let materialized: Vec<(Box<dyn Query>, bool)> = merged_branches
+            .par_iter()
+            .map(|branches| self.single_regex_term_query(branches, &[], text_field, max_expansions))
+            .collect::<Result<_>>()?;
         let mut truncated = false;
-        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(merged_branches.len());
-        for branches in &merged_branches {
-            let (word_query, word_truncated) =
-                self.single_regex_term_query(branches, &[], text_field, max_expansions)?;
+        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(materialized.len());
+        for (word_query, word_truncated) in materialized {
             truncated |= word_truncated;
             word_queries.push(word_query);
         }
