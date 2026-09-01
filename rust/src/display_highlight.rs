@@ -716,7 +716,15 @@ fn literal_charwise_pattern(word: &str, is_last_word: bool) -> String {
     // כל תו מוסיף את ATTACHED_MARKS_CLASS (~25 בתים) ואולי מחלקת גרש/גרשיים;
     // הקצאה מראש נדיבה מונעת reallocations בלולאה.
     let mut out = String::with_capacity(word.len() * 30);
+    let mut prev_was_letter = false;
     for ch in word.chars().take(core_len) {
+        // בין שתי אותיות עבריות רצופות — גרשיים אופציונליים, בדיוק כמו
+        // charwise_display_pattern: בלעדיהם "רשי" הדגיש את רש״י בגוף הספר
+        // אך החלונית הציגה "אין תוצאות" (Otzaria/otzaria#1054).
+        if prev_was_letter && matches!(ch, 'א'..='ת') {
+            out.push_str(OPTIONAL_QUOTES);
+        }
+        prev_was_letter = matches!(ch, 'א'..='ת');
         if is_query_quote(ch) {
             push_quote_class(&mut out, ch);
         } else {
@@ -871,6 +879,33 @@ mod tests {
                 super::super::BREAK_CHAR_CLASS.contains("\\u05BE"),
                 "separator must tolerate maqaf"
             );
+        }
+
+        #[test]
+        fn bare_query_matches_printed_gershayim() {
+            // Otzaria/otzaria#1054: המציאה חייבת ללכת אחרי ההדגשה — "רשי"
+            // בלי גרשיים מוצא את רש״י המודפס, על כל צורות הגרשיים.
+            // הבדיקה על תבנית-המילה בלבד: ל-fancy_regex אין lookbehind
+            // באורך משתנה, וגבולות המילה מכוסים בבדיקות המבנה למעלה.
+            let word = super::super::literal_charwise_pattern("רשי", true);
+            let re = fancy_regex::Regex::new(&format!("^(?:{word})$")).unwrap();
+            assert!(re.is_match("רש\u{05F4}י").unwrap());
+            assert!(re.is_match("רש\"י").unwrap());
+            // זוג-גרשים מודפס (מוסכמת קבצים ישנים) ≡ גרשיים.
+            assert!(re.is_match("רש''י").unwrap());
+            // בלי גרשיים בטקסט — עדיין נמצא.
+            assert!(re.is_match("רשי").unwrap());
+            // רווח אינו גרשיים — אין זליגה בין מילים.
+            assert!(!re.is_match("רש י").unwrap());
+        }
+
+        #[test]
+        fn optional_quotes_do_not_relax_explicit_quotes() {
+            // שאילתה עם גרשיים מפורשים עדיין דורשת גרשיים בטקסט.
+            let word = super::super::literal_charwise_pattern("רש\"י", true);
+            let re = fancy_regex::Regex::new(&format!("^(?:{word})$")).unwrap();
+            assert!(re.is_match("רש\u{05F4}י").unwrap());
+            assert!(!re.is_match("רשי").unwrap());
         }
 
         #[test]
