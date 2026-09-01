@@ -278,6 +278,16 @@ Future<void> main() async {
       expect(match!.group(0), 'רש״י');
     });
 
+    test('שאילתה ללא גרשיים תופסת ראשי תיבות מודפסים', () {
+      // Otzaria/otzaria#1054: החיפוש המקומי חייב להסכים עם ההדגשה
+      // והאינדקס, שמטמיעים גם טוקן-תאום נטול-גרשיים.
+      final regex = compileLiteral('רשי');
+      expect(regex.hasMatch('אמר רש״י כאן'), isTrue);
+      expect(regex.hasMatch("אמר רש''י כאן"), isTrue);
+      expect(regex.hasMatch('אמר רשי כאן'), isTrue);
+      expect(regex.hasMatch('אמר רש י כאן'), isFalse);
+    });
+
     test('ביטוי רב-מילים עם גרש פנימי (ר׳ עקיבא) נמצא', () {
       final match = compileLiteral('ר׳ עקיבא').firstMatch('אמר ר׳ עקיבא שלום');
       expect(match, isNotNull);
