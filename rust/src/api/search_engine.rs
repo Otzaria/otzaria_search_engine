@@ -30,7 +30,7 @@ use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
 use crate::display_highlight;
-use crate::gap_phrase::GapVerifiedPhraseQuery;
+use crate::gap_phrase::{GapVerifiedPhraseQuery, TermListPhraseQuery};
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
@@ -1618,6 +1618,10 @@ struct TermCacheKey {
     /// tokens materialize different term sets.
     typo_tokens: Vec<String>,
     max_expansions: u32,
+    /// The postings-cost ceiling the terms were collected under (differs
+    /// between the single-word path and the phrase-position path, which can
+    /// otherwise share every other key component through the string API).
+    postings_budget: u64,
 }
 
 /// Entries kept in [`SearchEngine::term_cache`]. Each entry holds at most
@@ -1645,6 +1649,25 @@ struct CachedTermSet {
 /// `Vec<Term>`. Initial value pending empirical calibration via
 /// `benchmark_cli` (VARIATION_CEILING_RESEARCH.md §3.א).
 const SINGLE_WORD_POSTINGS_BUDGET: u64 = 1_000_000;
+
+/// Term ceiling for one *word position* of a phrase on the degrade path
+/// ([`TermListPhraseQuery`]). Unlike tantivy's `RegexPhraseQuery` ceiling —
+/// which is cumulative across every position and *errors* on overflow — this
+/// bounds each position independently and overflow degrades: collection
+/// truncates from the back of the branch-priority order, exactly like the
+/// single-word path. The value bounds the materialized `Vec<Term>` and the
+/// per-segment positional postings the verifier opens (one per matched term
+/// per position), so it is a memory guard, not a scan-time guard.
+const PHRASE_POSITION_MAX_EXPANSIONS: u32 = 8_192;
+
+/// Postings-cost ceiling for one phrase position on the degrade path.
+/// Deliberately far looser than [`SINGLE_WORD_POSTINGS_BUDGET`]: the exact
+/// `RegexPhraseQuery` path this replaces never bounded Σ doc_freq at all (its
+/// bucketed unions contain the post-expansion cost), so a tight budget here
+/// would truncate phrases that used to work. This exists only as a backstop
+/// against a pathological position (e.g. a 1-char word with prefix+suffix
+/// windows) unioning a huge slice of the index.
+const PHRASE_POSITION_POSTINGS_BUDGET: u64 = 20_000_000;
 
 // ── Vocalized-path expansion ceilings ──────────────────────────────────────
 // Vocalized patterns are always expansions (free-mark runs match every
@@ -5375,12 +5398,15 @@ impl SearchEngine {
     /// patterns carry free-mark runs and must never hit the plain field).
     ///
     /// `gaps` is the per-pair intermediate-word allowance (`gaps[i]` between
-    /// words `i` and `i+1`). The phrase branch hands tantivy the *sum* as its
-    /// slop — tantivy spends slop cumulatively across the phrase, so the max
-    /// would reject a match using its allowance in two different gaps — and
-    /// then wraps the query in [`GapVerifiedPhraseQuery`], which re-checks
-    /// candidates against the positional postings so only in-order,
-    /// per-pair-within-allowance occurrences survive.
+    /// words `i` and `i+1`). The phrase branch goes through
+    /// [`Self::phrase_query_with_degrade`]: on its exact path tantivy gets
+    /// the *sum* as its slop — tantivy spends slop cumulatively across the
+    /// phrase, so the max would reject a match using its allowance in two
+    /// different gaps — wrapped in [`GapVerifiedPhraseQuery`], which
+    /// re-checks candidates against the positional postings so only
+    /// in-order, per-pair-within-allowance occurrences survive; on its
+    /// degrade path [`TermListPhraseQuery`] applies the same per-pair
+    /// verification directly.
     #[allow(clippy::too_many_arguments)]
     fn build_query_from_patterns(
         &self,
@@ -5404,10 +5430,10 @@ impl SearchEngine {
             Some(self.facet_filter_query(&facets)?)
         };
 
-        // Only the word-materialization paths (single word / paragraph /
-        // section scopes) degrade under their collection budgets; the empty
-        // and phrase branches either match nothing or carry their own in-DFA
-        // caps, so neither reports truncation.
+        // Every word-materialization path (single word / paragraph / section
+        // scopes / the phrase degrade path) degrades under its collection
+        // budgets and reports truncation; only the empty branch matches
+        // nothing and reports none.
         let (main_query, truncated): (Box<dyn Query>, bool) = match regex_terms.len() {
             0 => (Box::new(EmptyQuery), false),
             1 => self.single_regex_term_query(
@@ -5433,34 +5459,7 @@ impl SearchEngine {
                 )?,
                 (SearchScope::WordDistance, WordMatch::All) => {
                     debug_assert_eq!(gaps.len() + 1, regex_terms.len());
-                    // The phrase path needs one pattern string per word position:
-                    // `RegexPhraseQuery` compiles each as a single DFA (branch
-                    // splitting cannot help here — phrase matching intersects
-                    // positional postings, so the per-word budget caps in
-                    // `hebrew_query` remain load-bearing for this path).
-                    let joined: Vec<String> = regex_terms
-                        .iter()
-                        .map(hebrew_query::WordPattern::joined)
-                        .collect();
-                    let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-                    let mut phrase_query = RegexPhraseQuery::new(text_field, joined.clone());
-                    phrase_query.set_slop(slop_budget);
-                    phrase_query.set_max_expansions(max_expansions);
-                    if slop_budget == 0 {
-                        // Slop 0 is already strict in-order adjacency — nothing
-                        // for the position verifier to trim.
-                        (Box::new(phrase_query), false)
-                    } else {
-                        (
-                            Box::new(GapVerifiedPhraseQuery::new(
-                                phrase_query,
-                                text_field,
-                                joined,
-                                gaps.to_vec(),
-                            )),
-                            false,
-                        )
-                    }
+                    self.phrase_query_with_degrade(&regex_terms, gaps, text_field, max_expansions)?
                 }
             },
         };
@@ -5476,6 +5475,156 @@ impl SearchEngine {
             ])),
             truncated,
         ))
+    }
+
+    /// The ordered-phrase path (`WordDistance` + all words), with graceful
+    /// degradation instead of tantivy's hard expansion error.
+    ///
+    /// The joined patterns are first counted with *Tantivy's own semantics*:
+    /// one cumulative expansion count per segment. Only a phrase that would
+    /// exceed that limit (or whose joined DFA cannot compile) materializes
+    /// per-position term sets for the fallback engine. This keeps the normal
+    /// `RegexPhraseQuery` path exact — including its BM25 phrase scoring —
+    /// and avoids turning a large multi-segment union into a false fallback.
+    ///
+    /// - **Exact path** — every segment's cumulative count fits
+    ///   `max_expansions`, and every joined pattern compiles as one DFA: the
+    ///   historical `RegexPhraseQuery` (+ [`GapVerifiedPhraseQuery`] when
+    ///   slop > 0), with identical scoring and behavior.
+    /// - **Degrade path** — otherwise: a [`TermListPhraseQuery`] built from
+    ///   the materialized (possibly truncated) term sets. No joined DFA, no
+    ///   expansion ceiling to overflow — a phrase that used to die with
+    ///   tantivy's `InvalidArgument("Phrase query exceeded max expansions")`
+    ///   now serves complete results when only the *cumulative* ceiling was
+    ///   the problem, and budget-truncated (highest-priority-first) results
+    ///   with `truncated: true` when a single position outgrew its own caps.
+    fn phrase_query_with_degrade(
+        &self,
+        regex_terms: &[hebrew_query::WordPattern],
+        gaps: &[u32],
+        text_field: Field,
+        max_expansions: u32,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let joined: Vec<String> = regex_terms
+            .iter()
+            .map(hebrew_query::WordPattern::joined)
+            .collect();
+        let joined_compiles = joined.iter().all(|p| tantivy_fst::Regex::new(p).is_ok());
+        if joined_compiles
+            && !self.phrase_exceeds_max_expansions(&joined, text_field, max_expansions)?
+        {
+            let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
+            let mut phrase_query = RegexPhraseQuery::new(text_field, joined.clone());
+            phrase_query.set_slop(slop_budget);
+            phrase_query.set_max_expansions(max_expansions);
+            if slop_budget == 0 {
+                return Ok((Box::new(phrase_query), false));
+            }
+            return Ok((
+                Box::new(GapVerifiedPhraseQuery::new(
+                    phrase_query,
+                    text_field,
+                    joined,
+                    gaps.to_vec(),
+                )),
+                false,
+            ));
+        }
+
+        if !joined_compiles {
+            info!(
+                "joined phrase pattern exceeds the DFA limits; serving the term-list degrade path"
+            );
+        } else {
+            info!(
+                "phrase expansions exceed the exact RegexPhraseQuery ceiling ({max_expansions}) \
+                 in at least one segment; serving the term-list degrade path"
+            );
+        }
+
+        // Materialize every *distinct* branch set once, in parallel, only
+        // after the exact engine is known to be unusable. This is the costly
+        // work the fallback actually needs; doing it for all phrases both
+        // duplicated Tantivy's normal FST scan and changed valid phrases'
+        // ranking on multi-segment indexes.
+        use rayon::prelude::*;
+        let mut unique_branches: Vec<&[String]> = Vec::new();
+        let mut set_index: Vec<usize> = Vec::with_capacity(regex_terms.len());
+        for pattern in regex_terms {
+            let branches = pattern.branches();
+            match unique_branches.iter().position(|u| *u == branches) {
+                Some(i) => set_index.push(i),
+                None => {
+                    set_index.push(unique_branches.len());
+                    unique_branches.push(branches);
+                }
+            }
+        }
+        let unique_sets: Vec<CachedTermSet> = unique_branches
+            .par_iter()
+            .copied()
+            .map(|branches| {
+                self.materialize_term_set(
+                    branches,
+                    &[],
+                    text_field,
+                    PHRASE_POSITION_MAX_EXPANSIONS,
+                    PHRASE_POSITION_POSTINGS_BUDGET,
+                )
+            })
+            .collect::<Result<_>>()?;
+
+        let mut truncated = false;
+        let mut position_terms: Vec<Vec<Term>> = Vec::with_capacity(regex_terms.len());
+        for &set_i in &set_index {
+            let entry = &unique_sets[set_i];
+            if entry.terms.is_empty() {
+                return Ok((Box::new(EmptyQuery), false));
+            }
+            truncated |= entry.truncated;
+            position_terms.push(entry.terms.as_ref().clone());
+        }
+        Ok((
+            Box::new(TermListPhraseQuery::new(
+                text_field,
+                position_terms,
+                gaps.to_vec(),
+            )),
+            truncated,
+        ))
+    }
+
+    /// Mirrors `RegexPhraseWeight`'s expansion accounting exactly: the
+    /// matching terms of every word position are counted cumulatively, but
+    /// the counter resets for each segment. A global union is not equivalent
+    /// here — disjoint vocabularies in several segments may be larger than
+    /// `max_expansions` together while every segment remains valid for
+    /// Tantivy's BM25 phrase scorer.
+    fn phrase_exceeds_max_expansions(
+        &self,
+        joined_patterns: &[String],
+        text_field: Field,
+        max_expansions: u32,
+    ) -> Result<bool> {
+        let mut regexes = Vec::with_capacity(joined_patterns.len());
+        for pattern in joined_patterns {
+            regexes.push(tantivy_fst::Regex::new(pattern)?);
+        }
+        let searcher = self.index_reader.searcher();
+        for reader in searcher.segment_readers() {
+            let inverted = reader.inverted_index(text_field)?;
+            let mut segment_terms = 0usize;
+            for regex in &regexes {
+                let mut stream = inverted.terms().search(regex).into_stream()?;
+                while stream.advance() {
+                    segment_terms += 1;
+                    if segment_terms > max_expansions as usize {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Multi-word query for the paragraph/section scopes (and every partial
@@ -5534,11 +5683,16 @@ impl SearchEngine {
                 }
             }
         }
+        // Every distinct word materializes independently (same scans, same
+        // cache) — fan them out over the pool like the phrase path does.
+        use rayon::prelude::*;
+        let materialized: Vec<(Box<dyn Query>, bool)> = merged_branches
+            .par_iter()
+            .map(|branches| self.single_regex_term_query(branches, &[], text_field, max_expansions))
+            .collect::<Result<_>>()?;
         let mut truncated = false;
-        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(merged_branches.len());
-        for branches in &merged_branches {
-            let (word_query, word_truncated) =
-                self.single_regex_term_query(branches, &[], text_field, max_expansions)?;
+        let mut word_queries: Vec<Box<dyn Query>> = Vec::with_capacity(materialized.len());
+        for (word_query, word_truncated) in materialized {
             truncated |= word_truncated;
             word_queries.push(word_query);
         }
@@ -5653,6 +5807,33 @@ impl SearchEngine {
         text_field: Field,
         max_expansions: u32,
     ) -> Result<(Box<dyn Query>, bool)> {
+        let entry = self.materialize_term_set(
+            branches,
+            typo_tokens,
+            text_field,
+            max_expansions,
+            SINGLE_WORD_POSTINGS_BUDGET,
+        )?;
+        Ok((
+            Box::new(TermSetQuery::new(entry.terms.iter().cloned())),
+            entry.truncated,
+        ))
+    }
+
+    /// The materialization behind [`Self::single_regex_term_query`] and the
+    /// phrase degrade path: streams every branch's (and typo automaton's)
+    /// dictionary matches into one term set under the two collection budgets,
+    /// served from / stored into the LRU term cache. Overflow degrades —
+    /// collection stops at the budget and the highest-priority prefix is
+    /// returned with `truncated: true`, never an error.
+    fn materialize_term_set(
+        &self,
+        branches: &[String],
+        typo_tokens: &[String],
+        text_field: Field,
+        max_expansions: u32,
+        postings_budget: u64,
+    ) -> Result<CachedTermSet> {
         let searcher = self.index_reader.searcher();
         // The materialization below (per-branch DFA compile + one FST scan
         // per branch per segment) is the expensive part of a search, and one
@@ -5665,12 +5846,10 @@ impl SearchEngine {
             branches: branches.to_vec(),
             typo_tokens: typo_tokens.to_vec(),
             max_expansions,
+            postings_budget,
         };
         if let Some(entry) = self.term_cache.lock().unwrap().get(&cache_key) {
-            return Ok((
-                Box::new(TermSetQuery::new(entry.terms.iter().cloned())),
-                entry.truncated,
-            ));
+            return Ok(entry.clone());
         }
 
         let regexes: Vec<tantivy_fst::Regex> = branches
@@ -5717,6 +5896,7 @@ impl SearchEngine {
                     inverted,
                     regex,
                     max_expansions,
+                    postings_budget,
                     &mut matched,
                     &mut postings_cost,
                 )? {
@@ -5743,6 +5923,7 @@ impl SearchEngine {
                         inverted,
                         &automaton,
                         max_expansions,
+                        postings_budget,
                         &mut matched,
                         &mut postings_cost,
                     )? {
@@ -5754,8 +5935,8 @@ impl SearchEngine {
         }
         if truncated {
             warn!(
-                "single-word term collection truncated at {} terms / ~{postings_cost} postings \
-                 (caps: {max_expansions} terms, {SINGLE_WORD_POSTINGS_BUDGET} postings); \
+                "term collection truncated at {} terms / ~{postings_cost} postings \
+                 (caps: {max_expansions} terms, {postings_budget} postings); \
                  serving the highest-priority branches collected so far",
                 matched.len(),
             );
@@ -5766,17 +5947,12 @@ impl SearchEngine {
                 .map(|t| Term::from_field_text(text_field, &t))
                 .collect(),
         );
-        self.term_cache.lock().unwrap().put(
-            cache_key,
-            CachedTermSet {
-                terms: terms.clone(),
-                truncated,
-            },
-        );
-        Ok((
-            Box::new(TermSetQuery::new(terms.iter().cloned())),
-            truncated,
-        ))
+        let entry = CachedTermSet { terms, truncated };
+        self.term_cache
+            .lock()
+            .unwrap()
+            .put(cache_key, entry.clone());
+        Ok(entry)
     }
 
     /// Streams every term `automaton` matches in one segment's dictionary
@@ -5790,6 +5966,7 @@ impl SearchEngine {
         inverted: &tantivy::InvertedIndexReader,
         automaton: &A,
         max_expansions: u32,
+        postings_budget: u64,
         matched: &mut HashSet<String>,
         postings_cost: &mut u64,
     ) -> Result<bool>
@@ -5807,9 +5984,7 @@ impl SearchEngine {
                 if !matched.contains(term) {
                     matched.insert(term.to_string());
                 }
-                if matched.len() >= max_expansions as usize
-                    || *postings_cost >= SINGLE_WORD_POSTINGS_BUDGET
-                {
+                if matched.len() >= max_expansions as usize || *postings_cost >= postings_budget {
                     return Ok(true);
                 }
             }
@@ -5899,8 +6074,8 @@ impl SearchEngine {
     /// runs against the `textVocalized` dictionary instead: each token becomes
     /// a required-marks regex ([`hebrew_query::vocalized_token_pattern`]), a
     /// single word materializes via [`Self::single_regex_term_query`] (which
-    /// may truncate — the returned flag), a phrase becomes a
-    /// `RegexPhraseQuery`.
+    /// may truncate — the returned flag), a phrase goes through
+    /// [`Self::phrase_query_with_degrade`].
     fn build_exact_query(
         &self,
         query_str: &str,
@@ -5959,10 +6134,22 @@ impl SearchEngine {
                 VOC_EXACT_SINGLE_MAX_EXPANSIONS,
             )?,
             _ => {
-                let mut phrase_query = RegexPhraseQuery::new(voc_field, patterns);
-                phrase_query.set_slop(0);
-                phrase_query.set_max_expansions(VOC_PHRASE_MAX_EXPANSIONS);
-                (Box::new(phrase_query), false)
+                // Free-mark runs make every vocalized token an expansion, so
+                // a phrase of common words can outgrow the cumulative
+                // `RegexPhraseQuery` ceiling; the shared degrade path keeps
+                // the historical query when the counts fit and falls back to
+                // the term-list phrase instead of erroring when they don't.
+                let word_patterns: Vec<hebrew_query::WordPattern> = patterns
+                    .iter()
+                    .map(|p| hebrew_query::WordPattern::parse(p))
+                    .collect();
+                let gaps = vec![0u32; word_patterns.len().saturating_sub(1)];
+                self.phrase_query_with_degrade(
+                    &word_patterns,
+                    &gaps,
+                    voc_field,
+                    VOC_PHRASE_MAX_EXPANSIONS,
+                )?
             }
         };
         if facets.is_empty() {
@@ -10181,6 +10368,187 @@ mod tests {
         assert!(text.contains("<font color=red>ואהרן</font>"));
         // The stray trailing occurrence stays plain.
         assert!(text.contains("כך משה לבדו"), "snippet: {text}");
+    }
+
+    // ── Phrase expansion degrade path (TermListPhraseQuery) ───────────────
+
+    /// Ten distinct suffix letters so wildcard patterns fan out to ten index
+    /// terms per position without leaving the Hebrew tokenizer's alphabet.
+    const FAN_LETTERS: [&str; 10] = ["א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט", "י"];
+
+    fn make_fanout_phrase_engine() -> (SearchEngine, TempDir) {
+        let (mut engine, dir) = make_engine();
+        for (i, letter) in FAN_LETTERS.iter().enumerate() {
+            add(
+                &mut engine,
+                i as u64 + 1,
+                &format!("עמוד{letter} שער{letter}"),
+                "/books/a.txt",
+            );
+        }
+        // Reversed order — the phrase must reject it on every path.
+        add(&mut engine, 50, "שערא עמודא", "/books/b.txt");
+        // One intermediate word — admitted only when slop allows it.
+        add(&mut engine, 60, "עמודב מלה שערב", "/books/c.txt");
+        engine.commit().unwrap();
+        (engine, dir)
+    }
+
+    fn phrase_ids(engine: &SearchEngine, slop: u32, max_expansions: u32) -> Vec<u64> {
+        let mut ids: Vec<u64> = engine
+            .search(
+                vec!["עמוד.*".to_string(), "שער.*".to_string()],
+                vec!["/root".to_string()],
+                100,
+                0,
+                slop,
+                max_expansions,
+                ResultsOrder::Catalogue,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn phrase_over_expansion_ceiling_degrades_instead_of_erroring() {
+        // Each position matches 10 index terms, so max_expansions = 5 puts
+        // the query over tantivy's cumulative ceiling — historically a hard
+        // `InvalidArgument("Phrase query exceeded max expansions")`. The
+        // degrade path must serve the complete result set instead, with the
+        // same in-order adjacency semantics as the exact path.
+        let (engine, _dir) = make_fanout_phrase_engine();
+
+        let ids = phrase_ids(&engine, 0, 5);
+        assert_eq!(ids, (1..=10).collect::<Vec<u64>>());
+
+        // Only the cumulative ceiling was outgrown — no per-position budget
+        // truncated, so the count must not report partial results.
+        let status = engine
+            .count_with_status(
+                vec!["עמוד.*".to_string(), "שער.*".to_string()],
+                &["/root".to_string()],
+                0,
+                5,
+            )
+            .unwrap();
+        assert_eq!(status.count, 10);
+        assert!(!status.truncated);
+    }
+
+    #[test]
+    fn phrase_degrade_path_matches_exact_path_results() {
+        // The same query under a roomy ceiling runs the historical
+        // RegexPhraseQuery engine; both engines must agree on every doc,
+        // at slop 0 and with an allowance.
+        let (engine, _dir) = make_fanout_phrase_engine();
+
+        assert_eq!(phrase_ids(&engine, 0, 5), phrase_ids(&engine, 0, 1_000));
+        let with_gap = phrase_ids(&engine, 1, 5);
+        assert!(with_gap.contains(&60), "gap doc admitted under slop 1");
+        assert_eq!(with_gap, phrase_ids(&engine, 1, 1_000));
+    }
+
+    #[test]
+    fn phrase_expansion_limit_is_per_segment_not_global_union() {
+        // Tantivy resets the cumulative phrase-expansion counter for every
+        // segment. Each segment below has four expansions (three `עמוד.*`
+        // terms plus one `שער.*` term), so max=5 is valid even though the
+        // global union contains seven distinct terms. Counting the union
+        // would wrongly select the flat-scoring degrade path.
+        let (mut engine, _dir) = make_engine();
+        disable_auto_merge(&engine);
+        for (id, letter) in [(1, "א"), (2, "ב"), (3, "ג")] {
+            add(
+                &mut engine,
+                id,
+                &format!("עמוד{letter} שער"),
+                "/books/a.txt",
+            );
+        }
+        engine.commit().unwrap();
+        for (id, letter) in [(4, "ד"), (5, "ה"), (6, "ו")] {
+            add(
+                &mut engine,
+                id,
+                &format!("עמוד{letter} שער"),
+                "/books/b.txt",
+            );
+        }
+        engine.commit().unwrap();
+
+        let text_field = engine.schema.get_field("text").unwrap();
+        assert!(!engine
+            .phrase_exceeds_max_expansions(
+                &["עמוד.*".to_string(), "שער".to_string()],
+                text_field,
+                5,
+            )
+            .unwrap());
+        assert_eq!(phrase_ids(&engine, 0, 5), (1..=6).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn phrase_degrade_path_keeps_word_order() {
+        let (engine, _dir) = make_fanout_phrase_engine();
+        // Even with a generous allowance the reversed doc must stay out on
+        // the degrade path (the AND driver alone would admit it).
+        let ids = phrase_ids(&engine, 2, 5);
+        assert!(!ids.contains(&50), "reversed order must not match");
+    }
+
+    #[test]
+    fn phrase_position_over_budget_truncates_with_flag() {
+        // One position fanning out past PHRASE_POSITION_MAX_EXPANSIONS must
+        // degrade (truncate from the back of the dictionary order) and
+        // surface `truncated`, while the lexicographically-early target term
+        // survives and keeps matching.
+        let (mut engine, _dir) = make_engine();
+        let letters = [
+            "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט", "י", "כ", "ל", "מ", "נ", "ס", "ע", "פ",
+            "צ", "ק", "ר", "ש", "ת",
+        ];
+        // 22³ = 10 648 distinct terms under the "מלה" prefix — comfortably
+        // past the 8 192 per-position ceiling. Spread over a few docs to
+        // keep each document small.
+        let mut words: Vec<String> = Vec::with_capacity(letters.len().pow(3));
+        for a in letters {
+            for b in letters {
+                for c in letters {
+                    words.push(format!("מלה{a}{b}{c}"));
+                }
+            }
+        }
+        for (chunk_index, chunk) in words.chunks(1_000).enumerate() {
+            add(
+                &mut engine,
+                1_000 + chunk_index as u64,
+                &chunk.join(" "),
+                "/books/filler.txt",
+            );
+        }
+        add(&mut engine, 1, "ראשא מלהאאא", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let status = engine
+            .count_with_status(
+                vec!["ראש.*".to_string(), "מלה.*".to_string()],
+                &["/root".to_string()],
+                0,
+                // Force the fallback on every normal-sized segment; the
+                // second position then exceeds its own 8,192-term material-
+                // ization ceiling across the index and must surface partial
+                // results. Passing 8,192 here would correctly stay exact
+                // because Tantivy applies that limit per segment.
+                100,
+            )
+            .unwrap();
+        assert!(status.truncated, "per-position overflow must surface");
+        assert_eq!(status.count, 1, "the surviving target phrase still matches");
     }
 
     // ── Per-pair gap enforcement (GapVerifiedPhraseQuery) ─────────────────

@@ -106,7 +106,7 @@ Performs a search query on the index using regex patterns.
 - `limit` (int/u32): Maximum number of results to return
 - `offset` (int/u32): Number of leading results to skip (pagination)
 - `slop` (int/u32): Maximum distance between terms in phrase queries (for multi-term searches)
-- `maxExpansions` (int/u32): Maximum number of regex expansions allowed; exceeding it returns an error
+- `maxExpansions` (int/u32): Regex-expansion ceiling. A single term truncates its term collection at the ceiling (partial results, flagged via the status-bearing variants). A multi-term phrase checks Tantivy's cumulative expansions independently in every segment: when every segment fits, the exact `RegexPhraseQuery` runs; otherwise the engine falls back to a term-list phrase built from per-position materialized term sets (per-position caps, truncation flagged) — never an error
 - `order` (ResultsOrder): Sort order for results (Catalogue or Relevance)
 - `highlight` (HighlightConfig?, optional): Snippet/highlight configuration; defaults to `<font color=red>` tags and 800 chars
 
