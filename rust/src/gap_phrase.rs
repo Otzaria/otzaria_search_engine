@@ -13,11 +13,6 @@
 //! every candidate document against the real token positions from the
 //! positional postings, admitting only documents that contain an in-order
 //! occurrence `w0 … w1 … w_{k-1}` with every pair inside its own allowance.
-//! The verifier's postings come from the term sets the engine already
-//! materialized when it built the query (per-segment `get_term_info`
-//! lookups) — not from re-scanning the term dictionary with the word
-//! automatons, which historically repeated the full FST scan per segment on
-//! every engine call behind one user search.
 //! This is the same intermediate-word model the snippet phrase filter and
 //! `display_highlight` use, so what the engine returns, what the results
 //! snippet paints, and what an opened book highlights all agree.
@@ -40,24 +35,24 @@
 //! failing — the engine uses it whenever a phrase's expansions outgrow the
 //! exact `RegexPhraseQuery` path.
 
-use std::sync::Arc;
-
 use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{
     BooleanQuery, EmptyScorer, EnableScoring, Explanation, Occur, Query, RegexPhraseQuery, Scorer,
     TermSetQuery, Weight,
 };
 use tantivy::schema::{Field, IndexRecordOption};
-use tantivy::{DocId, DocSet, InvertedIndexReader, Score, SegmentReader, Term, TERMINATED};
+use tantivy::{
+    DocId, DocSet, InvertedIndexReader, Score, SegmentReader, TantivyError, Term, TERMINATED,
+};
 
 /// Positional postings for every materialized term that exists in this
 /// segment — one `Vec` per word position. Returns `None` when some position
 /// has no term in the segment: the phrase can never match there, so the
-/// caller serves an [`EmptyScorer`]. Both phrase verifiers share this, so the
-/// exact and degrade engines read positions identically.
+/// caller serves an [`EmptyScorer`]. The term-list degrade engine uses this
+/// after its bounded materialization step, avoiding another regex scan.
 fn positional_postings(
     inverted: &InvertedIndexReader,
-    position_terms: &[Arc<Vec<Term>>],
+    position_terms: &[Vec<Term>],
 ) -> tantivy::Result<Option<Vec<Vec<SegmentPostings>>>> {
     let mut word_postings = Vec::with_capacity(position_terms.len());
     for terms in position_terms {
@@ -87,11 +82,9 @@ pub(crate) struct GapVerifiedPhraseQuery {
     /// The field whose positional postings verify candidates — must be the
     /// same field `inner` runs against.
     field: Field,
-    /// The index terms each word position matched — the *untruncated* sets
-    /// the engine materialized when it chose this exact path, so they cover
-    /// exactly what `inner`'s automatons match and the verifier never needs
-    /// to re-scan the term dictionary.
-    position_terms: Vec<Arc<Vec<Term>>>,
+    /// One whole-term regex per word position (the same joined patterns
+    /// `inner` was built from), used to find each word's index terms.
+    word_patterns: Vec<String>,
     /// `gaps[i]` = allowed intermediate words between words `i` and `i+1`.
     gaps: Vec<u32>,
 }
@@ -100,14 +93,14 @@ impl GapVerifiedPhraseQuery {
     pub(crate) fn new(
         inner: RegexPhraseQuery,
         field: Field,
-        position_terms: Vec<Arc<Vec<Term>>>,
+        word_patterns: Vec<String>,
         gaps: Vec<u32>,
     ) -> Self {
-        debug_assert_eq!(gaps.len() + 1, position_terms.len());
+        debug_assert_eq!(gaps.len() + 1, word_patterns.len());
         Self {
             inner,
             field,
-            position_terms,
+            word_patterns,
             gaps,
         }
     }
@@ -115,10 +108,24 @@ impl GapVerifiedPhraseQuery {
 
 impl Query for GapVerifiedPhraseQuery {
     fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        let inner = self.inner.weight(enable_scoring)?;
+        // The same patterns already compiled inside `inner`'s weight, so a
+        // pattern that fails here would have failed the whole query first.
+        let regexes = self
+            .word_patterns
+            .iter()
+            .map(|pattern| {
+                tantivy_fst::Regex::new(pattern).map_err(|e| {
+                    TantivyError::InvalidArgument(format!(
+                        "gap-verify regex failed to compile: {e}"
+                    ))
+                })
+            })
+            .collect::<tantivy::Result<Vec<_>>>()?;
         Ok(Box::new(GapVerifiedWeight {
-            inner: self.inner.weight(enable_scoring)?,
+            inner,
             field: self.field,
-            position_terms: self.position_terms.clone(),
+            regexes,
             gaps: self.gaps.clone(),
         }))
     }
@@ -127,7 +134,7 @@ impl Query for GapVerifiedPhraseQuery {
 struct GapVerifiedWeight {
     inner: Box<dyn Weight>,
     field: Field,
-    position_terms: Vec<Arc<Vec<Term>>>,
+    regexes: Vec<tantivy_fst::Regex>,
     gaps: Vec<u32>,
 }
 
@@ -135,11 +142,26 @@ impl Weight for GapVerifiedWeight {
     fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
         let inner = self.inner.scorer(reader, boost)?;
         let inverted = reader.inverted_index(self.field)?;
-        let Some(word_postings) = positional_postings(&inverted, &self.position_terms)? else {
-            // A word with no matching term in this segment can never form
-            // a phrase here (and `inner` cannot match either).
-            return Ok(Box::new(EmptyScorer));
-        };
+        // The exact path deliberately keeps the historical verifier: it
+        // rescans the joined automata per segment instead of relying on a
+        // globally capped term cache. Tantivy's expansion limit is per
+        // segment, whereas a global collection can incorrectly demote a
+        // previously valid phrase to the flat-scoring degrade path.
+        let mut word_postings = Vec::with_capacity(self.regexes.len());
+        for regex in &self.regexes {
+            let mut postings = Vec::new();
+            let mut stream = inverted.terms().search(regex).into_stream()?;
+            while stream.advance() {
+                postings.push(inverted.read_postings_from_terminfo(
+                    stream.value(),
+                    IndexRecordOption::WithFreqsAndPositions,
+                )?);
+            }
+            if postings.is_empty() {
+                return Ok(Box::new(EmptyScorer));
+            }
+            word_postings.push(postings);
+        }
         Ok(Box::new(GapVerifiedScorer::new(
             inner,
             word_postings,
@@ -164,13 +186,13 @@ pub(crate) struct TermListPhraseQuery {
     /// The index terms each word position matched (every position holds at
     /// least one term; an empty position means the caller should have built
     /// an `EmptyQuery` instead).
-    position_terms: Vec<Arc<Vec<Term>>>,
+    position_terms: Vec<Vec<Term>>,
     /// `gaps[i]` = allowed intermediate words between words `i` and `i+1`.
     gaps: Vec<u32>,
 }
 
 impl TermListPhraseQuery {
-    pub(crate) fn new(field: Field, position_terms: Vec<Arc<Vec<Term>>>, gaps: Vec<u32>) -> Self {
+    pub(crate) fn new(field: Field, position_terms: Vec<Vec<Term>>, gaps: Vec<u32>) -> Self {
         debug_assert_eq!(gaps.len() + 1, position_terms.len());
         debug_assert!(position_terms.iter().all(|terms| !terms.is_empty()));
         Self {
@@ -214,7 +236,7 @@ impl Query for TermListPhraseQuery {
 struct TermListPhraseWeight {
     driver: Box<dyn Weight>,
     field: Field,
-    position_terms: Vec<Arc<Vec<Term>>>,
+    position_terms: Vec<Vec<Term>>,
     gaps: Vec<u32>,
 }
 
