@@ -31,6 +31,8 @@ class VerifyBinaries {
       final crateHash = CrateHash.compute(manifestDir);
       stdout.writeln('Crate hash: $crateHash');
 
+      final failed = <String>[];
+
       for (final target in Target.all) {
         final message = 'Checking ${target.rust}...';
         stdout.write(message.padRight(40));
@@ -77,7 +79,18 @@ class VerifyBinaries {
 
         if (ok) {
           stdout.writeln('OK');
+        } else {
+          failed.add(target.rust);
         }
+      }
+
+      // Reporting a missing artifact only on stdout made this a gate that
+      // gates nothing: the workflow's verify job stayed green while consumers
+      // had no binaries to download.
+      if (failed.isNotEmpty) {
+        stdout
+            .writeln('Missing or invalid artifacts for: ${failed.join(', ')}');
+        exit(1);
       }
     }
   }

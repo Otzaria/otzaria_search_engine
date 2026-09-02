@@ -42,12 +42,24 @@ class PrecompileBinaries {
   final int? androidMinSdkVersion;
   final String? tempDir;
 
+  /// GitHub normalizes release asset names: every run of characters outside
+  /// `[A-Za-z0-9._-]` is stored as a single dot, so an asset uploaded as
+  /// `aarch64-linux-android_libc++_shared.so` lands as
+  /// `aarch64-linux-android_libc._shared.so`. Uploads, downloads and
+  /// verification must therefore all address the stored name — otherwise the
+  /// C++ runtime is uploaded once and never found again, which drops the whole
+  /// Android target from the precompiled set and forces consumers to build the
+  /// crate locally. The name of the file on the device is unaffected; it comes
+  /// from `Artifact.finalFileName`.
+  static String assetName(String name) =>
+      name.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '.');
+
   static String fileName(Target target, String name) {
-    return '${target.rust}_$name';
+    return assetName('${target.rust}_$name');
   }
 
   static String signatureFileName(Target target, String name) {
-    return '${target.rust}_$name.sig';
+    return '${fileName(target, name)}.sig';
   }
 
   Future<void> run() async {
