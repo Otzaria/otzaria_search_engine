@@ -8,6 +8,7 @@ import 'package:http/http.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as path;
 
+import 'android_environment.dart';
 import 'builder.dart';
 import 'crate_hash.dart';
 import 'options.dart';
@@ -64,7 +65,7 @@ class ArtifactProvider {
     }
 
     final rustup = Rustup();
-    for (final target in targets) {
+    for (final target in pendingTargets) {
       final builder = RustBuilder(target: target, environment: environment);
       builder.prepare(rustup);
       _log.info('Building ${environment.crateInfo.packageName} for $target');
@@ -91,6 +92,14 @@ class ArtifactProvider {
               ))
           .where((element) => File(element.path).existsSync())
           .toList();
+      if (target.android != null) {
+        final runtime =
+            environment.androidEnvironmentFor(target).cxxSharedRuntime;
+        artifacts.add(Artifact(
+          path: runtime.path,
+          finalFileName: androidCxxSharedRuntimeName,
+        ));
+      }
       result[target] = artifacts;
     }
     return result;
@@ -258,7 +267,10 @@ List<String> getArtifactNames({
     if (aritifactType == AritifactType.staticlib) {
       return ['lib$libraryName.a'];
     } else {
-      return ['lib$libraryName.so'];
+      return [
+        'lib$libraryName.so',
+        if (remote && target.android != null) androidCxxSharedRuntimeName,
+      ];
     }
   } else {
     throw Exception("Unsupported target: ${target.rust}");

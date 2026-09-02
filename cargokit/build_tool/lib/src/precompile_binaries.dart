@@ -8,6 +8,7 @@ import 'package:github/github.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as path;
 
+import 'android_environment.dart';
 import 'artifacts_provider.dart';
 import 'builder.dart';
 import 'cargo.dart';
@@ -107,13 +108,27 @@ class PrecompileBinaries {
         libraryName: crateInfo.packageName,
         remote: true,
       );
+      final expectedAssetNames = <String>{
+        for (final name in artifactNames) ...{
+          PrecompileBinaries.fileName(target, name),
+          PrecompileBinaries.signatureFileName(target, name),
+        },
+      };
+      final existingAssets = (release.assets ?? [])
+          .where((asset) => expectedAssetNames.contains(asset.name))
+          .toList(growable: false);
 
-      if (artifactNames.every((name) {
-        final fileName = PrecompileBinaries.fileName(target, name);
-        return (release.assets ?? []).any((e) => e.name == fileName);
-      })) {
+      if (existingAssets.length == expectedAssetNames.length) {
         _log.info("All artifacts for $target already exist - skipping");
         continue;
+      }
+
+      // A failed upload may leave only a binary or only its signature. Delete
+      // the target's partial set before rebuilding so a signature can never be
+      // paired with bytes from a different build.
+      for (final asset in existingAssets) {
+        _log.warning('Deleting incomplete release asset ${asset.name}');
+        await repo.deleteReleaseAsset(repositorySlug, asset);
       }
 
       _log.info('Building for $target');
@@ -125,7 +140,12 @@ class PrecompileBinaries {
 
       final assets = <CreateReleaseAsset>[];
       for (final name in artifactNames) {
-        final file = File(path.join(res, name));
+        final file =
+            name == androidCxxSharedRuntimeName && target.android != null
+                ? buildEnvironment
+                    .androidEnvironmentFor(target)
+                    .packageCxxSharedRuntime(res)
+                : File(path.join(res, name));
         if (!file.existsSync()) {
           throw Exception('Missing artifact: ${file.path}');
         }

@@ -11,6 +11,10 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
 
 class CrateHash {
+  // Increment whenever the set or naming of published artifacts changes. This
+  // keeps consumers from mixing assets produced by different packaging schemas.
+  static const _artifactSetVersion = 2;
+
   /// Computes a hash uniquely identifying crate content. This takes into account
   /// content all all .rs files inside the src directory, as well as Cargo.toml,
   /// Cargo.lock, build.rs and cargokit.yaml.
@@ -56,6 +60,7 @@ class CrateHash {
     final input = sha256.startChunkedConversion(output);
 
     final data = ByteData(8);
+    input.add(utf8.encode('artifact-set-v$_artifactSetVersion'));
     for (final file in files) {
       input.add(utf8.encode(file.path));
       final stat = file.statSync();
@@ -72,6 +77,7 @@ class CrateHash {
   String _computeHash(List<File> files) {
     final output = AccumulatorSink<Digest>();
     final input = sha256.startChunkedConversion(output);
+    input.add(utf8.encode('artifact-set-v$_artifactSetVersion'));
 
     void addTextFile(File file) {
       // text Files are hashed by lines in case we're dealing with github checkout

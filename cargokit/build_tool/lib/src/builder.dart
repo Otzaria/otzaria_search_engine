@@ -104,6 +104,28 @@ class BuildEnvironment {
       javaHome: isAndroid ? Environment.javaHome : null,
     );
   }
+
+  AndroidEnvironment androidEnvironmentFor(Target target) {
+    final sdkPath = androidSdkPath;
+    final ndkVersion = androidNdkVersion;
+    final minSdkVersion = androidMinSdkVersion;
+    if (sdkPath == null) {
+      throw BuildException('androidSdkPath is not set');
+    }
+    if (ndkVersion == null) {
+      throw BuildException('androidNdkVersion is not set');
+    }
+    if (minSdkVersion == null) {
+      throw BuildException('androidMinSdkVersion is not set');
+    }
+    return AndroidEnvironment(
+      sdkPath: sdkPath,
+      ndkVersion: ndkVersion,
+      minSdkVersion: minSdkVersion,
+      targetTempDir: targetTempDir,
+      target: target,
+    );
+  }
 }
 
 class RustBuilder {
@@ -170,25 +192,7 @@ class RustBuilder {
     if (target.android == null) {
       return {};
     } else {
-      final sdkPath = environment.androidSdkPath;
-      final ndkVersion = environment.androidNdkVersion;
-      final minSdkVersion = environment.androidMinSdkVersion;
-      if (sdkPath == null) {
-        throw BuildException('androidSdkPath is not set');
-      }
-      if (ndkVersion == null) {
-        throw BuildException('androidNdkVersion is not set');
-      }
-      if (minSdkVersion == null) {
-        throw BuildException('androidMinSdkVersion is not set');
-      }
-      final env = AndroidEnvironment(
-        sdkPath: sdkPath,
-        ndkVersion: ndkVersion,
-        minSdkVersion: minSdkVersion,
-        targetTempDir: environment.targetTempDir,
-        target: target,
-      );
+      final env = environment.androidEnvironmentFor(target);
       if (!env.ndkIsInstalled() && environment.javaHome != null) {
         env.installNdk(javaHome: environment.javaHome!);
       }

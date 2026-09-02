@@ -93,6 +93,19 @@ status polling stay responsive while a semantic index is being built.
 
 clone otzaria repo and this repo to the same path, cd to otzaria and run flutter run.
 
+### Android C++ runtime
+
+The signed Android artifacts include the matching `libc++_shared.so`; consumers
+do not need a local NDK when a precompiled artifact is available. If another
+Flutter plugin also packages that runtime and Gradle reports a duplicate native
+library, select one copy in the application module's `android` block:
+
+```groovy
+packagingOptions {
+    jniLibs.pickFirsts += ['**/libc++_shared.so']
+}
+```
+
 ## Git hooks (one-time setup per machine)
 
 After cloning, run once to enable automatic formatting + LF normalization on every commit:

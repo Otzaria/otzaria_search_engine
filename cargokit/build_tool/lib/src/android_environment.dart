@@ -12,6 +12,8 @@ import 'package:version/version.dart';
 import 'target.dart';
 import 'util.dart';
 
+const androidCxxSharedRuntimeName = 'libc++_shared.so';
+
 class AndroidEnvironment {
   AndroidEnvironment({
     required this.sdkPath,
@@ -54,6 +56,73 @@ class AndroidEnvironment {
   /// Target being built.
   final Target target;
 
+  static String ndkLibraryTriple(Target target) {
+    if (target.android == null) {
+      throw ArgumentError.value(target.rust, 'target', 'must be Android');
+    }
+    return target.rust == 'armv7-linux-androideabi'
+        ? 'arm-linux-androideabi'
+        : target.rust;
+  }
+
+  String get _hostTag => Platform.isMacOS
+      ? 'darwin-x86_64'
+      : (Platform.isLinux ? 'linux-x86_64' : 'windows-x86_64');
+
+  String get _toolchainPrebuilt => path.join(
+        sdkPath,
+        'ndk',
+        ndkVersion,
+        'toolchains',
+        'llvm',
+        'prebuilt',
+        _hostTag,
+      );
+
+  File get cxxSharedRuntime {
+    final runtime = File(path.joinAll([
+      _toolchainPrebuilt,
+      'sysroot',
+      'usr',
+      'lib',
+      ndkLibraryTriple(target),
+      androidCxxSharedRuntimeName,
+    ]));
+    if (!runtime.existsSync()) {
+      throw Exception(
+        '$androidCxxSharedRuntimeName not found for ${target.rust} at '
+        '${runtime.path}',
+      );
+    }
+    return runtime;
+  }
+
+  File packageCxxSharedRuntime(String outputDirectory) {
+    final output = File(path.join(
+      outputDirectory,
+      androidCxxSharedRuntimeName,
+    ));
+    output.parent.createSync(recursive: true);
+    final executableSuffix = Platform.isWindows ? '.exe' : '';
+    runCommand(
+      path.join(
+        _toolchainPrebuilt,
+        'bin',
+        'llvm-strip$executableSuffix',
+      ),
+      [
+        '--strip-unneeded',
+        '-o',
+        output.path,
+        cxxSharedRuntime.path,
+      ],
+    );
+    if (!output.existsSync()) {
+      throw Exception('Failed to package $androidCxxSharedRuntimeName');
+    }
+    return output;
+  }
+
   bool ndkIsInstalled() {
     final ndkPath = path.join(sdkPath, 'ndk', ndkVersion);
     final ndkPackageXml = File(path.join(ndkPath, 'package.xml'));
@@ -82,19 +151,7 @@ class AndroidEnvironment {
   }
 
   Future<Map<String, String>> buildEnvironment() async {
-    final hostArch = Platform.isMacOS
-        ? "darwin-x86_64"
-        : (Platform.isLinux ? "linux-x86_64" : "windows-x86_64");
-
-    final ndkPath = path.join(sdkPath, 'ndk', ndkVersion);
-    final toolchainPath = path.join(
-      ndkPath,
-      'toolchains',
-      'llvm',
-      'prebuilt',
-      hostArch,
-      'bin',
-    );
+    final toolchainPath = path.join(_toolchainPrebuilt, 'bin');
 
     final minSdkVersion =
         math.max(target.androidMinSdkVersion!, this.minSdkVersion);
