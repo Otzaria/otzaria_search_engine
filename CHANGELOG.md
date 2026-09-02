@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.8 – 2026-09-02 – פתיחת אינדקס ובדיקת תאימות עברו לאסינכרוני (שובר תאימות)
+
+### Breaking
+
+- **`SearchEngine.new` ו-`check_index_compatibility` אינן עוד `#[frb(sync)]`.**
+  שתיהן עושות I/O כבד — הראשונה פותחת `MmapDirectory` וקוראת את ה-footer של כל
+  segment באינדקס, השנייה קוראת קובץ מטא מהדיסק — ו-`#[frb(sync)]` גרם
+  ל-flutter_rust_bridge לייצר קריאה חוסמת שרצה על ה-isolate הראשי של הצרכן.
+  באנדרואיד זה התבטא ב-ANR: `Executor::execute_sync` על ה-thread הראשי בתוך
+  `Footer::extract_footer`. כעת שתיהן רצות על ה-thread pool של FRB.
+
+  **מה משתנה אצל הצרכנים** — שני שינויי API בקוד המחולל:
+
+  | לפני | אחרי |
+  | --- | --- |
+  | `SearchEngine(path: p)` | `await SearchEngine.newInstance(path: p)` |
+  | `checkIndexCompatibility(path: p)` | `await checkIndexCompatibility(path: p)` |
+
+  ה-constructor הסינכרוני `factory SearchEngine({required String path})` הוסר;
+  במקומו נוצר `static Future<SearchEngine> newInstance({required String path})`,
+  ו-`checkIndexCompatibility` מחזירה כעת `Future<IndexCompatibility>`.
+
+  שאר ה-`#[frb(sync)]` בחבילה נשארו כפי שהיו — הן חישוב טהור ומהיר
+  (`sanitize_query`, `normalize_text_for_indexing`, `generate_highlight_pattern`,
+  `split_query_words`, `compute_content_fingerprint`, טעינת/בדיקת מילונים),
+  ונמצאות במסלולים חמים שבהם `await` היה עולה יותר מהחישוב עצמו.
+
+
 ## 0.7.7 – 2026-09-02 – יעדי פריסה של Apple מקובעים בבינאריים המוקדמים
 
 ### Fixed
