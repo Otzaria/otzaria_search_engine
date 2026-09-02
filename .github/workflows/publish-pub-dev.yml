@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  # id-token נדרש כדי ש-pub יוכל לבקש את אסימון ה-OIDC.
+  # id-token נדרש כדי שההרצה תוכל לבקש את אסימון ה-OIDC.
   id-token: write
   contents: read
 
@@ -22,8 +22,8 @@ jobs:
   publish:
     name: flutter pub publish
     runs-on: ubuntu-24.04
-    # בלי תקרה, כשל אימות אינו נכשל אלא נתלה: pub נופל למסלול ההתחברות
-    # האינטראקטיבי ומחכה לקוד אישור ב-stdin עד שהג'וב מת בתום 6 שעות.
+    # רשת ביטחון: כשל אימות אינו נכשל אלא נתלה — pub מרים שרת מקומי וממתין
+    # ל-redirect שלא יגיע לעולם, והג'וב היה מחזיק runner עד תום 6 שעות.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -49,17 +49,34 @@ jobs:
       - name: flutter pub get
         run: flutter pub get
 
-      - name: Verify the OIDC token is available
+      # ה-pub המצורף ל-Flutter אינו מבצע בעצמו את חילוף ה-OIDC מול pub.dev:
+      # הוא מתעלם מהאסימון שגיטהאב הנפיק (אימתנו שהוא זמין בשלב) ונופל למסלול
+      # ההתחברות האינטראקטיבי, שממתין ל-redirect ל-localhost עד שההרצה נהרגת.
+      # לכן מביאים את האסימון בעצמנו ורושמים אותו כאסימון של pub.dev.
+      - name: Authenticate to pub.dev with the run's OIDC token
         run: |
           set -euo pipefail
+
           if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             echo "::error::אין אסימון OIDC להרצה — ודאו ש-permissions כולל id-token: write."
             exit 1
           fi
-          echo "אסימון OIDC זמין."
 
-      # ‎</dev/null: אם pub.dev דוחה את תביעת ה-OIDC (למשל כשאירוע ההפעלה אינו
-      # מאושר בהגדרות Automated publishing), pub מנסה התחברות אינטראקטיבית.
-      # EOF מיידי מפיל אותו עם ההודעה האמיתית במקום להשאיר את ההרצה תלויה.
+          token="$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://pub.dev" \
+            | jq -r '.value')"
+
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::בקשת אסימון ה-OIDC נכשלה."
+            exit 1
+          fi
+
+          # מיסוך לפני כל שימוש, כדי שהאסימון לא ידלוף ללוג.
+          echo "::add-mask::$token"
+          echo "PUB_TOKEN=$token" >> "$GITHUB_ENV"
+
+          dart pub token add https://pub.dev --env-var PUB_TOKEN
+
       - name: flutter pub publish --force
-        run: flutter pub publish --force < /dev/null
+        run: flutter pub publish --force
