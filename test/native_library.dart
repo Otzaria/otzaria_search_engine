@@ -96,7 +96,7 @@ void writeStubGguf(File file) {
 Future<String?> semanticSidecarSkipReason() async {
   final probe = Directory.systemTemp.createTempSync('otzaria_ffi_probe');
   try {
-    final engine = SearchEngine(
+    final engine = await SearchEngine.newInstance(
       path: (Directory('${probe.path}/tantivy')..createSync()).path,
     );
     final model = File('${probe.path}/mock.gguf');

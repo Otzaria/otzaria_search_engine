@@ -877,7 +877,8 @@ struct IndexMetadata {
     created_at_unix_seconds: u64,
 }
 
-#[frb(sync)]
+/// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
+/// synchronous binding blocks the calling Dart isolate on disk I/O.
 pub fn check_index_compatibility(path: String) -> IndexCompatibility {
     check_index_compatibility_path(Path::new(&path))
 }
@@ -1745,7 +1746,8 @@ fn init_engine_logger() {
 }
 
 impl SearchEngine {
-    #[frb(sync)]
+    /// Deliberately **not** `#[frb(sync)]` — opening the index mmaps and reads every
+    /// segment footer; a synchronous binding blocks the calling Dart isolate throughout.
     pub fn new(path: &str) -> Self {
         init_engine_logger();
         debug!("new path={}", path);

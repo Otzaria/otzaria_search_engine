@@ -30,7 +30,7 @@ Future<void> main() async {
 
     setUp(() async {
       indexDir = Directory.systemTemp.createTempSync('otzaria_ffi_test');
-      engine = SearchEngine(path: indexDir.path);
+      engine = await SearchEngine.newInstance(path: indexDir.path);
       await engine.addDocument(
         id: BigInt.from(41),
         title: 'בראשית',
@@ -197,7 +197,7 @@ Future<void> main() async {
 
     setUp(() async {
       root = Directory.systemTemp.createTempSync('otzaria_ffi_mock');
-      engine = SearchEngine(
+      engine = await SearchEngine.newInstance(
         path: (Directory('${root.path}/tantivy')..createSync()).path,
       );
       await engine.addDocument(

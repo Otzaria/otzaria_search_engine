@@ -538,7 +538,9 @@ abstract class RustLibApi extends BaseApi {
     required SearchEngine that,
   });
 
-  SearchEngine crateApiSearchEngineSearchEngineNew({required String path});
+  Future<SearchEngine> crateApiSearchEngineSearchEngineNew({
+    required String path,
+  });
 
   Future<void> crateApiSearchEngineSearchEngineOptimize({
     required SearchEngine that,
@@ -897,7 +899,7 @@ abstract class RustLibApi extends BaseApi {
     required List<DocumentInput> docs,
   });
 
-  IndexCompatibility crateApiSearchEngineCheckIndexCompatibility({
+  Future<IndexCompatibility> crateApiSearchEngineCheckIndexCompatibility({
     required String path,
   });
 
@@ -3851,13 +3853,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  SearchEngine crateApiSearchEngineSearchEngineNew({required String path}) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
+  Future<SearchEngine> crateApiSearchEngineSearchEngineNew({
+    required String path,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 53,
+            port: port_,
+          );
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -6090,15 +6099,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  IndexCompatibility crateApiSearchEngineCheckIndexCompatibility({
+  Future<IndexCompatibility> crateApiSearchEngineCheckIndexCompatibility({
     required String path,
   }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 86)!;
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 86,
+            port: port_,
+          );
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_index_compatibility,

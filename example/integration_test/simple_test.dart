@@ -9,7 +9,7 @@ void main() async {
 
   test('Search Engine with custom tokenizer', () async {
     debugPrint("hello from test");
-    final engine = SearchEngine(path: "c:\\dev\\index");
+    final engine = await SearchEngine.newInstance(path: "c:\\dev\\index");
     debugPrint(engine.toString());
     engine.addDocument(
         id: BigInt.from(1),
