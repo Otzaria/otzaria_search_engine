@@ -24,6 +24,13 @@ rootProject.allprojects {
 
 apply plugin: 'com.android.library'
 
+def abiToTriples = [
+    'arm64-v8a'  : ['aarch64-linux-android'],
+    'armeabi-v7a': ['arm-linux-androideabi', 'armv7-linux-androideabi'],
+    'x86_64'     : ['x86_64-linux-android'],
+    'x86'        : ['i686-linux-android'],
+]
+
 android {
     if (project.android.hasProperty("namespace")) {
         namespace 'com.flutter_rust_bridge.search_engine'
@@ -48,6 +55,64 @@ android {
         // Matches ANDROID_PLATFORM in the prebuilt workflow. 23 because
         // llama.cpp calls `posix_madvise`, which bionic only exposes from API 23.
         minSdkVersion 23
+    }
+
+    packagingOptions {
+        pickFirst '**/libc++_shared.so'
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs += ["${buildDir}/ndk-libs"]
+        }
+    }
+}
+
+// Copy libc++_shared.so from the NDK into the jniLibs directory for each ABI.
+// The Rust search engine dynamically links against libc++ (via llama.cpp C++ deps),
+// but when cargokit downloads precompiled binaries or builds native code,
+// the Android Gradle plugin does not automatically bundle libc++_shared.so.
+task copyNdkLibs {
+    def ndkCopyDir = file("${buildDir}/ndk-libs")
+    outputs.dir ndkCopyDir
+
+    doLast {
+        def ndkDir = android.ndkDirectory
+        if (ndkDir == null || !ndkDir.exists()) {
+            logger.warn("otzaria_search_engine: NDK directory not found. Ensure android.ndkVersion is set in your project.")
+            return
+        }
+
+        def prebuilt = file("${ndkDir}/toolchains/llvm/prebuilt").listFiles()?.find { it.isDirectory() }
+        if (prebuilt == null || !prebuilt.exists()) {
+            logger.warn("otzaria_search_engine: NDK LLVM prebuilt directory not found under ${ndkDir}/toolchains/llvm/prebuilt")
+            return
+        }
+
+        abiToTriples.each { abi, triples ->
+            File srcFile = null
+            for (triple in triples) {
+                def candidate = file("${prebuilt}/sysroot/usr/lib/${triple}/libc++_shared.so")
+                if (candidate.exists()) {
+                    srcFile = candidate
+                    break
+                }
+            }
+
+            if (srcFile != null) {
+                def dst = file("${ndkCopyDir}/${abi}/libc++_shared.so")
+                dst.parentFile.mkdirs()
+                ant.copy(file: srcFile, tofile: dst)
+            } else {
+                logger.warn("otzaria_search_engine: libc++_shared.so not found for ABI ${abi} under ${prebuilt}/sysroot/usr/lib/")
+            }
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name.startsWith('merge') && task.name.endsWith('JniLibFolders')) {
+        task.dependsOn copyNdkLibs
     }
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **אריזת `libc++_shared.so` עבור אנדרואיד.** מנוע החיפוש מקושר כנגד ה-C++ runtime של ה-NDK (`libc++_shared.so` דרך תלויות llama.cpp), אך כשאפליקציית Flutter משתמשת בבינאריים המוקדמים, ה-Android Gradle Plugin אינו אורז את הספרייה אוטומטית והטעינה באנדרואיד נופלת ב-`dlopen failed: library "libc++_shared.so" not found`. נוספה משימת `copyNdkLibs` ב-`android/build.gradle` שמעתיקה את `libc++_shared.so` מתוך ה-NDK של הפרויקט לתיקיית `jniLibs` עבור כל ה-ABIs הנתמכים (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`).
+
 ## 0.8.0 – 2026-09-02 – פתיחת אינדקס ובדיקת תאימות עברו לאסינכרוני (שובר תאימות)
 
 > גרסה 0.7.8 נשאה את אותו שינוי ובוטלה: מספר תיקון (patch) נכנס לטווח של
