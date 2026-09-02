@@ -18,7 +18,7 @@ jobs:
     name: Dart format
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: subosito/flutter-action@v2
         with:
@@ -43,7 +43,7 @@ jobs:
     name: Line endings (no CRLF)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # נכשל אם קובץ טקסט מנוהל מכיל CRLF — בדיוק הבעיה שפרסום ממחשב Windows יוצר.
       # *.bat / *.cmd מוחרגים כי הם חייבים CRLF (ראו .gitattributes).
@@ -64,7 +64,7 @@ jobs:
     name: Rust format (rustfmt)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
