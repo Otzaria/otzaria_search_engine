@@ -135,6 +135,7 @@ class ArtifactProvider {
         remote: true,
       );
       final artifactsForTarget = <Artifact>[];
+      String? unavailableArtifact;
 
       for (final artifact in requiredArtifacts) {
         final fileName = PrecompileBinaries.fileName(target, artifact);
@@ -155,14 +156,30 @@ class ArtifactProvider {
             finalFileName: artifact,
           ));
         } else {
+          unavailableArtifact = fileName;
           break;
         }
       }
 
-      // Only provide complete set of artifacts.
-      if (artifactsForTarget.length == requiredArtifacts.length) {
+      if (unavailableArtifact == null) {
         _log.fine('Found precompiled artifacts for $target');
         res[target] = artifactsForTarget;
+      } else if (artifactsForTarget.isNotEmpty) {
+        // A partially available target is never a legitimate state: the
+        // release for this crate hash exists and just served the artifacts
+        // listed below. Falling back to a local build here is what hid a
+        // mangled asset name for an entire release - the engine downloaded,
+        // the C++ runtime 404'd, and Android quietly compiled the crate from
+        // source on every machine that happened to have an NDK.
+        throw Exception(
+          'Incomplete precompiled artifacts for $target (crate hash '
+          '$crateHash): $unavailableArtifact is unavailable while '
+          '${artifactsForTarget.map((e) => e.finalFileName).join(', ')} '
+          'downloaded. Refusing to fall back to a local build, which would '
+          'hide a broken release.',
+        );
+      } else {
+        _log.fine('No precompiled artifacts published for $target');
       }
     }
 
@@ -203,8 +220,11 @@ class ArtifactProvider {
     _log.fine('Downloading signature from $signatureUrl');
     final signature = await _get(signatureUrl);
     if (signature.statusCode == 404) {
-      _log.warning(
-          'Precompiled binaries not available for crate hash $crateHash ($fileName)');
+      // Naming the asset matters: the old message claimed no binaries existed
+      // for the crate hash even when every other asset had downloaded, which
+      // pointed away from the one that was actually missing.
+      _log.warning('Release asset $fileName is not published '
+          'for crate hash $crateHash');
       return;
     }
     if (signature.statusCode != 200) {
@@ -222,7 +242,13 @@ class ArtifactProvider {
         precompiledBinaries.publicKey, res.bodyBytes, signature.bodyBytes)) {
       File(finalPath).writeAsBytesSync(res.bodyBytes);
     } else {
-      _log.shout('Signature verification failed! Ignoring binary.');
+      // Ignoring the binary would fall back to a local build, so a release
+      // serving bytes that do not match their signature would look like a
+      // slow build rather than what it is.
+      throw Exception(
+        'Signature verification failed for $url. The release asset does not '
+        'match its signature; refusing to use it.',
+      );
     }
   }
 }
