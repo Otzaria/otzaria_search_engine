@@ -1,0 +1,87 @@
+name: Release Tag
+
+# קומיט שכל הודעתו היא מספר גרסה (למשל "0.8.1") מתויג אוטומטית ב-v0.8.1,
+# ואז מפעיל את publish-pub-dev.yml על ה-ref של התג.
+#
+# למה workflow_dispatch ולא להסתמך על דחיפת התג: דחיפה עם GITHUB_TOKEN אינה
+# מפעילה workflows אחרים, ומפתחות פריסה חסומים במאגר הזה. workflow_dispatch
+# הוא החריג המוצהר לכלל — הוא כן יוצר הרצה — וב-pub.dev מסומן שגם אירוע
+# workflow_dispatch מורשה לפרסם. ה-ref שנשלח הוא התג, כך שתביעת ה-OIDC
+# מתאימה לתבנית v{{version}}.
+on:
+  push:
+    branches:
+      - main
+      - refactor
+
+permissions:
+  # contents: דחיפת התג. actions: הפעלת workflow הפרסום.
+  contents: write
+  actions: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag version commits
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # דרוש כדי לזהות תג קיים לאותה גרסה.
+          fetch-depth: 0
+
+      - name: Detect a bare version commit
+        id: check
+        # הודעת הקומיט מועברת דרך משתנה סביבה ולא באינטרפולציה לתוך הסקריפט,
+        # כדי שתוכן הודעה לא יוכל להריץ פקודות.
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          subject="$(printf '%s' "$HEAD_MSG" | head -n 1 | tr -d '\r' \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+          if ! printf '%s' "$subject" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'; then
+            echo "הודעת הקומיט אינה מספר גרסה בלבד (\"$subject\") — אין מה לתייג."
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pubspec_version="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1 | tr -d '\r')"
+          if [ "$subject" != "$pubspec_version" ]; then
+            echo "::error::הודעת הקומיט מבקשת $subject אך pubspec.yaml עומד על $pubspec_version — עדכנו את הגרסה בקומיט הגרסה עצמו."
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/v$subject" >/dev/null; then
+            echo "::error::התג v$subject כבר קיים — גרסה שפורסמה אינה ניתנת לפרסום מחדש."
+            exit 1
+          fi
+
+          if ! grep -Fq "## $subject" CHANGELOG.md; then
+            echo "::warning::אין ל-$subject סעיף ב-CHANGELOG.md."
+          fi
+
+          echo "match=true" >> "$GITHUB_OUTPUT"
+          echo "version=$subject" >> "$GITHUB_OUTPUT"
+
+      - name: Push tag and start the publish run
+        if: steps.check.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # תג פשוט (lightweight) — אינו דורש זהות tagger ואינו מייחס את
+          # הפעולה לאיש.
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
+
+          gh workflow run publish-pub-dev.yml --ref "v$VERSION"
+
+          echo "נדחף התג v$VERSION והופעל הפרסום ל-pub.dev." >> "$GITHUB_STEP_SUMMARY"

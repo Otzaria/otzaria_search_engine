@@ -1,0 +1,50 @@
+name: Publish to pub.dev
+
+# מופעל מדחיפת תג גרסה (release-tag.yml יוצר אותו מקומיט שהודעתו מספר בלבד),
+# ומפרסם דרך Automated publishing של pub.dev: האימות נעשה באסימון OIDC של
+# ההרצה, ולכן אין כאן שום סוד של חשבון pub.dev.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+
+permissions:
+  # id-token נדרש כדי ש-pub יוכל לבקש את אסימון ה-OIDC.
+  id-token: write
+  contents: read
+
+concurrency:
+  group: publish-pub-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: flutter pub publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the tag matches pubspec version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          pubspec_version="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1 | tr -d '\r')"
+          if [ "$TAG" != "v$pubspec_version" ]; then
+            echo "::error::התג $TAG אינו תואם ל-version: $pubspec_version שב-pubspec.yaml."
+            exit 1
+          fi
+          echo "מפרסם $pubspec_version." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      # ל-pub publish דרושה resolution של התלויות, ולחבילת Flutter היא נכשלת
+      # תחת dart טהור — ולכן flutter, כמו בשאר ה-workflows כאן.
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter pub publish --force
+        run: flutter pub publish --force
