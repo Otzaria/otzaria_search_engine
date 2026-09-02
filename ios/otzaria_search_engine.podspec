@@ -23,7 +23,7 @@ A new Flutter FFI plugin project.
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.platform = :ios, '11.0'
+  s.platform = :ios, '15.0'
 
   # ggml/llama.cpp שבתוך libsearch_engine.a הוא C++ שמשתמש ב-vDSP וב-Metal.
   # cargokit בונה staticlib, כך שהצהרות cargo:rustc-link-lib של llama-cpp-sys-2

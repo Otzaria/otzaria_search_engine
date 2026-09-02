@@ -30,7 +30,7 @@ A new Flutter FFI plugin project.
   s.libraries = 'c++'
   s.frameworks = 'Accelerate', 'Metal', 'MetalKit', 'Foundation'
 
-  s.platform = :osx, '10.11'
+  s.platform = :osx, '12.0'
   s.swift_version = '5.0'
 
   s.script_phase = {

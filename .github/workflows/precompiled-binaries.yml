@@ -46,12 +46,12 @@ jobs:
     needs: prepare-release
     runs-on: macos-15
     env:
-      # Pin the iOS deployment target so cc-rs (C deps like zstd-sys) and rustc
-      # agree on it. Left unset, cc compiles C at the SDK default (e.g. iOS 18.x)
-      # while rustc links iOS at its default 10.0, where __chkstk_darwin is not
-      # in libSystem and the -nodefaultlibs link fails to resolve it. iOS 13 is
-      # Flutter's current floor and provides the symbol.
-      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+      # Unset, cc-rs compiles the C deps at the runner SDK's default while
+      # rustc uses its own much lower one, so both minimums land in the same
+      # .a - warning on every consumer, and on iOS failing the link outright
+      # (rustc's default has no __chkstk_darwin in libSystem).
+      IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
 
