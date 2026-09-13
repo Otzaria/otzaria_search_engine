@@ -11199,10 +11199,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   bool hasTranslationDictionary() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineHasTranslationDictionary(that: this);
 
-  /// Merge all segments into one. Run occasionally in the background after
-  /// many upserts/deletes to reclaim disk space and improve read performance.
-  /// Pending (uncommitted) changes are committed first, since only committed
-  /// segments participate in manual merge maintenance.
+  /// Compact the index without collapsing it. Pending changes are committed
+  /// first (only committed segments take part in manual merges); then the
+  /// searchable segments are brought toward `MAX_SEGMENTS_AFTER_OPTIMIZE`
+  /// by merging similarly sized small segments. The target may be exceeded
+  /// when its only alternative is rewriting a much larger healthy segment.
+  /// Segments with a high deleted-doc share are compacted independently.
   Future<void> optimize() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineOptimize(that: this);
 
@@ -11816,10 +11818,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
       );
 
   /// Bulk-indexing mode: while enabled, the live writer skips background
-  /// segment merges (`NoMergePolicy`). During a full-library build the
-  /// default `LogMergePolicy` repeatedly merges intermediate segments —
-  /// CPU and IO that are thrown away, because the caller runs `optimize`
-  /// (merge-all) once at the end anyway. Call with `true` before a bulk
+  /// segment merges (`NoMergePolicy`). During a full-library build, even the
+  /// size-aware policy can repeatedly merge intermediate segments before
+  /// the caller runs `optimize`. Call with `true` before a bulk
   /// build and `false` when done — `optimize` does NOT reset the flag, and
   /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
   /// default; incremental indexing keeps normal merging.

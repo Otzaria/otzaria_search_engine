@@ -5,10 +5,13 @@
 ### Changed
 
 - **`optimize` compacts instead of collapsing.** It no longer merges every
-  segment into one: the segment count is bounded (`MAX_SEGMENTS_AFTER_OPTIMIZE`,
-  8) by merging only the smallest segments, plus any segment with more than 30%
-  deleted docs. Large healthy segments are left untouched, so an incremental
-  run that adds one book no longer rewrites the whole multi-GB index.
+  segment into one: it targets eight segments by merging similarly sized ones,
+  selected by their on-disk bytes. The target is soft when merging would rewrite
+  a segment more than four times the size of the smallest one. Segments with
+  more than 30% deleted docs are compacted independently. This keeps a small
+  incremental addition from rewriting an unrelated large segment. The normal
+  writer uses the same size rule for background merges, so a commit cannot
+  undo this protection before `optimize` runs.
 - **`optimize` garbage-collects merged-away segment files.** GC runs again after
   the reader reload releases them, so the index directory shrinks instead of
   growing (tantivy’s post-merge GC saw them as still pinned by the old searcher).
