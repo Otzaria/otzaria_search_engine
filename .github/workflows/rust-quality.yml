@@ -98,6 +98,16 @@ jobs:
       - name: Compile the production semantic backend
         run: cargo check --manifest-path rust/Cargo.toml --locked --lib --features semantic
 
+      # The GC regression is platform-sensitive: Windows cannot unlink files
+      # still held by a searcher. Run the compaction paths on Windows as well.
+      - name: Test compaction and file cleanup on Windows
+        if: matrix.os == 'windows-2022'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --lib optimize_
+
+      - name: Test normal writer merge policy on Windows
+        if: matrix.os == 'windows-2022'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --lib normal_writer_
+
   generated-bindings:
     name: FRB bindings and Flutter tests
     runs-on: ubuntu-24.04

@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::indexer::NoMergePolicy;
+use tantivy::index::{SegmentId, SegmentMeta};
+use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
     AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, FuzzyTermQuery, Occur,
     PhraseQuery, TermQuery, TermSetQuery,
@@ -754,6 +755,14 @@ const DEFAULT_WRITER_HEAP_SIZE: usize = 300_000_000;
 // Economy indexing (see `set_economy_indexing`): the mobile budget — 3
 // threads with small arenas — applied on demand on desktop too.
 const ECONOMY_WRITER_HEAP_SIZE: usize = 50_000_000;
+/// Target number of searchable segments after `optimize`. This is deliberately
+/// soft: a tiny new segment must not force a rewrite of an unrelated large one.
+const MAX_SEGMENTS_AFTER_OPTIMIZE: usize = 8;
+/// Do not merge a healthy segment with one less than a quarter of its size.
+/// This bounds the write amplification of incremental indexing.
+const MAX_COMPACT_SIZE_RATIO: u64 = 4;
+/// A segment whose deleted-doc share exceeds this is compacted regardless of size.
+const OPTIMIZE_COMPACT_DELETE_RATIO: f64 = 0.3;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
 // גרסה 3 (טרם פורסמה): המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים
@@ -1817,7 +1826,12 @@ impl SearchEngine {
         // Best-effort: if another instance/process holds the writer lock right
         // now, start without a writer; ensure_writer() retries on first write.
         let index_writer = match index.writer(DEFAULT_WRITER_HEAP_SIZE) {
-            Ok(writer) => Some(writer),
+            Ok(writer) => {
+                writer.set_merge_policy(Box::new(SizeAwareMergePolicy {
+                    index_path: PathBuf::from(path),
+                }));
+                Some(writer)
+            }
             Err(err) => {
                 warn!("writer unavailable at startup ({err}); will retry lazily");
                 None
@@ -3377,20 +3391,20 @@ impl SearchEngine {
     }
 
     /// Bulk-indexing mode: while enabled, the live writer skips background
-    /// segment merges (`NoMergePolicy`). During a full-library build the
-    /// default `LogMergePolicy` repeatedly merges intermediate segments —
-    /// CPU and IO that are thrown away, because the caller runs `optimize`
-    /// (merge-all) once at the end anyway. Call with `true` before a bulk
+    /// segment merges (`NoMergePolicy`). During a full-library build, even the
+    /// size-aware policy can repeatedly merge intermediate segments before
+    /// the caller runs `optimize`. Call with `true` before a bulk
     /// build and `false` when done — `optimize` does NOT reset the flag, and
     /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
     /// default; incremental indexing keeps normal merging.
     pub fn set_bulk_indexing(&mut self, enabled: bool) -> Result<()> {
         self.bulk_indexing = enabled;
+        let index_path = self.index_path.clone();
         let writer = self.writer_mut()?;
         if enabled {
             writer.set_merge_policy(Box::new(NoMergePolicy));
         } else {
-            writer.set_merge_policy(Box::<tantivy::indexer::LogMergePolicy>::default());
+            writer.set_merge_policy(Box::new(SizeAwareMergePolicy { index_path }));
         }
         debug!("bulk_indexing={enabled}");
         Ok(())
@@ -3606,16 +3620,19 @@ impl SearchEngine {
 
     // ── Operational API ────────────────────────────────────────────────────────
 
-    /// Merge all segments into one. Run occasionally in the background after
-    /// many upserts/deletes to reclaim disk space and improve read performance.
-    /// Pending (uncommitted) changes are committed first, since only committed
-    /// segments participate in manual merge maintenance.
+    /// Compact the index without collapsing it. Pending changes are committed
+    /// first (only committed segments take part in manual merges); then the
+    /// searchable segments are brought toward `MAX_SEGMENTS_AFTER_OPTIMIZE`
+    /// by merging similarly sized small segments. The target may be exceeded
+    /// when its only alternative is rewriting a much larger healthy segment.
+    /// Segments with a high deleted-doc share are compacted independently.
     pub fn optimize(&mut self) -> Result<()> {
         let started = Instant::now();
         let before_count = self.index.searchable_segment_ids()?.len();
         debug!("optimize: before={before_count}");
-        if before_count <= 1 {
-            debug!("optimize: skipped");
+        // If another process owns the writer, this empty reader has no pending
+        // documents of its own to flush. Preserve the harmless no-op behavior.
+        if before_count == 0 && self.index_writer.is_none() {
             return Ok(());
         }
 
@@ -3640,12 +3657,33 @@ impl SearchEngine {
 
         maintenance_result?;
         self.index_reader.reload()?;
+        self.collect_garbage_after_optimize();
         let after_count = self.index.searchable_segment_ids()?.len();
         info!(
             "optimize: {before_count} → {after_count} segments in {:?}",
             started.elapsed()
         );
         Ok(())
+    }
+
+    /// Tantivy's post-merge GC keeps merged-away segments while the old searcher
+    /// holds their metas/mmaps; run it again after `reload` released them.
+    fn collect_garbage_after_optimize(&mut self) {
+        let gc = match self.writer_mut() {
+            Ok(writer) => writer.garbage_collect_files().wait(),
+            Err(err) => {
+                warn!("optimize: writer unavailable for garbage collection: {err:#}");
+                return;
+            }
+        };
+        match gc {
+            Ok(result) => debug!(
+                "optimize: garbage collection deleted {} files ({} could not be deleted)",
+                result.deleted_files.len(),
+                result.failed_to_delete_files.len()
+            ),
+            Err(err) => warn!("optimize: garbage collection failed: {err}"),
+        }
     }
 
     pub fn get_document_count(&self) -> u64 {
@@ -5271,6 +5309,10 @@ impl SearchEngine {
         let writer = self.index.writer(self.writer_heap_size)?;
         if self.bulk_indexing {
             writer.set_merge_policy(Box::new(NoMergePolicy));
+        } else {
+            writer.set_merge_policy(Box::new(SizeAwareMergePolicy {
+                index_path: self.index_path.clone(),
+            }));
         }
         Ok(writer)
     }
@@ -5283,17 +5325,24 @@ impl SearchEngine {
 
     fn optimize_committed_segments(&self) -> Result<()> {
         let mut maintenance_writer = self.open_writer_no_merge()?;
-        let segment_ids = self.index.searchable_segment_ids()?;
-        debug!("optimize: merging {} segments", segment_ids.len());
-
-        let merge_result = if segment_ids.len() > 1 {
-            maintenance_writer.merge(&segment_ids).wait().map(|_| ())
-        } else {
-            Ok(())
-        };
+        loop {
+            let metas = self.index.searchable_segment_metas()?;
+            let sized_metas = sized_segment_metas(&self.index_path, metas)?;
+            let Some(merge_ids) = select_segments_to_compact(&sized_metas) else {
+                debug!(
+                    "optimize: {} segments, nothing to compact",
+                    sized_metas.len()
+                );
+                break;
+            };
+            debug!(
+                "optimize: merging {} of {} segments",
+                merge_ids.len(),
+                sized_metas.len()
+            );
+            maintenance_writer.merge(&merge_ids).wait()?;
+        }
         let wait_result = maintenance_writer.wait_merging_threads();
-
-        merge_result?;
         wait_result?;
         Ok(())
     }
@@ -8958,6 +9007,95 @@ impl SegmentCollector for BookFingerprintSegmentCollector {
     }
 }
 
+/// Physical segment size, including stored text and postings. Optional
+/// components (notably the delete file) are absent on healthy segments.
+fn segment_disk_bytes(index_path: &Path, meta: &SegmentMeta) -> Result<u64> {
+    let mut bytes = 0u64;
+    for file in meta.list_files() {
+        match fs::metadata(index_path.join(&file)) {
+            Ok(metadata) => bytes = bytes.saturating_add(metadata.len()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("reading segment file {file:?}")),
+        }
+    }
+    Ok(bytes)
+}
+
+fn sized_segment_metas(
+    index_path: &Path,
+    metas: Vec<SegmentMeta>,
+) -> Result<Vec<(u64, SegmentMeta)>> {
+    metas
+        .into_iter()
+        .map(|meta| Ok((segment_disk_bytes(index_path, &meta)?, meta)))
+        .collect()
+}
+
+/// The normal writer must obey the same size rule as manual optimize; Tantivy's
+/// default LogMergePolicy can otherwise rewrite eight existing segments during
+/// the commit that adds one tiny book (its default minimum is eight segments).
+#[derive(Debug)]
+struct SizeAwareMergePolicy {
+    index_path: PathBuf,
+}
+
+impl MergePolicy for SizeAwareMergePolicy {
+    fn compute_merge_candidates(&self, metas: &[SegmentMeta]) -> Vec<MergeCandidate> {
+        if metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
+            return Vec::new();
+        }
+        let sized = match sized_segment_metas(&self.index_path, metas.to_vec()) {
+            Ok(sized) => sized,
+            Err(err) => {
+                warn!("background merge: cannot measure segment sizes: {err:#}");
+                return Vec::new();
+            }
+        };
+        select_similarly_sized_segments(&sized)
+            .map(|ids| vec![MergeCandidate(ids)])
+            .unwrap_or_default()
+    }
+}
+
+/// Pick one merge at a time. Reclaim a delete-heavy segment on its own, then
+/// combine the smallest healthy segments only if their byte sizes are close.
+fn select_segments_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+    if let Some((_, meta)) = sized_metas
+        .iter()
+        .filter(|(_, meta)| {
+            meta.max_doc() > 0
+                && f64::from(meta.num_deleted_docs()) / f64::from(meta.max_doc())
+                    > OPTIMIZE_COMPACT_DELETE_RATIO
+        })
+        .min_by_key(|(bytes, _)| *bytes)
+    {
+        return Some(vec![meta.id()]);
+    }
+
+    select_similarly_sized_segments(sized_metas)
+}
+
+fn select_similarly_sized_segments(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+    if sized_metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
+        return None;
+    }
+    let mut by_size: Vec<_> = sized_metas.iter().collect();
+    by_size.sort_by_key(|(bytes, _)| *bytes);
+    let smallest = by_size[0].0;
+    let mut chosen = Vec::new();
+    for (bytes, meta) in by_size {
+        if chosen.len() >= 2 && sized_metas.len() - chosen.len() + 1 <= MAX_SEGMENTS_AFTER_OPTIMIZE
+        {
+            break;
+        }
+        if *bytes > smallest.saturating_mul(MAX_COMPACT_SIZE_RATIO) {
+            break;
+        }
+        chosen.push(meta.id());
+    }
+    (chosen.len() >= 2).then_some(chosen)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -9889,7 +10027,7 @@ mod tests {
     }
 
     #[test]
-    fn bulk_indexing_skips_merges_and_optimize_still_collapses() {
+    fn bulk_indexing_skips_merges_and_optimize_bounds_segments() {
         let (mut engine, _dir) = make_engine();
         engine.set_bulk_indexing(true).unwrap();
         // כמה commit-ים ⇒ כמה סגמנטים; ב-bulk אין מיזוג רקע שמאחד אותם.
@@ -9901,8 +10039,416 @@ mod tests {
 
         engine.set_bulk_indexing(false).unwrap();
         engine.optimize().unwrap();
-        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 1);
+        assert!(
+            engine.index.searchable_segment_ids().unwrap().len() <= MAX_SEGMENTS_AFTER_OPTIMIZE
+        );
         assert_eq!(engine.get_document_count(), 3);
+    }
+
+    /// כל commit מפזר מסמכים על כמה סגמנטים (thread לכל סגמנט); הבדיקות
+    /// שצריכות "סגמנט גדול אחד" מאחדות אותו כאן, מחוץ ל-optimize הנבדק.
+    fn collapse_to_one_segment(engine: &mut SearchEngine) {
+        let live = engine.take_writer().unwrap();
+        drop(live);
+        let mut writer = engine.open_writer_no_merge().unwrap();
+        let ids = engine.index.searchable_segment_ids().unwrap();
+        writer.merge(&ids).wait().unwrap();
+        writer.wait_merging_threads().unwrap();
+        engine.restore_writer().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 1);
+    }
+
+    fn count_hits(engine: &SearchEngine, word: &str) -> usize {
+        engine.count(vec![word.to_string()], &[], 0, 1).unwrap() as usize
+    }
+
+    #[test]
+    fn optimize_merges_smallest_segments_down_to_cap() {
+        let (mut engine, _dir) = make_engine();
+        // bulk נשאר פעיל גם ב-optimize — אחרת LogMergePolicy היה מאחד ברקע
+        // והבדיקה לא הייתה מודדת את optimize עצמו.
+        engine.set_bulk_indexing(true).unwrap();
+        let total = MAX_SEGMENTS_AFTER_OPTIMIZE as u64 + 4;
+        for i in 0..total {
+            add(&mut engine, i + 1, "שלום עולם", "/books/a.txt");
+            engine.commit().unwrap();
+        }
+        assert_eq!(
+            engine.index.searchable_segment_ids().unwrap().len(),
+            total as usize
+        );
+
+        engine.optimize().unwrap();
+        assert_eq!(
+            engine.index.searchable_segment_ids().unwrap().len(),
+            MAX_SEGMENTS_AFTER_OPTIMIZE
+        );
+        assert_eq!(engine.get_document_count(), total);
+        assert_eq!(count_hits(&engine, "שלום"), total as usize);
+    }
+
+    fn count_idx_files(dir: &TempDir) -> usize {
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension() == Some("idx".as_ref()))
+            .count()
+    }
+
+    fn dir_size_bytes(dir: &TempDir) -> u64 {
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .sum()
+    }
+
+    #[test]
+    fn optimize_garbage_collects_merged_away_segment_files() {
+        let (mut engine, dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        let total = MAX_SEGMENTS_AFTER_OPTIMIZE as u64 + 4;
+        for i in 0..total {
+            add(&mut engine, i + 1, "שלום עולם", "/books/a.txt");
+            engine.commit().unwrap();
+        }
+        // Pin the pre-optimize segments the way a live search would.
+        engine.index_reader.reload().unwrap();
+        assert_eq!(count_idx_files(&dir), total as usize);
+        let size_before = dir_size_bytes(&dir);
+
+        engine.optimize().unwrap();
+        let searchable = engine.index.searchable_segment_ids().unwrap().len();
+        assert_eq!(searchable, MAX_SEGMENTS_AFTER_OPTIMIZE);
+        assert_eq!(
+            count_idx_files(&dir),
+            searchable,
+            "merged-away segment files must be garbage-collected"
+        );
+        assert!(
+            dir_size_bytes(&dir) <= size_before,
+            "index directory must not grow after optimize"
+        );
+    }
+
+    #[test]
+    fn optimize_leaves_large_segment_untouched_next_to_tiny_one() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        for i in 0..500u64 {
+            add(&mut engine, i + 1, "בראשית ברא", "/books/big.txt");
+        }
+        engine.commit().unwrap();
+        collapse_to_one_segment(&mut engine);
+        let big_id = engine.index.searchable_segment_ids().unwrap()[0];
+
+        add(&mut engine, 1_000, "שלום עולם", "/books/small.txt");
+        engine.commit().unwrap();
+        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 2);
+
+        engine.optimize().unwrap();
+        let ids = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(ids.len(), 2);
+        // הסגמנט הגדול לא נכתב מחדש — אותו SegmentId עדיין שם.
+        assert!(ids.contains(&big_id));
+        assert_eq!(engine.get_document_count(), 501);
+    }
+
+    fn large_unique_text() -> String {
+        let mut text = String::from("שלום ");
+        for i in 0..1_000 {
+            text.push_str(&format!("מילה{i} "));
+        }
+        text
+    }
+
+    #[test]
+    fn optimize_does_not_rewrite_eight_large_segments_for_one_new_book() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        let large_text = large_unique_text();
+        for id in 1..=MAX_SEGMENTS_AFTER_OPTIMIZE as u64 {
+            add(&mut engine, id, &large_text, &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        let original_ids = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(original_ids.len(), MAX_SEGMENTS_AFTER_OPTIMIZE);
+
+        add(&mut engine, 100, "שלום", "/books/new.txt");
+        engine.commit().unwrap();
+        let metas = engine.index.searchable_segment_metas().unwrap();
+        assert_eq!(metas.len(), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+        let mut sizes: Vec<_> = metas
+            .iter()
+            .map(|meta| segment_disk_bytes(&engine.index_path, meta).unwrap())
+            .collect();
+        sizes.sort_unstable();
+        assert!(
+            sizes[1] > sizes[0] * MAX_COMPACT_SIZE_RATIO,
+            "test requires a genuinely small new segment: {sizes:?}"
+        );
+
+        engine.optimize().unwrap();
+        let after = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(after.len(), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+        assert!(original_ids.iter().all(|id| after.contains(id)));
+        assert_eq!(count_hits(&engine, "שלום"), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+
+        add(&mut engine, 101, "שלום", "/books/next.txt");
+        engine.commit().unwrap();
+        engine.optimize().unwrap();
+        let after = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(after.len(), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+        assert!(original_ids.iter().all(|id| after.contains(id)));
+        assert_eq!(count_hits(&engine, "שלום"), MAX_SEGMENTS_AFTER_OPTIMIZE + 2);
+    }
+
+    #[test]
+    fn optimize_uses_disk_bytes_instead_of_document_count() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        add(&mut engine, 1, &large_unique_text(), "/books/large.txt");
+        engine.commit().unwrap();
+        let large_id = engine.index.searchable_segment_ids().unwrap()[0];
+        for id in 2..=9 {
+            add(&mut engine, id, "שלום", &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 9);
+        engine.optimize().unwrap();
+        let after = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(after.len(), MAX_SEGMENTS_AFTER_OPTIMIZE);
+        assert!(after.contains(&large_id));
+        assert_eq!(engine.get_document_count(), 9);
+        assert_eq!(count_hits(&engine, "שלום"), 9);
+    }
+
+    #[test]
+    fn normal_writer_does_not_merge_eight_large_segments_for_a_tiny_book() {
+        let (mut engine, dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        let large_text = large_unique_text();
+        for id in 1..=MAX_SEGMENTS_AFTER_OPTIMIZE as u64 {
+            add(&mut engine, id, &large_text, &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        let original_ids = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(original_ids.len(), MAX_SEGMENTS_AFTER_OPTIMIZE);
+
+        drop(engine);
+        let mut engine = SearchEngine::new(&dir_path_string(&dir));
+        add(&mut engine, 100, "שלום", "/books/new.txt");
+        engine.commit().unwrap();
+        let writer = engine.take_writer().unwrap();
+        writer.wait_merging_threads().unwrap();
+        engine.restore_writer().unwrap();
+
+        let after = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(after.len(), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+        assert!(original_ids.iter().all(|id| after.contains(id)));
+        engine.index_reader.reload().unwrap();
+        assert_eq!(count_hits(&engine, "שלום"), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+    }
+
+    #[test]
+    fn normal_writer_merges_similarly_sized_small_segments() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        for id in 1..=MAX_SEGMENTS_AFTER_OPTIMIZE as u64 {
+            add(&mut engine, id, "שלום", &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        assert_eq!(
+            engine.index.searchable_segment_ids().unwrap().len(),
+            MAX_SEGMENTS_AFTER_OPTIMIZE
+        );
+
+        engine.set_bulk_indexing(false).unwrap();
+        add(&mut engine, 100, "שלום", "/books/new.txt");
+        engine.commit().unwrap();
+        let writer = engine.take_writer().unwrap();
+        writer.wait_merging_threads().unwrap();
+        engine.restore_writer().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(
+            engine.index.searchable_segment_ids().unwrap().len(),
+            MAX_SEGMENTS_AFTER_OPTIMIZE
+        );
+        assert_eq!(count_hits(&engine, "שלום"), MAX_SEGMENTS_AFTER_OPTIMIZE + 1);
+    }
+
+    #[test]
+    fn optimize_commits_pending_document_into_an_empty_index() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/new.txt");
+        assert!(engine.index.searchable_segment_ids().unwrap().is_empty());
+        engine.optimize().unwrap();
+        assert_eq!(engine.get_document_count(), 1);
+        assert_eq!(count_hits(&engine, "שלום"), 1);
+    }
+
+    #[test]
+    #[ignore = "manual timing on an isolated copy of a real index"]
+    fn benchmark_real_index_one_vs_nine_segments() {
+        use std::hint::black_box;
+        use tantivy::query::TermQuery;
+
+        fn one_search(
+            searcher: &Searcher,
+            query: &TermQuery,
+            top_docs: bool,
+        ) -> std::time::Duration {
+            let started = Instant::now();
+            if top_docs {
+                black_box(
+                    searcher
+                        .search(query, &TopDocs::with_limit(10).order_by_score())
+                        .unwrap(),
+                );
+            } else {
+                black_box(searcher.search(query, &Count).unwrap());
+            }
+            started.elapsed()
+        }
+
+        fn paired_medians(
+            one: &Searcher,
+            nine: &Searcher,
+            query: &TermQuery,
+            top_docs: bool,
+        ) -> (std::time::Duration, std::time::Duration) {
+            for _ in 0..5 {
+                one_search(one, query, top_docs);
+                one_search(nine, query, top_docs);
+            }
+            let mut one_samples = Vec::new();
+            let mut nine_samples = Vec::new();
+            for i in 0..31 {
+                if i % 2 == 0 {
+                    one_samples.push(one_search(one, query, top_docs));
+                    nine_samples.push(one_search(nine, query, top_docs));
+                } else {
+                    nine_samples.push(one_search(nine, query, top_docs));
+                    one_samples.push(one_search(one, query, top_docs));
+                }
+            }
+            one_samples.sort_unstable();
+            nine_samples.sort_unstable();
+            (one_samples[15], nine_samples[15])
+        }
+
+        let path = std::env::var("OTZARIA_REAL_BENCH_INDEX")
+            .expect("set OTZARIA_REAL_BENCH_INDEX to an isolated index copy");
+        let mut engine = SearchEngine::new(&path);
+        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 1);
+        let large_id = engine.index.searchable_segment_ids().unwrap()[0];
+        let one_segment_searcher = engine.index_reader.searcher();
+
+        engine.set_bulk_indexing(true).unwrap();
+        let mut eight_segment_searcher = None;
+        for id in 0..8 {
+            add(
+                &mut engine,
+                9_000_000_000 + id,
+                "שלום רבי אמר ישראל בראשית",
+                &format!("/benchmark/new-{id}.txt"),
+            );
+            engine.commit().unwrap();
+            if id == 6 {
+                engine.index_reader.reload().unwrap();
+                eight_segment_searcher = Some(engine.index_reader.searcher());
+            }
+        }
+        assert_eq!(engine.index.searchable_segment_ids().unwrap().len(), 9);
+        engine.index_reader.reload().unwrap();
+        let nine_segment_searcher = engine.index_reader.searcher();
+        let eight_segment_searcher = eight_segment_searcher.unwrap();
+        let field = engine.schema.get_field("text").unwrap();
+        for term in ["שלום", "רבי", "אמר", "ישראל", "בראשית"] {
+            let query = TermQuery::new(
+                Term::from_field_text(field, term),
+                IndexRecordOption::WithFreqs,
+            );
+            for top_docs in [false, true] {
+                let (one, nine) = paired_medians(
+                    &one_segment_searcher,
+                    &nine_segment_searcher,
+                    &query,
+                    top_docs,
+                );
+                let (eight, nine_again) = paired_medians(
+                    &eight_segment_searcher,
+                    &nine_segment_searcher,
+                    &query,
+                    top_docs,
+                );
+                let kind = if top_docs { "top10" } else { "count" };
+                eprintln!("{kind} {term}: 1 segment {one:?}, 9 segments {nine:?}");
+                eprintln!("{kind} {term}: 8 segments {eight:?}, 9 segments {nine_again:?}");
+            }
+        }
+        engine.index.set_multithread_executor(4).unwrap();
+        engine.index_reader = engine
+            .index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .unwrap();
+        let nine_segment_multithread_searcher = engine.index_reader.searcher();
+        for term in ["שלום", "רבי", "אמר", "ישראל", "בראשית"] {
+            let query = TermQuery::new(
+                Term::from_field_text(field, term),
+                IndexRecordOption::WithFreqs,
+            );
+            for top_docs in [false, true] {
+                let (single, multi) = paired_medians(
+                    &nine_segment_searcher,
+                    &nine_segment_multithread_searcher,
+                    &query,
+                    top_docs,
+                );
+                let kind = if top_docs { "top10" } else { "count" };
+                eprintln!("{kind} {term}: 9 single {single:?}, 9 four-thread {multi:?}");
+            }
+        }
+        drop(one_segment_searcher);
+        drop(eight_segment_searcher);
+        drop(nine_segment_searcher);
+        drop(nine_segment_multithread_searcher);
+        let started = Instant::now();
+        engine.optimize().unwrap();
+        eprintln!("optimize with tiny additions: {:?}", started.elapsed());
+        let after = engine.index.searchable_segment_ids().unwrap();
+        assert!(after.contains(&large_id));
+        assert!(after.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE);
+    }
+
+    #[test]
+    fn optimize_compacts_delete_heavy_segment() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        for i in 0..20u64 {
+            add(&mut engine, i + 1, "בראשית ברא", "/books/gone.txt");
+        }
+        add(&mut engine, 100, "שלום עולם", "/books/kept.txt");
+        engine.commit().unwrap();
+        collapse_to_one_segment(&mut engine);
+        let heavy_id = engine.index.searchable_segment_ids().unwrap()[0];
+
+        engine
+            .delete_documents_by_file_path("/books/gone.txt")
+            .unwrap();
+        engine.commit().unwrap();
+        let metas = engine.index.searchable_segment_metas().unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].num_deleted_docs(), 20);
+
+        engine.optimize().unwrap();
+        let metas = engine.index.searchable_segment_metas().unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_ne!(metas[0].id(), heavy_id);
+        assert_eq!(metas[0].num_deleted_docs(), 0);
+        assert_eq!(metas[0].num_docs(), 1);
+        assert_eq!(count_hits(&engine, "שלום"), 1);
     }
 
     #[test]
@@ -12055,8 +12601,8 @@ mod tests {
             "optimize should not increase segment count"
         );
         assert_eq!(
-            after, 1,
-            "after optimize there should be exactly one segment"
+            after, MAX_SEGMENTS_AFTER_OPTIMIZE as u32,
+            "optimize compacts the smallest segments down to the cap"
         );
         assert_eq!(engine.get_document_count(), 12);
     }
