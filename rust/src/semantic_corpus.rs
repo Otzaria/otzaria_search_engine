@@ -49,10 +49,11 @@ use otzaria_semantic_search::errors::PackError;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::recipe::EmbeddingRecipe;
 use otzaria_semantic_search::semantic::versioning::{CorpusIdentity, ModelIdentity};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::Mutex;
 use tantivy::schema::{Facet, Value};
 use tantivy::{DocAddress, Index, ReloadPolicy, Searcher, TantivyDocument};
 
@@ -96,7 +97,10 @@ pub struct TantivyCorpus {
     /// The plan, computed at most once. `expected_line_ids` is called by both `pack` and
     /// `validate_artifact`, and chunking the library twice to answer the same question
     /// twice is the kind of cost a build notices.
-    plan: RefCell<Option<BTreeSet<u64>>>,
+    /// A `Mutex` rather than a `RefCell`, so the corpus is `Sync`: `compute_corpus_id`
+    /// reads six million stored documents in parallel, and a `RefCell` anywhere in the
+    /// struct would make that impossible for a cache neither thread touches.
+    plan: Mutex<Option<BTreeSet<u64>>>,
 }
 
 impl TantivyCorpus {
@@ -255,7 +259,7 @@ impl TantivyCorpus {
             chunking,
             books,
             locations,
-            plan: RefCell::new(None),
+            plan: Mutex::new(None),
         };
         corpus.identity.corpus_id = compute_corpus_id(&corpus)?;
 
@@ -434,13 +438,18 @@ impl CorpusIndex for TantivyCorpus {
             });
         }
 
-        if let Some(cached) = self.plan.borrow().as_ref() {
+        if let Some(cached) = self
+            .plan
+            .lock()
+            .expect("the plan cache is never poisoned")
+            .as_ref()
+        {
             return Ok(cached.clone());
         }
         let ids = BuildPlan::compute(self, &self.chunking, model)?
             .line_ids()
             .clone();
-        *self.plan.borrow_mut() = Some(ids.clone());
+        *self.plan.lock().expect("the plan cache is never poisoned") = Some(ids.clone());
         Ok(ids)
     }
 
@@ -503,12 +512,30 @@ fn compute_corpus_id(corpus: &TantivyCorpus) -> Result<String> {
     hasher.update(CORPUS_ID_VERSION.to_le_bytes());
     hasher.update((ordered.len() as u64).to_le_bytes());
 
-    for line_id in ordered {
-        let address = corpus.locations[&line_id].address;
-        let line = corpus
-            .read_at(address, line_id)
-            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
-        feed_line(&mut hasher, line_id, &line)?;
+    // Read and serialize in parallel, hash in order. The cost here is Tantivy's stored
+    // fields — a block decompression and a struct built per line, six million times —
+    // and it is embarrassingly parallel; the hash is not, and must not be, because its
+    // value depends on the order bytes reach it. So the window below is what crosses
+    // between the two: threads fill it, the digest drains it, and the resulting
+    // `corpus_id` is bit-identical to the one a single thread produces.
+    //
+    // Measured on the release index: 5.9M lines, and the serial version had not
+    // finished opening the corpus after minutes.
+    const WINDOW: usize = 8192;
+    for window in ordered.chunks(WINDOW) {
+        let lines = window
+            .par_iter()
+            .map(|&line_id| {
+                let address = corpus.locations[&line_id].address;
+                corpus
+                    .read_at(address, line_id)
+                    .map(|line| (line_id, line))
+                    .map_err(|reason| anyhow::anyhow!("{reason}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (line_id, line) in lines {
+            feed_line(&mut hasher, line_id, &line)?;
+        }
     }
 
     Ok(format!("{:x}", hasher.finalize()))

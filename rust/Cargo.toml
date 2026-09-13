@@ -43,6 +43,16 @@ path = "src/bin/benchmark_cli.rs"
 name = "build_semantic_artifact"
 path = "src/bin/build_semantic_artifact.rs"
 
+# The half of a build that needs the corpus and no model, so it links no backend.
+[[bin]]
+name = "export_semantic_plan"
+path = "src/bin/export_semantic_plan.rs"
+
+# The last step of a sharded build: ready-made vectors joined to the live index.
+[[bin]]
+name = "pack_semantic_artifact"
+path = "src/bin/pack_semantic_artifact.rs"
+
 [dependencies]
 env_logger = "0.11.10"
 flutter_rust_bridge = "=2.13.0"
@@ -75,7 +85,7 @@ sha2 = "0.10"
 # The semantic sidecar's persisted-vector format and llama bindings are part of
 # the index identity.  A branch dependency can silently change either; pin the
 # exact reviewed revision and retain it in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "e836ea6cac05e695efdb03ef227e78cd1a624149", optional = true }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "e2098f2b639310c0e6f0d19e17789d479aee7b56", optional = true }
 
 [dev-dependencies]
 # הידור התבניות שהמודול הזה מחזיר, כדי לבדוק אותן על טקסט אמיתי ולא רק
