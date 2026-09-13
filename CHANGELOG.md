@@ -1,6 +1,20 @@
 # Changelog
 
-## 0.8.4 – 2026-09-08
+## 0.8.4 – 2026-09-13
+
+### Added
+
+- **A sharded semantic build: `export_semantic_plan` and `pack_semantic_artifact`.**
+  The library's vectors are not produced on the machine that holds the library,
+  so the build splits in two. `export_semantic_plan` applies the embedding
+  recipe to the Tantivy index and writes `plan.jsonl` — the finished embedding
+  text and both digests, one record per line that gets a vector — plus its
+  manifest and the corpus identity to pack against. `pack_semantic_artifact`
+  takes the vectors back from wherever they were embedded and joins them to the
+  live index, verifying there what nothing upstream can: that every
+  `source_line_sha256` matches the line the index holds, and that the id set is
+  exactly the one the recipe embeds. Neither binary links an inference backend,
+  so both build without llama.cpp; both still require `semantic-integration`.
 
 ### Changed
 
@@ -15,6 +29,12 @@
 - **`optimize` garbage-collects merged-away segment files.** GC runs again after
   the reader reload releases them, so the index directory shrinks instead of
   growing (tantivy’s post-merge GC saw them as still pinned by the old searcher).
+- **The corpus id is computed in parallel.** Reading six million stored
+  documents is the cost of opening the corpus, and it is embarrassingly
+  parallel; the hash is not, so lines are read and serialized by a thread pool
+  and fed to the digest in order. The resulting `corpus_id` is bit-identical to
+  the single-threaded one. The plan cache became a `Mutex`, which makes
+  `TantivyCorpus` `Sync`.
 
 ## 0.8.3 – 2026-09-07 – flutter_rust_bridge 2.13.0
 
