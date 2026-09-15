@@ -9,6 +9,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroUsize;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
@@ -9051,7 +9052,7 @@ impl MergePolicy for SizeAwareMergePolicy {
                 return Vec::new();
             }
         };
-        select_similarly_sized_segments(&sized)
+        select_smallest_level(&sized)
             .map(|ids| vec![MergeCandidate(ids)])
             .unwrap_or_default()
     }
@@ -9072,28 +9073,94 @@ fn select_segments_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<
         return Some(vec![meta.id()]);
     }
 
-    select_similarly_sized_segments(sized_metas)
+    select_level_to_compact(sized_metas)
 }
 
-fn select_similarly_sized_segments(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+fn sorted_by_size(sized_metas: &[(u64, SegmentMeta)]) -> Vec<&(u64, SegmentMeta)> {
+    let mut by_size: Vec<_> = sized_metas.iter().collect();
+    by_size.sort_by_key(|(bytes, _)| *bytes);
+    by_size
+}
+
+/// The segments, sorted by size, split into levels: a level begins at the
+/// smallest segment not yet placed and holds everything within
+/// MAX_COMPACT_SIZE_RATIO of it. Segments in one level are interchangeable as
+/// far as write amplification goes; segments in different levels are not.
+fn size_levels(by_size: &[&(u64, SegmentMeta)]) -> Vec<Range<usize>> {
+    let mut levels = Vec::new();
+    let mut start = 0;
+    while start < by_size.len() {
+        let ceiling = by_size[start].0.saturating_mul(MAX_COMPACT_SIZE_RATIO);
+        let mut end = start + 1;
+        while end < by_size.len() && by_size[end].0 <= ceiling {
+            end += 1;
+        }
+        levels.push(start..end);
+        start = end;
+    }
+    levels
+}
+
+/// Merging k segments retires k - 1 of them, so take no more of a level than
+/// the distance to the target allows. When a level holds nearly the whole
+/// index this still merges nearly the whole index into one dominant segment —
+/// that is the cheapest way to reach the target in bytes written, and the
+/// alternative is rewriting the same data over several rounds of the loop.
+fn take_from_level(
+    total: usize,
+    by_size: &[&(u64, SegmentMeta)],
+    level: Range<usize>,
+) -> Vec<SegmentId> {
+    let room = total - MAX_SEGMENTS_AFTER_OPTIMIZE + 1;
+    let take = level.len().min(room);
+    by_size[level.start..level.start + take]
+        .iter()
+        .map(|(_, meta)| meta.id())
+        .collect()
+}
+
+/// What the writer merges on its own, in a background thread, while someone is
+/// indexing: the smallest level only, and only when it has something to
+/// combine. Nothing above that level is ever rewritten unasked — a user who
+/// adds a book to a library of large segments would otherwise pay gigabytes of
+/// rewriting for it, which is the property #21 added.
+fn select_smallest_level(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
     if sized_metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
         return None;
     }
-    let mut by_size: Vec<_> = sized_metas.iter().collect();
-    by_size.sort_by_key(|(bytes, _)| *bytes);
-    let smallest = by_size[0].0;
-    let mut chosen = Vec::new();
-    for (bytes, meta) in by_size {
-        if chosen.len() >= 2 && sized_metas.len() - chosen.len() + 1 <= MAX_SEGMENTS_AFTER_OPTIMIZE
-        {
-            break;
-        }
-        if *bytes > smallest.saturating_mul(MAX_COMPACT_SIZE_RATIO) {
-            break;
-        }
-        chosen.push(meta.id());
+    let by_size = sorted_by_size(sized_metas);
+    let smallest = size_levels(&by_size).into_iter().next()?;
+    (smallest.len() >= 2).then(|| take_from_level(sized_metas.len(), &by_size, smallest))
+}
+
+/// What `optimize` compacts when it is asked to, which is more than the
+/// background policy above: the smallest level when it has two members, and
+/// otherwise the first level over it that alone holds more segments than the
+/// whole index is meant to end with. Measuring the ratio against the smallest
+/// segment in the index instead — which is what this did — let one short final
+/// flush of a from-scratch build veto the merging of every other segment with
+/// its own kind, and left the index at 188 segments against a target of 8.
+///
+/// A level of eight or fewer above a singleton is still left alone, so an
+/// index can settle above the target. That is deliberate: the alternative is
+/// rewriting healthy large segments to retire one or two, and `optimize`
+/// documents its target as soft for exactly that reason.
+fn select_level_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+    if sized_metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
+        return None;
     }
-    (chosen.len() >= 2).then_some(chosen)
+    let by_size = sorted_by_size(sized_metas);
+    for (rank, level) in size_levels(&by_size).into_iter().enumerate() {
+        let worth_rewriting = if rank == 0 {
+            level.len() >= 2
+        } else {
+            level.len() > MAX_SEGMENTS_AFTER_OPTIMIZE
+        };
+        if worth_rewriting {
+            return Some(take_from_level(sized_metas.len(), &by_size, level));
+        }
+    }
+    None
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -10202,6 +10269,48 @@ mod tests {
         assert_eq!(count_hits(&engine, "שלום"), MAX_SEGMENTS_AFTER_OPTIMIZE + 2);
     }
 
+    /// אינדקס שנבנה מאפס משאיר עשרות סגמנטים דומים בגודלם ועוד אחד זעיר
+    /// (השטיפה האחרונה של אחד מחוטי הכתיבה). ריצה 34898795644 סיימה כך עם
+    /// 193 סגמנטים, ו-optimize ויתר אחרי מיזוג אחד — 188. הסיבה: החסם
+    /// MAX_COMPACT_SIZE_RATIO נמדד מול הסגמנט הקטן *בכל האינדקס*, כך
+    /// שסגמנט חריג אחד פוסל את מיזוגם של כל השאר זה עם זה.
+    #[test]
+    fn optimize_compacts_similar_segments_that_one_tiny_outlier_anchors() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        let large_text = large_unique_text();
+        let large_count = MAX_SEGMENTS_AFTER_OPTIMIZE + 4;
+        for id in 1..=large_count as u64 {
+            add(&mut engine, id, &large_text, &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        add(&mut engine, 100, "שלום", "/books/tiny.txt");
+        engine.commit().unwrap();
+
+        let metas = engine.index.searchable_segment_metas().unwrap();
+        assert_eq!(metas.len(), large_count + 1);
+        let mut sizes: Vec<_> = metas
+            .iter()
+            .map(|meta| segment_disk_bytes(&engine.index_path, meta).unwrap())
+            .collect();
+        sizes.sort_unstable();
+        // התרחיש נשען על שתי עובדות: החריג באמת זעיר,
+        assert!(
+            sizes[1] > sizes[0] * MAX_COMPACT_SIZE_RATIO,
+            "the outlier is not small enough to anchor: {sizes:?}"
+        );
+        // וכל השאר דומים זה לזה — כלומר מיזוגם אינו כתיבה-מחדש מיותרת.
+        assert!(
+            sizes[large_count] <= sizes[1] * MAX_COMPACT_SIZE_RATIO,
+            "the rest are not similarly sized: {sizes:?}"
+        );
+
+        engine.optimize().unwrap();
+        let after = engine.index.searchable_segment_ids().unwrap();
+        assert_eq!(after.len(), MAX_SEGMENTS_AFTER_OPTIMIZE);
+        assert_eq!(count_hits(&engine, "שלום"), large_count + 1);
+    }
+
     #[test]
     fn optimize_uses_disk_bytes_instead_of_document_count() {
         let (mut engine, _dir) = make_engine();
@@ -10220,6 +10329,136 @@ mod tests {
         assert!(after.contains(&large_id));
         assert_eq!(engine.get_document_count(), 9);
         assert_eq!(count_hits(&engine, "שלום"), 9);
+    }
+
+    /// גדלים סינתטיים: כאן נבדק הכלל עצמו, בלי לתלות אותו בגודל שסגמנט
+    /// אמיתי מזדמן לקבל. `max_doc` הוא 1 כדי שענף המחיקות לא ייגע בזה.
+    fn sized(engine: &SearchEngine, sizes: &[u64]) -> Vec<(u64, SegmentMeta)> {
+        sizes
+            .iter()
+            .map(|&bytes| {
+                (
+                    bytes,
+                    engine
+                        .index
+                        .new_segment_meta(SegmentId::generate_random(), 1),
+                )
+            })
+            .collect()
+    }
+
+    fn chosen(candidate: Option<Vec<SegmentId>>) -> usize {
+        candidate.map_or(0, |ids| ids.len())
+    }
+
+    #[test]
+    fn the_background_writer_merges_only_the_smallest_level() {
+        let (engine, _dir) = make_engine();
+        let nine_large_behind_one_tiny =
+            sized(&engine, &[1, 200, 201, 202, 203, 204, 205, 206, 207, 208]);
+        // עשרה סגמנטים, והרמה שמעל היחיד מונה תשעה. זה המקרה ששתי בדיקות
+        // המדיניות הקיימות עוצרות סגמנט אחד לפניו, ובו נמדדת ההבטחה של #21
+        // על מכונת המשתמש: ברקע לא נכתב כאן דבר מחדש.
+        assert_eq!(
+            chosen(select_smallest_level(&nine_large_behind_one_tiny)),
+            0
+        );
+        // optimize, כשמבקשים ממנו במפורש, כן מכווץ את אותה רמה.
+        assert_eq!(
+            chosen(select_level_to_compact(&nine_large_behind_one_tiny)),
+            3
+        );
+
+        // רמה קטנה ביותר עם שני חברים ומעלה — שתי הדרכים מסכימות, וזו
+        // ההתנהגות שהייתה כאן מאז #21.
+        for sizes in [
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 900],
+            vec![100; 100],
+            vec![0; 9],
+        ] {
+            let metas = sized(&engine, &sizes);
+            assert_eq!(
+                chosen(select_smallest_level(&metas)),
+                chosen(select_level_to_compact(&metas)),
+                "the two disagree on a smallest level that can merge: {sizes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn neither_selector_merges_at_or_below_the_target() {
+        let (engine, _dir) = make_engine();
+        for count in 0..=MAX_SEGMENTS_AFTER_OPTIMIZE {
+            let metas = sized(&engine, &vec![100; count]);
+            assert_eq!(chosen(select_smallest_level(&metas)), 0);
+            assert_eq!(chosen(select_level_to_compact(&metas)), 0);
+        }
+    }
+
+    #[test]
+    fn a_compaction_never_takes_the_index_below_the_target() {
+        let (engine, _dir) = make_engine();
+        for sizes in [
+            vec![100; MAX_SEGMENTS_AFTER_OPTIMIZE + 1],
+            vec![100; 50],
+            vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            vec![u64::MAX, u64::MAX, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ] {
+            let metas = sized(&engine, &sizes);
+            for candidate in [
+                select_smallest_level(&metas),
+                select_level_to_compact(&metas),
+            ] {
+                let Some(ids) = candidate else { continue };
+                // מיזוג של k סגמנטים מוריד k-1, ולעולם לא מתחת ליעד.
+                assert!(ids.len() >= 2, "a merge of {} is pointless", ids.len());
+                assert!(
+                    sizes.len() - ids.len() + 1 >= MAX_SEGMENTS_AFTER_OPTIMIZE,
+                    "{sizes:?} would drop to {}",
+                    sizes.len() - ids.len() + 1
+                );
+            }
+        }
+    }
+
+    /// הבדיקה שמתחתיה עוצרת בתשעה סגמנטים, שבהם הרמה הגדולה מונה שמונה.
+    /// בעשרה היא מונה תשעה — ורק שם מתברר אם מדיניות הרקע התחילה לכתוב
+    /// מחדש סגמנטים בריאים על מכונה של מישהו באמצע אינדוקס רגיל. המדיניות
+    /// נקראת כאן ישירות: השארת המיזוג לתזמון של tantivy הפכה בדיקה כזו
+    /// לריקה מתוכן — היא עברה גם כשהמדיניות הופנתה לבורר האגרסיבי.
+    #[test]
+    fn the_background_policy_leaves_nine_large_segments_behind_one_tiny_alone() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        add(&mut engine, 100, "שלום", "/books/tiny.txt");
+        engine.commit().unwrap();
+        let large_text = large_unique_text();
+        for id in 1..=(MAX_SEGMENTS_AFTER_OPTIMIZE as u64 + 1) {
+            add(&mut engine, id, &large_text, &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        let metas = engine.index.searchable_segment_metas().unwrap();
+        assert_eq!(metas.len(), MAX_SEGMENTS_AFTER_OPTIMIZE + 2);
+        let sized = sized_segment_metas(&engine.index_path, metas.clone()).unwrap();
+        let mut sizes: Vec<_> = sized.iter().map(|(bytes, _)| *bytes).collect();
+        sizes.sort_unstable();
+        assert!(
+            sizes[1] > sizes[0] * MAX_COMPACT_SIZE_RATIO,
+            "the outlier is not small enough to leave the level above it alone: {sizes:?}"
+        );
+
+        let policy = SizeAwareMergePolicy {
+            index_path: engine.index_path.clone(),
+        };
+        assert!(
+            policy.compute_merge_candidates(&metas).is_empty(),
+            "the writer would rewrite large segments in the background"
+        );
+        // optimize, כשמבקשים ממנו במפורש, כן מכווץ את אותה רמה.
+        assert_eq!(
+            select_level_to_compact(&sized).map_or(0, |ids| ids.len()),
+            3
+        );
     }
 
     #[test]
