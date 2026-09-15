@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.5 – 2026-09-15
+
+### Fixed
+
+- **`optimize` now groups segments into size levels instead of measuring every
+  segment against the single smallest one in the index.** One tiny outlier — the
+  short final flush a from-scratch build always leaves behind — was enough to
+  veto the merging of every other segment with its own kind, so a full
+  SeforimLibrary build ended at 188 segments where an identical input had
+  previously reached 8. Both indexes are correct, but the second reads 188 term
+  dictionaries per query, and nothing reported the difference. Segments are now
+  walked as levels: a level begins at the smallest segment not yet placed and
+  holds everything within the size ratio of it.
+
+  The two callers no longer share one rule, because they do not want the same
+  thing. The background merge policy, which tantivy consults on every commit
+  while someone is indexing, still merges the smallest level and nothing else —
+  byte for byte the behaviour 0.8.4 gave it — so a user's library reaching ten
+  segments never triggers a large rewrite in a background thread.
+  `optimize`, which is asked for explicitly, also takes the first level above the
+  smallest that alone holds more segments than the index is meant to end with;
+  that is what compacts a from-scratch build. `optimize` therefore still settles
+  above its target on some shapes — a singleton under a level of eight or fewer
+  is left alone — and that stays deliberate: the alternative is rewriting healthy
+  large segments to retire one or two, which is what its documented soft target
+  means.
+
 ## 0.8.4 – 2026-09-13
 
 ### Added
