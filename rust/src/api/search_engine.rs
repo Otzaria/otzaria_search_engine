@@ -560,7 +560,17 @@ impl SemanticSnippetPainter {
                 snippet.fragment(),
                 phrase,
                 &self.hl,
+                None,
             )
+            .or_else(|| {
+                SearchEngine::phrase_filtered_snippet_html(
+                    &self.searcher,
+                    text,
+                    phrase,
+                    &self.hl,
+                    Some(self.hl.max_chars as usize),
+                )
+            })
             .or_else(|| lexically_confirmed.then(|| snippet.to_html())),
             // No phrase constraint: every occurrence of every query word is a
             // real match of that word, whichever retrieval path found the line,
@@ -595,6 +605,45 @@ fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     let mut html = htmlescape::encode_minimal(&text[..end]);
     html.push('…');
     html
+}
+
+/// Cuts `text` to about `budget` bytes around its first phrase occurrence —
+/// `ranges[..word_count]`, since each occurrence contributes one range per
+/// word, in order — keeping whole words and the ranges that fall inside.
+fn crop_around_first_occurrence<'a>(
+    text: &'a str,
+    ranges: &[(usize, usize)],
+    word_count: usize,
+    budget: usize,
+) -> (&'a str, Vec<(usize, usize)>) {
+    let occ_start = ranges[0].0;
+    let occ_end = ranges[word_count.min(ranges.len()) - 1].1;
+    let extra = budget.saturating_sub(occ_end - occ_start);
+    let mut start = occ_start.saturating_sub(extra / 2);
+    let mut end = (occ_end + extra - (occ_start - start)).min(text.len());
+    start = start.saturating_sub(budget.saturating_sub(end - start));
+    while start > 0 && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    while end < text.len() && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if start > 0 {
+        if let Some(space) = text[start..occ_start].find(char::is_whitespace) {
+            start += space + 1;
+        }
+    }
+    if end < text.len() {
+        if let Some(space) = text[occ_end..end].rfind(char::is_whitespace) {
+            end = occ_end + space;
+        }
+    }
+    let cropped = ranges
+        .iter()
+        .filter(|&&(s, e)| s >= start && e <= end)
+        .map(|&(s, e)| (s - start, e - start))
+        .collect();
+    (&text[start..end], cropped)
 }
 
 /// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
@@ -8158,11 +8207,16 @@ impl SearchEngine {
     /// Returns `None` when the fragment holds no complete occurrence, so the
     /// caller falls back to the plain term highlight instead of painting
     /// nothing (never less context than before).
+    ///
+    /// `window`: `fragment` is the whole line, cut to that many bytes around its
+    /// first occurrence — tantivy picks the fragment by term density, which can
+    /// cut the phrase off when its fuzzy variants cluster elsewhere.
     fn phrase_filtered_snippet_html(
         searcher: &Searcher,
         fragment: &str,
         phrase: &PhraseHighlight,
         hl: &HighlightConfig,
+        window: Option<usize>,
     ) -> Option<String> {
         let word_count = phrase.per_word_terms.len();
         if word_count < 2 {
@@ -8254,6 +8308,10 @@ impl SearchEngine {
         if ranges.is_empty() {
             return None;
         }
+        let (fragment, mut ranges) = match window {
+            Some(budget) => crop_around_first_occurrence(fragment, &ranges, word_count, budget),
+            None => (fragment, ranges),
+        };
 
         // Same escaping as tantivy's `Snippet::to_html`. Ranges are built in
         // increasing, non-overlapping order; the guard is defensive.
@@ -8383,7 +8441,16 @@ impl SearchEngine {
             // context than before).
             let snippet_html = match phrase {
                 Some(pf) => {
-                    Self::phrase_filtered_snippet_html(searcher, snippet.fragment(), pf, hl)
+                    Self::phrase_filtered_snippet_html(searcher, snippet.fragment(), pf, hl, None)
+                        .or_else(|| {
+                            Self::phrase_filtered_snippet_html(
+                                searcher,
+                                &text,
+                                pf,
+                                hl,
+                                Some(hl.max_chars as usize),
+                            )
+                        })
                         .unwrap_or_else(|| snippet.to_html())
                 }
                 None => snippet.to_html(),
@@ -9168,6 +9235,30 @@ fn select_level_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<Seg
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crop_keeps_the_whole_first_occurrence_and_whole_words() {
+        let text = format!(
+            "{} מי שטרח בערב שבת {}",
+            "אם את ".repeat(200),
+            "יאכל ".repeat(200)
+        );
+        let occ_start = text.find("מי").unwrap();
+        let ranges: Vec<(usize, usize)> = ["מי", "שטרח", "בערב", "שבת"]
+            .iter()
+            .map(|w| {
+                let s = text[occ_start..].find(w).unwrap() + occ_start;
+                (s, s + w.len())
+            })
+            .collect();
+        let (cropped, shifted) = crop_around_first_occurrence(&text, &ranges, 4, 120);
+        assert!(cropped.len() <= 120);
+        assert!(cropped.contains("מי שטרח בערב שבת"));
+        assert_eq!(shifted.len(), 4);
+        assert_eq!(&cropped[shifted[1].0..shifted[1].1], "שטרח");
+        assert!(!cropped.starts_with(char::is_whitespace));
+        assert!(cropped.starts_with("אם") || cropped.starts_with("את"));
+    }
     use serde_json::json;
     use tempfile::TempDir;
 
