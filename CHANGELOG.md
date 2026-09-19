@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.6 – 2026-09-19
+
+### Fixed
+
+- **An approximate (fuzzy) search no longer loses the typed word from the
+  highlight of an opened book.** The per-word display pattern keeps a character
+  budget, and it was filled longest-first; with the lexical dictionary a word
+  has thousands of variants, so the short word the user actually typed was the
+  first to be cut. "מי שטרח בערב שבת יאכל בשבת" at distance 2 painted nothing in
+  a line that contained it verbatim. The budget now keeps the word itself first,
+  then the terms closest to it in length; only the kept terms are ordered
+  longest-first for the alternation.
+- **The result snippet of a phrase search is taken around the phrase.** Tantivy
+  picks the fragment by term density, and in fuzzy mode the short variants
+  (אם, את, אות) pulled it to where the phrase was cut off. The phrase filter
+  then found no complete occurrence and fell back to painting every variant.
+  When the chosen fragment holds no complete occurrence, the filter now runs on
+  the whole line and the snippet is cut around its first occurrence, within the
+  same `max_chars` budget and on word boundaries. Lines without an occurrence
+  keep the previous behaviour. Applies to the semantic path too.
+
 ## 0.8.5 – 2026-09-15
 
 ### Fixed
