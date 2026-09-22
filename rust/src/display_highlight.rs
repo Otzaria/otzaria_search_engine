@@ -489,28 +489,32 @@ fn assemble_display_highlight(
 /// Alternation in Dart's `RegExp` is leftmost-first, so a shorter term that
 /// prefixes a longer one (`ספר` vs `ספרים`) must come after it or it would
 /// truncate the longer word's highlight. Budget-capped like
-/// [`build_word_display_pattern`]; the first branch is always kept.
-fn build_terms_display_pattern(terms: &[String]) -> String {
-    let mut sorted: Vec<&str> = terms.iter().map(String::as_str).collect();
-    sorted.sort_by(|a, b| {
-        b.chars()
-            .count()
-            .cmp(&a.chars().count())
-            .then_with(|| a.cmp(b))
-    });
-    sorted.dedup();
+/// [`build_word_display_pattern`]: the budget keeps `word` itself first, then
+/// the terms closest to it in length — cutting longest-first dropped the typed
+/// word whenever it had thousands of variants.
+fn build_terms_display_pattern(terms: &[String], word: &str) -> String {
+    let word_len = word.chars().count();
+    // Count UTF-8 characters once per term, not for every sort comparison.
+    let mut by_priority: Vec<(&str, usize)> = terms
+        .iter()
+        .map(|term| (term.as_str(), term.chars().count()))
+        .collect();
+    by_priority.sort_unstable_by_key(|&(term, len)| (term != word, len.abs_diff(word_len), term));
+    by_priority.dedup();
 
-    let mut branches: Vec<String> = Vec::new();
+    let mut kept: Vec<(&str, usize, String)> = Vec::new();
     let mut total = 0usize;
-    for term in sorted {
+    for (term, term_len) in by_priority {
         let branch = charwise_display_pattern(term);
         let len = branch.chars().count();
-        if !branches.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
+        if !kept.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
             break;
         }
         total += len;
-        branches.push(branch);
+        kept.push((term, term_len, branch));
     }
+    kept.sort_unstable_by(|(a, a_len, _), (b, b_len, _)| b_len.cmp(a_len).then_with(|| a.cmp(b)));
+    let branches: Vec<String> = kept.into_iter().map(|(_, _, branch)| branch).collect();
 
     match branches.len() {
         0 => String::new(),
@@ -580,7 +584,7 @@ pub fn build_display_highlight_from_terms(
             || flags.aramaic_prefix;
         let (pattern, boundary_eligible) = if !matched.is_empty() && !(has_expansion && !flags.typo)
         {
-            (build_terms_display_pattern(matched), !has_expansion)
+            (build_terms_display_pattern(matched, word), !has_expansion)
         } else {
             (
                 build_word_display_pattern(word, &flags, alts),
@@ -1295,24 +1299,37 @@ mod tests {
     fn terms_pattern_sorts_longest_first() {
         // Leftmost-first alternation: ספר before הספרים would truncate the
         // longer word's highlight to its inner substring.
-        let p = build_terms_display_pattern(&["ספר".to_string(), "הספרים".to_string()]);
+        let p = build_terms_display_pattern(&["ספר".to_string(), "הספרים".to_string()], "ספר");
         assert_eq!(p, format!("(?:{}|{})", charwise("הספרים"), charwise("ספר")));
     }
 
     #[test]
     fn terms_pattern_dedups_and_bounds_budget() {
-        let dup = build_terms_display_pattern(&["ספר".to_string(), "ספר".to_string()]);
+        let dup = build_terms_display_pattern(&["ספר".to_string(), "ספר".to_string()], "ספר");
         assert_eq!(dup, charwise("ספר"));
 
         // Terms far beyond the char budget: the pattern stays bounded but
         // never empty.
         let many: Vec<String> = (0..2_000).map(|i| format!("מלה{i:04}")).collect();
-        let p = build_terms_display_pattern(&many);
+        let p = build_terms_display_pattern(&many, "ספר");
         assert!(!p.is_empty());
         // The budget bounds the branch bodies; `|` separators and the `(?:)`
         // wrapper add at most one char per branch plus the group frame.
         let branch_count = p.matches('|').count() + 1;
         assert!(p.chars().count() <= MAX_DISPLAY_PATTERN_CHARS + branch_count + 4);
+    }
+
+    #[test]
+    fn terms_pattern_budget_keeps_the_query_word() {
+        // חיפוש מקורב של "מי": אלפי וריאנטים ארוכים. חיתוך מהארוך לקצר השמיט
+        // את המילה שהוקלדה, והספר הפתוח לא הדגיש אותה כלל.
+        let mut terms: Vec<String> = (0..2_000).map(|i| format!("מימים{i:04}")).collect();
+        terms.push("מי".to_string());
+        terms.push("מים".to_string());
+        let p = build_terms_display_pattern(&terms, "מי");
+        let re = regex::Regex::new(&format!("^(?:{p})$")).unwrap();
+        assert!(re.is_match("מי"));
+        assert!(re.is_match("מים"));
     }
 
     #[test]
