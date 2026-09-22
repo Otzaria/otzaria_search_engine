@@ -494,28 +494,27 @@ fn assemble_display_highlight(
 /// word whenever it had thousands of variants.
 fn build_terms_display_pattern(terms: &[String], word: &str) -> String {
     let word_len = word.chars().count();
-    let mut by_priority: Vec<&str> = terms.iter().map(String::as_str).collect();
-    by_priority.sort_by_key(|t| (*t != word, t.chars().count().abs_diff(word_len), *t));
+    // Count UTF-8 characters once per term, not for every sort comparison.
+    let mut by_priority: Vec<(&str, usize)> = terms
+        .iter()
+        .map(|term| (term.as_str(), term.chars().count()))
+        .collect();
+    by_priority.sort_unstable_by_key(|&(term, len)| (term != word, len.abs_diff(word_len), term));
     by_priority.dedup();
 
-    let mut kept: Vec<(&str, String)> = Vec::new();
+    let mut kept: Vec<(&str, usize, String)> = Vec::new();
     let mut total = 0usize;
-    for term in by_priority {
+    for (term, term_len) in by_priority {
         let branch = charwise_display_pattern(term);
         let len = branch.chars().count();
         if !kept.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
             break;
         }
         total += len;
-        kept.push((term, branch));
+        kept.push((term, term_len, branch));
     }
-    kept.sort_by(|(a, _), (b, _)| {
-        b.chars()
-            .count()
-            .cmp(&a.chars().count())
-            .then_with(|| a.cmp(b))
-    });
-    let branches: Vec<String> = kept.into_iter().map(|(_, branch)| branch).collect();
+    kept.sort_unstable_by(|(a, a_len, _), (b, b_len, _)| b_len.cmp(a_len).then_with(|| a.cmp(b)));
+    let branches: Vec<String> = kept.into_iter().map(|(_, _, branch)| branch).collect();
 
     match branches.len() {
         0 => String::new(),

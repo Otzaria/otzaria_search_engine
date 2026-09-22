@@ -607,18 +607,19 @@ fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     html
 }
 
-/// Cuts `text` to about `budget` bytes around its first phrase occurrence —
+/// Cuts `text` to at most `budget` bytes around its first phrase occurrence —
 /// `ranges[..word_count]`, since each occurrence contributes one range per
-/// word, in order — keeping whole words and the ranges that fall inside.
+/// word, in order — keeping whole context words and complete occurrences.
+/// Returns `None` if the first occurrence itself cannot fit the budget.
 fn crop_around_first_occurrence<'a>(
     text: &'a str,
     ranges: &[(usize, usize)],
     word_count: usize,
     budget: usize,
-) -> (&'a str, Vec<(usize, usize)>) {
-    let occ_start = ranges[0].0;
-    let occ_end = ranges[word_count.min(ranges.len()) - 1].1;
-    let extra = budget.saturating_sub(occ_end - occ_start);
+) -> Option<(&'a str, Vec<(usize, usize)>)> {
+    let occ_start = ranges.first()?.0;
+    let occ_end = ranges.get(word_count.checked_sub(1)?)?.1;
+    let extra = budget.checked_sub(occ_end - occ_start)?;
     let mut start = occ_start.saturating_sub(extra / 2);
     let mut end = (occ_end + extra - (occ_start - start)).min(text.len());
     start = start.saturating_sub(budget.saturating_sub(end - start));
@@ -628,22 +629,27 @@ fn crop_around_first_occurrence<'a>(
     while end < text.len() && !text.is_char_boundary(end) {
         end -= 1;
     }
-    if start > 0 {
-        if let Some(space) = text[start..occ_start].find(char::is_whitespace) {
-            start += space + 1;
-        }
+    // A UTF-8 boundary can still be inside a context word. If no whitespace
+    // separates the cut from the occurrence (e.g. punctuation-adjacent text),
+    // discard that side's context instead of returning a word fragment.
+    if start > 0 && !text[..start].ends_with(char::is_whitespace) {
+        start = text[start..occ_start]
+            .char_indices()
+            .find(|&(_, c)| c.is_whitespace())
+            .map_or(occ_start, |(offset, c)| start + offset + c.len_utf8());
     }
-    if end < text.len() {
-        if let Some(space) = text[occ_end..end].rfind(char::is_whitespace) {
-            end = occ_end + space;
-        }
+    if end < text.len() && !text[end..].starts_with(char::is_whitespace) {
+        end = text[occ_end..end]
+            .rfind(char::is_whitespace)
+            .map_or(occ_end, |offset| occ_end + offset);
     }
     let cropped = ranges
-        .iter()
-        .filter(|&&(s, e)| s >= start && e <= end)
+        .chunks_exact(word_count)
+        .filter(|occurrence| occurrence.iter().all(|&(s, e)| s >= start && e <= end))
+        .flatten()
         .map(|&(s, e)| (s - start, e - start))
         .collect();
-    (&text[start..end], cropped)
+    Some((&text[start..end], cropped))
 }
 
 /// טווח הקרבה הנדרש בין מילות שאילתה מרובת-מילים במסלול המתקדם.
@@ -8267,9 +8273,16 @@ impl SearchEngine {
                     let mut m = cur + 1;
                     let mut found = None;
                     while m < candidates.len() {
+                        // The indexing analyzer emits a quote-free twin at the
+                        // same position as a quote-bearing word. It is another
+                        // spelling of that *one* word, never the next phrase
+                        // word, so it cannot consume a query position.
+                        if candidates[m].order <= candidates[cur].order {
+                            m += 1;
+                            continue;
+                        }
                         // The gap grows monotonically with m, so once it exceeds
                         // the allowance no later candidate can match this word.
-                        // saturating: טוקן-תאום חולק עמדה עם מילתו (אין הפרש).
                         if candidates[m]
                             .order
                             .saturating_sub(candidates[cur].order + 1)
@@ -8309,7 +8322,7 @@ impl SearchEngine {
             return None;
         }
         let (fragment, mut ranges) = match window {
-            Some(budget) => crop_around_first_occurrence(fragment, &ranges, word_count, budget),
+            Some(budget) => crop_around_first_occurrence(fragment, &ranges, word_count, budget)?,
             None => (fragment, ranges),
         };
 
@@ -9251,7 +9264,7 @@ mod tests {
                 (s, s + w.len())
             })
             .collect();
-        let (cropped, shifted) = crop_around_first_occurrence(&text, &ranges, 4, 120);
+        let (cropped, shifted) = crop_around_first_occurrence(&text, &ranges, 4, 120).unwrap();
         assert!(cropped.len() <= 120);
         assert!(cropped.contains("מי שטרח בערב שבת"));
         assert_eq!(shifted.len(), 4);
@@ -9259,6 +9272,257 @@ mod tests {
         assert!(!cropped.starts_with(char::is_whitespace));
         assert!(cropped.starts_with("אם") || cropped.starts_with("את"));
     }
+    #[test]
+    fn crop_handles_multibyte_whitespace() {
+        for space in ['\u{00a0}', '\u{2003}', '\u{202f}'] {
+            let text = format!("abcdefghij{space}מי שטרח trailing context");
+            let start = text.find("מי").unwrap();
+            let ranges = [(start, start + 4), (start + 5, start + 13)];
+            let (cropped, shifted) = crop_around_first_occurrence(&text, &ranges, 2, 21).unwrap();
+            assert!(cropped.contains("מי שטרח"));
+            assert_eq!(&cropped[shifted[0].0..shifted[0].1], "מי");
+        }
+    }
+
+    #[test]
+    fn crop_does_not_highlight_partial_neighboring_occurrences() {
+        let text = "aa bb aa bb";
+        let ranges = [(0, 2), (3, 5), (6, 8), (9, 11)];
+        let (cropped, shifted) = crop_around_first_occurrence(text, &ranges, 2, 9).unwrap();
+        assert!(cropped.len() <= 9);
+        assert_eq!(shifted, [(0, 2), (3, 5)]);
+    }
+
+    #[test]
+    fn crop_does_not_split_context_words_at_punctuation() {
+        let text = "abcdefghij,מי שטרח,klmnopqrst";
+        let start = text.find("מי").unwrap();
+        let ranges = [(start, start + 4), (start + 5, start + 13)];
+        let (cropped, _) = crop_around_first_occurrence(text, &ranges, 2, 21).unwrap();
+        assert_eq!(cropped, "מי שטרח");
+    }
+
+    #[test]
+    fn phrase_window_rejects_occurrences_larger_than_budget() {
+        let (engine, _dir) = make_engine();
+        let phrase = PhraseHighlight {
+            per_word_terms: vec![
+                HashSet::from(["משה".into()]),
+                HashSet::from(["ואהרן".into()]),
+            ],
+            gaps: vec![1000],
+            analyzer: "hebrew",
+        };
+        let text = format!("משה {} ואהרן", "שלום ".repeat(100));
+        assert!(SearchEngine::phrase_filtered_snippet_html(
+            &engine.index_reader.searcher(),
+            &text,
+            &phrase,
+            &HighlightConfig::default(),
+            Some(80),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn phrase_window_does_not_use_quote_free_twin_as_a_second_word() {
+        let (engine, _dir) = make_engine();
+        let phrase = PhraseHighlight {
+            per_word_terms: vec![
+                HashSet::from(["רמב\"ם".into()]),
+                HashSet::from(["רמבם".into()]),
+            ],
+            gaps: vec![0],
+            analyzer: "hebrew",
+        };
+        // The final word produces an indexing-only quote-free twin at the same
+        // position. That is one word, not a strict two-word phrase.
+        let text = format!("{}{}רמב\"ם", "רמבם ".repeat(100), "סתם ".repeat(100));
+        assert!(SearchEngine::phrase_filtered_snippet_html(
+            &engine.index_reader.searcher(),
+            &text,
+            &phrase,
+            &HighlightConfig::default(),
+            Some(80),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn crop_preserves_utf8_and_budget_across_context_boundaries() {
+        for prefix in ["", "שלום ", "abc\u{00a0}", "אבג,", "🙂\u{2003}"] {
+            for suffix in ["", " עולם", "\u{202f}abc", ",אבג", "\u{2003}🙂"] {
+                let text = format!("{prefix}מי שטרח{suffix}");
+                let start = prefix.len();
+                let ranges = [(start, start + 4), (start + 5, start + 13)];
+                for budget in 0..=text.len() + 2 {
+                    let result = crop_around_first_occurrence(&text, &ranges, 2, budget);
+                    if budget < 13 {
+                        assert!(result.is_none());
+                    } else {
+                        let (cropped, shifted) = result.unwrap();
+                        assert!(cropped.len() <= budget);
+                        assert!(cropped.contains("מי שטרח"));
+                        assert_eq!(shifted.len(), 2);
+                        assert_eq!(&cropped[shifted[0].0..shifted[0].1], "מי");
+                        assert_eq!(&cropped[shifted[1].0..shifted[1].1], "שטרח");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phrase_window_fallback_is_used_by_result_renderers() {
+        let (mut engine, _dir) = make_engine();
+        let text = format!(
+            "{} {} &<> משה ואהרן {}",
+            "משה ".repeat(100),
+            "שלום ".repeat(100),
+            "שלום ".repeat(100)
+        );
+        add(&mut engine, 1, &text, "/books/a.txt");
+        engine.commit().unwrap();
+        let searcher = engine.index_reader.searcher();
+        let phrase = PhraseHighlight {
+            per_word_terms: vec![
+                HashSet::from(["משה".into()]),
+                HashSet::from(["ואהרן".into()]),
+            ],
+            gaps: vec![0],
+            analyzer: "hebrew",
+        };
+        let field = engine.schema.get_field("text").unwrap();
+        let query = engine
+            .terms_query_from_word_sets(&phrase.per_word_terms, field)
+            .unwrap()
+            .unwrap();
+        let hl = HighlightConfig {
+            max_chars: 80,
+            ..HighlightConfig::default()
+        };
+        let generator =
+            SearchEngine::make_snippet_generator(&searcher, query.as_ref(), field, &hl).unwrap();
+        // Prove the term-density fragment misses the phrase, so this exercises
+        // the whole-line fallback rather than the original fragment path.
+        assert!(!generator.snippet(&text).fragment().contains("ואהרן"));
+        let addresses = searcher
+            .search(&AllQuery, &TopDocs::with_limit(1).order_by_score())
+            .unwrap()
+            .into_iter()
+            .map(|(_, address)| address)
+            .collect();
+        let results = SearchEngine::build_results_with_generator(
+            &engine.schema,
+            &searcher,
+            &generator,
+            field,
+            addresses,
+            &hl,
+            Some(&phrase),
+        )
+        .unwrap();
+        let html = &results[0].text;
+        assert_eq!(highlight_count(html), 2);
+        assert!(html.contains("<font color=red>משה</font> <font color=red>ואהרן</font>"));
+        let plain = htmlescape::decode_html(
+            &html
+                .replace(&hl.highlight_prefix, "")
+                .replace(&hl.highlight_postfix, ""),
+        )
+        .unwrap();
+        assert!(plain.len() <= hl.max_chars as usize);
+
+        #[cfg(feature = "semantic-integration")]
+        {
+            let painter = SemanticSnippetPainter {
+                searcher,
+                generator,
+                phrase: Some(phrase),
+                hl,
+            };
+            for confirmed in [false, true] {
+                let (semantic_html, painted) = painter.paint(&text, confirmed);
+                assert!(painted);
+                assert_eq!(highlight_count(&semantic_html), 2);
+                assert!(semantic_html
+                    .contains("<font color=red>משה</font> <font color=red>ואהרן</font>"));
+                let plain = htmlescape::decode_html(
+                    &semantic_html
+                        .replace(&painter.hl.highlight_prefix, "")
+                        .replace(&painter.hl.highlight_postfix, ""),
+                )
+                .unwrap();
+                assert!(plain.len() <= painter.hl.max_chars as usize);
+            }
+            let (semantic_html, painted) = painter.paint("משה לבדו ואהרן", false);
+            assert!(!painted);
+            assert_eq!(semantic_html, "משה לבדו ואהרן");
+        }
+    }
+
+    #[test]
+    fn oversized_phrase_window_keeps_existing_bounded_fallback() {
+        let (mut engine, _dir) = make_engine();
+        let text = format!("משה {} ואהרן", "שלום ".repeat(100));
+        add(&mut engine, 1, &text, "/books/a.txt");
+        engine.commit().unwrap();
+        let searcher = engine.index_reader.searcher();
+        let phrase = PhraseHighlight {
+            per_word_terms: vec![
+                HashSet::from(["משה".into()]),
+                HashSet::from(["ואהרן".into()]),
+            ],
+            gaps: vec![1000],
+            analyzer: "hebrew",
+        };
+        let field = engine.schema.get_field("text").unwrap();
+        let query = engine
+            .terms_query_from_word_sets(&phrase.per_word_terms, field)
+            .unwrap()
+            .unwrap();
+        let hl = HighlightConfig {
+            max_chars: 80,
+            ..HighlightConfig::default()
+        };
+        let generator =
+            SearchEngine::make_snippet_generator(&searcher, query.as_ref(), field, &hl).unwrap();
+        let mut original = generator.snippet(&text);
+        original.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
+        let addresses = searcher
+            .search(&AllQuery, &TopDocs::with_limit(1).order_by_score())
+            .unwrap()
+            .into_iter()
+            .map(|(_, address)| address)
+            .collect();
+        let results = SearchEngine::build_results_with_generator(
+            &engine.schema,
+            &searcher,
+            &generator,
+            field,
+            addresses,
+            &hl,
+            Some(&phrase),
+        )
+        .unwrap();
+        assert_eq!(results[0].text, original.to_html());
+        assert!(original.fragment().len() <= hl.max_chars as usize);
+        #[cfg(feature = "semantic-integration")]
+        {
+            let painter = SemanticSnippetPainter {
+                searcher,
+                generator,
+                phrase: Some(phrase),
+                hl,
+            };
+            assert_eq!(painter.paint(&text, true), (original.to_html(), true));
+            assert_eq!(
+                painter.paint(&text, false),
+                (bounded_plain_snippet(&text, 80), false)
+            );
+        }
+    }
+
     use serde_json::json;
     use tempfile::TempDir;
 
