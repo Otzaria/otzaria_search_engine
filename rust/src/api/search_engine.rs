@@ -13479,6 +13479,41 @@ mod tests {
     }
 
     #[test]
+    fn test_snippet_keeps_punctuation_after_last_word() {
+        let (mut engine, _dir) = make_engine();
+        // בראשית ב, ג כפי שהוא ב-seforim.db: השורה מסתיימת ב-`{פ}`.
+        let raw = "(ג) וַיְבָ֤רֶךְ אֱלֹהִים֙ אֶת־י֣וֹם הַשְּׁבִיעִ֔י וַיְקַדֵּ֖שׁ אֹת֑וֹ \
+            כִּ֣י ב֤וֹ שָׁבַת֙ מִכׇּל־מְלַאכְתּ֔וֹ אֲשֶׁר־בָּרָ֥א אֱלֹהִ֖ים \
+            לַעֲשֽׂוֹת׃&nbsp;<span class=\"mam-spi-pe\">{פ}</span><br>";
+        let stored = crate::hebrew_query::normalize_text_for_indexing(raw);
+        assert!(stored.ends_with("לעשות׃ {פ}"), "stored: {stored}");
+        add(&mut engine, 1, &stored, "/books/a.txt");
+        engine.commit().unwrap();
+
+        // מילה בודדת ומסלול הביטוי (phrase_filtered_snippet_html).
+        for query in ["שבת", "אלהים לעשות"] {
+            let results = engine
+                .search_exact(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
+            assert!(
+                results[0].text.ends_with("{פ}"),
+                "closing brace dropped for {query}: {}",
+                results[0].text
+            );
+        }
+    }
+
+    #[test]
     fn test_search_advanced_grammatical_prefix() {
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "ספר", "/books/a.txt");
