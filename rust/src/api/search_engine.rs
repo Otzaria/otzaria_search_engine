@@ -554,7 +554,7 @@ impl SemanticSnippetPainter {
     fn paint(&self, text: &str, lexically_confirmed: bool) -> (String, bool) {
         let mut snippet = self.generator.snippet(text);
         snippet.set_snippet_prefix_postfix(&self.hl.highlight_prefix, &self.hl.highlight_postfix);
-        let (lead, tail) = glued_punctuation(text, snippet.fragment());
+        let (lead, tail) = glued_punctuation(text, snippet.fragment_range());
         let fragment = [lead, snippet.fragment(), tail].concat();
         let term_html = || {
             htmlescape::encode_minimal(lead)
@@ -614,16 +614,13 @@ fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     html
 }
 
-/// The punctuation glued before and after `fragment` in `text`, which tantivy drops
-/// by cutting at the edge tokens' offsets (`{פ}` → `פ`).
-fn glued_punctuation<'a>(text: &'a str, fragment: &str) -> (&'a str, &'a str) {
-    if fragment.is_empty() {
+/// The punctuation glued before and after the fragment at `range` in `text`, which
+/// tantivy drops by cutting at the edge tokens' offsets (`{פ}` → `פ`).
+fn glued_punctuation<'a>(text: &'a str, range: std::ops::Range<usize>) -> (&'a str, &'a str) {
+    if range.is_empty() {
         return ("", "");
     }
-    let Some(start) = text.find(fragment) else {
-        return ("", "");
-    };
-    let end = start + fragment.len();
+    let (start, end) = (range.start, range.end);
     let before = text[..start]
         .rsplit(char::is_whitespace)
         .next()
@@ -8485,7 +8482,7 @@ impl SearchEngine {
             // painted. Falls back to the plain term highlight when the chosen
             // fragment holds no complete phrase occurrence (never paints less
             // context than before).
-            let (lead, tail) = glued_punctuation(&text, snippet.fragment());
+            let (lead, tail) = glued_punctuation(&text, snippet.fragment_range());
             let fragment = [lead, snippet.fragment(), tail].concat();
             let term_html = || {
                 htmlescape::encode_minimal(lead)
@@ -13577,14 +13574,50 @@ mod tests {
     }
 
     #[test]
+    fn test_snippet_punctuation_comes_from_the_chosen_fragment() {
+        let (mut engine, _dir) = make_engine();
+        // `שבת שבת` חוצה את גבול הקטע הראשון (790) ומופיע שוב בסוף, בקטע
+        // השלישי (1596) שמנצח בניקוד. חיפוש טקסט היה לוקח את `.` מהמופע הראשון.
+        let text = format!(
+            "{}שבת שבת. {}{{שבת שבת}}",
+            "אא ".repeat(158),
+            "אא ".repeat(158)
+        );
+        add(&mut engine, 1, &text, "/books/a.txt");
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact(
+                "שבת".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ids(results.clone()), vec![1]);
+        assert_eq!(
+            results[0].text,
+            "{<font color=red>שבת</font> <font color=red>שבת</font>}"
+        );
+    }
+
+    #[test]
     fn glued_punctuation_stops_at_whitespace_and_words() {
         let text = "אמר לעשות׃ {פ} כי־גר רעהו,10 סוף.";
-        assert_eq!(glued_punctuation(text, "אמר לעשות"), ("", "׃"));
-        assert_eq!(glued_punctuation(text, "לעשות׃ {פ"), ("", "}"));
-        assert_eq!(glued_punctuation(text, "פ} כי"), ("{", ""));
-        assert_eq!(glued_punctuation(text, "רעהו"), ("", ""));
-        assert_eq!(glued_punctuation(text, "סוף"), ("", "."));
-        assert_eq!(glued_punctuation(text, ""), ("", ""));
+        let glued = |fragment: &str| {
+            let start = text.find(fragment).unwrap();
+            glued_punctuation(text, start..start + fragment.len())
+        };
+        assert_eq!(glued("אמר לעשות"), ("", "׃"));
+        assert_eq!(glued("לעשות׃ {פ"), ("", "}"));
+        assert_eq!(glued("פ} כי"), ("{", ""));
+        assert_eq!(glued("רעהו"), ("", ""));
+        assert_eq!(glued("סוף"), ("", "."));
+        assert_eq!(glued_punctuation(text, 0..0), ("", ""));
     }
 
     #[test]
