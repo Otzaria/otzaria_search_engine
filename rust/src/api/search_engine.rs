@@ -845,7 +845,7 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // v4: נוסף השדה `textHash` (FAST) — חתימת טקסט-בלבד לצד החתימה הקנונית,
 // כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 4;
-const TANTIVY_INDEX_VERSION: &str = "0.26.1";
+const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל

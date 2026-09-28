@@ -2,7 +2,7 @@
 
 Verbatim copy of `tantivy-fst 0.5.0` from crates.io (the `data/` bench
 fixtures are omitted), wired in through `[patch.crates-io]` in
-`rust/Cargo.toml` so that both our direct dependency and tantivy 0.26.1's
+`rust/Cargo.toml` so that both our direct dependency and tantivy 0.26.2's
 internal one resolve to this copy.
 
 **The single functional change** is in `src/regex/dfa.rs`:
