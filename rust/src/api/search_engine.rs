@@ -5645,14 +5645,19 @@ impl SearchEngine {
             .iter()
             .map(hebrew_query::WordPattern::joined)
             .collect();
-        let joined_compiles = joined.iter().all(|p| tantivy_fst::Regex::new(p).is_ok());
+        let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
+        let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
+        phrase_query.set_slop(slop_budget);
+        phrase_query.set_max_expansions(max_expansions);
+        // The query caches the compiled DFAs; the checks below and its weight share them.
+        let joined_compiles = phrase_query.regexes().is_ok();
         if joined_compiles
-            && !self.phrase_exceeds_max_expansions(&joined, text_field, max_expansions)?
+            && !self.phrase_exceeds_max_expansions(
+                phrase_query.regexes()?,
+                text_field,
+                max_expansions,
+            )?
         {
-            let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-            let mut phrase_query = RegexPhraseQuery::new(text_field, joined.clone());
-            phrase_query.set_slop(slop_budget);
-            phrase_query.set_max_expansions(max_expansions);
             if slop_budget == 0 {
                 return Ok((Box::new(phrase_query), false));
             }
@@ -5660,7 +5665,6 @@ impl SearchEngine {
                 Box::new(GapVerifiedPhraseQuery::new(
                     phrase_query,
                     text_field,
-                    joined,
                     gaps.to_vec(),
                 )),
                 false,
@@ -5738,20 +5742,16 @@ impl SearchEngine {
     /// Tantivy's BM25 phrase scorer.
     fn phrase_exceeds_max_expansions(
         &self,
-        joined_patterns: &[String],
+        regexes: &[Arc<tantivy_fst::Regex>],
         text_field: Field,
         max_expansions: u32,
     ) -> Result<bool> {
-        let mut regexes = Vec::with_capacity(joined_patterns.len());
-        for pattern in joined_patterns {
-            regexes.push(tantivy_fst::Regex::new(pattern)?);
-        }
         let searcher = self.index_reader.searcher();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
             let mut segment_terms = 0usize;
-            for regex in &regexes {
-                let mut stream = inverted.terms().search(regex).into_stream()?;
+            for regex in regexes {
+                let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
                 while stream.advance() {
                     segment_terms += 1;
                     if segment_terms > max_expansions as usize {
@@ -11625,12 +11625,9 @@ mod tests {
         engine.commit().unwrap();
 
         let text_field = engine.schema.get_field("text").unwrap();
+        let phrase = RegexPhraseQuery::new(text_field, vec!["עמוד.*".into(), "שער".into()]);
         assert!(!engine
-            .phrase_exceeds_max_expansions(
-                &["עמוד.*".to_string(), "שער".to_string()],
-                text_field,
-                5,
-            )
+            .phrase_exceeds_max_expansions(phrase.regexes().unwrap(), text_field, 5)
             .unwrap());
         assert_eq!(phrase_ids(&engine, 0, 5), (1..=6).collect::<Vec<u64>>());
     }

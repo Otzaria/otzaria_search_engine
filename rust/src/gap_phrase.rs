@@ -35,15 +35,15 @@
 //! failing — the engine uses it whenever a phrase's expansions outgrow the
 //! exact `RegexPhraseQuery` path.
 
+use std::sync::Arc;
+
 use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{
     BooleanQuery, EmptyScorer, EnableScoring, Explanation, Occur, Query, RegexPhraseQuery, Scorer,
     TermSetQuery, Weight,
 };
 use tantivy::schema::{Field, IndexRecordOption};
-use tantivy::{
-    DocId, DocSet, InvertedIndexReader, Score, SegmentReader, TantivyError, Term, TERMINATED,
-};
+use tantivy::{DocId, DocSet, InvertedIndexReader, Score, SegmentReader, Term, TERMINATED};
 
 /// Positional postings for every materialized term that exists in this
 /// segment — one `Vec` per word position. Returns `None` when some position
@@ -82,46 +82,22 @@ pub(crate) struct GapVerifiedPhraseQuery {
     /// The field whose positional postings verify candidates — must be the
     /// same field `inner` runs against.
     field: Field,
-    /// One whole-term regex per word position (the same joined patterns
-    /// `inner` was built from), used to find each word's index terms.
-    word_patterns: Vec<String>,
     /// `gaps[i]` = allowed intermediate words between words `i` and `i+1`.
     gaps: Vec<u32>,
 }
 
 impl GapVerifiedPhraseQuery {
-    pub(crate) fn new(
-        inner: RegexPhraseQuery,
-        field: Field,
-        word_patterns: Vec<String>,
-        gaps: Vec<u32>,
-    ) -> Self {
-        debug_assert_eq!(gaps.len() + 1, word_patterns.len());
-        Self {
-            inner,
-            field,
-            word_patterns,
-            gaps,
-        }
+    pub(crate) fn new(inner: RegexPhraseQuery, field: Field, gaps: Vec<u32>) -> Self {
+        debug_assert_eq!(gaps.len() + 1, inner.phrase_terms().len());
+        Self { inner, field, gaps }
     }
 }
 
 impl Query for GapVerifiedPhraseQuery {
     fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
         let inner = self.inner.weight(enable_scoring)?;
-        // The same patterns already compiled inside `inner`'s weight, so a
-        // pattern that fails here would have failed the whole query first.
-        let regexes = self
-            .word_patterns
-            .iter()
-            .map(|pattern| {
-                tantivy_fst::Regex::new(pattern).map_err(|e| {
-                    TantivyError::InvalidArgument(format!(
-                        "gap-verify regex failed to compile: {e}"
-                    ))
-                })
-            })
-            .collect::<tantivy::Result<Vec<_>>>()?;
+        // Word regexes: the same automata `inner` compiled, one per word position.
+        let regexes = self.inner.regexes()?.to_vec();
         Ok(Box::new(GapVerifiedWeight {
             inner,
             field: self.field,
@@ -134,7 +110,7 @@ impl Query for GapVerifiedPhraseQuery {
 struct GapVerifiedWeight {
     inner: Box<dyn Weight>,
     field: Field,
-    regexes: Vec<tantivy_fst::Regex>,
+    regexes: Vec<Arc<tantivy_fst::Regex>>,
     gaps: Vec<u32>,
 }
 
@@ -150,7 +126,7 @@ impl Weight for GapVerifiedWeight {
         let mut word_postings = Vec::with_capacity(self.regexes.len());
         for regex in &self.regexes {
             let mut postings = Vec::new();
-            let mut stream = inverted.terms().search(regex).into_stream()?;
+            let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
             while stream.advance() {
                 postings.push(inverted.read_postings_from_terminfo(
                     stream.value(),
