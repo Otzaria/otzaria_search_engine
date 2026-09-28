@@ -554,10 +554,17 @@ impl SemanticSnippetPainter {
     fn paint(&self, text: &str, lexically_confirmed: bool) -> (String, bool) {
         let mut snippet = self.generator.snippet(text);
         snippet.set_snippet_prefix_postfix(&self.hl.highlight_prefix, &self.hl.highlight_postfix);
+        let (lead, tail) = glued_punctuation(text, snippet.fragment());
+        let fragment = [lead, snippet.fragment(), tail].concat();
+        let term_html = || {
+            htmlescape::encode_minimal(lead)
+                + &snippet.to_html()
+                + &htmlescape::encode_minimal(tail)
+        };
         let html = match self.phrase.as_ref() {
             Some(phrase) => SearchEngine::phrase_filtered_snippet_html(
                 &self.searcher,
-                snippet.fragment(),
+                &fragment,
                 phrase,
                 &self.hl,
                 None,
@@ -571,11 +578,11 @@ impl SemanticSnippetPainter {
                     Some(self.hl.max_chars as usize),
                 )
             })
-            .or_else(|| lexically_confirmed.then(|| snippet.to_html())),
+            .or_else(|| lexically_confirmed.then(term_html)),
             // No phrase constraint: every occurrence of every query word is a
             // real match of that word, whichever retrieval path found the line,
             // so term painting states nothing untrue.
-            None => Some(snippet.to_html()),
+            None => Some(term_html()),
         };
         match html {
             Some(html) if !html.is_empty() => (html, true),
@@ -605,6 +612,32 @@ fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     let mut html = htmlescape::encode_minimal(&text[..end]);
     html.push('…');
     html
+}
+
+/// The punctuation glued before and after `fragment` in `text`, which tantivy drops
+/// by cutting at the edge tokens' offsets (`{פ}` → `פ`).
+fn glued_punctuation<'a>(text: &'a str, fragment: &str) -> (&'a str, &'a str) {
+    if fragment.is_empty() {
+        return ("", "");
+    }
+    let Some(start) = text.find(fragment) else {
+        return ("", "");
+    };
+    let end = start + fragment.len();
+    let before = text[..start]
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or("");
+    let after = text[end..].split(char::is_whitespace).next().unwrap_or("");
+    // A run that reaches another word (`כי־גר`) is a real cut, not glued punctuation.
+    let glued = |run: &'a str| {
+        if run.contains(char::is_alphanumeric) {
+            ""
+        } else {
+            run
+        }
+    };
+    (glued(before), glued(after))
 }
 
 /// Cuts `text` to at most `budget` bytes around its first phrase occurrence —
@@ -8452,21 +8485,26 @@ impl SearchEngine {
             // painted. Falls back to the plain term highlight when the chosen
             // fragment holds no complete phrase occurrence (never paints less
             // context than before).
+            let (lead, tail) = glued_punctuation(&text, snippet.fragment());
+            let fragment = [lead, snippet.fragment(), tail].concat();
+            let term_html = || {
+                htmlescape::encode_minimal(lead)
+                    + &snippet.to_html()
+                    + &htmlescape::encode_minimal(tail)
+            };
             let snippet_html = match phrase {
-                Some(pf) => {
-                    Self::phrase_filtered_snippet_html(searcher, snippet.fragment(), pf, hl, None)
-                        .or_else(|| {
-                            Self::phrase_filtered_snippet_html(
-                                searcher,
-                                &text,
-                                pf,
-                                hl,
-                                Some(hl.max_chars as usize),
-                            )
-                        })
-                        .unwrap_or_else(|| snippet.to_html())
-                }
-                None => snippet.to_html(),
+                Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
+                    .or_else(|| {
+                        Self::phrase_filtered_snippet_html(
+                            searcher,
+                            &text,
+                            pf,
+                            hl,
+                            Some(hl.max_chars as usize),
+                        )
+                    })
+                    .unwrap_or_else(term_html),
+                None => term_html(),
             };
             let result_text = if snippet_html.is_empty() {
                 text
@@ -13476,6 +13514,77 @@ mod tests {
                 results[0].text
             );
         }
+    }
+
+    #[test]
+    fn test_snippet_keeps_punctuation_after_last_word() {
+        let (mut engine, _dir) = make_engine();
+        // בראשית ב, ג כפי שהוא ב-seforim.db: השורה מסתיימת ב-`{פ}`.
+        let raw = "(ג) וַיְבָ֤רֶךְ אֱלֹהִים֙ אֶת־י֣וֹם הַשְּׁבִיעִ֔י וַיְקַדֵּ֖שׁ אֹת֑וֹ \
+            כִּ֣י ב֤וֹ שָׁבַת֙ מִכׇּל־מְלַאכְתּ֔וֹ אֲשֶׁר־בָּרָ֥א אֱלֹהִ֖ים \
+            לַעֲשֽׂוֹת׃&nbsp;<span class=\"mam-spi-pe\">{פ}</span><br>";
+        let stored = crate::hebrew_query::normalize_text_for_indexing(raw);
+        assert!(stored.ends_with("לעשות׃ {פ}"), "stored: {stored}");
+        add(&mut engine, 1, &stored, "/books/a.txt");
+        engine.commit().unwrap();
+
+        // מילה בודדת ומסלול הביטוי (phrase_filtered_snippet_html).
+        for query in ["שבת", "אלהים לעשות"] {
+            let results = engine
+                .search_exact(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
+            assert!(
+                results[0].text.ends_with("{פ}"),
+                "closing brace dropped for {query}: {}",
+                results[0].text
+            );
+        }
+    }
+
+    #[test]
+    fn test_snippet_keeps_punctuation_before_later_fragment() {
+        let (mut engine, _dir) = make_engine();
+        // 795 בתים לפני `{שבת}`: `שבת` חורג מ-800 ופותח קטע שני משלו.
+        let prefix = "אא ".repeat(159);
+        assert_eq!(prefix.len(), 795);
+        add(&mut engine, 1, &format!("{prefix}{{שבת}}"), "/books/a.txt");
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact(
+                "שבת".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ids(results.clone()), vec![1]);
+        assert_eq!(results[0].text, "{<font color=red>שבת</font>}");
+    }
+
+    #[test]
+    fn glued_punctuation_stops_at_whitespace_and_words() {
+        let text = "אמר לעשות׃ {פ} כי־גר רעהו,10 סוף.";
+        assert_eq!(glued_punctuation(text, "אמר לעשות"), ("", "׃"));
+        assert_eq!(glued_punctuation(text, "לעשות׃ {פ"), ("", "}"));
+        assert_eq!(glued_punctuation(text, "פ} כי"), ("{", ""));
+        assert_eq!(glued_punctuation(text, "רעהו"), ("", ""));
+        assert_eq!(glued_punctuation(text, "סוף"), ("", "."));
+        assert_eq!(glued_punctuation(text, ""), ("", ""));
     }
 
     #[test]
