@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.8.7 – 2026-09-29
+
+### Fixed
+
+- **The result snippet keeps punctuation glued to its first and last word.**
+  Tantivy's `SnippetGenerator` cuts the fragment at the offsets of the first and
+  last tokens, so glued marks such as `{פ}` or `׃` were chopped off — בראשית ב, ג
+  ended in "{פ" instead of "{פ}", and a later fragment of a long line showed
+  "שבת}" for `{שבת}`. The fragment is now extended to the nearest space on each
+  side, as long as that run does not reach another word.
+- **That punctuation is taken from the fragment actually chosen.** It was located
+  with `text.find`, so in a long line where the fragment's text also appears
+  earlier, the punctuation came from the earlier occurrence. The position now
+  comes from `Snippet::fragment_range`, the exact range tantivy cut.
+- **tantivy 0.26.2.** In 0.26.1 a union (OR) filtered by a cheap filter could
+  return a document that matches none of its branches (quickwit-oss/tantivy#3086)
+  — the shape of a phrase search with acronym alternatives and a category
+  filter. A regression test covers it. The index format is unchanged; no
+  reindex is needed.
+
+### Changed
+
+- **tantivy now comes from the Otzaria fork** (`Otzaria/tantivy@otzaria-0.26`):
+  0.26.2 plus quickwit-oss/tantivy#3134 (`Snippet::fragment_range`), #3135
+  (`RegexPhraseQuery` compiles its regexes once rather than per segment), #3136
+  (`FuzzyTermQuery::automaton`) and #3137 (`RegexPhraseQuery::regexes`). A TODO
+  marks the return to crates.io once a release includes all four.
+- **A phrase search compiles each word pattern once.** The engine compiled every
+  pattern twice more before tantivy — once to check that it compiles, once to
+  count expansions per segment — and `GapVerifiedPhraseQuery` a further time.
+  All of them now use the DFA the query keeps.
+- **Fuzzy highlight terms use tantivy's own automaton.** The engine kept a copy of
+  tantivy's private `DfaWrapper` and pinned `levenshtein_automata` to tantivy's
+  version so highlight terms would match the query's expansion. Automatons are
+  now built through `FuzzyTermQuery::automaton`, with the same configuration and
+  cache as the query, and the direct `levenshtein_automata` dependency is gone.
+- **CI: the Windows compaction and merge-policy tests run serially**
+  (`--test-threads=1`), since they all create and compact temporary indexes and
+  Windows cannot unlink files another test still holds.
+
 ## 0.8.6 – 2026-09-19
 
 ### Fixed
