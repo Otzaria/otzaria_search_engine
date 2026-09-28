@@ -13541,6 +13541,31 @@ mod tests {
     }
 
     #[test]
+    fn test_snippet_keeps_punctuation_before_later_fragment() {
+        let (mut engine, _dir) = make_engine();
+        // 795 בתים לפני `{שבת}`: `שבת` חורג מ-800 ופותח קטע שני משלו.
+        let prefix = "אא ".repeat(159);
+        assert_eq!(prefix.len(), 795);
+        add(&mut engine, 1, &format!("{prefix}{{שבת}}"), "/books/a.txt");
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact(
+                "שבת".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ids(results.clone()), vec![1]);
+        assert_eq!(results[0].text, "{<font color=red>שבת</font>}");
+    }
+
+    #[test]
     fn trailing_punctuation_extension_stops_at_whitespace_and_words() {
         let text = "אמר לעשות׃ {פ} כי־גר רעהו,10 סוף.";
         let ext = |f| extend_through_trailing_punctuation(text, f);
