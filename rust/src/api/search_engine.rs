@@ -554,15 +554,17 @@ impl SemanticSnippetPainter {
     fn paint(&self, text: &str, lexically_confirmed: bool) -> (String, bool) {
         let mut snippet = self.generator.snippet(text);
         snippet.set_snippet_prefix_postfix(&self.hl.highlight_prefix, &self.hl.highlight_postfix);
-        let fragment = extend_through_trailing_punctuation(text, snippet.fragment())
-            .unwrap_or(snippet.fragment());
+        let (lead, tail) = glued_punctuation(text, snippet.fragment());
+        let fragment = [lead, snippet.fragment(), tail].concat();
         let term_html = || {
-            snippet.to_html() + &htmlescape::encode_minimal(&fragment[snippet.fragment().len()..])
+            htmlescape::encode_minimal(lead)
+                + &snippet.to_html()
+                + &htmlescape::encode_minimal(tail)
         };
         let html = match self.phrase.as_ref() {
             Some(phrase) => SearchEngine::phrase_filtered_snippet_html(
                 &self.searcher,
-                fragment,
+                &fragment,
                 phrase,
                 &self.hl,
                 None,
@@ -612,22 +614,30 @@ fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     html
 }
 
-/// tantivy ends a fragment at its last token's `offset_to`, cutting punctuation
-/// glued to that word (`{פ}` → `{פ`); extends `fragment` within `text` through it.
-fn extend_through_trailing_punctuation<'a>(text: &'a str, fragment: &str) -> Option<&'a str> {
+/// The punctuation glued before and after `fragment` in `text`, which tantivy drops
+/// by cutting at the edge tokens' offsets (`{פ}` → `פ`).
+fn glued_punctuation<'a>(text: &'a str, fragment: &str) -> (&'a str, &'a str) {
     if fragment.is_empty() {
-        return None;
+        return ("", "");
     }
-    let start = text.find(fragment)?;
-    let end = start + fragment.len();
-    let run = text[end..].split(char::is_whitespace).next().unwrap_or("");
-    // A run that reaches another word (`כי־גר`) is a real cut, not glued punctuation.
-    let run = if run.contains(char::is_alphanumeric) {
-        ""
-    } else {
-        run
+    let Some(start) = text.find(fragment) else {
+        return ("", "");
     };
-    Some(&text[start..end + run.len()])
+    let end = start + fragment.len();
+    let before = text[..start]
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or("");
+    let after = text[end..].split(char::is_whitespace).next().unwrap_or("");
+    // A run that reaches another word (`כי־גר`) is a real cut, not glued punctuation.
+    let glued = |run: &'a str| {
+        if run.contains(char::is_alphanumeric) {
+            ""
+        } else {
+            run
+        }
+    };
+    (glued(before), glued(after))
 }
 
 /// Cuts `text` to at most `budget` bytes around its first phrase occurrence —
@@ -8475,14 +8485,15 @@ impl SearchEngine {
             // painted. Falls back to the plain term highlight when the chosen
             // fragment holds no complete phrase occurrence (never paints less
             // context than before).
-            let fragment = extend_through_trailing_punctuation(&text, snippet.fragment())
-                .unwrap_or(snippet.fragment());
+            let (lead, tail) = glued_punctuation(&text, snippet.fragment());
+            let fragment = [lead, snippet.fragment(), tail].concat();
             let term_html = || {
-                snippet.to_html()
-                    + &htmlescape::encode_minimal(&fragment[snippet.fragment().len()..])
+                htmlescape::encode_minimal(lead)
+                    + &snippet.to_html()
+                    + &htmlescape::encode_minimal(tail)
             };
             let snippet_html = match phrase {
-                Some(pf) => Self::phrase_filtered_snippet_html(searcher, fragment, pf, hl, None)
+                Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
                     .or_else(|| {
                         Self::phrase_filtered_snippet_html(
                             searcher,
@@ -13566,15 +13577,14 @@ mod tests {
     }
 
     #[test]
-    fn trailing_punctuation_extension_stops_at_whitespace_and_words() {
+    fn glued_punctuation_stops_at_whitespace_and_words() {
         let text = "אמר לעשות׃ {פ} כי־גר רעהו,10 סוף.";
-        let ext = |f| extend_through_trailing_punctuation(text, f);
-        assert_eq!(ext("אמר לעשות"), Some("אמר לעשות׃"));
-        assert_eq!(ext("לעשות׃ {פ"), Some("לעשות׃ {פ}"));
-        assert_eq!(ext("{פ} כי"), Some("{פ} כי"));
-        assert_eq!(ext("רעהו"), Some("רעהו"));
-        assert_eq!(ext("סוף"), Some("סוף."));
-        assert_eq!(ext(""), None);
+        assert_eq!(glued_punctuation(text, "אמר לעשות"), ("", "׃"));
+        assert_eq!(glued_punctuation(text, "לעשות׃ {פ"), ("", "}"));
+        assert_eq!(glued_punctuation(text, "פ} כי"), ("{", ""));
+        assert_eq!(glued_punctuation(text, "רעהו"), ("", ""));
+        assert_eq!(glued_punctuation(text, "סוף"), ("", "."));
+        assert_eq!(glued_punctuation(text, ""), ("", ""));
     }
 
     #[test]
