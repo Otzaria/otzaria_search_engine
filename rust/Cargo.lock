@@ -1729,7 +1729,6 @@ dependencies = [
  "flutter_rust_bridge",
  "htmlescape",
  "jieba-rs",
- "levenshtein_automata",
  "log",
  "lru 0.12.5",
  "once_cell",

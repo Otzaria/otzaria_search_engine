@@ -1,7 +1,6 @@
 use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
-use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use log::{debug, error, info, warn};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -19,8 +18,8 @@ use tantivy::directory::MmapDirectory;
 use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
-    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, FuzzyTermQuery, Occur,
-    PhraseQuery, TermQuery, TermSetQuery,
+    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, DfaWrapper, EmptyQuery, FuzzyTermQuery,
+    Occur, PhraseQuery, TermQuery, TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
@@ -6052,9 +6051,8 @@ impl SearchEngine {
             // budget (an extremely common word) the scan is skipped entirely
             // rather than pushed past the budget; the query then behaves as
             // if typo tolerance found nothing, and the warn! below records it.
-            let builder = LevenshteinAutomatonBuilder::new(1, true);
             'typo: for token in typo_tokens {
-                let automaton = DfaWrapper(builder.build_dfa(token));
+                let automaton = self.fuzzy_automaton(token, 1)?;
                 for inverted in &inverted_indexes {
                     if Self::collect_automaton_terms(
                         inverted,
@@ -6320,10 +6318,9 @@ impl SearchEngine {
             return Ok(Vec::new());
         }
         let plain_field = self.schema.get_field("text")?;
-        let builder = LevenshteinAutomatonBuilder::new(distance, true);
         let mut branches = Vec::new();
         for base in bases {
-            let automaton = DfaWrapper(builder.build_dfa(base));
+            let automaton = self.fuzzy_automaton(base, distance)?;
             for variant in self.automaton_terms_in_field(
                 searcher,
                 plain_field,
@@ -6677,7 +6674,6 @@ impl SearchEngine {
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Vec<String>> {
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
         // Query-time enumeration (not highlight) — no search-scoped searcher
         // exists yet, so take a fresh one like the other query builders do.
         let searcher = self.index_reader.searcher();
@@ -6714,7 +6710,7 @@ impl SearchEngine {
 
                 let remaining = MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN.saturating_sub(terms.len());
                 if remaining > 0 {
-                    let automaton = DfaWrapper(builder.build_dfa(token));
+                    let automaton = self.fuzzy_automaton(token, max_distance)?;
                     for fuzzy_term in self.automaton_terms(&searcher, &automaton, remaining)? {
                         Self::push_limited_unique(
                             &mut terms,
@@ -7693,12 +7689,11 @@ impl SearchEngine {
             // scan here so a document found via any edit-distance-1 variant
             // highlights that variant (search↔highlight parity).
             if !advanced.typo_tokens.is_empty() {
-                let builder = LevenshteinAutomatonBuilder::new(1, true);
-                let typo_automatons: Vec<DfaWrapper> = advanced
+                let typo_automatons = advanced
                     .typo_tokens
                     .iter()
-                    .map(|t| DfaWrapper(builder.build_dfa(t)))
-                    .collect();
+                    .map(|t| self.fuzzy_automaton(t, 1))
+                    .collect::<Result<Vec<_>>>()?;
                 matched.extend(self.automaton_highlight_terms(&searcher, &typo_automatons)?);
             }
             per_word_terms.push(matched.into_iter().collect());
@@ -7743,7 +7738,6 @@ impl SearchEngine {
             Vec::new()
         } else {
             let searcher = self.index_reader.searcher();
-            let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
             let mut collected = Vec::with_capacity(tokens.len());
             for token in &tokens {
                 let mut matched = if max_distance == 0 {
@@ -7751,7 +7745,7 @@ impl SearchEngine {
                 } else {
                     self.automaton_highlight_terms(
                         &searcher,
-                        &[DfaWrapper(builder.build_dfa(token))],
+                        &[self.fuzzy_automaton(token, max_distance)?],
                     )?
                 };
                 matched.insert(token.clone());
@@ -8014,12 +8008,13 @@ impl SearchEngine {
         tokens: &[String],
         max_distance: u8,
     ) -> Result<Vec<HashSet<String>>> {
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
         tokens
             .iter()
             .map(|token| {
-                let mut matched = self
-                    .automaton_highlight_terms(searcher, &[DfaWrapper(builder.build_dfa(token))])?;
+                let mut matched = self.automaton_highlight_terms(
+                    searcher,
+                    &[self.fuzzy_automaton(token, max_distance)?],
+                )?;
                 matched.insert(token.clone());
                 if let Some(clean) = Self::quoteless_variant(token) {
                     matched.insert(clean);
@@ -8050,14 +8045,10 @@ impl SearchEngine {
             max_distance <= 2,
             "fuzzy highlight distance is limited to 2, got {max_distance}"
         );
-        // Same builder configuration as the search's FuzzyTermQuery
-        // (transposition counts as one edit), so the highlighted terms are
-        // exactly the terms the query can match.
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
-        let automatons: Vec<DfaWrapper> = term_texts
+        let automatons = term_texts
             .iter()
-            .map(|t| DfaWrapper(builder.build_dfa(t)))
-            .collect();
+            .map(|t| self.fuzzy_automaton(t, max_distance))
+            .collect::<Result<Vec<_>>>()?;
         self.build_automaton_highlight_query(searcher, &automatons)
     }
 
@@ -8099,11 +8090,10 @@ impl SearchEngine {
         let text_f = self.schema.get_field("text")?;
 
         // Start from the edit-distance terms (same automatons as search)...
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
-        let automatons: Vec<DfaWrapper> = term_texts
+        let automatons = term_texts
             .iter()
-            .map(|t| DfaWrapper(builder.build_dfa(t)))
-            .collect();
+            .map(|t| self.fuzzy_automaton(t, max_distance))
+            .collect::<Result<Vec<_>>>()?;
         let mut matched = self.automaton_highlight_terms(searcher, &automatons)?;
 
         // ...then add the literal tokens and the (blacklist-filtered) lexical
@@ -8139,6 +8129,13 @@ impl SearchEngine {
             .map(|t| Term::from_field_text(text_f, &t))
             .collect();
         Ok(Box::new(TermSetQuery::new(terms)))
+    }
+
+    /// The automaton the search's `FuzzyTermQuery` (transposition = one edit) matches
+    /// `token` with, so collected terms are exactly the ones the query can match.
+    fn fuzzy_automaton(&self, token: &str, distance: u8) -> Result<DfaWrapper> {
+        let field = self.schema.get_field("text")?;
+        Ok(FuzzyTermQuery::new(Term::from_field_text(field, token), distance, true).automaton()?)
     }
 
     /// Collects the distinct `text`-index terms the given automatons match,
@@ -8532,37 +8529,6 @@ impl HighlightConfig {
             highlight_postfix: "</font>".to_string(),
             max_chars: 800,
         }
-    }
-}
-
-// ── DfaWrapper ─────────────────────────────────────────────────────────────────
-
-/// Adapts a Levenshtein [`DFA`] to the [`tantivy_fst::Automaton`] trait so the
-/// term dictionary can be streamed with the same automaton `FuzzyTermQuery`
-/// matches with (mirrors tantivy's internal fuzzy-query wrapper, which is
-/// private).
-struct DfaWrapper(DFA);
-
-impl Automaton for DfaWrapper {
-    type State = u32;
-
-    fn start(&self) -> Self::State {
-        self.0.initial_state()
-    }
-
-    fn is_match(&self, state: &Self::State) -> bool {
-        match self.0.distance(*state) {
-            Distance::Exact(_) => true,
-            Distance::AtLeast(_) => false,
-        }
-    }
-
-    fn can_match(&self, state: &Self::State) -> bool {
-        *state != SINK_STATE
-    }
-
-    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
-        self.0.transition(*state, byte)
     }
 }
 
