@@ -102,3 +102,6 @@ fancy-regex = "0.14"
 # RegexPhraseQuery compiles against the raised cap too.
 [patch.crates-io]
 tantivy-fst = { path = "vendor/tantivy-fst" }
+# TODO: return to crates.io once a tantivy release includes quickwit-oss/tantivy#3134,
+# #3135 and #3136. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those three PRs.
+tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "7367f6a447071b789879ea4d8f3a0a4d5ae8a928" }
