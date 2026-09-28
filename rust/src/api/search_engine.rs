@@ -1,7 +1,6 @@
 use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
-use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use log::{debug, error, info, warn};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -19,8 +18,8 @@ use tantivy::directory::MmapDirectory;
 use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
-    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, FuzzyTermQuery, Occur,
-    PhraseQuery, TermQuery, TermSetQuery,
+    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, DfaWrapper, EmptyQuery, FuzzyTermQuery,
+    Occur, PhraseQuery, TermQuery, TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
@@ -554,7 +553,7 @@ impl SemanticSnippetPainter {
     fn paint(&self, text: &str, lexically_confirmed: bool) -> (String, bool) {
         let mut snippet = self.generator.snippet(text);
         snippet.set_snippet_prefix_postfix(&self.hl.highlight_prefix, &self.hl.highlight_postfix);
-        let (lead, tail) = glued_punctuation(text, snippet.fragment());
+        let (lead, tail) = glued_punctuation(text, snippet.fragment_range());
         let fragment = [lead, snippet.fragment(), tail].concat();
         let term_html = || {
             htmlescape::encode_minimal(lead)
@@ -614,16 +613,13 @@ fn bounded_plain_snippet(text: &str, max_chars: u32) -> String {
     html
 }
 
-/// The punctuation glued before and after `fragment` in `text`, which tantivy drops
-/// by cutting at the edge tokens' offsets (`{פ}` → `פ`).
-fn glued_punctuation<'a>(text: &'a str, fragment: &str) -> (&'a str, &'a str) {
-    if fragment.is_empty() {
+/// The punctuation glued before and after the fragment at `range` in `text`, which
+/// tantivy drops by cutting at the edge tokens' offsets (`{פ}` → `פ`).
+fn glued_punctuation<'a>(text: &'a str, range: std::ops::Range<usize>) -> (&'a str, &'a str) {
+    if range.is_empty() {
         return ("", "");
     }
-    let Some(start) = text.find(fragment) else {
-        return ("", "");
-    };
-    let end = start + fragment.len();
+    let (start, end) = (range.start, range.end);
     let before = text[..start]
         .rsplit(char::is_whitespace)
         .next()
@@ -5649,14 +5645,19 @@ impl SearchEngine {
             .iter()
             .map(hebrew_query::WordPattern::joined)
             .collect();
-        let joined_compiles = joined.iter().all(|p| tantivy_fst::Regex::new(p).is_ok());
+        let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
+        let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
+        phrase_query.set_slop(slop_budget);
+        phrase_query.set_max_expansions(max_expansions);
+        // The query caches the compiled DFAs; the checks below and its weight share them.
+        let joined_compiles = phrase_query.regexes().is_ok();
         if joined_compiles
-            && !self.phrase_exceeds_max_expansions(&joined, text_field, max_expansions)?
+            && !self.phrase_exceeds_max_expansions(
+                phrase_query.regexes()?,
+                text_field,
+                max_expansions,
+            )?
         {
-            let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-            let mut phrase_query = RegexPhraseQuery::new(text_field, joined.clone());
-            phrase_query.set_slop(slop_budget);
-            phrase_query.set_max_expansions(max_expansions);
             if slop_budget == 0 {
                 return Ok((Box::new(phrase_query), false));
             }
@@ -5664,7 +5665,6 @@ impl SearchEngine {
                 Box::new(GapVerifiedPhraseQuery::new(
                     phrase_query,
                     text_field,
-                    joined,
                     gaps.to_vec(),
                 )),
                 false,
@@ -5742,20 +5742,16 @@ impl SearchEngine {
     /// Tantivy's BM25 phrase scorer.
     fn phrase_exceeds_max_expansions(
         &self,
-        joined_patterns: &[String],
+        regexes: &[Arc<tantivy_fst::Regex>],
         text_field: Field,
         max_expansions: u32,
     ) -> Result<bool> {
-        let mut regexes = Vec::with_capacity(joined_patterns.len());
-        for pattern in joined_patterns {
-            regexes.push(tantivy_fst::Regex::new(pattern)?);
-        }
         let searcher = self.index_reader.searcher();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
             let mut segment_terms = 0usize;
-            for regex in &regexes {
-                let mut stream = inverted.terms().search(regex).into_stream()?;
+            for regex in regexes {
+                let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
                 while stream.advance() {
                     segment_terms += 1;
                     if segment_terms > max_expansions as usize {
@@ -6055,9 +6051,8 @@ impl SearchEngine {
             // budget (an extremely common word) the scan is skipped entirely
             // rather than pushed past the budget; the query then behaves as
             // if typo tolerance found nothing, and the warn! below records it.
-            let builder = LevenshteinAutomatonBuilder::new(1, true);
             'typo: for token in typo_tokens {
-                let automaton = DfaWrapper(builder.build_dfa(token));
+                let automaton = self.fuzzy_automaton(token, 1)?;
                 for inverted in &inverted_indexes {
                     if Self::collect_automaton_terms(
                         inverted,
@@ -6323,10 +6318,9 @@ impl SearchEngine {
             return Ok(Vec::new());
         }
         let plain_field = self.schema.get_field("text")?;
-        let builder = LevenshteinAutomatonBuilder::new(distance, true);
         let mut branches = Vec::new();
         for base in bases {
-            let automaton = DfaWrapper(builder.build_dfa(base));
+            let automaton = self.fuzzy_automaton(base, distance)?;
             for variant in self.automaton_terms_in_field(
                 searcher,
                 plain_field,
@@ -6680,7 +6674,6 @@ impl SearchEngine {
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Vec<String>> {
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
         // Query-time enumeration (not highlight) — no search-scoped searcher
         // exists yet, so take a fresh one like the other query builders do.
         let searcher = self.index_reader.searcher();
@@ -6717,7 +6710,7 @@ impl SearchEngine {
 
                 let remaining = MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN.saturating_sub(terms.len());
                 if remaining > 0 {
-                    let automaton = DfaWrapper(builder.build_dfa(token));
+                    let automaton = self.fuzzy_automaton(token, max_distance)?;
                     for fuzzy_term in self.automaton_terms(&searcher, &automaton, remaining)? {
                         Self::push_limited_unique(
                             &mut terms,
@@ -7696,12 +7689,11 @@ impl SearchEngine {
             // scan here so a document found via any edit-distance-1 variant
             // highlights that variant (search↔highlight parity).
             if !advanced.typo_tokens.is_empty() {
-                let builder = LevenshteinAutomatonBuilder::new(1, true);
-                let typo_automatons: Vec<DfaWrapper> = advanced
+                let typo_automatons = advanced
                     .typo_tokens
                     .iter()
-                    .map(|t| DfaWrapper(builder.build_dfa(t)))
-                    .collect();
+                    .map(|t| self.fuzzy_automaton(t, 1))
+                    .collect::<Result<Vec<_>>>()?;
                 matched.extend(self.automaton_highlight_terms(&searcher, &typo_automatons)?);
             }
             per_word_terms.push(matched.into_iter().collect());
@@ -7746,7 +7738,6 @@ impl SearchEngine {
             Vec::new()
         } else {
             let searcher = self.index_reader.searcher();
-            let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
             let mut collected = Vec::with_capacity(tokens.len());
             for token in &tokens {
                 let mut matched = if max_distance == 0 {
@@ -7754,7 +7745,7 @@ impl SearchEngine {
                 } else {
                     self.automaton_highlight_terms(
                         &searcher,
-                        &[DfaWrapper(builder.build_dfa(token))],
+                        &[self.fuzzy_automaton(token, max_distance)?],
                     )?
                 };
                 matched.insert(token.clone());
@@ -8017,12 +8008,13 @@ impl SearchEngine {
         tokens: &[String],
         max_distance: u8,
     ) -> Result<Vec<HashSet<String>>> {
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
         tokens
             .iter()
             .map(|token| {
-                let mut matched = self
-                    .automaton_highlight_terms(searcher, &[DfaWrapper(builder.build_dfa(token))])?;
+                let mut matched = self.automaton_highlight_terms(
+                    searcher,
+                    &[self.fuzzy_automaton(token, max_distance)?],
+                )?;
                 matched.insert(token.clone());
                 if let Some(clean) = Self::quoteless_variant(token) {
                     matched.insert(clean);
@@ -8053,14 +8045,10 @@ impl SearchEngine {
             max_distance <= 2,
             "fuzzy highlight distance is limited to 2, got {max_distance}"
         );
-        // Same builder configuration as the search's FuzzyTermQuery
-        // (transposition counts as one edit), so the highlighted terms are
-        // exactly the terms the query can match.
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
-        let automatons: Vec<DfaWrapper> = term_texts
+        let automatons = term_texts
             .iter()
-            .map(|t| DfaWrapper(builder.build_dfa(t)))
-            .collect();
+            .map(|t| self.fuzzy_automaton(t, max_distance))
+            .collect::<Result<Vec<_>>>()?;
         self.build_automaton_highlight_query(searcher, &automatons)
     }
 
@@ -8102,11 +8090,10 @@ impl SearchEngine {
         let text_f = self.schema.get_field("text")?;
 
         // Start from the edit-distance terms (same automatons as search)...
-        let builder = LevenshteinAutomatonBuilder::new(max_distance, true);
-        let automatons: Vec<DfaWrapper> = term_texts
+        let automatons = term_texts
             .iter()
-            .map(|t| DfaWrapper(builder.build_dfa(t)))
-            .collect();
+            .map(|t| self.fuzzy_automaton(t, max_distance))
+            .collect::<Result<Vec<_>>>()?;
         let mut matched = self.automaton_highlight_terms(searcher, &automatons)?;
 
         // ...then add the literal tokens and the (blacklist-filtered) lexical
@@ -8142,6 +8129,13 @@ impl SearchEngine {
             .map(|t| Term::from_field_text(text_f, &t))
             .collect();
         Ok(Box::new(TermSetQuery::new(terms)))
+    }
+
+    /// The automaton the search's `FuzzyTermQuery` (transposition = one edit) matches
+    /// `token` with, so collected terms are exactly the ones the query can match.
+    fn fuzzy_automaton(&self, token: &str, distance: u8) -> Result<DfaWrapper> {
+        let field = self.schema.get_field("text")?;
+        Ok(FuzzyTermQuery::new(Term::from_field_text(field, token), distance, true).automaton()?)
     }
 
     /// Collects the distinct `text`-index terms the given automatons match,
@@ -8485,7 +8479,7 @@ impl SearchEngine {
             // painted. Falls back to the plain term highlight when the chosen
             // fragment holds no complete phrase occurrence (never paints less
             // context than before).
-            let (lead, tail) = glued_punctuation(&text, snippet.fragment());
+            let (lead, tail) = glued_punctuation(&text, snippet.fragment_range());
             let fragment = [lead, snippet.fragment(), tail].concat();
             let term_html = || {
                 htmlescape::encode_minimal(lead)
@@ -8535,37 +8529,6 @@ impl HighlightConfig {
             highlight_postfix: "</font>".to_string(),
             max_chars: 800,
         }
-    }
-}
-
-// ── DfaWrapper ─────────────────────────────────────────────────────────────────
-
-/// Adapts a Levenshtein [`DFA`] to the [`tantivy_fst::Automaton`] trait so the
-/// term dictionary can be streamed with the same automaton `FuzzyTermQuery`
-/// matches with (mirrors tantivy's internal fuzzy-query wrapper, which is
-/// private).
-struct DfaWrapper(DFA);
-
-impl Automaton for DfaWrapper {
-    type State = u32;
-
-    fn start(&self) -> Self::State {
-        self.0.initial_state()
-    }
-
-    fn is_match(&self, state: &Self::State) -> bool {
-        match self.0.distance(*state) {
-            Distance::Exact(_) => true,
-            Distance::AtLeast(_) => false,
-        }
-    }
-
-    fn can_match(&self, state: &Self::State) -> bool {
-        *state != SINK_STATE
-    }
-
-    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
-        self.0.transition(*state, byte)
     }
 }
 
@@ -11662,12 +11625,9 @@ mod tests {
         engine.commit().unwrap();
 
         let text_field = engine.schema.get_field("text").unwrap();
+        let phrase = RegexPhraseQuery::new(text_field, vec!["עמוד.*".into(), "שער".into()]);
         assert!(!engine
-            .phrase_exceeds_max_expansions(
-                &["עמוד.*".to_string(), "שער".to_string()],
-                text_field,
-                5,
-            )
+            .phrase_exceeds_max_expansions(phrase.regexes().unwrap(), text_field, 5)
             .unwrap());
         assert_eq!(phrase_ids(&engine, 0, 5), (1..=6).collect::<Vec<u64>>());
     }
@@ -13577,14 +13537,50 @@ mod tests {
     }
 
     #[test]
+    fn test_snippet_punctuation_comes_from_the_chosen_fragment() {
+        let (mut engine, _dir) = make_engine();
+        // `שבת שבת` חוצה את גבול הקטע הראשון (790) ומופיע שוב בסוף, בקטע
+        // השלישי (1596) שמנצח בניקוד. חיפוש טקסט היה לוקח את `.` מהמופע הראשון.
+        let text = format!(
+            "{}שבת שבת. {}{{שבת שבת}}",
+            "אא ".repeat(158),
+            "אא ".repeat(158)
+        );
+        add(&mut engine, 1, &text, "/books/a.txt");
+        engine.commit().unwrap();
+
+        let results = engine
+            .search_exact(
+                "שבת".to_string(),
+                vec!["/root".to_string()],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ids(results.clone()), vec![1]);
+        assert_eq!(
+            results[0].text,
+            "{<font color=red>שבת</font> <font color=red>שבת</font>}"
+        );
+    }
+
+    #[test]
     fn glued_punctuation_stops_at_whitespace_and_words() {
         let text = "אמר לעשות׃ {פ} כי־גר רעהו,10 סוף.";
-        assert_eq!(glued_punctuation(text, "אמר לעשות"), ("", "׃"));
-        assert_eq!(glued_punctuation(text, "לעשות׃ {פ"), ("", "}"));
-        assert_eq!(glued_punctuation(text, "פ} כי"), ("{", ""));
-        assert_eq!(glued_punctuation(text, "רעהו"), ("", ""));
-        assert_eq!(glued_punctuation(text, "סוף"), ("", "."));
-        assert_eq!(glued_punctuation(text, ""), ("", ""));
+        let glued = |fragment: &str| {
+            let start = text.find(fragment).unwrap();
+            glued_punctuation(text, start..start + fragment.len())
+        };
+        assert_eq!(glued("אמר לעשות"), ("", "׃"));
+        assert_eq!(glued("לעשות׃ {פ"), ("", "}"));
+        assert_eq!(glued("פ} כי"), ("{", ""));
+        assert_eq!(glued("רעהו"), ("", ""));
+        assert_eq!(glued("סוף"), ("", "."));
+        assert_eq!(glued_punctuation(text, 0..0), ("", ""));
     }
 
     #[test]

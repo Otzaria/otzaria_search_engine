@@ -59,9 +59,6 @@ flutter_rust_bridge = "=2.13.0"
 tempfile = "3.27.0"
 tantivy= "=0.26.2"
 tantivy-fst = "=0.5.0"
-# Same crate/version tantivy 0.26 builds FuzzyTermQuery automatons from, so
-# fuzzy highlight-term collection matches the query's term expansion exactly.
-levenshtein_automata = "0.2.1"
 jieba-rs = "0.10.1"
 anyhow = "1.0.102"
 once_cell = "1.21.4"
@@ -102,3 +99,6 @@ fancy-regex = "0.14"
 # RegexPhraseQuery compiles against the raised cap too.
 [patch.crates-io]
 tantivy-fst = { path = "vendor/tantivy-fst" }
+# TODO: return to crates.io once a tantivy release includes quickwit-oss/tantivy#3134,
+# #3135, #3136 and #3137. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
+tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "85b76fe364f11c452bd2ce941521ece474a02227" }
