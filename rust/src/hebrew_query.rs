@@ -541,6 +541,7 @@ impl WordFlags {
 /// * כיווץ רצפי רווחים לרווח יחיד; trim.
 pub fn sanitize_query(query: &str) -> String {
     const STRIP: &[char] = &['*', '[', ']', '^', '$', '\\', '+', '.', '~', '`'];
+    let query = keep_second_of_paired_readings(query);
     let mut buf = String::with_capacity(query.len());
     for ch in query.chars() {
         match ch {
@@ -554,6 +555,33 @@ pub fn sanitize_query(query: &str) -> String {
         }
     }
     collapse_whitespace(&buf)
+}
+
+/// זוג `(X) [Y]` שהודבק לשאילתה נשאר Y בלבד: באינדקס שתי הקריאות חולקות
+/// עמדה אחת, ושתי מילים בשאילתה היו דורשות שתי עמדות.
+fn keep_second_of_paired_readings(query: &str) -> std::borrow::Cow<'_, str> {
+    use crate::hebrew_tokenizer::{next_token_boundaries, paired_reading_after};
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut pos = 0;
+    while let Some((start, end)) = next_token_boundaries(query, pos) {
+        pos = end;
+        if let Some(pair) = paired_reading_after(query, start, end) {
+            out.push_str(&query[copied..start - 1]);
+            // Parentheses break tokens even when attached to the preceding
+            // word. Preserve that boundary when replacing the entire pair.
+            out.push(' ');
+            out.push_str(&query[pair.second_start..pair.second_end]);
+            out.push(' ');
+            copied = pair.after_pair;
+            pos = copied;
+        }
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(query);
+    }
+    out.push_str(&query[copied..]);
+    std::borrow::Cow::Owned(out)
 }
 
 pub(crate) fn collapse_whitespace(s: &str) -> String {
@@ -610,6 +638,37 @@ pub fn split_query_words(query: &str) -> Vec<String> {
         pos = end;
     }
     words
+}
+
+/// The same query words as `split_query_words`, together with their precise
+/// source ranges in UTF-16 code units for Flutter text selections. Walk the
+/// full input so paired readings spanning whitespace select only the qere;
+/// normalizing each whitespace chunk independently would shift option keys.
+pub(crate) fn query_word_spans(query: &str) -> Vec<(String, u32, u32)> {
+    use crate::hebrew_tokenizer::{next_token_boundaries, paired_reading_after};
+
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    let mut source_byte = 0;
+    let mut source_utf16 = 0u32;
+    while let Some((mut start, mut end)) = next_token_boundaries(query, pos) {
+        pos = end;
+        if let Some(pair) = paired_reading_after(query, start, end) {
+            start = pair.second_start;
+            end = pair.second_end;
+            pos = pair.after_pair;
+        }
+        source_utf16 += query[source_byte..start].encode_utf16().count() as u32;
+        let start_utf16 = source_utf16;
+        source_utf16 += query[start..end].encode_utf16().count() as u32;
+        source_byte = end;
+        // Quote folding, transparent punctuation and doubled geresh must use
+        // exactly the same normalization as the complete query.
+        for word in split_query_words(&query[start..end]) {
+            spans.push((word, start_utf16, source_utf16));
+        }
+    }
+    spans
 }
 
 /// Normalises text to the index term dictionary's shape: folds presentation
@@ -2623,6 +2682,20 @@ mod tests {
         assert_eq!(sanitize_query("א־ב"), "א ב");
         assert_eq!(sanitize_query("רמב״ם"), "רמב\"ם");
         assert_eq!(sanitize_query("תוס׳"), "תוס'");
+    }
+
+    #[test]
+    fn sanitize_keeps_the_second_of_paired_readings() {
+        assert_eq!(sanitize_query("הארץ (הוצא) [היצא] אתך"), "הארץ היצא אתך");
+        assert_eq!(sanitize_query("(לא) [אפילו] בשביל"), "אפילו בשביל");
+        assert_eq!(sanitize_query("כי [אם] עונותיכם"), "כי אם עונותיכם");
+        assert_eq!(sanitize_query("הארץ(הוצא) [היצא] אתך"), "הארץ היצא אתך");
+        assert_eq!(sanitize_query("אמר(ת) [רבא] משום"), "אמר רבא משום");
+        assert_eq!(sanitize_query("בלק (לך) [לכה־]נא"), "בלק לכה נא");
+        assert_eq!(sanitize_query("(א)[ב](ג)[ד]"), "ב ד");
+        // More than one token in either reading is not a synonymous pair.
+        assert_eq!(sanitize_query("(א־ב) [ג]"), "א ב ג");
+        assert_eq!(sanitize_query("(א) [ב,ג]"), "א ב ג");
     }
 
     #[test]

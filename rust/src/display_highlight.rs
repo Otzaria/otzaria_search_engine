@@ -1374,6 +1374,80 @@ mod tests {
         assert!(combined_matches("אמר משה", 0, "קידומות", "אָמַר <b>וּ</b>מֹשֶׁה"));
     }
 
+    fn plain_matches(query: &str, distance: u32, text: &str) -> bool {
+        let hl = build_display_highlight(
+            query,
+            distance,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        !hl.matcher.find_matches(text, &[]).is_empty()
+    }
+
+    const KETIV_QERE_LINE: &str = "עַל־הָאָ֖רֶץ <span class=\"mam-kq\"><span class=\"mam-kq-k\">(הוצא)</span> <span class=\"mam-kq-q\">[הַיְצֵ֣א]</span></span> אִתָּ֑ךְ";
+
+    #[test]
+    fn phrase_matches_across_ketiv_qere_with_either_reading() {
+        // בראשית ח, יז: "הארץ (הוצא) [הַיְצֵא] אִתָּךְ".
+        assert!(plain_matches("הארץ היצא אתך", 0, KETIV_QERE_LINE));
+        assert!(plain_matches("הארץ הוצא אתך", 0, KETIV_QERE_LINE));
+    }
+
+    #[test]
+    fn paired_reading_counts_as_one_intermediate_word() {
+        assert!(plain_matches("הארץ אתך", 1, KETIV_QERE_LINE));
+        assert!(!plain_matches("הארץ אתך", 0, KETIV_QERE_LINE));
+    }
+
+    #[test]
+    fn a_lone_bracket_or_parenthesis_word_is_not_skipped() {
+        // רק זוג מלא הוא מילה אחת; "[אם]" לבד הוא מילה נפרדת גם באינדקס.
+        assert!(!plain_matches("כי עונותיכם", 0, "כי [אם] עונותיכם"));
+        assert!(!plain_matches("כי עונותיכם", 0, "כי (אם) עונותיכם"));
+    }
+
+    #[test]
+    fn punctuated_readings_follow_token_positions_instead_of_bracket_count() {
+        for text in ["הארץ (א־ב) [ג] אתך", "הארץ (א) [ב,ג] אתך"] {
+            assert!(!plain_matches("הארץ אתך", 1, text));
+            assert!(plain_matches("הארץ אתך", 3, text));
+        }
+        assert!(plain_matches("בלק לך נא", 0, "בלק (לך) [לכה־]נא"));
+        assert!(plain_matches("בלק לכה נא", 0, "בלק (לך) [לכה־]נא"));
+    }
+
+    #[test]
+    fn consecutive_paired_readings_have_bounded_near_miss_matching() {
+        // The former pair-or-word regex took >5 seconds with only 35 pairs.
+        // Place the final query word elsewhere to prevent a global presence
+        // check from hiding a full phrase-matching regression.
+        let n = 2_000;
+        let pairs = "(א) [ב] ".repeat(n);
+        let hl = build_display_highlight(
+            "הארץ אתך",
+            n as u32,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(hl.combined_pattern, "(?!)");
+        let start = std::time::Instant::now();
+        assert!(hl
+            .matcher
+            .find_matches(&format!("אתך הארץ {pairs}סוף"), &[])
+            .is_empty());
+        assert_eq!(
+            hl.matcher
+                .find_matches(&format!("הארץ {pairs}אתך"), &[])
+                .len(),
+            1
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
     #[test]
     fn alternatives_become_branches() {
         let alternatives = HashMap::from([(0u32, vec!["חכם".to_string()])]);
