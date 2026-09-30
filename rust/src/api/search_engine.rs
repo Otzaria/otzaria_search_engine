@@ -6179,9 +6179,10 @@ impl SearchEngine {
 
     /// [`Self::collect_automaton_terms`] over every `(automaton, segment)` pair
     /// in priority order (automaton-major), with the dictionary scans run in
-    /// parallel waves after a synchronous first scan. Each scan is capped by
-    /// the remaining postings budget and the full term cap, and the
-    /// hits are then replayed in order into `matched` — so the collected set
+    /// parallel waves after a bounded, read-only first-segment probe. Narrow
+    /// first branches run synchronously; broad branches share the pool. Each
+    /// scan is capped by the remaining postings budget and the full term cap.
+    /// Hits are then replayed in order into `matched` — so the collected set
     /// and the truncation point are exactly those of the sequential loop.
     fn collect_automatons_terms<A>(
         inverted_indexes: &[Arc<tantivy::InvertedIndexReader>],
@@ -6200,10 +6201,21 @@ impl SearchEngine {
         let pairs: Vec<(usize, usize)> = (0..automatons.len())
             .flat_map(|a| (0..inverted_indexes.len()).map(move |s| (a, s)))
             .collect();
-        // Small collections avoid task dispatch and intermediate allocations.
-        // Always scan the highest-priority pair synchronously: it may exhaust
-        // the budget by itself, in which case no speculative scan is needed.
-        let sequential = if pairs.len() <= 4 { pairs.len() } else { 1 };
+        // A bounded probe distinguishes cheap scans and early budget stops
+        // from broad scans without changing the global set or postings cost.
+        // A broad first automaton can then scan all its segments together;
+        // keeping its first segment synchronous would lose that parallel gain.
+        let broad_first = inverted_indexes.len() > 1
+            && !automatons.is_empty()
+            && Self::first_automaton_scan_is_broad(
+                &inverted_indexes[0],
+                &automatons[0],
+                max_expansions,
+                postings_budget,
+                matched,
+                *postings_cost,
+            )?;
+        let sequential = if broad_first { 0 } else { pairs.len().min(1) };
         let initial_terms = matched.len();
         for &(a, segment) in pairs.iter().take(sequential) {
             if Self::collect_automaton_terms(
@@ -6244,7 +6256,11 @@ impl SearchEngine {
         if cursor == pairs.len() {
             return Ok(false);
         }
-        let threads = rayon::current_num_threads().max(1);
+        let threads = if pairs.len() - cursor > 1 {
+            rayon::current_num_threads().max(1)
+        } else {
+            1
+        };
         while cursor < pairs.len() {
             let remaining_postings = postings_budget.saturating_sub(*postings_cost);
             let remaining_terms = (max_expansions as usize).saturating_sub(matched.len());
@@ -6270,6 +6286,23 @@ impl SearchEngine {
                 pairs.len()
             };
             let end = (cursor + wave).min(priority_end);
+            // A single remaining scan needs neither task dispatch nor a
+            // temporary hit vector, including waves reduced by the budgets.
+            if end == cursor + 1 {
+                let (a, segment) = pairs[cursor];
+                if Self::collect_automaton_terms(
+                    &inverted_indexes[segment],
+                    &automatons[a],
+                    max_expansions,
+                    postings_budget,
+                    matched,
+                    postings_cost,
+                )? {
+                    return Ok(true);
+                }
+                cursor = end;
+                continue;
+            }
             let scans: Vec<Vec<(String, u32)>> = pairs[cursor..end]
                 .par_iter()
                 .map(|&(a, segment)| {
@@ -6289,6 +6322,40 @@ impl SearchEngine {
                 }
             }
             cursor = end;
+        }
+        Ok(false)
+    }
+
+    /// Inspect at most nine dictionary hits without charging them twice when
+    /// the real scan starts. First-segment terms are distinct, so membership
+    /// in the prefilled set suffices to predict the sequential term budget.
+    fn first_automaton_scan_is_broad<A>(
+        inverted: &tantivy::InvertedIndexReader,
+        automaton: &A,
+        max_expansions: u32,
+        postings_budget: u64,
+        matched: &HashSet<String>,
+        mut postings_cost: u64,
+    ) -> Result<bool>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
+        let mut terms = matched.len();
+        let mut hits = 0;
+        let mut stream = inverted.terms().search(automaton).into_stream()?;
+        while stream.advance() {
+            if let Ok(term) = std::str::from_utf8(stream.key()) {
+                hits += 1;
+                postings_cost += u64::from(stream.value().doc_freq);
+                terms += usize::from(!matched.contains(term));
+                if terms >= max_expansions as usize || postings_cost >= postings_budget {
+                    return Ok(false);
+                }
+                if hits > 8 {
+                    return Ok(true);
+                }
+            }
         }
         Ok(false)
     }
@@ -10821,6 +10888,95 @@ mod tests {
                         assert_eq!(par, seq, "{case}");
                         assert_eq!(par_cost, seq_cost, "{case}");
                         assert_eq!(par_truncated, seq_truncated, "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn broad_term_collection_on_few_segments_retains_sequential_prefix() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+        let term = |index: usize| {
+            format!(
+                "מלה{}{}",
+                letters[index / letters.len()],
+                letters[index % letters.len()]
+            )
+        };
+        for segment in 0..3 {
+            let words: Vec<_> = (segment * 16..segment * 16 + 32).map(term).collect();
+            add(
+                &mut engine,
+                segment as u64,
+                &words.join(" "),
+                &format!("/books/{segment}.txt"),
+            );
+            engine.commit().unwrap();
+        }
+        let searcher = engine.index_reader.searcher();
+        let text = engine.schema.get_field("text").unwrap();
+        let inverted: Vec<_> = searcher
+            .segment_readers()
+            .iter()
+            .map(|reader| reader.inverted_index(text).unwrap())
+            .collect();
+        assert_eq!(inverted.len(), 3);
+        let regexes = [tantivy_fst::Regex::new("מלה.*").unwrap()];
+
+        // Wide dictionaries exercise the probe and parallel waves, while
+        // budgets reached inside the probe select synchronous collection.
+        // Overlapping dictionaries and prefilled sets retain the same prefix,
+        // including budgets reached immediately after the ninth probe hit.
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for segment_count in [2, 3] {
+                let readers = &inverted[..segment_count];
+                for initial in [HashSet::new(), (0..20).map(term).collect()] {
+                    for max_expansions in [0, 1, 8, 9, 10, 24, 40, 1000] {
+                        for budget in [0, 1, 8, 9, 10, 11, 24, 40, 64, 1000] {
+                            let mut seq = initial.clone();
+                            let mut seq_cost = 2;
+                            let mut seq_truncated = false;
+                            for reader in readers {
+                                if SearchEngine::collect_automaton_terms(
+                                    reader,
+                                    &regexes[0],
+                                    max_expansions,
+                                    budget,
+                                    &mut seq,
+                                    &mut seq_cost,
+                                )
+                                .unwrap()
+                                {
+                                    seq_truncated = true;
+                                    break;
+                                }
+                            }
+                            let mut actual = initial.clone();
+                            let mut actual_cost = 2;
+                            let actual_truncated = pool
+                                .install(|| {
+                                    SearchEngine::collect_automatons_terms(
+                                        readers,
+                                        &regexes,
+                                        max_expansions,
+                                        budget,
+                                        &mut actual,
+                                        &mut actual_cost,
+                                    )
+                                })
+                                .unwrap();
+                            let case = format!("threads={threads} segments={segment_count} cap={max_expansions} budget={budget}");
+                            assert_eq!(actual, seq, "{case}");
+                            assert_eq!(actual_cost, seq_cost, "{case}");
+                            assert_eq!(actual_truncated, seq_truncated, "{case}");
+                        }
                     }
                 }
             }
