@@ -6,6 +6,7 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
 
 1. [Classes](#classes)
    - [SearchEngine](#searchengine)
+     - [Semantic search](#semantic-search)
 2. [Top-Level Functions](#top-level-functions)
   - [checkIndexCompatibility](#checkindexcompatibility)
 3. [Data Models](#data-models)
@@ -225,6 +226,53 @@ Future<List<String>> getIndexedFilePaths()
 Returns the distinct `filePath` values present in the index — i.e. which books have at least one live document. Convenience wrapper over `countDocumentsByFilePath()`.
 
 **Returns:** Future<List<String>> - List of indexed file paths (unordered)
+
+---
+
+##### Semantic search
+
+```dart
+Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})
+Future<void> disableSemantic()
+Future<SemanticStatus> semanticStatus()
+Future<SemanticIndexDiff> semanticIndexDiff()
+Future<SemanticIndexingSummary> semanticIndexBooks({required List<SemanticBookInput> books})
+Future<SemanticRemoveResult> removeSemanticBooks({required List<String> sourceBookKeys})
+Future<SemanticResetResult> resetSemanticIndex()
+Future<SemanticSearchResponse> searchSemantic({...})
+```
+
+These reach the semantic sidecar only in a library built with a semantic
+feature; any other build reports an explicit disabled state and serves lexical
+results. The README's "Semantic search integration" section covers the
+features, the session lifecycle and the fallback contract.
+
+`configureSemantic` opens the sidecar. `SemanticConfigInput` states how the
+vectors are produced, and nothing in it is read from the model file. Every
+field but `rootDir` is part of the index's identity (the model file by its
+checksum, once it has loaded), so an index built under one value reports
+`needsFullReindex` under another.
+
+| field | meaning | Qwen3 GGUF | Meivin ONNX |
+| --- | --- | --- | --- |
+| `rootDir` | the sidecar's own directory | | |
+| `modelPath` | the model file: `.onnx` selects ONNX Runtime, any other path llama.cpp | the `.gguf` file | `seforim-embed-round2-fp32.onnx`, with `tokenizer.json` beside it |
+| `modelId` | the model's name | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
+| `embeddingDim` | the width of every vector | 1024 | 256 |
+| `pooling` | how one vector is made from each text | `last-token` | `in-graph` |
+| `maxTokens` | the token cap per text, as the model's backend counts it | 512 | 256 |
+| `modelQuantization` | the precision of the weights; must not be empty | `Q4_K_M` | `fp32` |
+| `embeddingTextVersion` | the text recipe; 2 prefixes `[PASSAGE] ` to texts and `[QUERY] ` to queries | 1 | 2 |
+
+**An ONNX model needs the ONNX Runtime shared library at run time.** The
+library is loaded, not linked, from the first of these that exists: the file
+named by the `OTZARIA_ONNX_RUNTIME` environment variable, or the platform's
+default file name (`onnxruntime.dll`, `libonnxruntime.so` or
+`libonnxruntime.dylib`) beside the `.onnx` graph. The reference is Microsoft's
+official ONNX Runtime 1.28.0 release, and the oldest runtime API accepted is
+ONNX Runtime 1.17's. Without one, semantic search reports the backend as
+unavailable and lexical search is unaffected. The ONNX backend is built for
+desktop targets (Windows, Linux and macOS) only.
 
 ---
 
