@@ -36,6 +36,7 @@ jobs:
         features:
           - default
           - semantic-mock
+          - semantic-onnx
     steps:
       - uses: actions/checkout@v5
 
@@ -54,10 +55,19 @@ jobs:
         if: matrix.features == 'semantic-mock'
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
 
+      # The ONNX backend alone, without llama.cpp and without the stand-in. It
+      # loads ONNX Runtime when a model loads rather than linking it, so the
+      # build downloads nothing; running a model needs that runtime, and belongs
+      # in a model-gated job.
+      - name: Check semantic ONNX integration
+        if: matrix.features == 'semantic-onnx'
+        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
+
       # The sidecar compiled with no embedding backend behind it. Every
       # `llama-backend` gate in the sidecar is paired with `not(target_arch =
-      # "arm")`, so this is the cfg state 32-bit ARM builds, and nothing else in
-      # this workflow compiles it.
+      # "arm")`, and every `onnx-backend` gate with the desktop targets, so this
+      # is the cfg state 32-bit ARM builds, and nothing else in this workflow
+      # compiles it.
       - name: Check the backend-less integration
         if: matrix.features == 'default'
         run: >
@@ -72,6 +82,13 @@ jobs:
         if: matrix.features == 'semantic-mock'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
 
+      # Built, not run: the one test that exercises the backend needs the model
+      # and ONNX Runtime and skips without them, so running the suite here would
+      # repeat what the default and mock jobs already run.
+      - name: Build semantic ONNX tests
+        if: matrix.features == 'semantic-onnx'
+        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx --no-run
+
       - name: Clippy
         if: matrix.features == 'default'
         run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets
@@ -79,6 +96,10 @@ jobs:
       - name: Clippy semantic mock integration
         if: matrix.features == 'semantic-mock'
         run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+
+      - name: Clippy semantic ONNX integration
+        if: matrix.features == 'semantic-onnx'
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
 
   real-backend-build:
     name: Real semantic backend (${{ matrix.os }})
@@ -95,7 +116,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Compile the production semantic backend
+      # `semantic` is both backends, llama.cpp for GGUF and ONNX Runtime for
+      # `.onnx` graphs, as the application builds them. ONNX Runtime is loaded
+      # at run time, so this compiles its bindings without downloading it.
+      - name: Compile the production semantic backends
         run: cargo check --manifest-path rust/Cargo.toml --locked --lib --features semantic
 
       # The GC regression is platform-sensitive: Windows cannot unlink files
