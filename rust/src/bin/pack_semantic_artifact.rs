@@ -23,7 +23,7 @@
 fn main() {
     eprintln!(
         "This binary was compiled without the semantic sidecar.\n\
-         Rebuild with --features semantic-integration (no GGUF weights are needed)."
+         Rebuild with --features semantic-integration (no model is needed)."
     );
     std::process::exit(1);
 }

@@ -16,17 +16,23 @@
 //!   --out ./artifact
 //! ```
 //!
-//! Requires an inference backend, because a build *is* inference: compile with
-//! `--features semantic-real` for GGUF weights, or `--features semantic-mock` for the
-//! deterministic stand-in, which then also needs `--allow-non-semantic` because its vectors
-//! carry no meaning.
+//! `--model-file` is handed to the sidecar as it is, and the sidecar picks the backend by
+//! its format: a path ending in `.onnx` is an ONNX graph, whose package is the graph plus
+//! the `tokenizer.json` beside it, and every other path is a GGUF.
+//!
+//! Requires an inference backend for that format, because a build *is* inference: compile
+//! with `--features semantic-onnx` for an ONNX graph, `--features semantic-llama` for GGUF
+//! weights (`semantic` has both), or `--features semantic-mock` for the deterministic
+//! stand-in, which then also needs `--allow-non-semantic` because its vectors carry no
+//! meaning.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
     eprintln!(
         "This binary was compiled without a semantic backend, and building an artifact is \
-         inference.\nRebuild with --features semantic-real (GGUF weights) or \
-         --features semantic-mock (deterministic stand-in)."
+         inference.\nRebuild with --features semantic-onnx (an ONNX graph), \
+         --features semantic-llama (GGUF weights) or --features semantic-mock \
+         (deterministic stand-in)."
     );
     std::process::exit(1);
 }
@@ -147,7 +153,8 @@ Required:
   --index <dir>              The lexical index to read the corpus from, read-only
   --library-version <name>   Catalogue release the index was built from
   --model <path>             JSON ModelIdentity describing how the vectors are produced
-  --model-file <path>        The GGUF the vectors are produced with
+  --model-file <path>        The model the vectors are produced with: a GGUF, or an
+                             ONNX graph (*.onnx) with its tokenizer.json beside it
   --chunking <path>          JSON ChunkerConfig — the recipe itself
   --out <dir>                Output directory; must not exist, or be empty
 
