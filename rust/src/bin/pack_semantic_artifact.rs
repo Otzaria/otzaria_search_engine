@@ -22,7 +22,8 @@
 //! `--stamp-index` also writes the index's corpus stamp into `--index`, as
 //! `build_semantic_artifact --stamp-index` does: the identity this artifact was packed
 //! against and the segment set it was read from, which a device compares instead of
-//! recomputing `corpus_id`.
+//! recomputing `corpus_id`. Pack against the index as it will ship, after any optimize: a
+//! later commit or merge invalidates the stamp.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
