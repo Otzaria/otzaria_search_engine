@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
@@ -78,6 +78,13 @@ String sanitizeQuery({required String query}) =>
 /// truth for `SearchQueryBuilder.splitQueryWords`.
 List<String> splitQueryWords({required String query}) =>
     RustLib.instance.api.crateApiSearchEngineSplitQueryWords(query: query);
+
+/// Maps the complete raw query to engine words and exact source selections.
+/// A paired `(X) [Y]` contributes only Y, even across whitespace; the returned
+/// word order is identical to `split_query_words` and keys per-word options.
+/// Pure string computation — safe to call synchronously.
+List<QueryWordSpan> queryWordSpans({required String query}) =>
+    RustLib.instance.api.crateApiSearchEngineQueryWordSpans(query: query);
 
 /// Normalises a text-book line for indexing exactly the way the engine expects
 /// stored text to look: strip HTML, decompose presentation forms and strip
@@ -1411,13 +1418,12 @@ class HighlightMatch {
           wordRanges == other.wordRanges;
 }
 
-/// Regex patterns for highlighting query matches in *displayed* book text
-/// (which, unlike index terms, still carries nikud and HTML). All patterns
-/// are ECMAScript-dialect strings; the Dart layer compiles them with
-/// `RegExp(pattern, caseSensitive: false)` and performs no pattern
-/// construction of its own.
+/// Prepared highlighting for displayed book text, including HTML and nikud.
+/// Use `matcher.find_matches` for phrases or `matcher.find_word_matches` for
+/// independent words. The string fields are legacy compatibility metadata.
 class HighlightPattern {
-  /// One regex matching the full query phrase (words + separators).
+  /// Deprecated for phrases: a single-word regex or the safe never-match
+  /// sentinel `(?!)` for multiple words. Use `matcher` for real matching.
   final String combinedPattern;
 
   /// Per-word regex, used to locate each word inside a combined match.
@@ -1606,6 +1612,32 @@ class PdfPageInput {
           reference == other.reference &&
           text == other.text &&
           pageIndex == other.pageIndex;
+}
+
+/// One engine query word with its original range in the user's query. Offsets
+/// are UTF-16 code units, matching Flutter's `TextSelection` offsets.
+class QueryWordSpan {
+  final String word;
+  final int start;
+  final int end;
+
+  const QueryWordSpan({
+    required this.word,
+    required this.start,
+    required this.end,
+  });
+
+  @override
+  int get hashCode => word.hashCode ^ start.hashCode ^ end.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is QueryWordSpan &&
+          runtimeType == other.runtimeType &&
+          word == other.word &&
+          start == other.start &&
+          end == other.end;
 }
 
 /// מצב איחוד תוצאות. `None` בפרמטר `grouping` = ההתנהגות הקיימת (שטוח).

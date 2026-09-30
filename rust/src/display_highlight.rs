@@ -1358,6 +1358,46 @@ mod tests {
     }
 
     #[test]
+    fn punctuated_readings_follow_token_positions_instead_of_bracket_count() {
+        for text in ["הארץ (א־ב) [ג] אתך", "הארץ (א) [ב,ג] אתך"] {
+            assert!(!plain_matches("הארץ אתך", 1, text));
+            assert!(plain_matches("הארץ אתך", 3, text));
+        }
+        assert!(plain_matches("בלק לך נא", 0, "בלק (לך) [לכה־]נא"));
+        assert!(plain_matches("בלק לכה נא", 0, "בלק (לך) [לכה־]נא"));
+    }
+
+    #[test]
+    fn consecutive_paired_readings_have_bounded_near_miss_matching() {
+        // The former pair-or-word regex took >5 seconds with only 35 pairs.
+        // Place the final query word elsewhere to prevent a global presence
+        // check from hiding a full phrase-matching regression.
+        let n = 2_000;
+        let pairs = "(א) [ב] ".repeat(n);
+        let hl = build_display_highlight(
+            "הארץ אתך",
+            n as u32,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(hl.combined_pattern, "(?!)");
+        let start = std::time::Instant::now();
+        assert!(hl
+            .matcher
+            .find_matches(&format!("אתך הארץ {pairs}סוף"), &[])
+            .is_empty());
+        assert_eq!(
+            hl.matcher
+                .find_matches(&format!("הארץ {pairs}אתך"), &[])
+                .len(),
+            1
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
     fn alternatives_become_branches() {
         let alternatives = HashMap::from([(0u32, vec!["חכם".to_string()])]);
         let hl =
