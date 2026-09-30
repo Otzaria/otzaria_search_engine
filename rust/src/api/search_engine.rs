@@ -6118,20 +6118,15 @@ impl SearchEngine {
         // before the next starts, so when a budget runs out mid-collection
         // the query degrades to the highest-priority automaton prefix rather
         // than over-serving whichever segment happened to be scanned first.
-        'branches: for regex in &regexes {
-            for inverted in &inverted_indexes {
-                if Self::collect_automaton_terms(
-                    inverted,
-                    regex,
-                    max_expansions,
-                    postings_budget,
-                    &mut matched,
-                    &mut postings_cost,
-                )? {
-                    truncated = true;
-                    break 'branches;
-                }
-            }
+        if Self::collect_automatons_terms(
+            &inverted_indexes,
+            &regexes,
+            max_expansions,
+            postings_budget,
+            &mut matched,
+            &mut postings_cost,
+        )? {
+            truncated = true;
         }
         if !truncated && !typo_tokens.is_empty() {
             // Same builder configuration as the fuzzy path (distance 1,
@@ -6180,6 +6175,85 @@ impl SearchEngine {
             .unwrap()
             .put(cache_key, entry.clone());
         Ok(entry)
+    }
+
+    /// [`Self::collect_automaton_terms`] over every `(automaton, segment)` pair
+    /// in priority order (automaton-major), with the dictionary scans run in
+    /// parallel waves. Each scan is capped by the budgets on its own, and the
+    /// hits are then replayed in order into `matched` — so the collected set
+    /// and the truncation point are exactly those of the sequential loop.
+    fn collect_automatons_terms<A>(
+        inverted_indexes: &[Arc<tantivy::InvertedIndexReader>],
+        automatons: &[A],
+        max_expansions: u32,
+        postings_budget: u64,
+        matched: &mut HashSet<String>,
+        postings_cost: &mut u64,
+    ) -> Result<bool>
+    where
+        A: Automaton + Sync,
+        A::State: Clone,
+    {
+        use rayon::prelude::*;
+
+        let pairs: Vec<(usize, usize)> = (0..automatons.len())
+            .flat_map(|a| (0..inverted_indexes.len()).map(move |s| (a, s)))
+            .collect();
+        // Waves bound the work (and memory) spent past a truncation point.
+        let wave = rayon::current_num_threads().max(1);
+        for chunk in pairs.chunks(wave) {
+            let scans: Vec<Vec<(String, u32)>> = chunk
+                .par_iter()
+                .map(|&(a, s)| {
+                    Self::scan_automaton_terms(
+                        &inverted_indexes[s],
+                        &automatons[a],
+                        max_expansions,
+                        postings_budget,
+                    )
+                })
+                .collect::<Result<_>>()?;
+            for (term, doc_freq) in scans.into_iter().flatten() {
+                *postings_cost += u64::from(doc_freq);
+                if !matched.contains(&term) {
+                    matched.insert(term);
+                }
+                if matched.len() >= max_expansions as usize || *postings_cost >= postings_budget {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// One segment's dictionary hits for `automaton`, in dictionary order,
+    /// stopping where [`Self::collect_automaton_terms`] alone would stop.
+    fn scan_automaton_terms<A>(
+        inverted: &tantivy::InvertedIndexReader,
+        automaton: &A,
+        max_expansions: u32,
+        postings_budget: u64,
+    ) -> Result<Vec<(String, u32)>>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
+        let mut hits = Vec::new();
+        let mut distinct = 0usize;
+        let mut cost = 0u64;
+        let mut stream = inverted.terms().search(automaton).into_stream()?;
+        while stream.advance() {
+            if let Ok(term) = std::str::from_utf8(stream.key()) {
+                let doc_freq = stream.value().doc_freq;
+                cost += u64::from(doc_freq);
+                distinct += 1;
+                hits.push((term.to_string(), doc_freq));
+                if distinct >= max_expansions as usize || cost >= postings_budget {
+                    break;
+                }
+            }
+        }
+        Ok(hits)
     }
 
     /// Streams every term `automaton` matches in one segment's dictionary
@@ -10503,6 +10577,94 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parallel_term_collection_equals_the_sequential_loop() {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        let words = [
+            "ספר",
+            "ספרים",
+            "הספר",
+            "מספר",
+            "סופר",
+            "ספרא",
+            "בספרו",
+            "תורה",
+        ];
+        for (segment, chunk) in words.chunks(2).enumerate() {
+            for (i, word) in chunk.iter().enumerate() {
+                let id = (segment * 10 + i) as u64;
+                engine
+                    .add_document(
+                        id,
+                        "title",
+                        "ref",
+                        "/root",
+                        &format!("{word} {word} אחר"),
+                        id,
+                        false,
+                        &format!("/books/{id}.txt"),
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+            }
+            engine.commit().unwrap();
+        }
+        assert!(engine.get_segment_count().unwrap() > 1);
+
+        let searcher = engine.index_reader.searcher();
+        let text = engine.schema.get_field("text").unwrap();
+        let inverted: Vec<_> = searcher
+            .segment_readers()
+            .iter()
+            .map(|r| r.inverted_index(text).unwrap())
+            .collect();
+        let regexes: Vec<tantivy_fst::Regex> = [".{0,3}ספר.{0,3}", "סופר", ".{0,2}ס.{0,3}"]
+            .iter()
+            .map(|p| tantivy_fst::Regex::new(p).unwrap())
+            .collect();
+
+        for (max_expansions, budget) in [(1000, u64::MAX), (3, u64::MAX), (1000, 5), (2, 1)] {
+            let mut seq = HashSet::new();
+            let mut seq_cost = 0u64;
+            let mut seq_truncated = false;
+            'outer: for regex in &regexes {
+                for inv in &inverted {
+                    if SearchEngine::collect_automaton_terms(
+                        inv,
+                        regex,
+                        max_expansions,
+                        budget,
+                        &mut seq,
+                        &mut seq_cost,
+                    )
+                    .unwrap()
+                    {
+                        seq_truncated = true;
+                        break 'outer;
+                    }
+                }
+            }
+            let mut par = HashSet::new();
+            let mut par_cost = 0u64;
+            let par_truncated = SearchEngine::collect_automatons_terms(
+                &inverted,
+                &regexes,
+                max_expansions,
+                budget,
+                &mut par,
+                &mut par_cost,
+            )
+            .unwrap();
+            let case = format!("max_expansions={max_expansions} budget={budget}");
+            assert_eq!(par, seq, "{case}");
+            assert_eq!(par_cost, seq_cost, "{case}");
+            assert_eq!(par_truncated, seq_truncated, "{case}");
+        }
     }
 
     #[test]
