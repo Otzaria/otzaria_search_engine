@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1999732859;
+  int get rustContentHash => -191614045;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -958,6 +958,10 @@ abstract class RustLibApi extends BaseApi {
 
   List<String> crateApiSearchEngineNormalizeTextsForIndexing({
     required List<String> inputs,
+  });
+
+  List<QueryWordSpan> crateApiSearchEngineQueryWordSpans({
+    required String query,
   });
 
   Future<void> crateApiDiagnosticTestRunDiagnosticTest();
@@ -6557,6 +6561,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  List<QueryWordSpan> crateApiSearchEngineQueryWordSpans({
+    required String query,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(query, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 99)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_query_word_span,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineQueryWordSpansConstMeta,
+        argValues: [query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineQueryWordSpansConstMeta =>
+      const TaskConstMeta(debugName: "query_word_spans", argNames: ["query"]);
+
+  @override
   Future<void> crateApiDiagnosticTestRunDiagnosticTest() {
     return handler.executeNormal(
       NormalTask(
@@ -6565,7 +6594,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 100,
             port: port_,
           );
         },
@@ -6592,7 +6621,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 101,
             port: port_,
           );
         },
@@ -6620,7 +6649,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 102,
           )!;
         },
         codec: SseCodec(
@@ -6647,7 +6676,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 103,
           )!;
         },
         codec: SseCodec(
@@ -7215,6 +7244,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<QueryWordSpan> dco_decode_list_query_word_span(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_query_word_span).toList();
+  }
+
+  @protected
   List<(String, bool)> dco_decode_list_record_string_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_record_string_bool).toList();
@@ -7428,6 +7463,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       reference: dco_decode_String(arr[0]),
       text: dco_decode_String(arr[1]),
       pageIndex: dco_decode_u_32(arr[2]),
+    );
+  }
+
+  @protected
+  QueryWordSpan dco_decode_query_word_span(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return QueryWordSpan(
+      word: dco_decode_String(arr[0]),
+      start: dco_decode_u_32(arr[1]),
+      end: dco_decode_u_32(arr[2]),
     );
   }
 
@@ -8474,6 +8522,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<QueryWordSpan> sse_decode_list_query_word_span(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <QueryWordSpan>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_query_word_span(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<(String, bool)> sse_decode_list_record_string_bool(
     SseDeserializer deserializer,
   ) {
@@ -8839,6 +8901,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       text: var_text,
       pageIndex: var_pageIndex,
     );
+  }
+
+  @protected
+  QueryWordSpan sse_decode_query_word_span(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_word = sse_decode_String(deserializer);
+    var var_start = sse_decode_u_32(deserializer);
+    var var_end = sse_decode_u_32(deserializer);
+    return QueryWordSpan(word: var_word, start: var_start, end: var_end);
   }
 
   @protected
@@ -9967,6 +10038,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_query_word_span(
+    List<QueryWordSpan> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_query_word_span(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_record_string_bool(
     List<(String, bool)> self,
     SseSerializer serializer,
@@ -10296,6 +10379,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.reference, serializer);
     sse_encode_String(self.text, serializer);
     sse_encode_u_32(self.pageIndex, serializer);
+  }
+
+  @protected
+  void sse_encode_query_word_span(
+    QueryWordSpan self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.word, serializer);
+    sse_encode_u_32(self.start, serializer);
+    sse_encode_u_32(self.end, serializer);
   }
 
   @protected

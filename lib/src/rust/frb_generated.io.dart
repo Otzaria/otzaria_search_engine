@@ -252,6 +252,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<QueryWordSpan> dco_decode_list_query_word_span(dynamic raw);
+
+  @protected
   List<(String, bool)> dco_decode_list_record_string_bool(dynamic raw);
 
   @protected
@@ -346,6 +349,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PdfPageInput dco_decode_pdf_page_input(dynamic raw);
+
+  @protected
+  QueryWordSpan dco_decode_query_word_span(dynamic raw);
 
   @protected
   (String, bool) dco_decode_record_string_bool(dynamic raw);
@@ -712,6 +718,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<QueryWordSpan> sse_decode_list_query_word_span(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(String, bool)> sse_decode_list_record_string_bool(
     SseDeserializer deserializer,
   );
@@ -834,6 +845,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PdfPageInput sse_decode_pdf_page_input(SseDeserializer deserializer);
+
+  @protected
+  QueryWordSpan sse_decode_query_word_span(SseDeserializer deserializer);
 
   @protected
   (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
@@ -1303,6 +1317,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_query_word_span(
+    List<QueryWordSpan> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_string_bool(
     List<(String, bool)> self,
     SseSerializer serializer,
@@ -1443,6 +1463,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_pdf_page_input(PdfPageInput self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_query_word_span(QueryWordSpan self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_string_bool(
