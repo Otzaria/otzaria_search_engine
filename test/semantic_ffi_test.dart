@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
@@ -21,10 +22,12 @@ import 'native_library.dart';
 /// library was built with or without the semantic feature: the fallback
 /// contract is the same either way. The second drives a configured one, which
 /// is the only way to prove that `SemanticConfigInput` and `SemanticBookInput`
-/// cross *into* Rust correctly and that semantic scores come back.
+/// cross *into* Rust correctly and that semantic scores come back. The third
+/// opens a prebuilt artifact, which is the application's own semantic path.
 Future<void> main() async {
   final skipReason = await initNativeEngine();
   final sidecarSkipReason = skipReason ?? await semanticSidecarSkipReason();
+  final artifactSkipReason = sidecarSkipReason ?? artifactBuilderSkipReason();
 
   group('semantic FFI', () {
     late Directory indexDir;
@@ -447,4 +450,180 @@ Future<void> main() async {
       expect((await engine.semanticStatus()).indexedBookCount, 0);
     });
   }, skip: sidecarSkipReason ?? false);
+
+  group('semantic FFI with a prebuilt artifact', () {
+    const bookKey = '/books/genesis.txt';
+    const probeLine = 'ויאמר אלהים יהי אור ויהי אור';
+    // `ChunkerConfig::default().identity()`: the recipe below, which the
+    // artifact's model identity has to name.
+    const chunkingIdentity = 6636791861761206090;
+
+    late Directory root;
+    late SearchEngine engine;
+    late Map<String, Object> identity;
+
+    SemanticArtifactInput input(Map<String, Object> modelIdentity) =>
+        SemanticArtifactInput(
+          artifactDir: '${root.path}/artifact',
+          modelPath: '${root.path}/model.gguf',
+          modelIdentityJson: jsonEncode(modelIdentity),
+        );
+
+    setUp(() async {
+      root = Directory.systemTemp.createTempSync('otzaria_ffi_artifact');
+      final index = Directory('${root.path}/tantivy')..createSync();
+      engine = await SearchEngine.newInstance(path: index.path);
+      await engine.addTextBook(
+        title: 'בראשית',
+        topics: '/מקרא/תורה',
+        filePath: bookKey,
+        catalogueOrder: 0,
+        generationOrder: 0,
+        text: 'בראשית ברא אלהים את השמים ואת הארץ\n$probeLine',
+      );
+      await engine.commit();
+
+      // The build machine's half: the model's identity, the recipe, and the
+      // artifact built from this index, which the build stamps as it goes.
+      final model = File('${root.path}/model.gguf');
+      writeStubGguf(model);
+      identity = {
+        'model_id': 'test-mock',
+        'model_checksum': sha256.convert(model.readAsBytesSync()).toString(),
+        'model_quantization': 'Q4_K_M',
+        'embedding_backend': MockBackend.id,
+        'embedding_dim': 64,
+        'pooling': 'last-token',
+        'max_tokens': 512,
+        'embedding_text_version': 1,
+        'normalization_version': 1,
+        'chunking_identity': chunkingIdentity,
+      };
+      File('${root.path}/model.json').writeAsStringSync(jsonEncode(identity));
+      File('${root.path}/chunking.json').writeAsStringSync(
+        jsonEncode({
+          'min_meaningful_chars': 20,
+          'context_window_lines': 2,
+          'max_chunk_chars': 512,
+          'min_embeddable_chars': 5,
+          'chunking_version': 1,
+          'embedding_text_version': 1,
+          'normalization_version': 1,
+        }),
+      );
+      final built = await Process.run(findArtifactBuilder()!.path, [
+        '--index',
+        index.path,
+        '--library-version',
+        'otzaria-library-ffi',
+        '--model',
+        '${root.path}/model.json',
+        '--model-file',
+        model.path,
+        '--chunking',
+        '${root.path}/chunking.json',
+        '--out',
+        '${root.path}/artifact',
+        '--created-at',
+        '2026-10-01T00:00:00Z',
+        '--allow-non-semantic',
+        '--stamp-index',
+      ]);
+      expect(
+        built.exitCode,
+        0,
+        reason: 'the build failed:\n${built.stdout}\n${built.stderr}',
+      );
+    });
+
+    tearDown(() {
+      try {
+        root.deleteSync(recursive: true);
+      } on FileSystemException {
+        // Left for the OS to reclaim.
+      }
+    });
+
+    test('an opened artifact serves a hydrated semantic-only hit', () async {
+      final status = await engine.openSemanticArtifact(config: input(identity));
+      expect(status.enabled, isTrue);
+      expect(status.available, isTrue, reason: status.lastError);
+      expect(status.embeddingBackend, MockBackend.id);
+      expect(status.vectorCount, 2);
+      expect(status.vectorsPersisted, isTrue);
+
+      final response = await engine.searchSemantic(
+        query: probeLine,
+        facets: const [],
+        limit: 10,
+        offset: 0,
+        lexicalMode: SemanticLexicalMode.exact,
+        fuzzyMaxDistance: 0,
+        retrievalMode: SemanticRetrievalMode.semanticOnly,
+        matchNikud: false,
+        matchTaamim: false,
+      );
+      expect(response.executedMode, SemanticExecutedMode.semanticOnly);
+      expect(response.semanticAvailable, isTrue);
+      final hit = response.results.first;
+      expect(hit.source, SemanticResultSource.semantic);
+      expect(hit.needsHydration, isFalse);
+      expect(hit.snippetHtml, probeLine);
+      expect(hit.filePath, bookKey);
+    });
+
+    test('indexing on an opened artifact is refused as read-only', () async {
+      await engine.openSemanticArtifact(config: input(identity));
+      await expectLater(
+        engine.semanticIndexBooks(
+          books: [
+            SemanticBookInput(
+              sourceBookKey: bookKey,
+              title: 'בראשית',
+              contentFingerprint: BigInt.one,
+              isPdf: false,
+              topics: '/מקרא/תורה',
+              extraFacets: const [],
+              lines: [
+                SemanticBookLineInput(
+                  lineId: BigInt.one,
+                  sectionId: BigInt.one,
+                  text: probeLine,
+                  lineHash: BigInt.one,
+                  reference: 'בראשית א',
+                  segment: BigInt.zero,
+                ),
+              ],
+            ),
+          ],
+        ),
+        throwsA(
+          isA<AnyhowException>().having(
+            (error) => error.message,
+            'message',
+            contains('read-only'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'a model identity the artifact was not built with is refused',
+      () async {
+        await expectLater(
+          engine.openSemanticArtifact(
+            config: input({...identity, 'model_id': 'another-model'}),
+          ),
+          throwsA(
+            isA<AnyhowException>().having(
+              (error) => error.message,
+              'message',
+              contains('model.model_id'),
+            ),
+          ),
+        );
+        expect((await engine.semanticStatus()).enabled, isFalse);
+      },
+    );
+  }, skip: artifactSkipReason ?? false);
 }

@@ -537,10 +537,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Remove the configured sidecar without touching its on-disk files.
   /// This is useful when an app switches library roots or wants lexical-only
   /// operation for the current session, and it is the explicit way to allow a
-  /// subsequent [`Self::configure_semantic`] with different inputs.
+  /// subsequent [`Self::configure_semantic`] or [`Self::open_semantic_artifact`]
+  /// with different inputs.
   ///
-  /// Because the vector store is in-memory, this drops the session's vectors:
-  /// re-configuring afterwards needs a full semantic re-index.
+  /// For a session from [`Self::configure_semantic`] this drops its vectors,
+  /// which are in memory only: configuring it again needs a full re-index. An
+  /// opened artifact is only closed; its files are untouched.
   Future<void> disableSemantic();
 
   /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
@@ -751,6 +753,49 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// segment footer; a synchronous binding blocks the calling Dart isolate throughout.
   static Future<SearchEngine> newInstance({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
+
+  /// Open a prebuilt semantic artifact and serve semantic and hybrid search
+  /// from it, with every result hydrated from this Tantivy index as
+  /// [`Self::search_semantic`] always does. **This is the application's
+  /// semantic path**: the library's vectors are built on the build machine,
+  /// and the device embeds only the query. When this crate was built without
+  /// the optional semantic feature this is a no-op that returns an explicit
+  /// Disabled status.
+  ///
+  /// Opening verifies the artifact against this installation, all of it and
+  /// before reading a vector:
+  ///
+  /// | half | expected value, from | fixed by |
+  /// | --- | --- | --- |
+  /// | corpus | the corpus stamp inside this index's directory, and the index's own segment set | installing the release's index with its artifact |
+  /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
+  /// | store | what this build can read | a build that reads the artifact's format |
+  ///
+  /// The corpus identity is read from the index, never passed in: nothing on
+  /// a device can recompute `corpus_id`, which digests every stored line, so
+  /// the build machine writes it into the index directory beside the index it
+  /// describes (`build_semantic_artifact --stamp-index`), together with the
+  /// index's segment set at that moment. An index added to, deleted from or
+  /// merged since is refused here, and so is one stamped for another corpus.
+  ///
+  /// A mismatch is an error naming every field that disagreed, and nothing is
+  /// left open. On success the session is read-only: `semantic_index_books`,
+  /// `remove_semantic_books`, `reset_semantic_index` and `semantic_index_diff`
+  /// are refused by name, and so is [`Self::configure_semantic`]. A commit to
+  /// this index afterwards makes the artifact stale: searches then fall back
+  /// to lexical results with the reason, and [`Self::semantic_status`]
+  /// reports it, until the session is disabled and a matching pair opened.
+  ///
+  /// - Called again with the same inputs it is a no-op returning the status.
+  /// - Called while another session is open it fails: call
+  ///   [`Self::disable_semantic`] first.
+  ///
+  /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
+  /// the artifact's vectors, which takes time, and a `&mut self` binding would
+  /// hold the engine's write lock throughout, stalling every lexical search.
+  Future<SemanticStatus> openSemanticArtifact({
+    required SemanticArtifactInput config,
+  });
 
   /// Compact the index without collapsing it. Pending changes are committed
   /// first (only committed segments take part in manual merges); then the
@@ -1741,6 +1786,68 @@ class SearchStreamUpdate {
           results == other.results &&
           truncated == other.truncated &&
           groupCount == other.groupCount;
+}
+
+/// What [`SearchEngine::open_semantic_artifact`] opens: a semantic artifact built
+/// on the build machine, and the model this device embeds queries with.
+///
+/// The artifact states the identity its vectors were built under, and opening
+/// compares every field of it with this installation's. Nothing in this struct
+/// is a value to type in: the corpus half is read from the corpus stamp inside
+/// the open lexical index, and the model half is the model's published identity
+/// file, the same one the artifact was built with.
+class SemanticArtifactInput {
+  /// The artifact directory, as `build_semantic_artifact` or
+  /// `pack_semantic_artifact` wrote it: `manifest.json`, `payloads.json` and
+  /// the payload files.
+  final String artifactDir;
+
+  /// The model queries are embedded with. An `.onnx` graph, with its
+  /// `tokenizer.json` beside it, or a GGUF; the extension selects the backend,
+  /// as for [`SemanticConfigInput::model_path`], and an ONNX graph needs the
+  /// ONNX Runtime library described there.
+  final String modelPath;
+
+  /// The text of the model's identity file: the JSON `ModelIdentity` the
+  /// artifact was built with (`--model` of `build_semantic_artifact`), such as
+  /// the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin
+  /// INT8 graph. Text rather than a path, so an application can ship it as an
+  /// asset.
+  ///
+  /// Every field is compared: the recipe fields with the artifact's, and
+  /// `model_checksum` and `embedding_backend` with the model at `model_path`
+  /// once it has loaded, so an identity file that describes other weights is
+  /// refused rather than trusted.
+  final String modelIdentityJson;
+
+  /// The artifact's digest as published outside it, when the release publishes
+  /// one. Without it, opening still detects damage and a wrong artifact, but
+  /// not one deliberately rebuilt to match.
+  final String? publishedDigest;
+
+  const SemanticArtifactInput({
+    required this.artifactDir,
+    required this.modelPath,
+    required this.modelIdentityJson,
+    this.publishedDigest,
+  });
+
+  @override
+  int get hashCode =>
+      artifactDir.hashCode ^
+      modelPath.hashCode ^
+      modelIdentityJson.hashCode ^
+      publishedDigest.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticArtifactInput &&
+          runtimeType == other.runtimeType &&
+          artifactDir == other.artifactDir &&
+          modelPath == other.modelPath &&
+          modelIdentityJson == other.modelIdentityJson &&
+          publishedDigest == other.publishedDigest;
 }
 
 class SemanticBookInput {

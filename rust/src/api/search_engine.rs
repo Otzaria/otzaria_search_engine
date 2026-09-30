@@ -50,12 +50,20 @@ use otzaria_semantic_search::hybrid::coordinator::HybridCoordinator;
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
 #[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::official_index::{
+    LocalModel, OfficialIndexConfig, OfficialSemanticIndex,
+};
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::types::{
     BookForIndexing as SidecarBookForIndexing, BookLine as SidecarBookLine,
     GroupingMode as SidecarGroupingMode, LexicalCandidate as SidecarLexicalCandidate,
     ResultSource as SidecarResultSource, SearchFilters as SidecarSearchFilters,
     SearchMode as SidecarSearchMode,
 };
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+#[cfg(feature = "semantic-integration")]
+use std::sync::{PoisonError, RwLock};
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -393,6 +401,41 @@ pub struct SemanticConfigInput {
     pub embedding_text_version: u32,
 }
 
+/// What [`SearchEngine::open_semantic_artifact`] opens: a semantic artifact built
+/// on the build machine, and the model this device embeds queries with.
+///
+/// The artifact states the identity its vectors were built under, and opening
+/// compares every field of it with this installation's. Nothing in this struct
+/// is a value to type in: the corpus half is read from the corpus stamp inside
+/// the open lexical index, and the model half is the model's published identity
+/// file, the same one the artifact was built with.
+pub struct SemanticArtifactInput {
+    /// The artifact directory, as `build_semantic_artifact` or
+    /// `pack_semantic_artifact` wrote it: `manifest.json`, `payloads.json` and
+    /// the payload files.
+    pub artifact_dir: String,
+    /// The model queries are embedded with. An `.onnx` graph, with its
+    /// `tokenizer.json` beside it, or a GGUF; the extension selects the backend,
+    /// as for [`SemanticConfigInput::model_path`], and an ONNX graph needs the
+    /// ONNX Runtime library described there.
+    pub model_path: String,
+    /// The text of the model's identity file: the JSON `ModelIdentity` the
+    /// artifact was built with (`--model` of `build_semantic_artifact`), such as
+    /// the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin
+    /// INT8 graph. Text rather than a path, so an application can ship it as an
+    /// asset.
+    ///
+    /// Every field is compared: the recipe fields with the artifact's, and
+    /// `model_checksum` and `embedding_backend` with the model at `model_path`
+    /// once it has loaded, so an identity file that describes other weights is
+    /// refused rather than trusted.
+    pub model_identity_json: String,
+    /// The artifact's digest as published outside it, when the release publishes
+    /// one. Without it, opening still detects damage and a wrong artifact, but
+    /// not one deliberately rebuilt to match.
+    pub published_digest: Option<String>,
+}
+
 /// A serializable, feature-independent projection of sidecar status. It is
 /// intentionally available without the `semantic` Cargo feature so Dart can
 /// render an explicit Disabled state rather than silently falling back.
@@ -590,15 +633,51 @@ impl SemanticConfigKey {
     }
 }
 
-/// An open sidecar session: the engine plus the configuration that produced it.
+/// Everything that decides which artifact session [`SearchEngine::open_semantic_artifact`]
+/// opens, so a repeat call can be told from a different one. The model identity is held
+/// parsed, so two spellings of the same JSON are one key.
+#[cfg(feature = "semantic-integration")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SemanticArtifactKey {
+    artifact_dir: PathBuf,
+    model_path: PathBuf,
+    model: ModelIdentity,
+    published_digest: Option<String>,
+}
+
+/// A prebuilt artifact as it was opened: its key, and the segment set the index's corpus
+/// stamp vouched for at that moment.
+#[cfg(feature = "semantic-integration")]
+struct OpenedArtifact {
+    key: SemanticArtifactKey,
+    /// Compared with the index before every search: a commit after the artifact was opened
+    /// means the artifact's line ids may name lines that moved, and it is then not asked.
+    segments_sha256: String,
+}
+
+/// Where a session's vectors come from.
+#[cfg(feature = "semantic-integration")]
+enum SemanticSource {
+    /// [`SearchEngine::configure_semantic`]: vectors embedded on this device, which the
+    /// application never does for the library — development and testing.
+    SelfBuilt(SemanticConfigKey),
+    /// [`SearchEngine::open_semantic_artifact`]: vectors built on the build machine, read
+    /// only. The application's path.
+    Artifact(OpenedArtifact),
+}
+
+/// An open sidecar session: the engine, and what it was opened from.
 #[cfg(feature = "semantic-integration")]
 struct ConfiguredSemantic {
     engine: OtzariaHybridEngine,
-    config: SemanticConfigKey,
+    source: SemanticSource,
 }
 
+/// Behind a lock, not a plain field, so that [`SearchEngine::open_semantic_artifact`] can
+/// take `&self`: opening loads the model and the artifact's vectors, and holding the whole
+/// engine's write lock for that long would stall every lexical search in the meantime.
 #[cfg(feature = "semantic-integration")]
-type SemanticRuntime = Option<ConfiguredSemantic>;
+type SemanticRuntime = RwLock<Option<ConfiguredSemantic>>;
 #[cfg(not(feature = "semantic-integration"))]
 type SemanticRuntime = ();
 
@@ -2046,7 +2125,7 @@ impl SearchEngine {
             )),
             bulk_indexing: false,
             #[cfg(feature = "semantic-integration")]
-            semantic_runtime: None,
+            semantic_runtime: RwLock::new(None),
             #[cfg(not(feature = "semantic-integration"))]
             semantic_runtime: (),
         }
@@ -2163,16 +2242,32 @@ impl SearchEngine {
         #[cfg(feature = "semantic-integration")]
         {
             let requested = SemanticConfigKey::from_input(&config);
-            if let Some(active) = &self.semantic_runtime {
-                if active.config == requested {
+            let active = self
+                .semantic_runtime
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            match active.as_ref().map(|active| &active.source) {
+                None => {}
+                Some(SemanticSource::SelfBuilt(key)) if *key == requested => {
                     return Ok(self.semantic_status());
                 }
-                return Err(anyhow::anyhow!(
-                    "the semantic sidecar is already configured and {} changed; the vector \
-                     store is in-memory, so re-opening would discard the vectors indexed in \
-                     this session. Call disable_semantic() first if that is intended",
-                    active.config.changed_fields(&requested)
-                ));
+                Some(SemanticSource::SelfBuilt(key)) => {
+                    return Err(anyhow::anyhow!(
+                        "the semantic sidecar is already configured and {} changed; the \
+                         vector store is in-memory, so re-opening would discard the vectors \
+                         indexed in this session. Call disable_semantic() first if that is \
+                         intended",
+                        key.changed_fields(&requested)
+                    ));
+                }
+                Some(SemanticSource::Artifact(opened)) => {
+                    return Err(anyhow::anyhow!(
+                        "a prebuilt semantic artifact is open ({}); configure_semantic would \
+                         replace it with vectors built on this device. Call \
+                         disable_semantic() first if that is intended",
+                        opened.key.artifact_dir.display()
+                    ));
+                }
             }
 
             // The sidecar validates the rest of the configuration when it opens:
@@ -2219,9 +2314,12 @@ impl SearchEngine {
 
             let engine = SemanticEngine::open(semantic_config)
                 .map_err(|err| anyhow::anyhow!("failed to open semantic sidecar: {err}"))?;
-            self.semantic_runtime = Some(ConfiguredSemantic {
+            *self
+                .semantic_runtime
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = Some(ConfiguredSemantic {
                 engine: OtzariaHybridEngine::new(HybridCoordinator::new(Some(engine))),
-                config: requested,
+                source: SemanticSource::SelfBuilt(requested),
             });
             Ok(self.semantic_status())
         }
@@ -2233,25 +2331,254 @@ impl SearchEngine {
         }
     }
 
+    /// Open a prebuilt semantic artifact and serve semantic and hybrid search
+    /// from it, with every result hydrated from this Tantivy index as
+    /// [`Self::search_semantic`] always does. **This is the application's
+    /// semantic path**: the library's vectors are built on the build machine,
+    /// and the device embeds only the query. When this crate was built without
+    /// the optional semantic feature this is a no-op that returns an explicit
+    /// Disabled status.
+    ///
+    /// Opening verifies the artifact against this installation, all of it and
+    /// before reading a vector:
+    ///
+    /// | half | expected value, from | fixed by |
+    /// | --- | --- | --- |
+    /// | corpus | the corpus stamp inside this index's directory, and the index's own segment set | installing the release's index with its artifact |
+    /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
+    /// | store | what this build can read | a build that reads the artifact's format |
+    ///
+    /// The corpus identity is read from the index, never passed in: nothing on
+    /// a device can recompute `corpus_id`, which digests every stored line, so
+    /// the build machine writes it into the index directory beside the index it
+    /// describes (`build_semantic_artifact --stamp-index`), together with the
+    /// index's segment set at that moment. An index added to, deleted from or
+    /// merged since is refused here, and so is one stamped for another corpus.
+    ///
+    /// A mismatch is an error naming every field that disagreed, and nothing is
+    /// left open. On success the session is read-only: `semantic_index_books`,
+    /// `remove_semantic_books`, `reset_semantic_index` and `semantic_index_diff`
+    /// are refused by name, and so is [`Self::configure_semantic`]. A commit to
+    /// this index afterwards makes the artifact stale: searches then fall back
+    /// to lexical results with the reason, and [`Self::semantic_status`]
+    /// reports it, until the session is disabled and a matching pair opened.
+    ///
+    /// - Called again with the same inputs it is a no-op returning the status.
+    /// - Called while another session is open it fails: call
+    ///   [`Self::disable_semantic`] first.
+    ///
+    /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
+    /// the artifact's vectors, which takes time, and a `&mut self` binding would
+    /// hold the engine's write lock throughout, stalling every lexical search.
+    pub fn open_semantic_artifact(&self, config: SemanticArtifactInput) -> Result<SemanticStatus> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let model: ModelIdentity =
+                serde_json::from_str(&config.model_identity_json).map_err(|err| {
+                    anyhow::anyhow!(
+                        "model_identity_json is not a model identity: {err}. It is the JSON \
+                         the artifact was built with, such as the sidecar's \
+                         config/models/meivin-round2-onnx/model.json"
+                    )
+                })?;
+            let key = SemanticArtifactKey {
+                artifact_dir: PathBuf::from(&config.artifact_dir),
+                model_path: PathBuf::from(&config.model_path),
+                model,
+                published_digest: config.published_digest.clone(),
+            };
+            if let Some(refusal) = self.refuse_second_session(&key) {
+                return refusal;
+            }
+
+            let stamp = crate::semantic_corpus::CorpusStamp::read(&self.index_path)?;
+            let segments = self.index_reader.searcher();
+            stamp.ensure_describes(&segments, &self.index_path)?;
+            let segments_sha256 = stamp.segments_sha256.clone();
+            drop(segments);
+
+            let max_tokens = key.model.max_tokens;
+            let index = OfficialSemanticIndex::open(OfficialIndexConfig {
+                artifact_path: key.artifact_dir.clone(),
+                corpus: stamp.corpus,
+                model: LocalModel {
+                    model_path: key.model_path.clone(),
+                    model_id: key.model.model_id.clone(),
+                    model_quantization: key.model.model_quantization.clone(),
+                    embedding_dim: key.model.embedding_dim,
+                    pooling: key.model.pooling.clone(),
+                    max_tokens,
+                    embedding_text_version: key.model.embedding_text_version,
+                    normalization_version: key.model.normalization_version,
+                    chunking_identity: key.model.chunking_identity,
+                },
+                published_digest: key.published_digest.clone(),
+            })
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to open the semantic artifact at {}: {err}",
+                    key.artifact_dir.display()
+                )
+            })?;
+
+            // The two fields the sidecar takes from the loaded model rather than from the
+            // identity file. The artifact agreed with the model, so an identity file that
+            // disagrees with either describes other weights, and is refused rather than
+            // quietly outvoted.
+            let loaded = &index.identity().model;
+            for (field, declared, actual) in [
+                (
+                    "model_checksum",
+                    &key.model.model_checksum,
+                    &loaded.model_checksum,
+                ),
+                (
+                    "embedding_backend",
+                    &key.model.embedding_backend,
+                    &loaded.embedding_backend,
+                ),
+            ] {
+                if declared != actual {
+                    return Err(anyhow::anyhow!(
+                        "model_identity_json declares {field} '{declared}', but the model at \
+                         {} is '{actual}', as is the artifact: the identity file describes \
+                         other weights",
+                        key.model_path.display()
+                    ));
+                }
+            }
+
+            let mut active = self
+                .semantic_runtime
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            // Checked again under the lock: another call may have opened a session while
+            // this one was loading.
+            if let Some(existing) = active.as_ref() {
+                let same = Self::is_artifact_session(existing, &key);
+                drop(active);
+                return if same {
+                    Ok(self.semantic_status())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "another semantic session was opened while this artifact was loading; \
+                         call disable_semantic() first to open {}",
+                        key.artifact_dir.display()
+                    ))
+                };
+            }
+            *active = Some(ConfiguredSemantic {
+                engine: OtzariaHybridEngine::new(HybridCoordinator::with_official_index(index)),
+                source: SemanticSource::Artifact(OpenedArtifact {
+                    key,
+                    segments_sha256,
+                }),
+            });
+            drop(active);
+            Ok(self.semantic_status())
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = config;
+            Ok(Self::semantic_disabled_status())
+        }
+    }
+
+    /// Whether `active` is the artifact session `key` would open.
+    #[cfg(feature = "semantic-integration")]
+    fn is_artifact_session(active: &ConfiguredSemantic, key: &SemanticArtifactKey) -> bool {
+        matches!(&active.source, SemanticSource::Artifact(opened) if opened.key == *key)
+    }
+
+    /// What [`Self::open_semantic_artifact`] answers while a session is already open:
+    /// the status for a repeat of the same artifact, a refusal for anything else, and
+    /// `None` when nothing is open.
+    #[cfg(feature = "semantic-integration")]
+    fn refuse_second_session(&self, key: &SemanticArtifactKey) -> Option<Result<SemanticStatus>> {
+        let active = self
+            .semantic_runtime
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let refusal = match active.as_ref().map(|active| &active.source)? {
+            SemanticSource::Artifact(opened) if opened.key == *key => None,
+            SemanticSource::Artifact(opened) => Some(format!(
+                "a semantic artifact is already open ({}); call disable_semantic() first to \
+                 open {}",
+                opened.key.artifact_dir.display(),
+                key.artifact_dir.display()
+            )),
+            SemanticSource::SelfBuilt(_) => Some(format!(
+                "a semantic session with vectors built on this device is open \
+                 (configure_semantic); call disable_semantic() first to open {}",
+                key.artifact_dir.display()
+            )),
+        };
+        // Released before the status is read, which takes the lock again.
+        drop(active);
+        Some(match refusal {
+            None => Ok(self.semantic_status()),
+            Some(refusal) => Err(anyhow::anyhow!(refusal)),
+        })
+    }
+
     /// Remove the configured sidecar without touching its on-disk files.
     /// This is useful when an app switches library roots or wants lexical-only
     /// operation for the current session, and it is the explicit way to allow a
-    /// subsequent [`Self::configure_semantic`] with different inputs.
+    /// subsequent [`Self::configure_semantic`] or [`Self::open_semantic_artifact`]
+    /// with different inputs.
     ///
-    /// Because the vector store is in-memory, this drops the session's vectors:
-    /// re-configuring afterwards needs a full semantic re-index.
+    /// For a session from [`Self::configure_semantic`] this drops its vectors,
+    /// which are in memory only: configuring it again needs a full re-index. An
+    /// opened artifact is only closed; its files are untouched.
     pub fn disable_semantic(&mut self) {
         #[cfg(feature = "semantic-integration")]
         {
-            self.semantic_runtime = None;
+            *self
+                .semantic_runtime
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = None;
         }
     }
 
     /// The open sidecar engine, or `None` when semantic search has not been
-    /// configured in this session.
+    /// configured in this session. A clone of the handle, which is an `Arc`, so no
+    /// lock is held while it is used.
     #[cfg(feature = "semantic-integration")]
-    fn semantic_engine(&self) -> Option<&OtzariaHybridEngine> {
-        self.semantic_runtime.as_ref().map(|active| &active.engine)
+    fn semantic_engine(&self) -> Option<OtzariaHybridEngine> {
+        self.semantic_runtime
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|active| active.engine.clone())
+    }
+
+    /// Why an opened artifact must not be asked, or `None` when it may be — or when
+    /// the session is not an artifact at all.
+    ///
+    /// The artifact was verified against the index's segment set at open. A commit since
+    /// (an add, a delete, a merge) means its line ids may name lines that moved, and
+    /// hydration would then show the wrong line under a confident score.
+    #[cfg(feature = "semantic-integration")]
+    fn stale_artifact_reason(&self) -> Option<String> {
+        let active = self
+            .semantic_runtime
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let SemanticSource::Artifact(opened) = &active.as_ref()?.source else {
+            return None;
+        };
+        let current = crate::semantic_corpus::segments_digest(&self.index_reader.searcher());
+        (current != opened.segments_sha256).then(|| {
+            format!(
+                "the lexical index has changed since the semantic artifact at {} was opened \
+                 (its segments were {}, and are {current}), so the artifact's line ids may \
+                 name lines that moved; disable_semantic() and open the artifact built for \
+                 this index",
+                opened.key.artifact_dir.display(),
+                opened.segments_sha256
+            )
+        })
     }
 
     /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
@@ -2264,9 +2591,12 @@ impl SearchEngine {
         {
             if let Some(runtime) = self.semantic_engine() {
                 let status = runtime.get_semantic_status();
+                // A stale artifact is not served, and the status says so rather than
+                // reporting vectors a search will not use.
+                let stale = self.stale_artifact_reason();
                 return SemanticStatus {
                     enabled: true,
-                    available: status.available,
+                    available: status.available && stale.is_none(),
                     model_loaded: status.model_loaded,
                     indexed_book_count: status.indexed_book_count,
                     vector_count: status.vector_count,
@@ -2276,7 +2606,7 @@ impl SearchEngine {
                     vector_backend: status.vector_backend,
                     vectors_persisted: status.vectors_persisted,
                     needs_full_reindex: status.needs_full_reindex,
-                    last_error: status.last_error,
+                    last_error: stale.or(status.last_error),
                 };
             }
             Self::semantic_not_configured_status()
@@ -2503,6 +2833,24 @@ impl SearchEngine {
                     started.elapsed().as_millis() as u64,
                 );
             };
+            // Before the sidecar is asked, not after: its candidates would be hydrated from
+            // lines the artifact may not describe.
+            if let Some(stale) = self.stale_artifact_reason() {
+                return self.semantic_lexical_fallback_response(
+                    &query,
+                    &facets,
+                    limit,
+                    offset,
+                    lexical_mode,
+                    fuzzy_max_distance,
+                    retrieval_mode,
+                    grouping,
+                    match_nikud,
+                    match_taamim,
+                    Some(stale),
+                    started.elapsed().as_millis() as u64,
+                );
+            }
             // Ask the coordinator for a prefix wider than the requested page,
             // then hydrate/filter before applying the caller's pagination.
             // This lets a few stale sidecar records be skipped without leaving

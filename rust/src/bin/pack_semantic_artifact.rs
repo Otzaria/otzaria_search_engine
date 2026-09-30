@@ -18,6 +18,11 @@
 //! either check: a GPU worker has no corpus, and the assembler only counts.
 //!
 //! **No inference backend is required.** Packing never turns text into a vector.
+//!
+//! `--stamp-index` also writes the index's corpus stamp into `--index`, as
+//! `build_semantic_artifact --stamp-index` does: the identity this artifact was packed
+//! against and the segment set it was read from, which a device compares instead of
+//! recomputing `corpus_id`.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
@@ -133,6 +138,16 @@ fn main() {
     println!("Payload bytes: {}", report.total_size_bytes);
     println!("Identity:      {}", report.identity);
     println!("Digest:        {}", report.digest);
+    // After packing, so a refused pack leaves no stamp claiming an artifact exists for it.
+    if args.iter().any(|arg| arg == "--stamp-index") {
+        let stamp = corpus
+            .write_stamp(Path::new(&index_path))
+            .unwrap_or_else(|error| {
+                eprintln!("Could not stamp the index at {index_path}: {error:#}");
+                process::exit(1);
+            });
+        println!("Index stamp:   {}", stamp.display());
+    }
     println!(
         "\nPublish that digest outside the artifact. Verified without it, an install \
          detects damage\nand the wrong artifact, but not one deliberately rebuilt to match."
@@ -202,6 +217,8 @@ Usage:
   --model            JSON ModelIdentity
   --chunking         JSON ChunkerConfig; its hash must be the model's chunking_identity
   --out              Output directory; must not exist, or be empty
+  --stamp-index      Also write the corpus stamp into --index, which a device needs to
+                     open this artifact against that index
 
 Every check happens here: each record's source digest against the line the index holds,
 and the whole id set against the one the recipe embeds.";
