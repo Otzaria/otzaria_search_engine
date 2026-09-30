@@ -392,6 +392,42 @@ Future<void> main() async {
       },
     );
 
+    test(
+      'a negative ONNX token cap arrives in the billions and is refused',
+      () async {
+        // maxTokens crosses as a u32, so -1 reaches Rust as 4294967295: the
+        // case the ONNX cap's ceiling exists for, since the load-time probe of
+        // that many tokens could not be allocated. It is refused while it is
+        // still a configuration, naming the cap and the ceiling. Nothing is
+        // loaded, so no graph has to exist at the path.
+        await engine.disableSemantic();
+        await expectLater(
+          engine.configureSemantic(
+            config: SemanticConfigInput(
+              rootDir: '${root.path}/semantic-onnx',
+              modelPath: '${root.path}/model.onnx',
+              modelId: 'ArieLLL123/judaic-semantic-round2-onnx-zayit',
+              embeddingDim: 256,
+              pooling: 'in-graph',
+              maxTokens: -1,
+              modelQuantization: 'fp32',
+              embeddingTextVersion: 2,
+            ),
+          ),
+          throwsA(
+            isA<AnyhowException>().having(
+              (error) => error.message,
+              'message',
+              allOf(
+                contains('embedding_max_tokens is 4294967295'),
+                contains('65536'),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
     test('the index diff sees the indexed book', () async {
       final diff = await engine.semanticIndexDiff();
 

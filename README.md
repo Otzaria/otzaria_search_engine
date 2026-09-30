@@ -62,8 +62,12 @@ await engine.configureSemantic(
 ```
 
 A value the sidecar does not implement — an unknown pooling, a text recipe
-version it has no code for, a token cap below 2 — is refused by
-`configureSemantic` itself, and so is an empty `modelQuantization`.
+version it has no code for, a token cap below 2, or for an ONNX model a cap
+above 65,536 — is refused by `configureSemantic` itself, and so is an empty
+`modelQuantization`. The ONNX ceiling is past the context of any ONNX sentence
+encoder, and it is what keeps a negative `maxTokens`, which arrives as a cap in
+the billions, from reaching the model's load-time probe. A GGUF cap has no
+such bound: llama.cpp clamps it to the model's context.
 
 ### The ONNX Runtime library
 
@@ -77,17 +81,32 @@ provide the runtime. The first of these that exists is used:
    `libonnxruntime.dylib`) in the model directory, beside the `.onnx` graph.
 
 The reference runtime is Microsoft's official ONNX Runtime 1.28.0 release on
-GitHub, and the oldest runtime API accepted is ONNX Runtime 1.17's. With no
-runtime found, an ONNX model is unavailable just as on a build without the
-backend, and lexical search is unaffected. The runtime is code rather than
-model data, so it is not part of the model checksum.
+GitHub, and the oldest runtime API accepted is ONNX Runtime 1.17's. The runtime
+is code rather than model data, so it is not part of the model checksum.
+
+Without a runtime that loads (none found, not a runtime, too old, or a different
+one already loaded in the process), loading the model fails with "ONNX Runtime
+could not be loaded: …", which names both places above. That text is in the
+error `semanticIndexBooks` throws and in `SemanticStatus.lastError`. It is not
+the "No embedding backend is available in this build" of a build without the
+backend: here the fix is the library, not a rebuild. Otherwise the model behaves
+as on such a build (see below), and lexical search is unaffected.
+
+On macOS, an application built with the Hardened Runtime, which notarization
+requires, loads only libraries signed by Apple or with its own Team ID. It may
+therefore refuse Microsoft's `libonnxruntime.dylib` from the model directory
+even when the file is intact, and the loader's reason then appears in that
+message. What works is shipping the library inside the application bundle,
+signed with the application's identity, and naming it with
+`OTZARIA_ONNX_RUNTIME`.
 
 ### Builds without a backend
 
 A build can hold the integration with no backend for the configured model's
-format: a GGUF model on 32-bit ARM, an ONNX model on Android or iOS, a build
-whose feature for that format is off, or an ONNX model with no ONNX Runtime
-library to load. `available` — not `enabled` — is the flag that says so:
+format: a GGUF model on 32-bit ARM, an ONNX model on Android or iOS, or a build
+whose feature for that format is off. An ONNX model whose runtime cannot be
+loaded behaves the same way; only the message `semanticIndexBooks` throws
+differs (see above). `available` — not `enabled` — is the flag that says so:
 
 | call | on such a build |
 | --- | --- |

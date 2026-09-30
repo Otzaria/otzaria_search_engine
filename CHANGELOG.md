@@ -23,10 +23,13 @@
 
   They map onto the sidecar's `pooling`, `embedding_max_tokens`,
   `model_quantization` and `chunking.embedding_text_version`, and the sidecar
-  validates them when `configureSemantic` opens it; an empty
-  `modelQuantization` is refused before that. `configureSemantic` now compares
-  all eight fields, so a different recipe under the same model file is refused
-  by name, like a different model, instead of being accepted as a repeat.
+  validates them when `configureSemantic` opens it. It refuses an unknown
+  pooling, a text recipe it has no code for, a cap below 2 and, for an ONNX
+  model, a cap above 65,536, which is also where a negative `maxTokens` lands:
+  it arrives as a cap in the billions. An empty `modelQuantization` is refused
+  before that. `configureSemantic` now compares all eight fields, so a
+  different recipe under the same model file is refused by name, like a
+  different model, instead of being accepted as a repeat.
 
   **What changes for consumers.** Every construction has to pass the four
   fields. The Otzaria app constructs `SemanticConfigInput` only in
@@ -43,9 +46,13 @@
   the platform's default file name beside the `.onnx` graph. **An application
   that configures an ONNX model has to provide that library**; the reference is
   Microsoft's ONNX Runtime 1.28.0 release, and the oldest runtime API accepted
-  is 1.17's. Without one, semantic search reports the backend as unavailable
-  and lexical search is unaffected. The runtime is not part of the model
-  checksum. The backend is built for desktop targets only.
+  is 1.17's. Without one that loads, indexing throws an error that says "ONNX
+  Runtime could not be loaded: …" and names both places, not the no-backend
+  error of a build without it; semantic search reports itself unavailable, and
+  lexical search is unaffected. On macOS a Hardened Runtime application loads
+  only libraries signed by Apple or with its own Team ID, so the runtime belongs
+  inside the signed bundle, named through `OTZARIA_ONNX_RUNTIME`. The runtime is
+  not part of the model checksum. The backend is built for desktop targets only.
 - **Tests against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
   a handful of lines indexed through the public API, and queries that must rank
   the line they are about first. A ranking cannot tell whether the role

@@ -44,7 +44,7 @@ use tempfile::TempDir;
 
 const MODEL_ENV: &str = "OTZARIA_TEST_ONNX_MODEL";
 /// Read by the sidecar, not by this test: checked here only so that a missing runtime
-/// is a loud skip rather than a `BackendUnavailable` failure.
+/// is a loud skip rather than an "ONNX Runtime could not be loaded" failure.
 const RUNTIME_ENV: &str = "OTZARIA_ONNX_RUNTIME";
 const BOOK_KEY: &str = "/library/meivin-probe.txt";
 const TITLE: &str = "probe";
@@ -277,7 +277,8 @@ fn the_meivin_model_ranks_the_line_a_query_is_about_first() {
 /// Text recipe 2 is recipe 1's text behind the role prefixes, on both sides of a search.
 /// So a recipe 2 session over the bare lines, queried with bare queries, and a recipe 1
 /// session over the lines with `[PASSAGE] ` written in, queried with `[QUERY] ` written
-/// in, embed the very same strings and must score every pair alike.
+/// in, embed the very same strings and must score every pair alike. (Recipe 2 also trims
+/// what it prefixes; nothing here has whitespace at either end to trim.)
 ///
 /// This is what shows that `embedding_text_version` arrives as 2 and that the version
 /// means what the model needs: had it been lost, both halves of the first session would

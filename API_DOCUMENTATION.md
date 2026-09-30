@@ -260,7 +260,7 @@ checksum, once it has loaded), so an index built under one value reports
 | `modelId` | the model's name | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
 | `embeddingDim` | the width of every vector | 1024 | 256 |
 | `pooling` | how one vector is made from each text | `last-token` | `in-graph` |
-| `maxTokens` | the token cap per text, as the model's backend counts it | 512 | 256 |
+| `maxTokens` | the token cap per text, as the model's backend counts it; at least 2, and for an ONNX model at most 65,536 | 512 | 256 |
 | `modelQuantization` | the precision of the weights; must not be empty | `Q4_K_M` | `fp32` |
 | `embeddingTextVersion` | the text recipe; 2 prefixes `[PASSAGE] ` to texts and `[QUERY] ` to queries | 1 | 2 |
 
@@ -270,9 +270,15 @@ named by the `OTZARIA_ONNX_RUNTIME` environment variable, or the platform's
 default file name (`onnxruntime.dll`, `libonnxruntime.so` or
 `libonnxruntime.dylib`) beside the `.onnx` graph. The reference is Microsoft's
 official ONNX Runtime 1.28.0 release, and the oldest runtime API accepted is
-ONNX Runtime 1.17's. Without one, semantic search reports the backend as
-unavailable and lexical search is unaffected. The ONNX backend is built for
-desktop targets (Windows, Linux and macOS) only.
+ONNX Runtime 1.17's. Without one that loads, indexing throws an error that
+says "ONNX Runtime could not be loaded: …" and names both places, which
+`SemanticStatus.lastError` then carries too; semantic search reports itself
+unavailable, and lexical search is unaffected. That is not the "No embedding
+backend is available in this build" of a build without the backend: the fix
+is the library, not a rebuild. On macOS, a Hardened Runtime application loads
+only libraries signed by Apple or with its own Team ID, so ship the runtime
+inside the signed application bundle and name it with `OTZARIA_ONNX_RUNTIME`.
+The ONNX backend is built for desktop targets (Windows, Linux and macOS) only.
 
 ---
 
