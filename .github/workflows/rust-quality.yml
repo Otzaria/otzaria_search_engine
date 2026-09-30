@@ -82,8 +82,8 @@ jobs:
         if: matrix.features == 'semantic-mock'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
 
-      # Built, not run: the one test that exercises the backend needs the model
-      # and ONNX Runtime and skips without them, so running the suite here would
+      # Built, not run: the only tests that exercise the backend need the model
+      # and ONNX Runtime and skip without them, so running the suite here would
       # repeat what the default and mock jobs already run.
       - name: Build semantic ONNX tests
         if: matrix.features == 'semantic-onnx'

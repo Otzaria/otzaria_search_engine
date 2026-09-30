@@ -46,11 +46,14 @@
   is 1.17's. Without one, semantic search reports the backend as unavailable
   and lexical search is unaffected. The runtime is not part of the model
   checksum. The backend is built for desktop targets only.
-- **A test against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
+- **Tests against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
   a handful of lines indexed through the public API, and queries that must rank
-  the line they are about first. `#[ignore]`d, and it skips loudly unless
-  `OTZARIA_TEST_ONNX_MODEL` and `OTZARIA_ONNX_RUNTIME` name the graph and the
-  runtime.
+  the line they are about first. A ranking cannot tell whether the role
+  prefixes reached the model, so text recipe 2 is also checked against its
+  definition: it must score every pair exactly as recipe 1 does when handed the
+  `[PASSAGE] ` / `[QUERY] `-prefixed strings. `#[ignore]`d, and they skip loudly
+  unless `OTZARIA_TEST_ONNX_MODEL` and `OTZARIA_ONNX_RUNTIME` name the graph and
+  the runtime.
 
 ### Changed
 
