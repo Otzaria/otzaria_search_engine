@@ -24,10 +24,15 @@
 //! existing files, the pattern of the sidecar's `golden` suite. The sidecar reads
 //! `OTZARIA_ONNX_RUNTIME` itself; the reference runtime is Microsoft's ONNX Runtime 1.28.0
 //! release. `tokenizer.json` must sit beside the graph, as it does in the published
-//! package. Run them with:
+//! package.
+//!
+//! The graph is the one the application uses, `seforim-embed-round2-int8.onnx`. The
+//! full-precision `seforim-embed-round2-fp32.onnx` published beside it runs the same tests:
+//! the quantization label is read off the file name, so each graph is configured under
+//! its own identity. Run them with:
 //!
 //! ```sh
-//! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-fp32.onnx \
+//! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-int8.onnx \
 //! OTZARIA_ONNX_RUNTIME=/path/to/onnxruntime-osx-arm64-1.28.0/lib/libonnxruntime.dylib \
 //!   cargo test --manifest-path rust/Cargo.toml --features semantic-onnx \
 //!   --test semantic_onnx_model -- --ignored --nocapture
@@ -59,8 +64,9 @@ const QUERY_PREFIX: &str = "[QUERY] ";
 /// How far two scores of the same strings may lie apart. The vectors are bit-identical
 /// in practice (same graph, runtime and thread count, one text per run); the tolerance
 /// only spares a platform with non-deterministic kernels a failure for the wrong reason.
-/// Dropping the prefixes from both sides moves this probe's 15 scores by 0.0006 to 0.06
-/// (measured), so it is far below anything a wrong recipe does.
+/// Dropping the prefixes from both sides moves this probe's 15 scores by 0.002 to 0.06 on
+/// the INT8 graph and by 0.0006 to 0.06 on the fp32 one (measured), so it is far below
+/// anything a wrong recipe does.
 const SCORE_TOLERANCE: f32 = 1e-6;
 
 /// Lines on unrelated subjects, each in a section of its own: a line shorter than the
@@ -114,8 +120,8 @@ fn model_and_runtime() -> Option<PathBuf> {
     // Both looked up before either is acted on, so one run reports everything missing.
     let model = required_file(
         MODEL_ENV,
-        "seforim-embed-round2-fp32.onnx, with its tokenizer.json beside it, from the \
-         gated judaic-semantic-round2-onnx-zayit model",
+        "seforim-embed-round2-int8.onnx (or its -fp32 twin), with its tokenizer.json \
+         beside it, from the gated judaic-semantic-round2-onnx-zayit model",
     );
     let runtime = required_file(
         RUNTIME_ENV,
@@ -125,7 +131,28 @@ fn model_and_runtime() -> Option<PathBuf> {
     model.zip(runtime).map(|(model, _)| model)
 }
 
-/// The Meivin identity, exactly as the application configures it.
+/// The quantization label of a Meivin Round 2 graph, read off its published file name:
+/// the two graphs are one model under two identities, and configuring the INT8 graph as
+/// `"fp32"` would record an identity that names other weights.
+fn quantization_of(graph: &Path) -> &'static str {
+    let stem = graph
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if stem.ends_with("-int8") {
+        "int8"
+    } else if stem.ends_with("-fp32") {
+        "fp32"
+    } else {
+        panic!(
+            "{MODEL_ENV} names {}, which is neither seforim-embed-round2-int8.onnx nor \
+             seforim-embed-round2-fp32.onnx, so its quantization is unknown",
+            graph.display()
+        )
+    }
+}
+
+/// The Meivin identity, exactly as the application configures it for `model`.
 fn meivin(root: &TempDir, model: &Path) -> SemanticConfigInput {
     SemanticConfigInput {
         root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
@@ -134,7 +161,7 @@ fn meivin(root: &TempDir, model: &Path) -> SemanticConfigInput {
         embedding_dim: 256,
         pooling: "in-graph".to_owned(),
         max_tokens: 256,
-        model_quantization: "fp32".to_owned(),
+        model_quantization: quantization_of(model).to_owned(),
         embedding_text_version: 2,
     }
 }

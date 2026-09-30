@@ -1839,15 +1839,17 @@ class SemanticBookLineInput {
 /// value is reported as needing a full re-index under another, rather than
 /// having vectors that cannot be compared mixed into it.
 /// Nothing here is read from the model file, so the values must be the ones the
-/// model was built for. The two models the application knows:
+/// model was built for. The two models the application knows (the Meivin
+/// default is its INT8 graph; the full-precision `seforim-embed-round2-fp32.onnx`
+/// published beside it differs only in `model_path` and `"fp32"`):
 ///
 /// | field | Qwen3 GGUF | Meivin ONNX |
 /// | --- | --- | --- |
-/// | `model_path` | the `.gguf` file | `seforim-embed-round2-fp32.onnx` |
+/// | `model_path` | the `.gguf` file | `seforim-embed-round2-int8.onnx` |
 /// | `embedding_dim` | 1024 | 256 |
 /// | `pooling` | `"last-token"` | `"in-graph"` |
 /// | `max_tokens` | 512 | 256 |
-/// | `model_quantization` | `"Q4_K_M"` | `"fp32"` |
+/// | `model_quantization` | `"Q4_K_M"` | `"int8"` |
 /// | `embedding_text_version` | 1 | 2 |
 class SemanticConfigInput {
   final String rootDir;
@@ -1897,10 +1899,10 @@ class SemanticConfigInput {
   /// one a backend may clamp it to.
   final int maxTokens;
 
-  /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF and
-  /// `"fp32"` for the Meivin graph (the INT8 graph published beside it is a
-  /// different identity). Not the precision the vectors are stored at. Must not
-  /// be empty.
+  /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF,
+  /// `"int8"` for the Meivin INT8 graph the application uses, and `"fp32"` for
+  /// the full-precision graph published beside it, which is a different
+  /// identity. Not the precision the vectors are stored at. Must not be empty.
   ///
   /// Identity because two quantizations of one model produce different
   /// vectors. The model file's checksum catches such a swap as well, but only

@@ -38,24 +38,30 @@ mixing in vectors that cannot be compared.
 
 | field | Qwen3 GGUF | Meivin ONNX |
 | --- | --- | --- |
-| `modelPath` | the `.gguf` file | `seforim-embed-round2-fp32.onnx`, with `tokenizer.json` beside it |
+| `modelPath` | the `.gguf` file | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
 | `modelId` | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
 | `embeddingDim` | 1024 | 256 |
 | `pooling` | `last-token` | `in-graph` |
 | `maxTokens` | 512 | 256 |
-| `modelQuantization` | `Q4_K_M` | `fp32` |
+| `modelQuantization` | `Q4_K_M` | `int8` |
 | `embeddingTextVersion` | 1 | 2 |
+
+The Meivin model the application uses is its INT8 graph: the accuracy it gives
+up is negligible, and it is a quarter of the size, which matters on weak
+machines. The full-precision `seforim-embed-round2-fp32.onnx` published beside
+it remains an alternative, configured with `modelQuantization: 'fp32'`; the two
+are different identities, so vectors from one never mix with the other's.
 
 ```dart
 await engine.configureSemantic(
   config: SemanticConfigInput(
     rootDir: semanticRoot,
-    modelPath: '$modelDir/seforim-embed-round2-fp32.onnx',
+    modelPath: '$modelDir/seforim-embed-round2-int8.onnx',
     modelId: 'ArieLLL123/judaic-semantic-round2-onnx-zayit',
     embeddingDim: 256,
     pooling: 'in-graph',
     maxTokens: 256,
-    modelQuantization: 'fp32',
+    modelQuantization: 'int8',
     embeddingTextVersion: 2,
   ),
 );

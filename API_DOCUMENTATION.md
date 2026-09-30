@@ -256,12 +256,12 @@ checksum, once it has loaded), so an index built under one value reports
 | field | meaning | Qwen3 GGUF | Meivin ONNX |
 | --- | --- | --- | --- |
 | `rootDir` | the sidecar's own directory | | |
-| `modelPath` | the model file: `.onnx` selects ONNX Runtime, any other path llama.cpp | the `.gguf` file | `seforim-embed-round2-fp32.onnx`, with `tokenizer.json` beside it |
+| `modelPath` | the model file: `.onnx` selects ONNX Runtime, any other path llama.cpp | the `.gguf` file | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
 | `modelId` | the model's name | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
 | `embeddingDim` | the width of every vector | 1024 | 256 |
 | `pooling` | how one vector is made from each text | `last-token` | `in-graph` |
 | `maxTokens` | the token cap per text, as the model's backend counts it; at least 2, and for an ONNX model at most 65,536 | 512 | 256 |
-| `modelQuantization` | the precision of the weights; must not be empty | `Q4_K_M` | `fp32` |
+| `modelQuantization` | the precision of the weights; must not be empty | `Q4_K_M` | `int8` (`fp32` for the full-precision graph) |
 | `embeddingTextVersion` | the text recipe; 2 prefixes `[PASSAGE] ` to texts and `[QUERY] ` to queries | 1 | 2 |
 
 **An ONNX model needs the ONNX Runtime shared library at run time.** The
