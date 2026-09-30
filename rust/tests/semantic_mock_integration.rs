@@ -7,8 +7,13 @@
 //! the lexical fallback: `Hybrid` and `LexicalOnly` are the only paths that run
 //! the BM25 candidate collector, so a fallback-only suite would leave it
 //! untested.
+//!
+//! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the
+//! sidecar is opened on a stub GGUF, which only the stand-in serves, and
+//! `semantic-llama` would take it ahead of the stand-in and fail to load it.
+//! `semantic-onnx` serves only `.onnx` graphs, so it leaves the stub alone.
 
-#![cfg(feature = "semantic-mock")]
+#![cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
 
 use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
 use search_engine::api::search_engine::{

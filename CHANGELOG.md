@@ -65,11 +65,13 @@
 - **`build_semantic_artifact` documents an ONNX graph as `--model-file`**, next
   to a GGUF, and its no-backend message names `semantic-onnx`, `semantic-llama`
   and `semantic-mock`. The bins that need no model no longer say "GGUF".
-- **The artifact-build tests that drive the stand-in with a stub GGUF run only
-  with `semantic-mock` and without `semantic-llama`.** The binary's test was
-  gated off `semantic-real`, which `semantic` no longer turns on, so llama.cpp
-  could have claimed the stub; the corpus adapter's test had no gate at all and
-  did not compile in a build without the stand-in, such as `semantic-onnx`.
+- **The Rust tests that drive the stand-in with a stub GGUF run only with
+  `semantic-mock` and without `semantic-llama`.** The binary's test was gated
+  off `semantic-real`, which `semantic` no longer turns on, so llama.cpp could
+  have claimed the stub; the corpus adapter's test had no gate at all and did
+  not compile in a build without the stand-in, such as `semantic-onnx`; and
+  `tests/semantic_mock_integration.rs`, gated on `semantic-mock` alone, failed
+  every test beside `semantic` because llama.cpp claimed its stub.
 - **CI checks, lints and builds the tests with `--features semantic-onnx`**,
   and the real-backend job compiles both backends through `semantic`.
 
