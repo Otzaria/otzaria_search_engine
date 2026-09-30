@@ -35,6 +35,8 @@
 //! failing — the engine uses it whenever a phrase's expansions outgrow the
 //! exact `RegexPhraseQuery` path.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 use tantivy::postings::{Postings, SegmentPostings};
@@ -244,8 +246,13 @@ struct GapVerifiedScorer {
     inner: Box<dyn Scorer>,
     /// Positional postings per word position (≥1 term per word).
     word_postings: Vec<Vec<SegmentPostings>>,
+    /// Per word: `(current doc, postings index)`, smallest doc on top. A word
+    /// can carry thousands of terms; verifying a doc touches only the postings
+    /// that lag behind it or sit on it, instead of seeking every one of them.
+    heaps: Vec<BinaryHeap<Reverse<(DocId, usize)>>>,
     gaps: Vec<u32>,
     // Reused scratch buffers (verification runs per candidate doc).
+    on_doc: Vec<usize>,
     pos_buf: Vec<u32>,
     cur_positions: Vec<u32>,
     feasible: Vec<u32>,
@@ -258,10 +265,23 @@ impl GapVerifiedScorer {
         word_postings: Vec<Vec<SegmentPostings>>,
         gaps: Vec<u32>,
     ) -> Self {
+        let heaps = word_postings
+            .iter()
+            .map(|postings| {
+                postings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.doc() != TERMINATED)
+                    .map(|(i, p)| Reverse((p.doc(), i)))
+                    .collect()
+            })
+            .collect();
         let mut scorer = Self {
             inner,
             word_postings,
+            heaps,
             gaps,
+            on_doc: Vec::new(),
             pos_buf: Vec::new(),
             cur_positions: Vec::new(),
             feasible: Vec::new(),
@@ -291,14 +311,30 @@ impl GapVerifiedScorer {
             // docs in increasing order, so the postings only ever seek
             // forward.
             self.cur_positions.clear();
-            for postings in &mut self.word_postings[w] {
-                if postings.doc() < doc {
-                    postings.seek(doc);
+            let postings = &mut self.word_postings[w];
+            let heap = &mut self.heaps[w];
+            while let Some(&Reverse((at, i))) = heap.peek() {
+                if at >= doc {
+                    break;
                 }
-                if postings.doc() == doc {
-                    postings.positions(&mut self.pos_buf);
-                    self.cur_positions.extend_from_slice(&self.pos_buf);
+                heap.pop();
+                let next = postings[i].seek(doc);
+                if next != TERMINATED {
+                    heap.push(Reverse((next, i)));
                 }
+            }
+            self.on_doc.clear();
+            while let Some(&Reverse((at, i))) = heap.peek() {
+                if at != doc {
+                    break;
+                }
+                heap.pop();
+                postings[i].positions(&mut self.pos_buf);
+                self.cur_positions.extend_from_slice(&self.pos_buf);
+                self.on_doc.push(i);
+            }
+            for &i in &self.on_doc {
+                heap.push(Reverse((doc, i)));
             }
             if self.cur_positions.is_empty() {
                 return false;
