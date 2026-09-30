@@ -224,19 +224,47 @@ pub(crate) fn next_token_boundaries(text: &str, start_byte: usize) -> Option<(us
 /// זוג קריאות של מילה אחת: `(X) [Y]` — קרי וכתיב במקרא, ותיקון נוסח
 /// "(מחק) [גרוס]" בשאר הספרים. כש-`[tok_start, tok_end)` הוא X, מחזיר את
 /// גבולות Y. שתיהן מאונדקסות באותה עמדה, כך שביטוי נמצא עם כל אחת מהן.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PairedReading {
+    pub second_start: usize,
+    pub second_end: usize,
+    /// Byte immediately after the closing `]`, including trailing punctuation
+    /// inside the brackets (e.g. the maqaf in `[לכה־]נא`).
+    pub after_pair: usize,
+}
+
+/// A trailing separator inside a reading does not add another token. Brackets
+/// and markup delimiters are excluded so nested or incomplete readings cannot
+/// be mistaken for a complete pair.
+fn is_reading_suffix(c: char) -> bool {
+    !is_word_char(c) && !matches!(c, '(' | ')' | '[' | ']' | '<' | '>')
+}
+
 pub(crate) fn paired_reading_after(
     text: &str,
     tok_start: usize,
     tok_end: usize,
-) -> Option<(usize, usize)> {
+) -> Option<PairedReading> {
     if !text[..tok_start].ends_with('(') {
         return None;
     }
-    let after_close = text[tok_end..].strip_prefix(')')?;
+    let after_close = text[tok_end..]
+        .trim_start_matches(is_reading_suffix)
+        .strip_prefix(')')?;
     let after_open = after_close.trim_start().strip_prefix('[')?;
     let y_start = text.len() - after_open.len();
     let (start, end) = next_token_boundaries(text, y_start)?;
-    (start == y_start && text[end..].starts_with(']')).then_some((start, end))
+    if start != y_start {
+        return None;
+    }
+    let after_pair = text[end..]
+        .trim_start_matches(is_reading_suffix)
+        .strip_prefix(']')?;
+    Some(PairedReading {
+        second_start: start,
+        second_end: end,
+        after_pair: text.len() - after_pair.len(),
+    })
 }
 
 impl<'a> TokenStream for HebrewTokenStream<'a> {
@@ -383,6 +411,55 @@ mod tests {
             positions("סימן (ח')[ו'] שם"),
             vec![p("סימן", 0), p("ח'", 1), p("ו'", 1), p("שם", 2)]
         );
+        assert_eq!(
+            positions("בלק (לך) [לכה־]נא"),
+            vec![p("בלק", 0), p("לך", 1), p("לכה", 1), p("נא", 2)]
+        );
+        assert_eq!(
+            positions("אמר(ת) [רבא] משום"),
+            vec![p("אמר", 0), p("ת", 1), p("רבא", 1), p("משום", 2)]
+        );
+        assert_eq!(
+            positions("(א)[ב](ג)[ד] סוף"),
+            vec![p("א", 0), p("ב", 0), p("ג", 1), p("ד", 1), p("סוף", 2)]
+        );
+    }
+
+    #[test]
+    fn quote_free_twins_preserve_paired_positions_and_source_offsets() {
+        let text = "סימן (ח')[ו'] (ט')[י'] שם";
+        let mut tokenizer = HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: false,
+        };
+        let mut stream = tokenizer.token_stream(text);
+        let mut tokens = Vec::new();
+        while stream.advance() {
+            let token = stream.token();
+            tokens.push((
+                token.text.clone(),
+                token.position,
+                text[token.offset_from..token.offset_to].to_string(),
+            ));
+        }
+        let expected = [
+            ("סימן", 0, "סימן"),
+            ("ח'", 1, "ח'"),
+            ("ח", 1, "ח'"),
+            ("ו'", 1, "ו'"),
+            ("ו", 1, "ו'"),
+            ("ט'", 2, "ט'"),
+            ("ט", 2, "ט'"),
+            ("י'", 2, "י'"),
+            ("י", 2, "י'"),
+            ("שם", 3, "שם"),
+        ];
+        assert_eq!(
+            tokens,
+            expected
+                .map(|(term, position, source)| (term.to_string(), position, source.to_string()))
+                .to_vec()
+        );
     }
 
     #[test]
@@ -399,6 +476,13 @@ mod tests {
         );
         // סוגר מרובע שנמשך לאות (השלמה תוך-מילית) — לא זוג.
         assert_eq!(positions("(לא) [א]מר"), vec![p("לא", 0), p("אמר", 1)]);
+        for text in ["(א־ב) [ג]", "(א) [ב,ג]"] {
+            assert_eq!(
+                positions(text).iter().map(|(_, p)| *p).collect::<Vec<_>>(),
+                vec![0, 1, 2],
+                "multi-token reading was collapsed: {text}"
+            );
+        }
     }
 
     #[test]

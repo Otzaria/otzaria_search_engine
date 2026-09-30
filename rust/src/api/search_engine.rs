@@ -1050,6 +1050,27 @@ pub fn split_query_words(query: String) -> Vec<String> {
     hebrew_query::split_query_words(&query)
 }
 
+/// One engine query word with its original range in the user's query. Offsets
+/// are UTF-16 code units, matching Flutter's `TextSelection` offsets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryWordSpan {
+    pub word: String,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Maps the complete raw query to engine words and exact source selections.
+/// A paired `(X) [Y]` contributes only Y, even across whitespace; the returned
+/// word order is identical to `split_query_words` and keys per-word options.
+/// Pure string computation — safe to call synchronously.
+#[frb(sync)]
+pub fn query_word_spans(query: String) -> Vec<QueryWordSpan> {
+    hebrew_query::query_word_spans(&query)
+        .into_iter()
+        .map(|(word, start, end)| QueryWordSpan { word, start, end })
+        .collect()
+}
+
 /// Normalises a text-book line for indexing exactly the way the engine expects
 /// stored text to look: strip HTML, decompose presentation forms and strip
 /// nikud/cantillation — keeping punctuation, which search results display.
@@ -10238,6 +10259,127 @@ mod tests {
         // מילה בסוגריים מרובעים לבדה אינה זוג, ונשארת מילה נפרדת.
         assert_eq!(count("כי עונותיכם", 0), 0);
         assert_eq!(count("כי אם עונותיכם", 0), 1);
+    }
+
+    #[test]
+    fn paired_readings_preserve_query_boundaries_and_real_maqaf_readings() {
+        let (mut engine, _dir) = make_engine();
+        for (id, text) in [
+            // Numbers 23:13 and 1 Samuel 20:24: a maqaf is inside the
+            // qere brackets, with the following word immediately adjacent.
+            (1, "בלק (לך) [לכה־]נא"),
+            (2, "המלך (על) [אל־]הלחם"),
+            // No whitespace before '(' still means a separate token.
+            (3, "אמר(ת) [רבא] משום"),
+            (4, "ראשון (א־ב) [ג] סוף"),
+            (5, "שני (א) [ב,ג] סוף"),
+            (6, "סימן (ח')[ו'] (ט')[י'] שם"),
+        ] {
+            add(&mut engine, id, text, &format!("/books/{id}.txt"));
+        }
+        engine.commit().unwrap();
+        let count = |query: &str, distance: u32| {
+            count_advanced_default(
+                &engine,
+                query.to_string(),
+                vec![],
+                distance,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap()
+        };
+        for query in [
+            "בלק לך נא",
+            "בלק לכה נא",
+            "בלק (לך) [לכה־]נא",
+            "המלך על הלחם",
+            "המלך אל הלחם",
+            "אמר רבא משום",
+            "אמר(ת) [רבא] משום",
+            "סימן ח ט שם",
+            "סימן ו י שם",
+        ] {
+            assert_eq!(count(query, 0), 1, "query {query}");
+        }
+        for query in ["ראשון סוף", "שני סוף"] {
+            assert_eq!(count(query, 1), 0, "multi-token reading: {query}");
+            assert_eq!(count(query, 3), 1, "full gap: {query}");
+        }
+        // Neither quote-free twins nor paired readings consume an extra word.
+        assert_eq!(count("סימן שם", 1), 0);
+        assert_eq!(count("סימן שם", 2), 1);
+    }
+
+    #[test]
+    fn query_word_spans_agree_with_full_query_tokens_and_original_utf16_ranges() {
+        for query in [
+            "הארץ (הוצא) [היצא] אתך",
+            "הארץ(הוצא)\n[היצא] אתך",
+            "(אב) [אב] אב",
+            "😀 הארץ(הוצא) [היצא] אתך 😀",
+            "בלק (לך) [לכה־]נא",
+            "(א)[ב](ג)[ד] סוף",
+            "רמב''ם-משה תוס׳ רמח”ל",
+            "א.ב יב[ע]ר לה\u{FEFF}תיר",
+            "שָׁלוֹם מ\u{FB1D}ם \u{FB4F}הים",
+            "(א־ב) [ג] (א) [ב,ג]",
+            "כי [אם] עונותיכם",
+        ] {
+            let spans = query_word_spans(query.to_string());
+            assert_eq!(
+                spans.iter().map(|s| s.word.clone()).collect::<Vec<_>>(),
+                split_query_words(query.to_string()),
+                "full-query words differ for {query}"
+            );
+            let utf16 = query.encode_utf16().collect::<Vec<_>>();
+            let mut previous_end = 0;
+            for span in spans {
+                assert!(span.start >= previous_end, "overlapping spans: {query}");
+                let source = String::from_utf16(&utf16[span.start as usize..span.end as usize])
+                    .expect("source range split a surrogate pair");
+                assert_eq!(
+                    split_query_words(source),
+                    vec![span.word],
+                    "source range changed the selected word: {query}"
+                );
+                previous_end = span.end;
+            }
+        }
+        assert_eq!(
+            query_word_spans("(אב) [אב] אב".to_string()),
+            vec![
+                QueryWordSpan {
+                    word: "אב".to_string(),
+                    start: 6,
+                    end: 8
+                },
+                QueryWordSpan {
+                    word: "אב".to_string(),
+                    start: 10,
+                    end: 12
+                },
+            ]
+        );
+        assert_eq!(
+            query_word_spans("😀 רמב''ם-משה".to_string()),
+            vec![
+                QueryWordSpan {
+                    word: "רמב\"ם".to_string(),
+                    start: 3,
+                    end: 9
+                },
+                QueryWordSpan {
+                    word: "משה".to_string(),
+                    start: 10,
+                    end: 13
+                },
+            ]
+        );
     }
 
     #[test]
