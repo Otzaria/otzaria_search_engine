@@ -315,15 +315,51 @@ fn display_terms(word: &str, flags: &WordFlags, alternatives: &[String]) -> Vec<
     terms
 }
 
-fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[String]) -> String {
+fn bounded_charwise_display_pattern(term: &str) -> Option<String> {
+    // Count characters before allocating a potentially huge display regex.
+    // The same pieces are appended by `charwise_display_pattern` below.
+    let marks = ATTACHED_MARKS_CLASS.chars().count();
+    let mut previous_hebrew = false;
+    let mut length = 0;
+    for c in term.chars() {
+        let hebrew = matches!(c, 'א'..='ת');
+        if previous_hebrew && hebrew {
+            length += OPTIONAL_QUOTES.len();
+        }
+        previous_hebrew = hebrew;
+        length += match c {
+            'א'..='ת' => 1 + marks,
+            '"' => GERSHAYIM_DISPLAY_CLASS.len(),
+            '\'' => GERESH_DISPLAY_CLASS.len(),
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' => 2,
+            _ => 1,
+        };
+        if length > MAX_DISPLAY_PATTERN_CHARS {
+            return None;
+        }
+    }
+    Some(charwise_display_pattern(term))
+}
+
+fn build_word_display_pattern(
+    word: &str,
+    flags: &WordFlags,
+    alternatives: &[String],
+) -> Option<String> {
     let terms = display_terms(word, flags, alternatives);
 
     // Length budget: keep branches while the cumulative size stays under the
-    // cap; the first branch is always kept so the pattern is never empty.
+    // cap. An oversized first branch fails generation rather than truncating
+    // the typed root or blocking the rendering isolate during compilation.
     let mut branches: Vec<String> = Vec::new();
     let mut total = 0usize;
     for term in &terms {
-        let branch = charwise_display_pattern(term);
+        let Some(branch) = bounded_charwise_display_pattern(term) else {
+            if branches.is_empty() {
+                return None;
+            }
+            break;
+        };
         let len = branch.chars().count();
         if !branches.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
             break;
@@ -332,11 +368,11 @@ fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[Str
         branches.push(branch);
     }
 
-    match branches.len() {
+    Some(match branches.len() {
         0 => String::new(),
         1 => branches.into_iter().next().unwrap(),
         _ => format!("(?:{})", branches.join("|")),
-    }
+    })
 }
 
 fn matcher_branches(
@@ -396,7 +432,7 @@ pub fn build_display_highlight(
             .get(&(i as u32))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let pattern = build_word_display_pattern(word, &flags, alts);
+        let pattern = build_word_display_pattern(word, &flags, alts)?;
         if pattern.is_empty() {
             // Word vanished under normalization (e.g. a nikud-only token);
             // skip it rather than emit an empty branch that matches anywhere.
@@ -570,7 +606,7 @@ pub fn build_display_highlight_from_terms(
                 (pattern, !has_expansion, plan)
             } else {
                 (
-                    build_word_display_pattern(word, &flags, alts),
+                    build_word_display_pattern(word, &flags, alts)?,
                     !has_expansion,
                     matcher_branches(word, &flags, alts),
                 )
@@ -942,6 +978,21 @@ mod tests {
         );
         assert_eq!(hl.word_patterns.len(), 1);
         assert_eq!(hl.word_boundary_eligible, vec![true]);
+    }
+
+    #[test]
+    fn individual_display_branch_budget_is_checked_before_compilation() {
+        let below = "a".repeat(MAX_DISPLAY_PATTERN_CHARS);
+        assert_eq!(bounded_charwise_display_pattern(&below).unwrap(), below);
+        assert!(bounded_charwise_display_pattern(&format!("{below}a")).is_none());
+        // Escapes, nikud tolerance and optional quotes count toward the same
+        // budget as the output, not just the number of typed root letters.
+        for term in ["אב'\"", "a.*", "תורה", "\u{1F600}"] {
+            assert_eq!(
+                bounded_charwise_display_pattern(term).unwrap(),
+                charwise_display_pattern(term)
+            );
+        }
     }
 
     #[test]
