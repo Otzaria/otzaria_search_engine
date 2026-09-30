@@ -298,8 +298,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// - Called again with the same inputs it is a no-op returning the current
   ///   status, so a caller that configures defensively cannot lose an index.
   /// - Called with different inputs while a session is open it fails and says
-  ///   which input changed. Switching model or library root is an explicit
-  ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
+  ///   which input changed. Switching model, text recipe or library root is an
+  ///   explicit act: call [`Self::disable_semantic`] first and accept the
+  ///   rebuild.
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   });
@@ -1831,17 +1832,96 @@ class SemanticBookLineInput {
 /// loaded lazily when indexing begins, so configuration is cheap; searches
 /// report a degraded state until indexing has loaded the model and produced
 /// vectors, instead of making the lexical engine unusable.
+///
+/// Every field but `root_dir` describes how the vectors are produced, and the
+/// sidecar records each one in its manifest as part of the index's identity (the
+/// model file by its checksum, once it has loaded). An index built under one
+/// value is reported as needing a full re-index under another, rather than
+/// having vectors that cannot be compared mixed into it.
+/// Nothing here is read from the model file, so the values must be the ones the
+/// model was built for. The two models the application knows:
+///
+/// | field | Qwen3 GGUF | Meivin ONNX |
+/// | --- | --- | --- |
+/// | `model_path` | the `.gguf` file | `seforim-embed-round2-fp32.onnx` |
+/// | `embedding_dim` | 1024 | 256 |
+/// | `pooling` | `"last-token"` | `"in-graph"` |
+/// | `max_tokens` | 512 | 256 |
+/// | `model_quantization` | `"Q4_K_M"` | `"fp32"` |
+/// | `embedding_text_version` | 1 | 2 |
 class SemanticConfigInput {
   final String rootDir;
+
+  /// The model file, whose extension selects the backend. A path ending in
+  /// `.onnx` (in any letter case) is an ONNX graph for ONNX Runtime, with its
+  /// `tokenizer.json` in the same directory; every other path is a GGUF for
+  /// llama.cpp. A build without that format's backend cannot serve the model:
+  /// loading it, which indexing does, fails with `BackendUnavailable`.
+  ///
+  /// An ONNX graph also needs the ONNX Runtime shared library, which this
+  /// library does not link but loads when the model loads: the file named by
+  /// the `OTZARIA_ONNX_RUNTIME` environment variable, or else the platform's
+  /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
+  /// the graph. Without one, the model is `BackendUnavailable` in the same
+  /// way, and lexical search is unaffected.
   final String modelPath;
   final String modelId;
   final int embeddingDim;
+
+  /// How the model's output becomes one vector per text. `"last-token"` takes
+  /// the hidden state of the final token, which is what the Qwen3 GGUF was
+  /// trained for. `"in-graph"` means the graph itself emits the finished
+  /// sentence vector (the Meivin graph pools, projects and normalizes inside),
+  /// so nothing is pooled outside it. Spellings are matched exactly, and
+  /// `"mean"`, which parses but which no backend performs, is refused like an
+  /// unknown one.
+  ///
+  /// Identity because the same weights pooled two ways produce two unrelated
+  /// vector spaces.
+  final String pooling;
+
+  /// The token cap per embedded text, counted the way the model's backend
+  /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
+  /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
+  /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
+  /// and a cap that leaves no room for content is refused.
+  ///
+  /// Identity because a different cap cuts every long text somewhere else, and
+  /// so changes its vector. The manifest records the value requested here, not
+  /// one a backend may clamp it to.
+  final int maxTokens;
+
+  /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF and
+  /// `"fp32"` for the Meivin graph (the INT8 graph published beside it is a
+  /// different identity). Not the precision the vectors are stored at. Must not
+  /// be empty.
+  ///
+  /// Identity because two quantizations of one model produce different
+  /// vectors. The model file's checksum catches such a swap as well, but only
+  /// once indexing has loaded the model; this label is compared the moment an
+  /// index is opened.
+  final String modelQuantization;
+
+  /// Which text each chunk, and each query, carries to the model. Version 1
+  /// embeds the line itself, or a short line together with its neighbours,
+  /// which is what the Qwen3 GGUF expects. Version 2 prefixes `"[PASSAGE] "`
+  /// to that same text and `"[QUERY] "` to the query: the Meivin model's
+  /// learned role tokens, which it was trained to see. A version the sidecar
+  /// does not implement is refused.
+  ///
+  /// Identity because it changes the string that is embedded. It is folded
+  /// into the chunking identity that the manifest and every book record carry.
+  final int embeddingTextVersion;
 
   const SemanticConfigInput({
     required this.rootDir,
     required this.modelPath,
     required this.modelId,
     required this.embeddingDim,
+    required this.pooling,
+    required this.maxTokens,
+    required this.modelQuantization,
+    required this.embeddingTextVersion,
   });
 
   @override
@@ -1849,7 +1929,11 @@ class SemanticConfigInput {
       rootDir.hashCode ^
       modelPath.hashCode ^
       modelId.hashCode ^
-      embeddingDim.hashCode;
+      embeddingDim.hashCode ^
+      pooling.hashCode ^
+      maxTokens.hashCode ^
+      modelQuantization.hashCode ^
+      embeddingTextVersion.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1859,7 +1943,11 @@ class SemanticConfigInput {
           rootDir == other.rootDir &&
           modelPath == other.modelPath &&
           modelId == other.modelId &&
-          embeddingDim == other.embeddingDim;
+          embeddingDim == other.embeddingDim &&
+          pooling == other.pooling &&
+          maxTokens == other.maxTokens &&
+          modelQuantization == other.modelQuantization &&
+          embeddingTextVersion == other.embeddingTextVersion;
 }
 
 enum SemanticExecutedMode { disabled, hybrid, semanticOnly, lexicalOnly }

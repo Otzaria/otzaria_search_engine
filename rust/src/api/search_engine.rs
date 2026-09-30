@@ -308,11 +308,81 @@ pub enum SemanticResultSource {
 /// loaded lazily when indexing begins, so configuration is cheap; searches
 /// report a degraded state until indexing has loaded the model and produced
 /// vectors, instead of making the lexical engine unusable.
+///
+/// Every field but `root_dir` describes how the vectors are produced, and the
+/// sidecar records each one in its manifest as part of the index's identity (the
+/// model file by its checksum, once it has loaded). An index built under one
+/// value is reported as needing a full re-index under another, rather than
+/// having vectors that cannot be compared mixed into it.
+/// Nothing here is read from the model file, so the values must be the ones the
+/// model was built for. The two models the application knows:
+///
+/// | field | Qwen3 GGUF | Meivin ONNX |
+/// | --- | --- | --- |
+/// | `model_path` | the `.gguf` file | `seforim-embed-round2-fp32.onnx` |
+/// | `embedding_dim` | 1024 | 256 |
+/// | `pooling` | `"last-token"` | `"in-graph"` |
+/// | `max_tokens` | 512 | 256 |
+/// | `model_quantization` | `"Q4_K_M"` | `"fp32"` |
+/// | `embedding_text_version` | 1 | 2 |
 pub struct SemanticConfigInput {
     pub root_dir: String,
+    /// The model file, whose extension selects the backend. A path ending in
+    /// `.onnx` (in any letter case) is an ONNX graph for ONNX Runtime, with its
+    /// `tokenizer.json` in the same directory; every other path is a GGUF for
+    /// llama.cpp. A build without that format's backend cannot serve the model:
+    /// loading it, which indexing does, fails with `BackendUnavailable`.
+    ///
+    /// An ONNX graph also needs the ONNX Runtime shared library, which this
+    /// library does not link but loads when the model loads: the file named by
+    /// the `OTZARIA_ONNX_RUNTIME` environment variable, or else the platform's
+    /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
+    /// the graph. Without one, the model is `BackendUnavailable` in the same
+    /// way, and lexical search is unaffected.
     pub model_path: String,
     pub model_id: String,
     pub embedding_dim: u32,
+    /// How the model's output becomes one vector per text. `"last-token"` takes
+    /// the hidden state of the final token, which is what the Qwen3 GGUF was
+    /// trained for. `"in-graph"` means the graph itself emits the finished
+    /// sentence vector (the Meivin graph pools, projects and normalizes inside),
+    /// so nothing is pooled outside it. Spellings are matched exactly, and
+    /// `"mean"`, which parses but which no backend performs, is refused like an
+    /// unknown one.
+    ///
+    /// Identity because the same weights pooled two ways produce two unrelated
+    /// vector spaces.
+    pub pooling: String,
+    /// The token cap per embedded text, counted the way the model's backend
+    /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
+    /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
+    /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
+    /// and a cap that leaves no room for content is refused.
+    ///
+    /// Identity because a different cap cuts every long text somewhere else, and
+    /// so changes its vector. The manifest records the value requested here, not
+    /// one a backend may clamp it to.
+    pub max_tokens: u32,
+    /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF and
+    /// `"fp32"` for the Meivin graph (the INT8 graph published beside it is a
+    /// different identity). Not the precision the vectors are stored at. Must not
+    /// be empty.
+    ///
+    /// Identity because two quantizations of one model produce different
+    /// vectors. The model file's checksum catches such a swap as well, but only
+    /// once indexing has loaded the model; this label is compared the moment an
+    /// index is opened.
+    pub model_quantization: String,
+    /// Which text each chunk, and each query, carries to the model. Version 1
+    /// embeds the line itself, or a short line together with its neighbours,
+    /// which is what the Qwen3 GGUF expects. Version 2 prefixes `"[PASSAGE] "`
+    /// to that same text and `"[QUERY] "` to the query: the Meivin model's
+    /// learned role tokens, which it was trained to see. A version the sidecar
+    /// does not implement is refused.
+    ///
+    /// Identity because it changes the string that is embedded. It is folded
+    /// into the chunking identity that the manifest and every book record carry.
+    pub embedding_text_version: u32,
 }
 
 /// A serializable, feature-independent projection of sidecar status. It is
@@ -442,17 +512,27 @@ pub struct SemanticSearchResponse {
     pub truncated: bool,
 }
 
-/// The four inputs that decide which vectors a sidecar session holds. Kept
-/// beside the open engine so [`SearchEngine::configure_semantic`] can tell a
-/// harmless repeat call from a real change of model or library root — see that
-/// method for why the difference matters.
+/// Every input that decides which vectors a sidecar session holds: the whole
+/// of [`SemanticConfigInput`]. Kept beside the open engine so
+/// [`SearchEngine::configure_semantic`] can tell a harmless repeat call from a
+/// real change of model, recipe or library root — see that method for why the
+/// difference matters.
+///
+/// All of it, not only the model and the root: a caller that switches pooling or
+/// text recipe under an unchanged model file is asking for different vectors
+/// just the same, and a key that ignored those fields would answer that request
+/// with a no-op and keep serving the old ones.
 #[cfg(feature = "semantic-integration")]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SemanticConfigKey {
     root_dir: PathBuf,
     model_path: PathBuf,
     model_id: String,
     embedding_dim: u32,
+    pooling: String,
+    max_tokens: u32,
+    model_quantization: String,
+    embedding_text_version: u32,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -463,6 +543,10 @@ impl SemanticConfigKey {
             model_path: PathBuf::from(&config.model_path),
             model_id: config.model_id.clone(),
             embedding_dim: config.embedding_dim,
+            pooling: config.pooling.clone(),
+            max_tokens: config.max_tokens,
+            model_quantization: config.model_quantization.clone(),
+            embedding_text_version: config.embedding_text_version,
         }
     }
 
@@ -481,6 +565,18 @@ impl SemanticConfigKey {
         }
         if self.embedding_dim != other.embedding_dim {
             changed.push("embedding_dim");
+        }
+        if self.pooling != other.pooling {
+            changed.push("pooling");
+        }
+        if self.max_tokens != other.max_tokens {
+            changed.push("max_tokens");
+        }
+        if self.model_quantization != other.model_quantization {
+            changed.push("model_quantization");
+        }
+        if self.embedding_text_version != other.embedding_text_version {
+            changed.push("embedding_text_version");
         }
         changed.join(", ")
     }
@@ -2052,8 +2148,9 @@ impl SearchEngine {
     /// - Called again with the same inputs it is a no-op returning the current
     ///   status, so a caller that configures defensively cannot lose an index.
     /// - Called with different inputs while a session is open it fails and says
-    ///   which input changed. Switching model or library root is an explicit
-    ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
+    ///   which input changed. Switching model, text recipe or library root is an
+    ///   explicit act: call [`Self::disable_semantic`] first and accept the
+    ///   rebuild.
     pub fn configure_semantic(&mut self, config: SemanticConfigInput) -> Result<SemanticStatus> {
         #[cfg(feature = "semantic-integration")]
         {
@@ -2070,13 +2167,42 @@ impl SearchEngine {
                 ));
             }
 
+            // The sidecar validates the rest of the configuration when it opens:
+            // pooling, text recipe and token cap. A blank quantization it would
+            // record as given, leaving an index whose identity names no weights.
+            if requested.model_quantization.trim().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "model_quantization is empty; it is part of the semantic index's \
+                     identity, so name the precision of the model's weights, e.g. \
+                     \"Q4_K_M\" for the Qwen3 GGUF or \"fp32\" for the Meivin ONNX graph"
+                ));
+            }
+            let embedding_max_tokens = usize::try_from(requested.max_tokens).map_err(|_| {
+                anyhow::anyhow!(
+                    "max_tokens {} does not fit this platform's address width",
+                    requested.max_tokens
+                )
+            })?;
+
+            // Each input lands on the one sidecar field that carries it. What stays
+            // at `SemanticConfig::default()` is not the caller's to choose:
+            // `vector_precision` is the store's format, `embedding_batch_size` is
+            // throughput, and the rest of the chunking recipe is the root
+            // `chunking.json` that both known models are built with.
             let mut semantic_config = SemanticConfig {
                 root_dir: requested.root_dir.clone(),
                 model_path: requested.model_path.clone(),
                 embedding_model_id: requested.model_id.clone(),
                 embedding_dim: requested.embedding_dim,
+                pooling: requested.pooling.clone(),
+                embedding_max_tokens,
+                model_quantization: requested.model_quantization.clone(),
                 ..SemanticConfig::default()
             };
+            // The text recipe is part of the chunking configuration rather than a
+            // field of its own, because the chunker is what applies it and
+            // `ChunkerConfig::identity` is what records it.
+            semantic_config.chunking.embedding_text_version = requested.embedding_text_version;
             // Both dimensions must agree or the sidecar refuses the config, and
             // the store's path is derived from our root rather than the
             // sidecar's own default root.
@@ -16280,5 +16406,233 @@ mod tests {
         bounded.add_entry((1u8, 999_999), (999_999, 999_999, DocAddress::new(0, 3)));
         assert!(!bounded.groups.contains_key(&(1u8, 999_999)));
         assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
+    }
+
+    /// [`SemanticConfigKey`] and the mapping [`SearchEngine::configure_semantic`] performs.
+    ///
+    /// Nothing here loads a model — configuring is lazy — so every build with the
+    /// integration runs it, whichever backends it has, including none.
+    #[cfg(feature = "semantic-integration")]
+    mod semantic_configuration {
+        use super::*;
+        use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
+        use otzaria_semantic_search::semantic::recipe::EmbeddingTextRecipe;
+
+        /// What the sidecar writes when it opens, and so the witness of an open.
+        const MANIFEST: &str = "semantic_manifest.json";
+
+        /// A field's name, and one edit of that field alone.
+        type FieldEdit = (&'static str, fn(&mut SemanticConfigInput));
+
+        /// The production Qwen3 GGUF identity, rooted in `root`.
+        fn qwen3(root: &Path) -> SemanticConfigInput {
+            SemanticConfigInput {
+                root_dir: root.join("semantic").to_string_lossy().into_owned(),
+                model_path: root
+                    .join("otzaria-embedding-v1-flash-q4.gguf")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_id: "EMD123/Otzaria-Embedding-V1-Flash-0.6B".to_string(),
+                embedding_dim: 1024,
+                pooling: "last-token".to_string(),
+                max_tokens: 512,
+                model_quantization: "Q4_K_M".to_string(),
+                embedding_text_version: 1,
+            }
+        }
+
+        /// The Meivin ONNX identity, rooted in `root`. Every field but `root_dir` differs
+        /// from [`qwen3`].
+        fn meivin(root: &Path) -> SemanticConfigInput {
+            SemanticConfigInput {
+                root_dir: root.join("semantic").to_string_lossy().into_owned(),
+                model_path: root
+                    .join("seforim-embed-round2-fp32.onnx")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_id: "ArieLLL123/judaic-semantic-round2-onnx-zayit".to_string(),
+                embedding_dim: 256,
+                pooling: "in-graph".to_string(),
+                max_tokens: 256,
+                model_quantization: "fp32".to_string(),
+                embedding_text_version: 2,
+            }
+        }
+
+        fn manifest(root_dir: &str) -> JsonValue {
+            let path = Path::new(root_dir).join(MANIFEST);
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            serde_json::from_str(&text).unwrap()
+        }
+
+        #[test]
+        fn an_identical_configuration_is_the_same_key_and_names_no_change() {
+            let root = Path::new("/library");
+            let active = SemanticConfigKey::from_input(&qwen3(root));
+            let repeat = SemanticConfigKey::from_input(&qwen3(root));
+
+            assert_eq!(active, repeat);
+            assert_eq!(active.changed_fields(&repeat), "");
+        }
+
+        /// One row per field of [`SemanticConfigInput`]: a key that left one out would
+        /// answer a request for different vectors with a no-op.
+        #[test]
+        fn a_change_to_any_single_input_is_detected_and_named() {
+            let root = Path::new("/library");
+            let active = SemanticConfigKey::from_input(&qwen3(root));
+            let changes: [FieldEdit; 8] = [
+                ("root_dir", |c| c.root_dir.push_str("-elsewhere")),
+                ("model_path", |c| c.model_path.push_str(".bak")),
+                ("model_id", |c| c.model_id.push_str("-v2")),
+                ("embedding_dim", |c| c.embedding_dim = 768),
+                ("pooling", |c| c.pooling = "in-graph".to_string()),
+                ("max_tokens", |c| c.max_tokens = 256),
+                ("model_quantization", |c| {
+                    c.model_quantization = "Q8_0".to_string()
+                }),
+                ("embedding_text_version", |c| c.embedding_text_version = 2),
+            ];
+
+            for (field, change) in changes {
+                let mut input = qwen3(root);
+                change(&mut input);
+                let requested = SemanticConfigKey::from_input(&input);
+                assert_ne!(active, requested, "{field} must be part of the key");
+                assert_eq!(active.changed_fields(&requested), field);
+            }
+        }
+
+        #[test]
+        fn switching_models_names_every_input_that_differs() {
+            let root = Path::new("/library");
+            let qwen3 = SemanticConfigKey::from_input(&qwen3(root));
+            let meivin = SemanticConfigKey::from_input(&meivin(root));
+
+            assert_eq!(
+                qwen3.changed_fields(&meivin),
+                "model_path, model_id, embedding_dim, pooling, max_tokens, \
+                 model_quantization, embedding_text_version"
+            );
+        }
+
+        /// Both halves of the contract, through the method itself. Opening the sidecar
+        /// writes its manifest, so the manifest is deleted after the first call: a repeat
+        /// or a refusal that re-opened anything would write it back.
+        #[test]
+        fn configure_semantic_ignores_a_repeat_and_refuses_a_change_by_name() {
+            let (mut engine, _index) = make_engine();
+            let semantic = TempDir::new().unwrap();
+            let config = || qwen3(semantic.path());
+            engine
+                .configure_semantic(config())
+                .expect("the Qwen3 identity configures");
+            let manifest = Path::new(&config().root_dir).join(MANIFEST);
+            assert!(manifest.exists(), "opening the sidecar writes its manifest");
+            fs::remove_file(&manifest).unwrap();
+
+            let status = engine
+                .configure_semantic(config())
+                .expect("an identical repeat is accepted");
+            assert!(status.enabled);
+            assert!(!manifest.exists(), "an identical repeat must not re-open");
+
+            let changes: [FieldEdit; 4] = [
+                ("pooling", |c| c.pooling = "in-graph".to_string()),
+                ("max_tokens", |c| c.max_tokens = 256),
+                ("model_quantization", |c| {
+                    c.model_quantization = "fp32".to_string()
+                }),
+                ("embedding_text_version", |c| c.embedding_text_version = 2),
+            ];
+            for (field, change) in changes {
+                let mut input = config();
+                change(&mut input);
+                let message = match engine.configure_semantic(input) {
+                    Ok(_) => panic!("changing {field} while a session is open must fail"),
+                    Err(error) => error.to_string(),
+                };
+                assert!(
+                    message.contains(&format!("and {field} changed")),
+                    "the refusal must name {field}: {message}"
+                );
+            }
+            assert!(
+                !manifest.exists(),
+                "a refused change must not re-open either"
+            );
+        }
+
+        /// The mapping, read back from what the sidecar recorded. The model id, dimension,
+        /// pooling, cap and quantization all differ from the sidecar's own defaults, so an
+        /// input left to its default shows up as the default. The text version is recorded
+        /// only inside the chunking identity, so there is one configuration per recipe the
+        /// sidecar implements, and each must record its own.
+        #[test]
+        fn configure_semantic_hands_each_input_to_the_sidecar() {
+            let (mut engine, _index) = make_engine();
+            for recipe in EmbeddingTextRecipe::ALL {
+                let semantic = TempDir::new().unwrap();
+                let input = SemanticConfigInput {
+                    embedding_text_version: recipe.version(),
+                    ..meivin(semantic.path())
+                };
+                let root_dir = input.root_dir.clone();
+                engine
+                    .configure_semantic(input)
+                    .unwrap_or_else(|error| panic!("text recipe {}: {error:#}", recipe.version()));
+
+                let recorded = manifest(&root_dir);
+                assert_eq!(
+                    recorded["embedding_model_id"],
+                    "ArieLLL123/judaic-semantic-round2-onnx-zayit"
+                );
+                assert_eq!(recorded["embedding_dim"], 256);
+                assert_eq!(recorded["pooling"], "in-graph");
+                assert_eq!(recorded["embedding_max_tokens"], 256);
+                assert_eq!(recorded["model_quantization"], "fp32");
+                let chunking = ChunkerConfig {
+                    embedding_text_version: recipe.version(),
+                    ..ChunkerConfig::default()
+                };
+                assert_eq!(recorded["chunking_identity"], chunking.identity());
+
+                engine.disable_semantic();
+            }
+        }
+
+        /// A refusal is what proves a value reaches the sidecar: every default the
+        /// sidecar would otherwise fill in is valid, so only a forwarded value can be
+        /// refused. A refused configuration leaves no session behind.
+        #[test]
+        fn a_value_the_sidecar_cannot_serve_is_refused_when_configuring() {
+            let (mut engine, _index) = make_engine();
+            let semantic = TempDir::new().unwrap();
+            let spoiled: [FieldEdit; 4] = [
+                ("last_token", |c| c.pooling = "last_token".to_string()),
+                ("embedding_max_tokens", |c| c.max_tokens = 1),
+                ("model_quantization", |c| {
+                    c.model_quantization = " ".to_string()
+                }),
+                ("embedding_text_version", |c| c.embedding_text_version = 99),
+            ];
+
+            for (named, spoil) in spoiled {
+                let mut input = qwen3(semantic.path());
+                spoil(&mut input);
+                let message = match engine.configure_semantic(input) {
+                    Ok(_) => panic!("a configuration with a bad {named} must be refused"),
+                    Err(error) => format!("{error:#}"),
+                };
+                assert!(
+                    message.contains(named),
+                    "the refusal must name {named}: {message}"
+                );
+            }
+            engine
+                .configure_semantic(qwen3(semantic.path()))
+                .expect("a refused configuration leaves no session behind");
+        }
     }
 }

@@ -70,6 +70,29 @@ void writeStubGguf(File file) {
   file.writeAsBytesSync(out.takeBytes());
 }
 
+/// The configuration the FFI suites open the sidecar with: the stub GGUF at
+/// [modelPath], under the recipe of the production GGUF model, whose pooling
+/// the stand-in claims for that format. A suite that must see a value arrive,
+/// or be refused, passes it instead of the default.
+SemanticConfigInput stubGgufConfig({
+  required String rootDir,
+  required String modelPath,
+  required String modelId,
+  String pooling = 'last-token',
+  int maxTokens = 512,
+  String modelQuantization = 'Q4_K_M',
+  int embeddingTextVersion = 1,
+}) => SemanticConfigInput(
+  rootDir: rootDir,
+  modelPath: modelPath,
+  modelId: modelId,
+  embeddingDim: 64,
+  pooling: pooling,
+  maxTokens: maxTokens,
+  modelQuantization: modelQuantization,
+  embeddingTextVersion: embeddingTextVersion,
+);
+
 /// Returns why the sidecar round-trip cannot run (`null` when it can), by
 /// making the library prove it: the probe indexes one line and then reads the
 /// status back.
@@ -105,11 +128,10 @@ Future<String?> semanticSidecarSkipReason() async {
     String? failure;
     try {
       await engine.configureSemantic(
-        config: SemanticConfigInput(
+        config: stubGgufConfig(
           rootDir: '${probe.path}/semantic',
           modelPath: model.path,
           modelId: 'probe',
-          embeddingDim: 64,
         ),
       );
       await engine.semanticIndexBooks(

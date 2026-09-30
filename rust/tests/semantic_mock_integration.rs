@@ -1,7 +1,7 @@
 //! Integration coverage for the live `SearchEngine` → Tantivy → sidecar route,
-//! without GGUF/FFI. The sidecar's explicitly test-only deterministic backend is
-//! selected by the `semantic-mock` feature; production builds use
-//! `semantic`/`semantic-real`.
+//! without a real model or the FFI. The sidecar's explicitly test-only
+//! deterministic backend is selected by the `semantic-mock` feature; production
+//! builds use `semantic`.
 //!
 //! Every retrieval mode is exercised *through a configured sidecar*, not only
 //! the lexical fallback: `Hybrid` and `LexicalOnly` are the only paths that run
@@ -71,17 +71,30 @@ fn lexical_engine(lines: &[Line]) -> (SearchEngine, TempDir) {
     (engine, root)
 }
 
+/// What every test opens the sidecar with: the stub GGUF under `root`, and the
+/// recipe of the production GGUF model, whose pooling the stand-in claims for
+/// that format.
+fn mock_config(root: &TempDir, model_id: &str) -> SemanticConfigInput {
+    SemanticConfigInput {
+        root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
+        model_path: root.path().join("mock.gguf").to_string_lossy().into_owned(),
+        model_id: model_id.to_owned(),
+        embedding_dim: 64,
+        pooling: "last-token".to_owned(),
+        max_tokens: 512,
+        model_quantization: "Q4_K_M".to_owned(),
+        embedding_text_version: 1,
+    }
+}
+
+/// A field's name, and one edit of that field alone.
+type FieldEdit = (&'static str, fn(&mut SemanticConfigInput));
+
 /// Open the sidecar against `root`, writing the stub model it needs.
 fn configure(engine: &mut SearchEngine, root: &TempDir) {
-    let model_path = root.path().join("mock.gguf");
-    write_stub_gguf(&model_path, 3).unwrap();
+    write_stub_gguf(&root.path().join("mock.gguf"), 3).unwrap();
     let status = engine
-        .configure_semantic(SemanticConfigInput {
-            root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
-            model_path: model_path.to_string_lossy().into_owned(),
-            model_id: "test-mock".to_owned(),
-            embedding_dim: 64,
-        })
+        .configure_semantic(mock_config(root, "test-mock"))
         .unwrap();
     assert!(
         status.enabled,
@@ -618,13 +631,7 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
     let (mut engine, root) = fixture(&lines);
     let before = engine.semantic_status();
 
-    let model_path = root.path().join("mock.gguf");
-    let attempt = engine.configure_semantic(SemanticConfigInput {
-        root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
-        model_path: model_path.to_string_lossy().into_owned(),
-        model_id: "a-different-model".to_owned(),
-        embedding_dim: 64,
-    });
+    let attempt = engine.configure_semantic(mock_config(&root, "a-different-model"));
     let message = match attempt {
         Ok(_) => panic!("changing the model while a session is open must fail"),
         Err(error) => error.to_string(),
@@ -634,7 +641,32 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
         "the refusal must name the input that changed: {message}"
     );
 
-    // The refusal left the session untouched.
+    // A different recipe under the same model file asks for different vectors
+    // just the same, and is refused the same way.
+    let recipe_changes: [FieldEdit; 4] = [
+        ("pooling", |config| config.pooling = "in-graph".to_owned()),
+        ("max_tokens", |config| config.max_tokens = 256),
+        ("model_quantization", |config| {
+            config.model_quantization = "fp32".to_owned()
+        }),
+        ("embedding_text_version", |config| {
+            config.embedding_text_version = 2
+        }),
+    ];
+    for (field, change) in recipe_changes {
+        let mut config = mock_config(&root, "test-mock");
+        change(&mut config);
+        let message = match engine.configure_semantic(config) {
+            Ok(_) => panic!("changing {field} while a session is open must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains(field),
+            "the refusal must name the input that changed: {message}"
+        );
+    }
+
+    // The refusals left the session untouched.
     let after = engine.semantic_status();
     assert_eq!(after.vector_count, before.vector_count);
     assert_eq!(after.indexed_book_count, before.indexed_book_count);
@@ -642,12 +674,7 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
     // Disabling first is the explicit route to a different model.
     engine.disable_semantic();
     engine
-        .configure_semantic(SemanticConfigInput {
-            root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
-            model_path: model_path.to_string_lossy().into_owned(),
-            model_id: "a-different-model".to_owned(),
-            embedding_dim: 64,
-        })
+        .configure_semantic(mock_config(&root, "a-different-model"))
         .expect("an explicit disable clears the way for a new configuration");
 }
 
