@@ -6205,31 +6205,46 @@ impl SearchEngine {
         // from broad scans without changing the global set or postings cost.
         // A broad first automaton can then scan all its segments together;
         // keeping its first segment synchronous would lose that parallel gain.
-        let broad_first = inverted_indexes.len() > 1
-            && !automatons.is_empty()
-            && Self::first_automaton_scan_is_broad(
-                &inverted_indexes[0],
-                &automatons[0],
-                max_expansions,
-                postings_budget,
-                matched,
-                *postings_cost,
-            )?;
-        let sequential = if broad_first { 0 } else { pairs.len().min(1) };
         let initial_terms = matched.len();
-        for &(a, segment) in pairs.iter().take(sequential) {
-            if Self::collect_automaton_terms(
-                &inverted_indexes[segment],
-                &automatons[a],
-                max_expansions,
-                postings_budget,
-                matched,
-                postings_cost,
-            )? {
-                return Ok(true);
+        let mut cursor = 0;
+        if let Some(&(a, segment)) = pairs.first() {
+            if inverted_indexes.len() > 1 {
+                let (hits, broad) = Self::probe_first_automaton_scan(
+                    &inverted_indexes[segment],
+                    &automatons[a],
+                    max_expansions,
+                    postings_budget,
+                    matched,
+                    *postings_cost,
+                )?;
+                if !broad {
+                    // Few hits can still require traversing most of the FST.
+                    // Reuse them instead of repeating that dictionary scan.
+                    if Self::replay_automaton_hits(
+                        hits,
+                        max_expansions,
+                        postings_budget,
+                        matched,
+                        postings_cost,
+                    ) {
+                        return Ok(true);
+                    }
+                    cursor = 1;
+                }
+            } else {
+                if Self::collect_automaton_terms(
+                    &inverted_indexes[segment],
+                    &automatons[a],
+                    max_expansions,
+                    postings_budget,
+                    matched,
+                    postings_cost,
+                )? {
+                    return Ok(true);
+                }
+                cursor = 1;
             }
         }
-        let mut cursor = sequential;
         if cursor == pairs.len() {
             return Ok(false);
         }
@@ -6314,50 +6329,72 @@ impl SearchEngine {
                     )
                 })
                 .collect::<Result<_>>()?;
-            for (term, doc_freq) in scans.into_iter().flatten() {
-                *postings_cost += u64::from(doc_freq);
-                matched.insert(term);
-                if matched.len() >= max_expansions as usize || *postings_cost >= postings_budget {
-                    return Ok(true);
-                }
+            if Self::replay_automaton_hits(
+                scans.into_iter().flatten(),
+                max_expansions,
+                postings_budget,
+                matched,
+                postings_cost,
+            ) {
+                return Ok(true);
             }
             cursor = end;
         }
         Ok(false)
     }
 
-    /// Inspect at most nine dictionary hits without charging them twice when
-    /// the real scan starts. First-segment terms are distinct, so membership
-    /// in the prefilled set suffices to predict the sequential term budget.
-    fn first_automaton_scan_is_broad<A>(
+    /// Inspect at most nine hits without changing the global set or cost.
+    /// Narrow scans return their complete prefix for replay; broad scans will
+    /// repeat only this bounded prefix when starting the parallel wave.
+    /// First-segment terms are distinct, so membership in the prefilled set
+    /// suffices to predict the sequential term budget.
+    fn probe_first_automaton_scan<A>(
         inverted: &tantivy::InvertedIndexReader,
         automaton: &A,
         max_expansions: u32,
         postings_budget: u64,
         matched: &HashSet<String>,
         mut postings_cost: u64,
-    ) -> Result<bool>
+    ) -> Result<(Vec<(String, u32)>, bool)>
     where
         A: Automaton,
         A::State: Clone,
     {
         let mut terms = matched.len();
-        let mut hits = 0;
+        let mut hits = Vec::new();
         let mut stream = inverted.terms().search(automaton).into_stream()?;
         while stream.advance() {
             if let Ok(term) = std::str::from_utf8(stream.key()) {
-                hits += 1;
-                postings_cost += u64::from(stream.value().doc_freq);
+                let doc_freq = stream.value().doc_freq;
+                postings_cost += u64::from(doc_freq);
                 terms += usize::from(!matched.contains(term));
+                hits.push((term.to_string(), doc_freq));
                 if terms >= max_expansions as usize || postings_cost >= postings_budget {
-                    return Ok(false);
+                    return Ok((hits, false));
                 }
-                if hits > 8 {
-                    return Ok(true);
+                if hits.len() > 8 {
+                    return Ok((hits, true));
                 }
             }
         }
-        Ok(false)
+        Ok((hits, false))
+    }
+
+    fn replay_automaton_hits(
+        hits: impl IntoIterator<Item = (String, u32)>,
+        max_expansions: u32,
+        postings_budget: u64,
+        matched: &mut HashSet<String>,
+        postings_cost: &mut u64,
+    ) -> bool {
+        for (term, doc_freq) in hits {
+            *postings_cost += u64::from(doc_freq);
+            matched.insert(term);
+            if matched.len() >= max_expansions as usize || *postings_cost >= postings_budget {
+                return true;
+            }
+        }
+        false
     }
 
     /// One segment's dictionary hits for `automaton`, in dictionary order,
@@ -10837,6 +10874,63 @@ mod tests {
             .num_threads(4)
             .build()
             .unwrap();
+        // Narrow leading-wildcard and empty scans can traverse the whole
+        // dictionary. Their probe hits must be reused, so each visited
+        // segment starts exactly as many scans as the sequential collector.
+        for pattern in [".*ספר", "סופר", ".*missing"] {
+            let narrow = [CountedRegex {
+                regex: tantivy_fst::Regex::new(pattern).unwrap(),
+                starts: Arc::new(AtomicUsize::new(0)),
+            }];
+            for initial in [HashSet::new(), HashSet::from(["ספר".to_owned()])] {
+                for max_expansions in [0, 1, 1000] {
+                    for budget in [0, 1, u64::MAX] {
+                        narrow[0].starts.store(0, Ordering::Relaxed);
+                        let mut actual = initial.clone();
+                        let mut actual_cost = 0;
+                        let actual_truncated = pool
+                            .install(|| {
+                                SearchEngine::collect_automatons_terms(
+                                    &inverted,
+                                    &narrow,
+                                    max_expansions,
+                                    budget,
+                                    &mut actual,
+                                    &mut actual_cost,
+                                )
+                            })
+                            .unwrap();
+                        let actual_scans = narrow[0].starts.swap(0, Ordering::Relaxed);
+                        let mut seq = initial.clone();
+                        let mut seq_cost = 0;
+                        let mut seq_truncated = false;
+                        for reader in &inverted {
+                            if SearchEngine::collect_automaton_terms(
+                                reader,
+                                &narrow[0],
+                                max_expansions,
+                                budget,
+                                &mut seq,
+                                &mut seq_cost,
+                            )
+                            .unwrap()
+                            {
+                                seq_truncated = true;
+                                break;
+                            }
+                        }
+                        assert_eq!(actual, seq, "pattern={pattern}");
+                        assert_eq!(actual_cost, seq_cost, "pattern={pattern}");
+                        assert_eq!(actual_truncated, seq_truncated, "pattern={pattern}");
+                        assert_eq!(
+                            actual_scans,
+                            narrow[0].starts.load(Ordering::Relaxed),
+                            "narrow probe repeated a scan: pattern={pattern}",
+                        );
+                    }
+                }
+            }
+        }
         // Existing terms, per-segment duplicates, exhausted initial budgets,
         // and shrinking waves all retain the original sequential prefix.
         for initial in [vec![], vec!["ספר"], vec!["ספר", "סופר", "not-in-index"]] {
