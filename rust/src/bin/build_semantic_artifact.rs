@@ -25,6 +25,13 @@
 //! weights (`semantic` has both), or `--features semantic-mock` for the deterministic
 //! stand-in, which then also needs `--allow-non-semantic` because its vectors carry no
 //! meaning.
+//!
+//! `--stamp-index` also writes the index's corpus stamp into `--index`
+//! ([`CORPUS_STAMP_FILE_NAME`](search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME)): the
+//! corpus identity the artifact was built for, and the segment set it was read from. It is
+//! what lets an application open the artifact against the index it ships with, since a
+//! device cannot recompute `corpus_id`. It is the one write this binary makes outside
+//! `--out`, which is why it is asked for rather than done by default.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
@@ -139,6 +146,16 @@ fn main() {
     println!("Books:         {}", report.book_count);
     println!("Payload bytes: {}", report.total_size_bytes);
     println!("Digest:        {}", report.digest);
+    // After the build, so a failed one leaves no stamp claiming an artifact exists for it.
+    if args.iter().any(|arg| arg == "--stamp-index") {
+        let stamp = corpus
+            .write_stamp(Path::new(&index_path))
+            .unwrap_or_else(|error| {
+                eprintln!("Could not stamp the index at {index_path}: {error:#}");
+                process::exit(1);
+            });
+        println!("Index stamp:   {}", stamp.display());
+    }
     println!(
         "\nPublish that digest outside the artifact. Verified without it, an install \
          detects damage\nand the wrong artifact, but not one deliberately rebuilt to match."
@@ -164,6 +181,8 @@ Optional:
   --created-at <timestamp>   Manifest timestamp (default: now, UTC)
   --allow-non-semantic       Permit a backend whose vectors carry no meaning. For tests
                              only: such an artifact passes every check and answers nonsense.
+  --stamp-index              Also write the corpus stamp into --index, which a device
+                             needs to open this artifact against that index
 
 Which lines get a vector is derived by applying the recipe to the corpus, before any
 inference. The recipe's three versions must name behaviour this build implements, and its

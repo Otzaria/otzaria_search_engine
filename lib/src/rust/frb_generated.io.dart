@@ -163,6 +163,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw);
 
   @protected
+  SemanticArtifactInput dco_decode_box_autoadd_semantic_artifact_input(
+    dynamic raw,
+  );
+
+  @protected
   SemanticConfigInput dco_decode_box_autoadd_semantic_config_input(dynamic raw);
 
   @protected
@@ -392,6 +397,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchStreamUpdate dco_decode_search_stream_update(dynamic raw);
 
   @protected
+  SemanticArtifactInput dco_decode_semantic_artifact_input(dynamic raw);
+
+  @protected
   SemanticBookInput dco_decode_semantic_book_input(dynamic raw);
 
   @protected
@@ -603,6 +611,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult sse_decode_box_autoadd_search_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticArtifactInput sse_decode_box_autoadd_semantic_artifact_input(
     SseDeserializer deserializer,
   );
 
@@ -894,6 +907,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticArtifactInput sse_decode_semantic_artifact_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticBookInput sse_decode_semantic_book_input(
     SseDeserializer deserializer,
   );
@@ -1172,6 +1190,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_search_result(
     SearchResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_artifact_input(
+    SemanticArtifactInput self,
     SseSerializer serializer,
   );
 
@@ -1527,6 +1551,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_search_stream_update(
     SearchStreamUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_artifact_input(
+    SemanticArtifactInput self,
     SseSerializer serializer,
   );
 

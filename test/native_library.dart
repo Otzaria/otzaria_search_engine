@@ -192,3 +192,38 @@ Future<String?> semanticSidecarSkipReason() async {
 abstract final class MockBackend {
   static const id = 'mock-hash-v1';
 }
+
+/// The build machine's artifact builder, compiled beside the library the suites
+/// load (`cargo build --features semantic-mock --bin build_semantic_artifact`),
+/// or `null` when it is not there.
+///
+/// A device never builds an artifact; the suite needs one to open, and the
+/// binary is how the release pipeline makes it, so it stands in for the build
+/// machine. As with the library itself, a missing binary skips the suite
+/// locally and fails it under `OTZARIA_REQUIRE_NATIVE`.
+File? findArtifactBuilder() {
+  final name = Platform.isWindows
+      ? 'build_semantic_artifact.exe'
+      : 'build_semantic_artifact';
+  for (final dir in const ['rust/target/debug', 'rust/target/release']) {
+    final file = File('$dir/$name');
+    if (file.existsSync()) return file;
+  }
+  return null;
+}
+
+/// Why the prebuilt-artifact suite cannot run (`null` when it can).
+String? artifactBuilderSkipReason() {
+  if (findArtifactBuilder() != null) return null;
+  const message =
+      'build_semantic_artifact לא נמצא — הריצו cargo build --features '
+      'semantic-mock --bin build_semantic_artifact בתיקיית rust';
+  if (Platform.environment.containsKey('OTZARIA_REQUIRE_NATIVE')) {
+    fail(
+      '$message\n'
+      'OTZARIA_REQUIRE_NATIVE is set, so the prebuilt-artifact suite may not be '
+      'skipped: opening an artifact is the application\'s semantic path.',
+    );
+  }
+  return message;
+}

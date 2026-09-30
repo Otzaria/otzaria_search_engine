@@ -29,11 +29,20 @@
 //! The graph is the one the application uses, `seforim-embed-round2-int8.onnx`. The
 //! full-precision `seforim-embed-round2-fp32.onnx` published beside it runs the same tests:
 //! the quantization label is read off the file name, so each graph is configured under
-//! its own identity. Run them with:
+//! its own identity.
+//!
+//! One test is the application's own path rather than the scaffolding's: the build binary
+//! embeds the lines into an artifact and stamps the index, and `open_semantic_artifact`
+//! opens it and serves the queries, embedding nothing but them. It also needs the model's
+//! published identity files, `model.json` and `chunking.json`, from the directory
+//! `OTZARIA_TEST_ONNX_IDENTITY` names: the sidecar's `config/models/meivin-round2-onnx`
+//! for the INT8 graph, `config/models/meivin-round2-onnx-fp32` for the fp32 one. Run them
+//! with:
 //!
 //! ```sh
 //! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-int8.onnx \
 //! OTZARIA_ONNX_RUNTIME=/path/to/onnxruntime-osx-arm64-1.28.0/lib/libonnxruntime.dylib \
+//! OTZARIA_TEST_ONNX_IDENTITY=/path/to/otzaria-semantic-search/config/models/meivin-round2-onnx \
 //!   cargo test --manifest-path rust/Cargo.toml --features semantic-onnx \
 //!   --test semantic_onnx_model -- --ignored --nocapture
 //! ```
@@ -41,13 +50,16 @@
 #![cfg(feature = "semantic-onnx")]
 
 use search_engine::api::search_engine::{
-    SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticConfigInput,
-    SemanticExecutedMode, SemanticLexicalMode, SemanticRetrievalMode,
+    SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
+    SemanticConfigInput, SemanticExecutedMode, SemanticLexicalMode, SemanticRetrievalMode,
 };
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tempfile::TempDir;
 
 const MODEL_ENV: &str = "OTZARIA_TEST_ONNX_MODEL";
+/// The directory holding the model's published identity files, for the artifact test.
+const IDENTITY_ENV: &str = "OTZARIA_TEST_ONNX_IDENTITY";
 /// Read by the sidecar, not by this test: checked here only so that a missing runtime
 /// is a loud skip rather than an "ONNX Runtime could not be loaded" failure.
 const RUNTIME_ENV: &str = "OTZARIA_ONNX_RUNTIME";
@@ -342,5 +354,113 @@ fn recipe_two_scores_exactly_like_the_role_prefixed_text_it_is_defined_as() {
                  {hand_score}, so recipe 2 did not embed [PASSAGE] / [QUERY] before the text"
             );
         }
+    }
+}
+
+/// The application's path with the real model: the build binary embeds the library into an
+/// artifact and stamps the index, and the device opens that artifact against the index and
+/// embeds nothing but the queries. The identity files are the model's published ones, used
+/// by both sides exactly as a release would use them, so this also shows the published
+/// `model_checksum` names the graph on disk.
+#[test]
+#[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
+            OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
+            pass --ignored"]
+fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line_first() {
+    let model = model_and_runtime();
+    let identity = required_file(
+        IDENTITY_ENV,
+        "the directory with the model's model.json and chunking.json, such as the sidecar's \
+         config/models/meivin-round2-onnx",
+    );
+    let (Some(model), Some(identity)) = (model, identity) else {
+        return;
+    };
+
+    // The library, closed before the build reads it, as a release builds it. One book, so
+    // the ids are the ones `add_text_book` composes; every line is long enough to embed on
+    // its own, so none borrows a neighbour's text.
+    let root = TempDir::new().unwrap();
+    let index = root.path().join("tantivy");
+    std::fs::create_dir_all(&index).unwrap();
+    {
+        let mut engine = SearchEngine::new(index.to_str().unwrap());
+        let text = LINES.map(|(_, line)| line).join("\n");
+        engine
+            .add_text_book(
+                TITLE.to_owned(),
+                TOPICS.to_owned(),
+                BOOK_KEY.to_owned(),
+                0,
+                0,
+                text,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+    }
+
+    let artifact = root.path().join("artifact");
+    let built = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"))
+        .args([
+            "--index",
+            index.to_str().unwrap(),
+            "--library-version",
+            "meivin-probe",
+            "--model",
+            identity.join("model.json").to_str().unwrap(),
+            "--model-file",
+            model.to_str().unwrap(),
+            "--chunking",
+            identity.join("chunking.json").to_str().unwrap(),
+            "--out",
+            artifact.to_str().unwrap(),
+            "--stamp-index",
+        ])
+        .output()
+        .expect("the build binary runs");
+    assert!(
+        built.status.success(),
+        "build failed:\n{}\n{}",
+        String::from_utf8_lossy(&built.stdout),
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let engine = SearchEngine::new(index.to_str().unwrap());
+    let status = engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            artifact_dir: artifact.to_string_lossy().into_owned(),
+            model_path: model.to_string_lossy().into_owned(),
+            model_identity_json: std::fs::read_to_string(identity.join("model.json")).unwrap(),
+            published_digest: None,
+        })
+        .expect("the artifact built from this index opens against it");
+    assert!(status.available, "{:?}", status.last_error);
+    assert_eq!(
+        status.embedding_backend.as_deref(),
+        Some("onnxruntime-sentence-v1")
+    );
+    assert_eq!(status.vector_count, LINES.len() as u32);
+
+    for (query, expected) in QUERIES {
+        let expected_text = LINES
+            .iter()
+            .find(|(id, _)| *id == expected)
+            .map(|(_, text)| *text)
+            .unwrap();
+        let ranking = ranking(&engine, query);
+        let texts: Vec<(String, f32)> = ranking
+            .iter()
+            .map(|&(id, score)| {
+                let line = engine.get_document_by_id(id).unwrap().expect("hydrated");
+                (line.text, score)
+            })
+            .collect();
+        println!("artifact query for line {expected}: {ranking:?}");
+        assert_eq!(
+            texts.first().map(|(text, _)| text.as_str()),
+            Some(expected_text),
+            "the line the query is about must rank first; ranking (text, score): {texts:?}"
+        );
     }
 }

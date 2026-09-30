@@ -50,9 +50,11 @@ use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::recipe::EmbeddingRecipe;
 use otzaria_semantic_search::semantic::versioning::{CorpusIdentity, ModelIdentity};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tantivy::schema::{Facet, Value};
 use tantivy::{DocAddress, Index, ReloadPolicy, Searcher, TantivyDocument};
@@ -476,6 +478,164 @@ impl CorpusBooks for TantivyCorpus {
             .ok_or_else(|| PackError::Corpus {
                 reason: format!("no book keyed {book_key:?} in this snapshot"),
             })
+    }
+}
+
+// ── The corpus stamp ────────────────────────────────────────────────────────────────────
+//
+// What a device compares instead of `corpus_id`, which it cannot afford to recompute.
+
+/// The file, inside a lexical index's directory, that says which corpus the index holds.
+///
+/// Opening a prebuilt semantic artifact needs the [`CorpusIdentity`] of the index that is
+/// actually open, and the artifact's own copy cannot serve: comparing an artifact with
+/// itself proves nothing. Deriving it means reading every stored document, which is a
+/// build-machine cost, so the build writes it here, beside the index it describes, and the
+/// index carries it wherever it is shipped. An artifact is then refused against any other
+/// index — another release, or this one changed since — rather than handing back ids that
+/// name other lines.
+///
+/// Written by `build_semantic_artifact --stamp-index` and `pack_semantic_artifact
+/// --stamp-index`, from the snapshot the artifact was built from; read by
+/// [`SearchEngine::open_semantic_artifact`](crate::api::search_engine::SearchEngine::open_semantic_artifact).
+pub const CORPUS_STAMP_FILE_NAME: &str = "otzaria_semantic_corpus.json";
+
+/// The stamp's format tag and version, refused on a mismatch rather than half-read.
+const CORPUS_STAMP_FORMAT: &str = "otzaria-semantic-corpus";
+const CORPUS_STAMP_VERSION: u32 = 1;
+
+/// Folded into [`segments_digest`], so a change to what is hashed cannot compare equal to a
+/// digest computed the old way.
+const SEGMENTS_DIGEST_VERSION: &str = "otzaria-index-segments-v1";
+
+/// A [`CorpusIdentity`], and the exact index state it was derived from.
+///
+/// `corpus_id` describes the documents; `segments_sha256` ties that description to one
+/// state of this directory, which is what makes the stamp checkable on a device at all:
+/// the identity cannot be recomputed there, but the segment set can be read in
+/// microseconds. Any add, delete or merge after the stamp was written changes the set, and
+/// the stamp then no longer vouches for the index. A commit that changed nothing does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorpusStamp {
+    pub format: String,
+    pub format_version: u32,
+    pub corpus: CorpusIdentity,
+    pub segments_sha256: String,
+}
+
+/// A digest of the segment set `searcher` sees: every segment's id, `max_doc` and deleted
+/// count, sorted, so it names one committed state of the index and nothing about the order
+/// segments were listed in.
+pub fn segments_digest(searcher: &Searcher) -> String {
+    let mut segments: Vec<String> = searcher
+        .segment_readers()
+        .iter()
+        .map(|reader| {
+            format!(
+                "{}\t{}\t{}",
+                reader.segment_id().uuid_string(),
+                reader.max_doc(),
+                reader.num_deleted_docs()
+            )
+        })
+        .collect();
+    segments.sort_unstable();
+    let mut hasher = Sha256::new();
+    hasher.update(SEGMENTS_DIGEST_VERSION.as_bytes());
+    hasher.update(b"\n");
+    for segment in &segments {
+        hasher.update(segment.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+impl TantivyCorpus {
+    /// The stamp for the snapshot this corpus holds: its identity, and the segment set it
+    /// was read from — the one the artifact built from this corpus describes.
+    pub fn stamp(&self) -> CorpusStamp {
+        CorpusStamp {
+            format: CORPUS_STAMP_FORMAT.to_string(),
+            format_version: CORPUS_STAMP_VERSION,
+            corpus: self.identity.clone(),
+            segments_sha256: segments_digest(&self.searcher),
+        }
+    }
+
+    /// Write [`Self::stamp`] into `index_path`, replacing any earlier stamp atomically: a
+    /// reader sees the old stamp or the new one, never half of either.
+    ///
+    /// `index_path` must be the directory this corpus was read from; the stamp describes
+    /// that snapshot and would refuse, on any device, to vouch for another.
+    pub fn write_stamp(&self, index_path: &Path) -> Result<PathBuf> {
+        let target = index_path.join(CORPUS_STAMP_FILE_NAME);
+        let json = serde_json::to_vec_pretty(&self.stamp()).context("serializing the stamp")?;
+        let mut file = tempfile::NamedTempFile::new_in(index_path)
+            .with_context(|| format!("creating a file in {}", index_path.display()))?;
+        file.write_all(&json)
+            .and_then(|()| file.as_file().sync_all())
+            .with_context(|| format!("writing {}", target.display()))?;
+        file.persist(&target)
+            .with_context(|| format!("replacing {}", target.display()))?;
+        Ok(target)
+    }
+}
+
+impl CorpusStamp {
+    /// Read the stamp an index directory carries.
+    ///
+    /// Every failure names the file and the fix, because the fix is never on the device:
+    /// an index without a stamp, or with a foreign one, needs the release's own index.
+    pub fn read(index_path: &Path) -> Result<Self> {
+        let path = index_path.join(CORPUS_STAMP_FILE_NAME);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
+                "the lexical index at {} carries no corpus stamp ({CORPUS_STAMP_FILE_NAME}), \
+                 so nothing says which corpus it holds. A semantic artifact opens only against \
+                 the index it was built from, stamped on the build machine with \
+                 `build_semantic_artifact --stamp-index` or `pack_semantic_artifact \
+                 --stamp-index`; install that index with the artifact",
+                index_path.display()
+            ),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            }
+        };
+        let stamp: Self = serde_json::from_str(&text)
+            .with_context(|| format!("{} is not a corpus stamp", path.display()))?;
+        if stamp.format != CORPUS_STAMP_FORMAT || stamp.format_version != CORPUS_STAMP_VERSION {
+            anyhow::bail!(
+                "{} is a {:?} stamp, version {}; this build reads {CORPUS_STAMP_FORMAT:?} \
+                 version {CORPUS_STAMP_VERSION}",
+                path.display(),
+                stamp.format,
+                stamp.format_version
+            );
+        }
+        Ok(stamp)
+    }
+
+    /// Refuse the stamp unless `searcher` sees exactly the segment set it was written for.
+    ///
+    /// A mismatch means the index was added to, deleted from or merged since it was
+    /// stamped — or is another copy of it altogether — so `corpus_id` no longer vouches for
+    /// what it holds, and an artifact's ids may name lines that moved.
+    pub fn ensure_describes(&self, searcher: &Searcher, index_path: &Path) -> Result<()> {
+        let current = segments_digest(searcher);
+        if current != self.segments_sha256 {
+            anyhow::bail!(
+                "the lexical index at {} has changed since its corpus stamp was written (its \
+                 segments were {}, and are {current}), so the stamp no longer says which \
+                 corpus it holds, and an artifact built for it may name lines that moved. \
+                 Install the release's index and artifact together, or re-stamp the index on \
+                 the build machine and rebuild the artifact from it",
+                index_path.display(),
+                self.segments_sha256
+            );
+        }
+        Ok(())
     }
 }
 

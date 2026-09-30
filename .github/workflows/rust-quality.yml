@@ -180,15 +180,18 @@ jobs:
       # job goes green having tested nothing across the bridge. `semantic-mock`
       # so the suites can configure a sidecar and exercise indexing and hybrid
       # retrieval, not only the disabled-sidecar fallback; it is the sidecar's
-      # deterministic backend, so no GGUF or llama.cpp is built here.
-      - name: Build the native library the FFI tests load
+      # deterministic backend, so no GGUF or llama.cpp is built here. The
+      # artifact builder is what the prebuilt-artifact suite stands in for the
+      # build machine with: it builds the artifact that suite then opens.
+      - name: Build the native library and the artifact builder the FFI tests use
         run: >
           cargo build --manifest-path rust/Cargo.toml --locked --lib
-          --features semantic-mock
+          --bin build_semantic_artifact --features semantic-mock
 
       - name: Flutter tests
-        # Turns a missing native library, or one built without the sidecar, from
-        # a skip into a failure. Skipping is for contributors who have not run
+        # Turns a missing native library, one built without the sidecar, or a
+        # missing artifact builder, from a skip into a failure. Skipping is for
+        # contributors who have not run
         # `cargo build`; in CI it would hide exactly what this job exists to
         # check.
         env:
