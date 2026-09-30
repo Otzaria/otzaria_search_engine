@@ -11141,10 +11141,16 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<void> commit() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(that: this);
 
-  /// Open the semantic sidecar and wire it to the already-open Tantivy
-  /// engine. The sidecar owns semantic fusion; Tantivy stays owned here. When
-  /// this crate was built without the optional semantic feature this is a
-  /// no-op that returns an explicit Disabled status.
+  /// Open a semantic session whose vectors are built on this device, and wire
+  /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
+  /// Tantivy stays owned here. When this crate was built without the optional
+  /// semantic feature this is a no-op that returns an explicit Disabled status.
+  ///
+  /// **Development and testing scaffolding.** The application never builds
+  /// the library's vectors; it opens the artifact the build machine made with
+  /// [`Self::open_semantic_artifact`]. Kept, and not deprecated, because the
+  /// test suites and existing application code call it. While an artifact is
+  /// open this is refused.
   ///
   /// **The sidecar's vector store is in-memory** (check
   /// [`SemanticStatus::vectors_persisted`]): vectors live only for the
@@ -11973,6 +11979,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Remove vector records for books previously reported as `removed_books`.
   /// This never deletes lexical Tantivy documents.
   ///
+  /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
+  /// is; refused as read-only on an opened artifact.
+  ///
   /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticRemoveResult> removeSemanticBooks({
     required List<String> sourceBookKeys,
@@ -11984,6 +11993,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
   /// documents are untouched, so a full semantic rebuild can follow safely.
+  ///
+  /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
+  /// is; refused as read-only on an opened artifact.
   ///
   /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticResetResult> resetSemanticIndex() => RustLib.instance.api
@@ -12467,7 +12479,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
 
   /// Search through the sidecar exactly once. Tantivy supplies scored lexical
   /// candidates; `OtzariaHybridEngine` alone performs hybrid fusion/grouping.
-  /// Semantic-only items are hydrated from Tantivy before crossing FFI.
+  /// Semantic-only items are hydrated from Tantivy before crossing FFI. The
+  /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
+  /// development session, except that a stale artifact (the index committed
+  /// to since it was opened) is not asked, and the lexical fallback says why.
   Future<SemanticSearchResponse> searchSemantic({
     required String query,
     required List<String> facets,
@@ -12533,6 +12548,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
   /// be the global Tantivy document ids so semantic-only results can hydrate.
   ///
+  /// **Development and testing scaffolding**, for a session from
+  /// [`Self::configure_semantic`]: this embeds books on the device, which the
+  /// application never does for the library. On an artifact opened with
+  /// [`Self::open_semantic_artifact`] it is refused as read-only.
+  ///
   /// Takes `&self` on purpose. It mutates only the sidecar, which serializes
   /// indexing behind its own mutex and releases the engine lock between
   /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
@@ -12548,6 +12568,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Compare the semantic manifest with the book fingerprints stored in the
   /// lexical index. A `contentHash` of zero is deliberately surfaced as
   /// `unverifiable_books` rather than treated as an up-to-date PDF.
+  ///
+  /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
+  /// is: it answers which books this device should embed. On an opened
+  /// artifact it is refused as read-only, since nothing there is re-indexed.
   Future<SemanticIndexDiff> semanticIndexDiff() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSemanticIndexDiff(that: this);
 
