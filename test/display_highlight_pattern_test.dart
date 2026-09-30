@@ -65,8 +65,9 @@ Future<void> main() async {
       final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('רבי יוחנן: הוא אפילו'), isTrue);
       expect(
-        _PreparedPattern(_pattern('אמר רבי יוחנן'))
-            .hasMatch('אמר <b>רבי</b> יוחנן'),
+        _PreparedPattern(
+          _pattern('אמר רבי יוחנן'),
+        ).hasMatch('אמר <b>רבי</b> יוחנן'),
         isTrue,
       );
     });
@@ -114,8 +115,9 @@ Future<void> main() async {
       var offset = 0;
       final matched = text.substring(match!.start, match.end);
       for (final wordPattern in hl.wordPatterns) {
-        final wordMatch = _compile(wordPattern)
-            .firstMatch(matched.substring(offset));
+        final wordMatch = _compile(
+          wordPattern,
+        ).firstMatch(matched.substring(offset));
         expect(wordMatch, isNotNull);
         offset += wordMatch!.end;
       }
@@ -174,8 +176,9 @@ Future<void> main() async {
       expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
       expect(_PreparedPattern(hl).hasMatch('גיטין $text'), isFalse);
       expect(
-        _PreparedPattern(hl)
-            .hasMatch('$text${List.filled(31, 'דבר ').join()}גיטין'),
+        _PreparedPattern(
+          hl,
+        ).hasMatch('$text${List.filled(31, 'דבר ').join()}גיטין'),
         isFalse,
       );
     });
