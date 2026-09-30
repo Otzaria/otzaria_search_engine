@@ -938,7 +938,7 @@ pub(crate) const BREAKING_TAG_NAMES: &[&str] = &[
 
 /// האם תוכן תג (`body` — התווים שבין `<` ל-`>`) הוא תג שבירה: `/` פותח
 /// אופציונלי, שם באדישות לרישיות, ואחריו רק תו שאינו אות/ספרה (או כלום).
-fn is_breaking_tag(body: &[char]) -> bool {
+pub(crate) fn is_breaking_tag(body: &[char]) -> bool {
     let mut idx = 0;
     if idx < body.len() && body[idx] == '/' {
         idx += 1;
@@ -1526,63 +1526,45 @@ fn partial_word_window(root_len: usize) -> usize {
     }
 }
 
-/// האורך המרבי (באותיות) של חלופה בקבוצת תבנית כמו [`GRAM_PREFIX_GROUP`]:
-/// סכום החלופה הארוכה בכל משבצת `(?:…)?`.
-fn group_max_len(group: &str) -> usize {
-    group
-        .split("(?:")
-        .skip(1)
-        .map(|slot| {
-            slot.split(')')
-                .next()
-                .unwrap_or("")
-                .split('|')
-                .map(|alt| alt.chars().count())
-                .max()
-                .unwrap_or(0)
-        })
-        .sum()
-}
-
-/// כמה אותיות לכל היותר עשויות להידבק לפני המילה ואחריה בתוך אותו טוקן —
-/// אותו ענף ש-[`word_to_pattern`] בוחר, כדי שההדגשה תתאים בדיוק למה שנמצא.
-pub(crate) fn affix_windows(root: &str, flags: &WordFlags) -> (usize, usize) {
-    let len = root.chars().count();
+/// The same morphological branches as `word_to_pattern`, kept separate so
+/// display matching can capture the root and use each spelling's own bounds.
+pub(crate) fn highlight_affix_patterns(root: &str, flags: &WordFlags) -> Vec<(String, String)> {
+    let n = root.chars().count();
+    let bounded = |n| format!(".{{0,{n}}}");
     let base = if flags.prefix && flags.suffix {
-        (partial_word_window(len), partial_word_window(len))
+        let p = bounded(partial_word_window(n));
+        (p.clone(), p)
     } else if flags.gram_prefix && flags.gram_suffix {
-        (
-            group_max_len(PREFIX_GROUP),
-            group_max_len(FULL_SUFFIX_PATTERN),
-        )
+        (PREFIX_GROUP.to_string(), FULL_SUFFIX_PATTERN.to_string())
     } else if flags.prefix {
-        (user_prefix_window(len), 0)
+        (bounded(user_prefix_window(n)), String::new())
     } else if flags.suffix {
-        (0, user_suffix_window(len))
+        (String::new(), bounded(user_suffix_window(n)))
     } else if flags.gram_prefix {
-        (group_max_len(GRAM_PREFIX_GROUP), 0)
+        (GRAM_PREFIX_GROUP.to_string(), String::new())
     } else if flags.gram_suffix {
-        (0, group_max_len(SUFFIX_PATTERN))
+        (String::new(), SUFFIX_PATTERN.to_string())
     } else if flags.partial {
-        (partial_word_window(len), partial_word_window(len))
+        let p = bounded(partial_word_window(n));
+        (p.clone(), p)
     } else {
-        (0, 0)
+        (String::new(), String::new())
     };
     if !flags.aramaic_prefix {
-        return base;
+        return vec![base];
     }
     let aramaic = (
-        group_max_len(GRAM_PREFIX_GROUP),
+        GRAM_PREFIX_GROUP.to_string(),
         if flags.gram_suffix {
-            group_max_len(SUFFIX_PATTERN)
+            SUFFIX_PATTERN.to_string()
         } else {
-            0
+            String::new()
         },
     );
-    if flags.expands_besides_aramaic() {
-        (aramaic.0.max(base.0), aramaic.1.max(base.1))
+    if flags.expands_besides_aramaic() && base != aramaic {
+        vec![aramaic, base]
     } else {
-        aramaic
+        vec![aramaic]
     }
 }
 

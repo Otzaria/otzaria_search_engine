@@ -26,7 +26,20 @@ HighlightPattern _pattern(
   return pattern!;
 }
 
-RegExp _compile(String pattern) => RegExp(pattern, caseSensitive: false);
+RegExp _compile(String pattern) =>
+    RegExp(pattern, caseSensitive: false, unicode: false);
+
+class _PreparedPattern {
+  const _PreparedPattern(this.pattern);
+  final HighlightPattern pattern;
+
+  List<HighlightMatch> matches(String text) => pattern.matcher!.findMatches(
+    data: text,
+    requireTokenBoundaries: pattern.wordBoundaryEligible,
+  );
+  bool hasMatch(String text) => matches(text).isNotEmpty;
+  HighlightMatch? firstMatch(String text) => matches(text).firstOrNull;
+}
 
 Future<void> main() async {
   final skipReason = await initNativeEngine();
@@ -34,7 +47,7 @@ Future<void> main() async {
   group('generateHighlightPattern', () {
     test('מילה בודדת נתפסת בטקסט נקי ובטקסט מנוקד', () {
       final hl = _pattern('כל');
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('כל יום טוב'), isTrue);
       expect(regex.hasMatch('הָיָה כָּל הַיּוֹם'), isTrue);
       expect(hl.wordBoundaryEligible, equals([true]));
@@ -42,19 +55,18 @@ Future<void> main() async {
 
     test('ביטוי רב-מילים נתפס רק ברצף', () {
       final hl = _pattern('כל היום');
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('היה זה כל היום טוב'), isTrue);
       expect(regex.hasMatch('כל הספרים היו שם'), isFalse);
     });
 
     test('פיסוק ותגי HTML בין מילים אינם שוברים התאמה', () {
       final hl = _pattern('רבי יוחנן הוא', distance: 1);
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('רבי יוחנן: הוא אפילו'), isTrue);
       expect(
-        _compile(
-          _pattern('אמר רבי יוחנן').combinedPattern,
-        ).hasMatch('אמר <b>רבי</b> יוחנן'),
+        _PreparedPattern(_pattern('אמר רבי יוחנן'))
+            .hasMatch('אמר <b>רבי</b> יוחנן'),
         isTrue,
       );
     });
@@ -62,7 +74,7 @@ Future<void> main() async {
     test('תג שבירה בין מילים הוא מפריד — כמו הרווח שהאינדוקס רואה', () {
       // Otzaria/otzaria#949: `<br>` הופך לרווח באינדוקס, ולכן שתי מילים
       // משני צדי מעבר שורה הן טוקנים סמוכים וההדגשה חייבת לתפוס אותן.
-      final regex = _compile(_pattern('תדע זרעך').combinedPattern);
+      final regex = _PreparedPattern(_pattern('תדע זרעך'));
       expect(regex.hasMatch('תדע<br>זרעך'), isTrue);
       expect(regex.hasMatch('תדע<br/>זרעך'), isTrue);
       expect(regex.hasMatch('תדע</P><P>זרעך'), isTrue, reason: 'אדיש לרישיות');
@@ -72,20 +84,20 @@ Future<void> main() async {
 
     test('מרווח מותאם מאפשר מילים ביניים עד הגבול', () {
       final hl = _pattern('כל היום', spacing: {'0-1': '1'});
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('היה זה כל דבר היום טוב'), isTrue);
       expect(regex.hasMatch('היה זה כל דבר נוסף היום טוב'), isFalse);
     });
 
     test('ערך מרווח יחיד חל כברירת מחדל על כל הפערים', () {
       final hl = _pattern('אמר שמעון לקיש', spacing: {'0-1': '1'});
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('אמר רבי שמעון בן לקיש'), isTrue);
     });
 
     test('searchDistance גלובלי מתנהג כמו מרווח מותאם', () {
       final hl = _pattern('פרעה נבון', distance: 1);
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(
         regex.hasMatch('וְעַתָּה יֵרֶא פַּרְעֹה אִישׁ נָבוֹן וְחָכָם'),
         isTrue,
@@ -94,17 +106,16 @@ Future<void> main() async {
 
     test('מקף בין מילים מנוקדות אינו נבלע לתוך מילה', () {
       final hl = _pattern('עקב אשר שמע אברהם');
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       const text = 'עֵ֣קֶב אֲשֶׁר־שָׁמַ֣ע אַבְרָהָ֖ם בְּקֹלִ֑י';
       final match = regex.firstMatch(text);
       expect(match, isNotNull);
       // תבניות המילים מאתרות כל מילה בנפרד בתוך ההתאמה.
       var offset = 0;
-      final matched = match!.group(0)!;
+      final matched = text.substring(match!.start, match.end);
       for (final wordPattern in hl.wordPatterns) {
-        final wordMatch = _compile(
-          wordPattern,
-        ).firstMatch(matched.substring(offset));
+        final wordMatch = _compile(wordPattern)
+            .firstMatch(matched.substring(offset));
         expect(wordMatch, isNotNull);
         offset += wordMatch!.end;
       }
@@ -117,7 +128,7 @@ Future<void> main() async {
           'שלום_0': {'כתיב מלא/חסר': true},
         },
       );
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('דרשו שלם בעדה'), isTrue);
       expect(regex.hasMatch('שָׁלוֹם רב'), isTrue);
     });
@@ -130,7 +141,7 @@ Future<void> main() async {
         },
       );
       expect(hl.wordBoundaryEligible, equals([false]));
-      expect(_compile(hl.combinedPattern).hasMatch('ויאמר משה'), isTrue);
+      expect(_PreparedPattern(hl).hasMatch('ויאמר משה'), isTrue);
     });
 
     test('מילים חילופיות נתפסות באותו מיקום', () {
@@ -140,9 +151,46 @@ Future<void> main() async {
           0: ['חכם'],
         },
       );
-      final regex = _compile(hl.combinedPattern);
+      final regex = _PreparedPattern(hl);
       expect(regex.hasMatch('איש חָכָם היה'), isTrue);
       expect(regex.hasMatch('איש צַדִּיק היה'), isTrue);
+    });
+
+    test('multiword compatibility regex is a safe sentinel on Dart RegExp', () {
+      final hl = _pattern(
+        'אמר אמר אמר אמר גיטין',
+        distance: 30,
+        options: {
+          for (var i = 0; i < 4; i++) 'אמר_$i': {'קידומות': true},
+          'גיטין_4': {'קידומות': true},
+        },
+      );
+      expect(hl.matcher, isNotNull);
+      expect(hl.combinedPattern, '(?!)');
+      final text = List.filled(100, 'ואמר ').join();
+      final watch = Stopwatch()..start();
+      expect(_compile(hl.combinedPattern).hasMatch(text), isFalse);
+      expect(_PreparedPattern(hl).hasMatch(text), isFalse);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+      expect(_PreparedPattern(hl).hasMatch('גיטין $text'), isFalse);
+      expect(
+        _PreparedPattern(hl)
+            .hasMatch('$text${List.filled(31, 'דבר ').join()}גיטין'),
+        isFalse,
+      );
+    });
+
+    test('each spelling variant has its own bounded affixes', () {
+      final hl = _pattern(
+        'אמר תורה',
+        options: {
+          'תורה_1': {'חלק ממילה': true, 'כתיב מלא/חסר': true},
+        },
+      );
+      final matches = _PreparedPattern(hl).matches('אמר אאבתרה');
+      expect(matches, hasLength(1));
+      expect(matches.single.wordRanges.last.start, 7);
+      expect(matches.single.wordRanges.last.end, 10);
     });
 
     test('שאילתה ריקה או ניקוד-בלבד מחזירה null', () {

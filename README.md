@@ -21,6 +21,22 @@ words to their exact UTF-16 ranges in the original query, so per-word options
 and selections use the same word order. Native library, generated bindings and
 the app's prepared highlight matcher integration must be updated together.
 
+## Display highlighting
+
+Native highlight generators return a prepared `HighlightPattern.matcher`.
+Call `matcher.findMatches(data: text, requireTokenBoundaries: flags)` for phrase
+matches, or `findWordMatches` for independent words. Each match has `start` and
+`end` in Dart UTF-16 code units and `wordRanges` relative to `start`. The matcher
+retains compiled word regexes and resolves gaps with a bounded token-based
+algorithm, including HTML source offsets, nikud, and index quote synonyms.
+
+The legacy `combinedPattern` is preserved for single-word callers. For phrases
+it is the never-match sentinel `(?!)`; migrate applications to the prepared
+matcher together with the regenerated Flutter Rust Bridge bindings. Compiling
+full-phrase ECMAScript regexes with multiple word gaps can otherwise freeze the
+rendering isolate on a short near miss. Every native generator supplies a
+matcher; the nullable field only preserves manually constructed Dart fixtures.
+
 ## Semantic search integration
 
 The native library can optionally link

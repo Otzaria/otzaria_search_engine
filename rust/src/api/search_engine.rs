@@ -35,6 +35,7 @@ use crate::gap_phrase::{GapVerifiedPhraseQuery, TermListPhraseQuery};
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
+use crate::highlight_matcher as display_highlight_matcher;
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
@@ -810,19 +811,88 @@ type AdvancedQueryBuild = (
     Vec<Vec<String>>,
 );
 
-/// Regex patterns for highlighting query matches in *displayed* book text
-/// (which, unlike index terms, still carries nikud and HTML). All patterns
-/// are ECMAScript-dialect strings; the Dart layer compiles them with
-/// `RegExp(pattern, caseSensitive: false)` and performs no pattern
-/// construction of its own.
+/// Prepared highlighting for displayed book text, including HTML and nikud.
+/// Use `matcher.find_matches` for phrases or `matcher.find_word_matches` for
+/// independent words. The string fields are legacy compatibility metadata.
 pub struct HighlightPattern {
-    /// One regex matching the full query phrase (words + separators).
+    /// Deprecated for phrases: a single-word regex or the safe never-match
+    /// sentinel `(?!)` for multiple words. Use `matcher` for real matching.
     pub combined_pattern: String,
     /// Per-word regex, used to locate each word inside a combined match.
     pub word_patterns: Vec<String>,
     /// Per-word: `true` when the word has no morphological expansion option,
     /// so the UI may require token boundaries around its match.
     pub word_boundary_eligible: Vec<bool>,
+    /// Prepared bounded matcher. Always populated by native generators;
+    /// optional only for compatibility with manually constructed Dart values.
+    pub matcher: Option<HighlightMatcher>,
+}
+
+/// A range measured in Dart UTF-16 code units.
+pub struct HighlightRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+pub struct HighlightMatch {
+    pub start: u32,
+    pub end: u32,
+    /// Word ranges relative to `start`.
+    pub word_ranges: Vec<HighlightRange>,
+}
+
+/// Compiles each query word once. Matching is linear in paragraph token count
+/// times query word count, including near misses and arbitrary phrase gaps.
+#[frb(opaque)]
+pub struct HighlightMatcher {
+    plan: display_highlight_matcher::PreparedHighlightMatcher,
+}
+
+impl HighlightMatcher {
+    #[frb(sync)]
+    pub fn find_matches(
+        &self,
+        data: String,
+        require_token_boundaries: Vec<bool>,
+    ) -> Vec<HighlightMatch> {
+        convert_highlight_matches(self.plan.find_matches(&data, &require_token_boundaries))
+    }
+
+    #[frb(sync)]
+    pub fn find_word_matches(
+        &self,
+        data: String,
+        require_token_boundaries: Vec<bool>,
+    ) -> Vec<HighlightMatch> {
+        convert_highlight_matches(
+            self.plan
+                .find_word_matches(&data, &require_token_boundaries),
+        )
+    }
+}
+
+fn convert_highlight_matches(
+    matches: Vec<display_highlight_matcher::Match>,
+) -> Vec<HighlightMatch> {
+    matches
+        .into_iter()
+        .filter_map(|m| {
+            Some(HighlightMatch {
+                start: m.start.try_into().ok()?,
+                end: m.end.try_into().ok()?,
+                word_ranges: m
+                    .word_ranges
+                    .into_iter()
+                    .map(|r| {
+                        Some(HighlightRange {
+                            start: r.start.try_into().ok()?,
+                            end: r.end.try_into().ok()?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            })
+        })
+        .collect()
 }
 
 // ── SearchEngine ───────────────────────────────────────────────────────────────
@@ -1007,6 +1077,7 @@ pub fn generate_highlight_pattern(
         combined_pattern: hl.combined_pattern,
         word_patterns: hl.word_patterns,
         word_boundary_eligible: hl.word_boundary_eligible,
+        matcher: Some(HighlightMatcher { plan: hl.matcher }),
     })
 }
 
@@ -7732,6 +7803,7 @@ impl SearchEngine {
             combined_pattern: hl.combined_pattern,
             word_patterns: hl.word_patterns,
             word_boundary_eligible: hl.word_boundary_eligible,
+            matcher: Some(HighlightMatcher { plan: hl.matcher }),
         }))
     }
 
@@ -7794,6 +7866,7 @@ impl SearchEngine {
             combined_pattern: hl.combined_pattern,
             word_patterns: hl.word_patterns,
             word_boundary_eligible: hl.word_boundary_eligible,
+            matcher: Some(HighlightMatcher { plan: hl.matcher }),
         }))
     }
 
@@ -12234,9 +12307,14 @@ mod tests {
         assert_eq!(hl.word_patterns.len(), 2);
         assert_eq!(hl.word_patterns[0], charwise("ויאמר"));
         assert_eq!(hl.word_patterns[1], charwise("מסה"));
-        // Combined phrase pattern chains both words.
-        assert!(hl.combined_pattern.starts_with(&charwise("ויאמר")));
-        assert!(hl.combined_pattern.ends_with(&charwise("מסה")));
+        assert_eq!(hl.combined_pattern, "(?!)");
+        assert_eq!(
+            hl.matcher
+                .unwrap()
+                .find_matches("ויאמר מסה אל העם".into(), vec![])
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -15908,9 +15986,7 @@ mod tests {
                         &HashMap::new(),
                     )
                     .unwrap();
-                    // fancy-regex: בתבנית המשולבת יש lookahead, כמו ב-Dart.
-                    let pattern = fancy_regex::Regex::new(&highlight.combined_pattern).unwrap();
-                    if pattern.is_match(line).unwrap() {
+                    if !highlight.matcher.find_matches(line, &[]).is_empty() {
                         found_by_highlight = Some(distance);
                     }
                 }
