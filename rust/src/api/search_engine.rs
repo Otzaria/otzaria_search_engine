@@ -338,8 +338,10 @@ pub struct SemanticConfigInput {
     /// library does not link but loads when the model loads: the file named by
     /// the `OTZARIA_ONNX_RUNTIME` environment variable, or else the platform's
     /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
-    /// the graph. Without one, the model is `BackendUnavailable` in the same
-    /// way, and lexical search is unaffected.
+    /// the graph. Without one that loads, loading the model fails with "ONNX
+    /// Runtime could not be loaded", which names both places. That is not
+    /// `BackendUnavailable`: the backend is in the build, and the fix is the
+    /// library, not a rebuild. Lexical search is unaffected either way.
     pub model_path: String,
     pub model_id: String,
     pub embedding_dim: u32,
@@ -358,7 +360,11 @@ pub struct SemanticConfigInput {
     /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
     /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
     /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
-    /// and a cap that leaves no room for content is refused.
+    /// and a cap that leaves no room for content is refused. So is an ONNX cap
+    /// above 65,536, past the context of any ONNX sentence encoder, when
+    /// configuring: a negative Dart value arrives here as a cap in the billions,
+    /// and the load-time probe of that many tokens could not even be allocated.
+    /// A GGUF cap has no such bound; llama.cpp clamps it to the model's context.
     ///
     /// Identity because a different cap cuts every long text somewhere else, and
     /// so changes its vector. The manifest records the value requested here, not
@@ -17593,6 +17599,57 @@ mod tests {
             engine
                 .configure_semantic(qwen3(semantic.path()))
                 .expect("a refused configuration leaves no session behind");
+        }
+
+        /// The ONNX token cap has a ceiling, 65,536, and it binds before the manifest
+        /// records the cap. `u32::MAX` is the case it exists for: a negative Dart value
+        /// arrives as a cap in the billions, and the load-time probe of that many tokens
+        /// cannot be allocated. A GGUF cap is llama.cpp's to clamp, so it has none.
+        #[test]
+        fn an_onnx_cap_past_the_ceiling_is_refused_when_configuring_and_a_gguf_one_is_not() {
+            const CEILING: u32 = 65_536;
+            let (mut engine, _index) = make_engine();
+
+            for cap in [CEILING + 1, u32::MAX] {
+                let semantic = TempDir::new().unwrap();
+                let input = SemanticConfigInput {
+                    max_tokens: cap,
+                    ..meivin(semantic.path())
+                };
+                let root_dir = input.root_dir.clone();
+                let message = match engine.configure_semantic(input) {
+                    Ok(_) => panic!("an ONNX cap of {cap} must be refused"),
+                    Err(error) => format!("{error:#}"),
+                };
+                assert!(
+                    message.contains(&format!("embedding_max_tokens is {cap}"))
+                        && message.contains(&CEILING.to_string()),
+                    "the refusal must name the cap and the ceiling: {message}"
+                );
+                assert!(
+                    !Path::new(&root_dir).join(MANIFEST).exists(),
+                    "a refused cap must not be recorded as an index's identity"
+                );
+            }
+
+            let onnx_root = TempDir::new().unwrap();
+            let gguf_root = TempDir::new().unwrap();
+            for accepted in [
+                SemanticConfigInput {
+                    max_tokens: CEILING,
+                    ..meivin(onnx_root.path())
+                },
+                SemanticConfigInput {
+                    max_tokens: u32::MAX,
+                    ..qwen3(gguf_root.path())
+                },
+            ] {
+                let model_path = accepted.model_path.clone();
+                engine
+                    .configure_semantic(accepted)
+                    .unwrap_or_else(|error| panic!("{model_path}: {error:#}"));
+                engine.disable_semantic();
+            }
         }
     }
 }

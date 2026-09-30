@@ -1959,8 +1959,10 @@ class SemanticConfigInput {
   /// library does not link but loads when the model loads: the file named by
   /// the `OTZARIA_ONNX_RUNTIME` environment variable, or else the platform's
   /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
-  /// the graph. Without one, the model is `BackendUnavailable` in the same
-  /// way, and lexical search is unaffected.
+  /// the graph. Without one that loads, loading the model fails with "ONNX
+  /// Runtime could not be loaded", which names both places. That is not
+  /// `BackendUnavailable`: the backend is in the build, and the fix is the
+  /// library, not a rebuild. Lexical search is unaffected either way.
   final String modelPath;
   final String modelId;
   final int embeddingDim;
@@ -1981,7 +1983,11 @@ class SemanticConfigInput {
   /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
   /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
   /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
-  /// and a cap that leaves no room for content is refused.
+  /// and a cap that leaves no room for content is refused. So is an ONNX cap
+  /// above 65,536, past the context of any ONNX sentence encoder, when
+  /// configuring: a negative Dart value arrives here as a cap in the billions,
+  /// and the load-time probe of that many tokens could not even be allocated.
+  /// A GGUF cap has no such bound; llama.cpp clamps it to the model's context.
   ///
   /// Identity because a different cap cuts every long text somewhere else, and
   /// so changes its vector. The manifest records the value requested here, not
