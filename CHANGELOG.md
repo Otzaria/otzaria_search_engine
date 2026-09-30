@@ -5,6 +5,13 @@
 > Breaking for Dart code that constructs `SemanticConfigInput`, so this must
 > not ship as a 0.8.x patch: `^0.8.7` would take it on its own (see 0.8.0).
 
+**The application never builds the library's vectors.** The build machine
+embeds the whole library into a semantic artifact; the application opens it
+with the new `openSemanticArtifact` and embeds only the query.
+`configureSemantic`, `semanticIndexBooks`, `semanticIndexDiff`,
+`removeSemanticBooks` and `resetSemanticIndex` build vectors on the device, and
+are now documented as development and testing scaffolding, not for the library.
+
 ### Breaking
 
 - **`SemanticConfigInput` states the whole recipe: four new required fields.**
@@ -45,16 +52,42 @@
 
 ### Added
 
+- **`openSemanticArtifact`: the application's semantic path.** It opens a
+  prebuilt artifact read-only, verifies every field of its identity against
+  this installation, and serves `searchSemantic` from it with each result
+  hydrated from the lexical index. `SemanticArtifactInput` takes the artifact
+  directory, the model file, the text of the model's identity file (the one the
+  artifact was built with, such as the sidecar's
+  `config/models/meivin-round2-onnx/model.json`) and, optionally, the published
+  digest; the model identity's `model_checksum` and `embedding_backend` are also
+  compared with the model once it has loaded. The corpus half is not an input:
+  it is read from the index (next entry). On an opened artifact,
+  `semanticIndexBooks`, `removeSemanticBooks`, `resetSemanticIndex`,
+  `semanticIndexDiff` and `configureSemantic` are refused as read-only, and a
+  commit to the index afterwards makes the artifact stale: searches fall back to
+  lexical results and `semanticStatus` reports why. It takes the engine's read
+  lock, so lexical search keeps serving while the model and the vectors load.
+- **The corpus stamp, `otzaria_semantic_corpus.json`.** `build_semantic_artifact
+  --stamp-index` and `pack_semantic_artifact --stamp-index` write the corpus
+  identity the artifact was built for into the lexical index directory,
+  together with the index's segment set, from the snapshot the artifact was
+  read from. A device cannot recompute `corpus_id`, which digests every stored
+  line, and the artifact's own copy proves nothing about the index that is
+  open, so `openSemanticArtifact` reads the stamp, refuses it unless the index
+  still has that segment set, and compares it with the artifact's. The index
+  carries its stamp wherever it is shipped; without `--stamp-index` the bins
+  still write nothing outside `--out`.
 - **The ONNX embedding backend, `semantic-onnx`**, for ONNX graphs such as the
   Meivin model. It links nothing native: the sidecar loads the ONNX Runtime
   shared library when a model loads, from `OTZARIA_ONNX_RUNTIME` or else from
   the platform's default file name beside the `.onnx` graph. **An application
   that configures an ONNX model has to provide that library**; the reference is
   Microsoft's ONNX Runtime 1.28.0 release, and the oldest runtime API accepted
-  is 1.17's. Without one that loads, indexing throws an error that says "ONNX
-  Runtime could not be loaded: …" and names both places, not the no-backend
-  error of a build without it; semantic search reports itself unavailable, and
-  lexical search is unaffected. On macOS a Hardened Runtime application loads
+  is 1.17's. Without one that loads, opening an artifact (or, on the
+  development path, indexing) throws an error that says "ONNX Runtime could not
+  be loaded: …" and names both places, not the no-backend error of a build
+  without it; semantic search reports itself unavailable, and lexical search is
+  unaffected. On macOS a Hardened Runtime application loads
   only libraries signed by Apple or with its own Team ID, so the runtime belongs
   inside the signed bundle, named through `OTZARIA_ONNX_RUNTIME`. The runtime is
   not part of the model checksum. The backend is built for desktop targets only.
@@ -63,12 +96,37 @@
   the line they are about first. A ranking cannot tell whether the role
   prefixes reached the model, so text recipe 2 is also checked against its
   definition: it must score every pair exactly as recipe 1 does when handed the
-  `[PASSAGE] ` / `[QUERY] `-prefixed strings. `#[ignore]`d, and they skip loudly
-  unless `OTZARIA_TEST_ONNX_MODEL` and `OTZARIA_ONNX_RUNTIME` name the graph and
-  the runtime.
+  `[PASSAGE] ` / `[QUERY] `-prefixed strings. A third runs the application's
+  path: the build binary embeds the lines into an artifact and stamps the
+  index, and `openSemanticArtifact` opens it and must rank the same lines first,
+  using the model's published identity files from `OTZARIA_TEST_ONNX_IDENTITY`.
+  `#[ignore]`d, and they skip loudly unless `OTZARIA_TEST_ONNX_MODEL`,
+  `OTZARIA_ONNX_RUNTIME` and, for the third, `OTZARIA_TEST_ONNX_IDENTITY` name
+  what they need.
+- **Tests of the artifact path with the stand-in**, `rust/tests/semantic_artifact.rs`:
+  an artifact built by the binary from a small index, opened, searched both
+  ways and hydrated; refusals of a missing, foreign or outdated stamp, of every
+  kind of wrong model identity and of a wrong published digest; every
+  build-side call refused as read-only; and a commit after opening turning the
+  artifact stale. The FFI suite opens one across the bridge too, so CI now
+  builds `build_semantic_artifact` beside the library, and the package gains
+  `crypto` as a dev dependency for the stub model's checksum.
+- **INT8 vectors depend on the CPU's INT8 kernels**, documented: ARM (KleidiAI)
+  and x86 (MLAS) land about cosine 0.999 apart, the same order as INT8 against
+  fp32, so a library built on x86 and queried on an ARM Mac meets at about
+  0.999. The sidecar records this as accepted, and as a measurement still to be
+  made on a weak PC.
 
 ### Changed
 
+- **The calls that build vectors on the device are documented as development
+  and testing scaffolding**: `configureSemantic`, `semanticIndexBooks`,
+  `semanticIndexDiff`, `removeSemanticBooks` and `resetSemanticIndex`, in their
+  doc comments (and so in the Dart docs), the README and API_DOCUMENTATION. They
+  are kept, since application code references them, and not `#[deprecated]`:
+  flutter_rust_bridge's codegen does not carry the attribute to Dart, so the
+  application would see nothing, while every Rust call site would warn, the
+  generated wrappers included.
 - **`semantic` compiles both real backends**: `semantic-llama` (llama.cpp, for
   GGUF) and `semantic-onnx`. The sidecar picks one per model by the model
   file's format, `.onnx` or anything else, so the configured model decides.

@@ -232,24 +232,55 @@ Returns the distinct `filePath` values present in the index — i.e. which books
 ##### Semantic search
 
 ```dart
-Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})
+Future<SemanticStatus> openSemanticArtifact({required SemanticArtifactInput config})
 Future<void> disableSemantic()
 Future<SemanticStatus> semanticStatus()
+Future<SemanticSearchResponse> searchSemantic({...})
+
+// Development and testing: vectors built on this device.
+Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})
 Future<SemanticIndexDiff> semanticIndexDiff()
 Future<SemanticIndexingSummary> semanticIndexBooks({required List<SemanticBookInput> books})
 Future<SemanticRemoveResult> removeSemanticBooks({required List<String> sourceBookKeys})
 Future<SemanticResetResult> resetSemanticIndex()
-Future<SemanticSearchResponse> searchSemantic({...})
 ```
 
 These reach the semantic sidecar only in a library built with a semantic
 feature; any other build reports an explicit disabled state and serves lexical
 results. The README's "Semantic search integration" section covers the
-features, the session lifecycle and the fallback contract.
+features, the release contract, the session lifecycle and the fallback
+contract.
 
-`configureSemantic` opens the sidecar. `SemanticConfigInput` states how the
-vectors are produced, and nothing in it is read from the model file. Every
-field but `rootDir` is part of the index's identity (the model file by its
+**The application never builds the library's vectors.** The build machine
+embeds the library into an artifact; the application opens it with
+`openSemanticArtifact` and embeds only the query. `configureSemantic` and the
+calls below it build vectors on the device, for development and testing, and
+are not for the library.
+
+`openSemanticArtifact` opens a prebuilt artifact read-only and serves
+`searchSemantic` from it, hydrating every result from this index. It compares
+every field of the artifact's identity with this installation's, and nothing in
+its input is a value to type in:
+
+| field | meaning |
+| --- | --- |
+| `artifactDir` | the artifact directory the build binary wrote |
+| `modelPath` | the model queries are embedded with: `.onnx` selects ONNX Runtime, any other path llama.cpp; for the Meivin model, `seforim-embed-round2-int8.onnx` with `tokenizer.json` beside it |
+| `modelIdentityJson` | the text of the model's identity file, the one the artifact was built with: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph |
+| `publishedDigest` | optional: the artifact's digest as published outside it |
+
+The corpus half of the identity is not an input: it is the corpus stamp the
+build machine writes into the lexical index (`--stamp-index`), checked against
+the index's segment set, because nothing on a device can recompute `corpus_id`.
+A mismatch anywhere is an error naming the fields, and leaves nothing open. On
+an opened artifact the calls that build vectors are refused as read-only, and a
+commit to the index afterwards makes it stale: searches fall back to lexical
+results, and `semanticStatus` reports why. INT8 vectors from x86 and ARM CPUs
+meet at about cosine 0.999, the same order as INT8 against fp32.
+
+`configureSemantic` opens a development session. `SemanticConfigInput` states
+how the vectors are produced, and nothing in it is read from the model file.
+Every field but `rootDir` is part of the index's identity (the model file by its
 checksum, once it has loaded), so an index built under one value reports
 `needsFullReindex` under another.
 
@@ -270,15 +301,15 @@ named by the `OTZARIA_ONNX_RUNTIME` environment variable, or the platform's
 default file name (`onnxruntime.dll`, `libonnxruntime.so` or
 `libonnxruntime.dylib`) beside the `.onnx` graph. The reference is Microsoft's
 official ONNX Runtime 1.28.0 release, and the oldest runtime API accepted is
-ONNX Runtime 1.17's. Without one that loads, indexing throws an error that
-says "ONNX Runtime could not be loaded: …" and names both places, which
-`SemanticStatus.lastError` then carries too; semantic search reports itself
-unavailable, and lexical search is unaffected. That is not the "No embedding
-backend is available in this build" of a build without the backend: the fix
-is the library, not a rebuild. On macOS, a Hardened Runtime application loads
-only libraries signed by Apple or with its own Team ID, so ship the runtime
-inside the signed application bundle and name it with `OTZARIA_ONNX_RUNTIME`.
-The ONNX backend is built for desktop targets (Windows, Linux and macOS) only.
+ONNX Runtime 1.17's. Without one that loads, opening an artifact (or indexing,
+on the development path) throws an error that says "ONNX Runtime could not be
+loaded: …" and names both places; semantic search reports itself unavailable,
+and lexical search is unaffected. That is not the "No embedding backend is
+available in this build" of a build without the backend: the fix is the
+library, not a rebuild. On macOS, a Hardened Runtime application loads only
+libraries signed by Apple or with its own Team ID, so ship the runtime inside
+the signed application bundle and name it with `OTZARIA_ONNX_RUNTIME`. The
+ONNX backend is built for desktop targets (Windows, Linux and macOS) only.
 
 ---
 
