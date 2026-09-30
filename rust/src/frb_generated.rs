@@ -6921,11 +6921,19 @@ impl SseDecode for crate::api::search_engine::SemanticConfigInput {
         let mut var_modelPath = <String>::sse_decode(deserializer);
         let mut var_modelId = <String>::sse_decode(deserializer);
         let mut var_embeddingDim = <u32>::sse_decode(deserializer);
+        let mut var_pooling = <String>::sse_decode(deserializer);
+        let mut var_maxTokens = <u32>::sse_decode(deserializer);
+        let mut var_modelQuantization = <String>::sse_decode(deserializer);
+        let mut var_embeddingTextVersion = <u32>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticConfigInput {
             root_dir: var_rootDir,
             model_path: var_modelPath,
             model_id: var_modelId,
             embedding_dim: var_embeddingDim,
+            pooling: var_pooling,
+            max_tokens: var_maxTokens,
+            model_quantization: var_modelQuantization,
+            embedding_text_version: var_embeddingTextVersion,
         };
     }
 }
@@ -8047,6 +8055,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticConfig
             self.model_path.into_into_dart().into_dart(),
             self.model_id.into_into_dart().into_dart(),
             self.embedding_dim.into_into_dart().into_dart(),
+            self.pooling.into_into_dart().into_dart(),
+            self.max_tokens.into_into_dart().into_dart(),
+            self.model_quantization.into_into_dart().into_dart(),
+            self.embedding_text_version.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -9280,6 +9292,10 @@ impl SseEncode for crate::api::search_engine::SemanticConfigInput {
         <String>::sse_encode(self.model_path, serializer);
         <String>::sse_encode(self.model_id, serializer);
         <u32>::sse_encode(self.embedding_dim, serializer);
+        <String>::sse_encode(self.pooling, serializer);
+        <u32>::sse_encode(self.max_tokens, serializer);
+        <String>::sse_encode(self.model_quantization, serializer);
+        <u32>::sse_encode(self.embedding_text_version, serializer);
     }
 }
 

@@ -7644,13 +7644,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticConfigInput dco_decode_semantic_config_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return SemanticConfigInput(
       rootDir: dco_decode_String(arr[0]),
       modelPath: dco_decode_String(arr[1]),
       modelId: dco_decode_String(arr[2]),
       embeddingDim: dco_decode_u_32(arr[3]),
+      pooling: dco_decode_String(arr[4]),
+      maxTokens: dco_decode_u_32(arr[5]),
+      modelQuantization: dco_decode_String(arr[6]),
+      embeddingTextVersion: dco_decode_u_32(arr[7]),
     );
   }
 
@@ -9099,11 +9103,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_modelPath = sse_decode_String(deserializer);
     var var_modelId = sse_decode_String(deserializer);
     var var_embeddingDim = sse_decode_u_32(deserializer);
+    var var_pooling = sse_decode_String(deserializer);
+    var var_maxTokens = sse_decode_u_32(deserializer);
+    var var_modelQuantization = sse_decode_String(deserializer);
+    var var_embeddingTextVersion = sse_decode_u_32(deserializer);
     return SemanticConfigInput(
       rootDir: var_rootDir,
       modelPath: var_modelPath,
       modelId: var_modelId,
       embeddingDim: var_embeddingDim,
+      pooling: var_pooling,
+      maxTokens: var_maxTokens,
+      modelQuantization: var_modelQuantization,
+      embeddingTextVersion: var_embeddingTextVersion,
     );
   }
 
@@ -10551,6 +10563,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.modelPath, serializer);
     sse_encode_String(self.modelId, serializer);
     sse_encode_u_32(self.embeddingDim, serializer);
+    sse_encode_String(self.pooling, serializer);
+    sse_encode_u_32(self.maxTokens, serializer);
+    sse_encode_String(self.modelQuantization, serializer);
+    sse_encode_u_32(self.embeddingTextVersion, serializer);
   }
 
   @protected
@@ -11023,8 +11039,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// - Called again with the same inputs it is a no-op returning the current
   ///   status, so a caller that configures defensively cannot lose an index.
   /// - Called with different inputs while a session is open it fails and says
-  ///   which input changed. Switching model or library root is an explicit
-  ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
+  ///   which input changed. Switching model, text recipe or library root is an
+  ///   explicit act: call [`Self::disable_semantic`] first and accept the
+  ///   rebuild.
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineConfigureSemantic(

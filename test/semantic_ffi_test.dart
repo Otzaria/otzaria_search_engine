@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 
@@ -189,6 +191,9 @@ Future<void> main() async {
   group('semantic FFI with a configured sidecar', () {
     const bookKey = '/library/bereshit.json';
     const text = 'בראשית ברא אלהים';
+    // Not the recipe's 512, which is also the sidecar's own default: only a
+    // value the sidecar would not have chosen shows that this one arrived.
+    const maxTokens = 384;
     final lineId = BigInt.from(9001);
     final sectionId = BigInt.from(42);
 
@@ -216,11 +221,11 @@ Future<void> main() async {
       final model = File('${root.path}/mock.gguf');
       writeStubGguf(model);
       final status = await engine.configureSemantic(
-        config: SemanticConfigInput(
+        config: stubGgufConfig(
           rootDir: '${root.path}/semantic',
           modelPath: model.path,
           modelId: 'test-mock',
-          embeddingDim: 64,
+          maxTokens: maxTokens,
         ),
       );
       expect(status.enabled, isTrue, reason: 'the sidecar should be open');
@@ -330,6 +335,62 @@ Future<void> main() async {
       expect(hit.snippetHtml, text);
       expect(hit.isHighlighted, isFalse);
     });
+
+    test('every recipe field reaches the sidecar\'s manifest', () async {
+      // The sidecar records the configuration it was opened with, so its
+      // manifest shows what arrived on the Rust side. A field the codec lost or
+      // misordered shows up here as the sidecar's default, or as a swap.
+      final manifest =
+          jsonDecode(
+                File(
+                  '${root.path}/semantic/semantic_manifest.json',
+                ).readAsStringSync(),
+              )
+              as Map<String, dynamic>;
+
+      expect(manifest['embedding_model_id'], 'test-mock');
+      expect(manifest['embedding_dim'], 64);
+      expect(manifest['pooling'], 'last-token');
+      expect(manifest['embedding_max_tokens'], maxTokens);
+      expect(manifest['model_quantization'], 'Q4_K_M');
+    });
+
+    test(
+      'a recipe value the sidecar cannot serve is refused by name',
+      () async {
+        // The stub GGUF is served only under the pooling and text recipe the
+        // defaults already name, so a value the sidecar refuses is what shows
+        // that these two fields reach Rust.
+        await engine.disableSemantic();
+        final model = '${root.path}/mock.gguf';
+        final refused = {
+          'last_token': stubGgufConfig(
+            rootDir: '${root.path}/semantic',
+            modelPath: model,
+            modelId: 'test-mock',
+            pooling: 'last_token',
+          ),
+          'embedding_text_version': stubGgufConfig(
+            rootDir: '${root.path}/semantic',
+            modelPath: model,
+            modelId: 'test-mock',
+            embeddingTextVersion: 99,
+          ),
+        };
+        for (final MapEntry(key: named, value: config) in refused.entries) {
+          await expectLater(
+            engine.configureSemantic(config: config),
+            throwsA(
+              isA<AnyhowException>().having(
+                (error) => error.message,
+                'message',
+                contains(named),
+              ),
+            ),
+          );
+        }
+      },
+    );
 
     test('the index diff sees the indexed book', () async {
       final diff = await engine.semanticIndexDiff();

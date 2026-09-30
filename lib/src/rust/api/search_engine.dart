@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `push_limited_unique`, `push`, `quoteless_variant`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 
@@ -318,8 +318,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// - Called again with the same inputs it is a no-op returning the current
   ///   status, so a caller that configures defensively cannot lose an index.
   /// - Called with different inputs while a session is open it fails and says
-  ///   which input changed. Switching model or library root is an explicit
-  ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
+  ///   which input changed. Switching model, text recipe or library root is an
+  ///   explicit act: call [`Self::disable_semantic`] first and accept the
+  ///   rebuild.
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   });
@@ -1928,17 +1929,96 @@ class SemanticBookLineInput {
 /// loaded lazily when indexing begins, so configuration is cheap; searches
 /// report a degraded state until indexing has loaded the model and produced
 /// vectors, instead of making the lexical engine unusable.
+///
+/// Every field but `root_dir` describes how the vectors are produced, and the
+/// sidecar records each one in its manifest as part of the index's identity (the
+/// model file by its checksum, once it has loaded). An index built under one
+/// value is reported as needing a full re-index under another, rather than
+/// having vectors that cannot be compared mixed into it.
+/// Nothing here is read from the model file, so the values must be the ones the
+/// model was built for. The two models the application knows:
+///
+/// | field | Qwen3 GGUF | Meivin ONNX |
+/// | --- | --- | --- |
+/// | `model_path` | the `.gguf` file | `seforim-embed-round2-fp32.onnx` |
+/// | `embedding_dim` | 1024 | 256 |
+/// | `pooling` | `"last-token"` | `"in-graph"` |
+/// | `max_tokens` | 512 | 256 |
+/// | `model_quantization` | `"Q4_K_M"` | `"fp32"` |
+/// | `embedding_text_version` | 1 | 2 |
 class SemanticConfigInput {
   final String rootDir;
+
+  /// The model file, whose extension selects the backend. A path ending in
+  /// `.onnx` (in any letter case) is an ONNX graph for ONNX Runtime, with its
+  /// `tokenizer.json` in the same directory; every other path is a GGUF for
+  /// llama.cpp. A build without that format's backend cannot serve the model:
+  /// loading it, which indexing does, fails with `BackendUnavailable`.
+  ///
+  /// An ONNX graph also needs the ONNX Runtime shared library, which this
+  /// library does not link but loads when the model loads: the file named by
+  /// the `OTZARIA_ONNX_RUNTIME` environment variable, or else the platform's
+  /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
+  /// the graph. Without one, the model is `BackendUnavailable` in the same
+  /// way, and lexical search is unaffected.
   final String modelPath;
   final String modelId;
   final int embeddingDim;
+
+  /// How the model's output becomes one vector per text. `"last-token"` takes
+  /// the hidden state of the final token, which is what the Qwen3 GGUF was
+  /// trained for. `"in-graph"` means the graph itself emits the finished
+  /// sentence vector (the Meivin graph pools, projects and normalizes inside),
+  /// so nothing is pooled outside it. Spellings are matched exactly, and
+  /// `"mean"`, which parses but which no backend performs, is refused like an
+  /// unknown one.
+  ///
+  /// Identity because the same weights pooled two ways produce two unrelated
+  /// vector spaces.
+  final String pooling;
+
+  /// The token cap per embedded text, counted the way the model's backend
+  /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
+  /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
+  /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
+  /// and a cap that leaves no room for content is refused.
+  ///
+  /// Identity because a different cap cuts every long text somewhere else, and
+  /// so changes its vector. The manifest records the value requested here, not
+  /// one a backend may clamp it to.
+  final int maxTokens;
+
+  /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF and
+  /// `"fp32"` for the Meivin graph (the INT8 graph published beside it is a
+  /// different identity). Not the precision the vectors are stored at. Must not
+  /// be empty.
+  ///
+  /// Identity because two quantizations of one model produce different
+  /// vectors. The model file's checksum catches such a swap as well, but only
+  /// once indexing has loaded the model; this label is compared the moment an
+  /// index is opened.
+  final String modelQuantization;
+
+  /// Which text each chunk, and each query, carries to the model. Version 1
+  /// embeds the line itself, or a short line together with its neighbours,
+  /// which is what the Qwen3 GGUF expects. Version 2 prefixes `"[PASSAGE] "`
+  /// to that same text and `"[QUERY] "` to the query: the Meivin model's
+  /// learned role tokens, which it was trained to see. A version the sidecar
+  /// does not implement is refused.
+  ///
+  /// Identity because it changes the string that is embedded. It is folded
+  /// into the chunking identity that the manifest and every book record carry.
+  final int embeddingTextVersion;
 
   const SemanticConfigInput({
     required this.rootDir,
     required this.modelPath,
     required this.modelId,
     required this.embeddingDim,
+    required this.pooling,
+    required this.maxTokens,
+    required this.modelQuantization,
+    required this.embeddingTextVersion,
   });
 
   @override
@@ -1946,7 +2026,11 @@ class SemanticConfigInput {
       rootDir.hashCode ^
       modelPath.hashCode ^
       modelId.hashCode ^
-      embeddingDim.hashCode;
+      embeddingDim.hashCode ^
+      pooling.hashCode ^
+      maxTokens.hashCode ^
+      modelQuantization.hashCode ^
+      embeddingTextVersion.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1956,7 +2040,11 @@ class SemanticConfigInput {
           rootDir == other.rootDir &&
           modelPath == other.modelPath &&
           modelId == other.modelId &&
-          embeddingDim == other.embeddingDim;
+          embeddingDim == other.embeddingDim &&
+          pooling == other.pooling &&
+          maxTokens == other.maxTokens &&
+          modelQuantization == other.modelQuantization &&
+          embeddingTextVersion == other.embeddingTextVersion;
 }
 
 enum SemanticExecutedMode { disabled, hybrid, semanticOnly, lexicalOnly }
