@@ -31,7 +31,9 @@
 //! corpus identity the artifact was built for, and the segment set it was read from. It is
 //! what lets an application open the artifact against the index it ships with, since a
 //! device cannot recompute `corpus_id`. It is the one write this binary makes outside
-//! `--out`, which is why it is asked for rather than done by default.
+//! `--out`, which is why it is asked for rather than done by default. Build from the index
+//! as it will ship, after any optimize: a later commit or merge, even one that changes no
+//! line, invalidates the stamp.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {

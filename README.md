@@ -69,7 +69,8 @@ nothing about that. It cannot be recomputed on a device either: `corpus_id`
 digests every stored line, so the build machine writes it into the index
 directory, with the index's segment set at that moment, and the index carries it
 wherever it is shipped. An index added to, deleted from or merged since is
-refused, since the artifact's line ids may then name lines that moved.
+refused, since the artifact's line ids may then name lines that moved, so the
+build machine stamps the index as it will ship, after any optimize.
 
 Every refusal names every field that disagreed, and leaves no session open. An
 opened artifact is read-only: `semanticIndexBooks`, `removeSemanticBooks`,

@@ -498,6 +498,9 @@ impl CorpusBooks for TantivyCorpus {
 /// Written by `build_semantic_artifact --stamp-index` and `pack_semantic_artifact
 /// --stamp-index`, from the snapshot the artifact was built from; read by
 /// [`SearchEngine::open_semantic_artifact`](crate::api::search_engine::SearchEngine::open_semantic_artifact).
+/// So the index is stamped as it will ship, after any optimize: a later add, delete or
+/// merge, even one that changes no line, leaves the stamp naming a segment set the index
+/// no longer has, and every device then refuses the artifact.
 pub const CORPUS_STAMP_FILE_NAME: &str = "otzaria_semantic_corpus.json";
 
 /// The stamp's format tag and version, refused on a mismatch rather than half-read.
