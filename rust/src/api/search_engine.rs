@@ -10478,7 +10478,7 @@ mod tests {
     #[test]
     fn paired_readings_preserve_query_boundaries_and_real_maqaf_readings() {
         let (mut engine, _dir) = make_engine();
-        for (id, text) in [
+        let documents = [
             // Numbers 23:13 and 1 Samuel 20:24: a maqaf is inside the
             // qere brackets, with the following word immediately adjacent.
             (1, "בלק (לך) [לכה־]נא"),
@@ -10488,7 +10488,8 @@ mod tests {
             (4, "ראשון (א־ב) [ג] סוף"),
             (5, "שני (א) [ב,ג] סוף"),
             (6, "סימן (ח')[ו'] (ט')[י'] שם"),
-        ] {
+        ];
+        for (id, text) in documents {
             add(&mut engine, id, text, &format!("/books/{id}.txt"));
         }
         engine.commit().unwrap();
@@ -10507,26 +10508,75 @@ mod tests {
             )
             .unwrap()
         };
-        for query in [
-            "בלק לך נא",
-            "בלק לכה נא",
-            "בלק (לך) [לכה־]נא",
-            "המלך על הלחם",
-            "המלך אל הלחם",
-            "אמר רבא משום",
-            "אמר(ת) [רבא] משום",
-            "סימן ח ט שם",
-            "סימן ו י שם",
+        for (query, document_id) in [
+            ("בלק לך נא", 1),
+            ("בלק לכה נא", 1),
+            ("בלק (לך) [לכה־]נא", 1),
+            ("המלך על הלחם", 2),
+            ("המלך אל הלחם", 2),
+            ("אמר רבא משום", 3),
+            ("אמר(ת) [רבא] משום", 3),
+            ("סימן ח ט שם", 6),
+            ("סימן ו י שם", 6),
+            ("סימן (ח')[ו'] (ט')[י'] שם", 6),
         ] {
             assert_eq!(count(query, 0), 1, "query {query}");
+            let source = documents
+                .iter()
+                .find(|(id, _)| *id == document_id)
+                .unwrap()
+                .1;
+            let pattern = generate_highlight_pattern(
+                query.to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .unwrap();
+            assert_eq!(pattern.combined_pattern, "(?!)");
+            let matches = pattern
+                .matcher
+                .unwrap()
+                .find_matches(source.to_string(), vec![]);
+            assert_eq!(matches.len(), 1, "highlight/index parity: {query}");
+            assert_eq!(
+                matches[0].word_ranges.len(),
+                split_query_words(query.to_string()).len()
+            );
         }
-        for query in ["ראשון סוף", "שני סוף"] {
+        for (query, document_id) in [("ראשון סוף", 4), ("שני סוף", 5)] {
             assert_eq!(count(query, 1), 0, "multi-token reading: {query}");
             assert_eq!(count(query, 3), 1, "full gap: {query}");
+            let source = documents
+                .iter()
+                .find(|(id, _)| *id == document_id)
+                .unwrap()
+                .1;
+            for (distance, expected_matches) in [(1, 0), (3, 1)] {
+                let pattern = generate_highlight_pattern(
+                    query.to_string(),
+                    distance,
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                )
+                .unwrap();
+                assert_eq!(
+                    pattern
+                        .matcher
+                        .unwrap()
+                        .find_matches(source.to_string(), vec![])
+                        .len(),
+                    expected_matches,
+                    "punctuation highlight/index parity: {query}, distance={distance}"
+                );
+            }
         }
         // Neither quote-free twins nor paired readings consume an extra word.
         assert_eq!(count("סימן שם", 1), 0);
         assert_eq!(count("סימן שם", 2), 1);
+        assert_eq!(count("סימן ח ו ט שם", 0), 0);
     }
 
     #[test]
