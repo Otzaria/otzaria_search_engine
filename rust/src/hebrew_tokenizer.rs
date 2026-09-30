@@ -72,7 +72,7 @@ impl Tokenizer for HebrewTokenizer {
 /// וסוף-פסוק: בקורפוס הוא מדביק בעיקר מספרי הערות-שוליים (`רעהו,10`)
 /// ופיסוק חסר-רווח (`שלום,עולם`).
 #[inline]
-fn is_transparent(c: char) -> bool {
+pub(crate) fn is_transparent(c: char) -> bool {
     matches!(
         c,
         '*' | '[' | ']' | '^' | '$' | '\\' | '+' | '.' | '~' | '`'
@@ -82,13 +82,13 @@ fn is_transparent(c: char) -> bool {
 /// גרש: ASCII, עברי (U+05F3), או ציטוט-יחיד טיפוגרפי (U+2018/U+2019 —
 /// ברינדור RTL שתי הצורות משמשות באותו תפקיד, ראו סריקת הקורפוס).
 #[inline]
-fn is_geresh(c: char) -> bool {
+pub(crate) fn is_geresh(c: char) -> bool {
     matches!(c, '\'' | '\u{05F3}' | '\u{2018}' | '\u{2019}')
 }
 
 /// גרשיים: ASCII, עברי (U+05F4), או ציטוט-כפול טיפוגרפי (U+201C/U+201D).
 #[inline]
-fn is_gershayim(c: char) -> bool {
+pub(crate) fn is_gershayim(c: char) -> bool {
     matches!(c, '"' | '\u{05F4}' | '\u{201C}' | '\u{201D}')
 }
 
