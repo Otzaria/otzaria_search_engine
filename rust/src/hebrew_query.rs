@@ -879,7 +879,7 @@ pub(crate) const BREAKING_TAG_NAMES: &[&str] = &[
 
 /// האם תוכן תג (`body` — התווים שבין `<` ל-`>`) הוא תג שבירה: `/` פותח
 /// אופציונלי, שם באדישות לרישיות, ואחריו רק תו שאינו אות/ספרה (או כלום).
-fn is_breaking_tag(body: &[char]) -> bool {
+pub(crate) fn is_breaking_tag(body: &[char]) -> bool {
     let mut idx = 0;
     if idx < body.len() && body[idx] == '/' {
         idx += 1;
@@ -1418,24 +1418,36 @@ fn full_morphological_pattern(root: &str) -> String {
 /// Bounded prefix-search: `.{0,k}` before the root, where `k` shrinks as the
 /// root grows (shorter root → more room for prefix content).
 fn user_prefix_pattern(root: &str) -> String {
-    let window = match root.chars().count() {
-        0 => return String::new(),
+    match user_prefix_window(root.chars().count()) {
+        0 => String::new(),
+        window => format!(".{{0,{}}}{}", window, escape_regex(root)),
+    }
+}
+
+fn user_prefix_window(root_len: usize) -> usize {
+    match root_len {
+        0 => 0,
         1 => 5,
         2 => 4,
         _ => 3,
-    };
-    format!(".{{0,{}}}{}", window, escape_regex(root))
+    }
 }
 
 /// Bounded suffix-search: `.{0,k}` after the root.
 fn user_suffix_pattern(root: &str) -> String {
-    let window = match root.chars().count() {
-        0 => return String::new(),
+    match user_suffix_window(root.chars().count()) {
+        0 => String::new(),
+        window => format!("{}.{{0,{}}}", escape_regex(root), window),
+    }
+}
+
+fn user_suffix_window(root_len: usize) -> usize {
+    match root_len {
+        0 => 0,
         1 => 7,
         2 => 6,
         _ => 5,
-    };
-    format!("{}.{{0,{}}}", escape_regex(root), window)
+    }
 }
 
 /// Bounded anywhere-in-word: `.{0,k}` on both sides.
@@ -1443,8 +1455,58 @@ fn partial_word_pattern(root: &str) -> String {
     if root.is_empty() {
         return String::new();
     }
-    let window = if root.chars().count() <= 3 { 3 } else { 2 };
+    let window = partial_word_window(root.chars().count());
     format!(".{{0,{w}}}{}.{{0,{w}}}", escape_regex(root), w = window)
+}
+
+fn partial_word_window(root_len: usize) -> usize {
+    if root_len <= 3 {
+        3
+    } else {
+        2
+    }
+}
+
+/// The same morphological branches as `word_to_pattern`, kept separate so
+/// display matching can capture the root and use each spelling's own bounds.
+pub(crate) fn highlight_affix_patterns(root: &str, flags: &WordFlags) -> Vec<(String, String)> {
+    let n = root.chars().count();
+    let bounded = |n| format!(".{{0,{n}}}");
+    let base = if flags.prefix && flags.suffix {
+        let p = bounded(partial_word_window(n));
+        (p.clone(), p)
+    } else if flags.gram_prefix && flags.gram_suffix {
+        (PREFIX_GROUP.to_string(), FULL_SUFFIX_PATTERN.to_string())
+    } else if flags.prefix {
+        (bounded(user_prefix_window(n)), String::new())
+    } else if flags.suffix {
+        (String::new(), bounded(user_suffix_window(n)))
+    } else if flags.gram_prefix {
+        (GRAM_PREFIX_GROUP.to_string(), String::new())
+    } else if flags.gram_suffix {
+        (String::new(), SUFFIX_PATTERN.to_string())
+    } else if flags.partial {
+        let p = bounded(partial_word_window(n));
+        (p.clone(), p)
+    } else {
+        (String::new(), String::new())
+    };
+    if !flags.aramaic_prefix {
+        return vec![base];
+    }
+    let aramaic = (
+        GRAM_PREFIX_GROUP.to_string(),
+        if flags.gram_suffix {
+            SUFFIX_PATTERN.to_string()
+        } else {
+            String::new()
+        },
+    );
+    if flags.expands_besides_aramaic() && base != aramaic {
+        vec![aramaic, base]
+    } else {
+        vec![aramaic]
+    }
 }
 
 // ── ארמית: שקילות אות סופית + קידומות ─────────────────────────────────────

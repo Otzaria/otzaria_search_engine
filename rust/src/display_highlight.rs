@@ -1,47 +1,24 @@
-//! Display-highlight pattern generation for the Otzaria app.
+//! Display-highlight patterns and a prepared bounded matcher.
 //!
-//! While [`crate::hebrew_query`] builds tantivy-fst regex terms that match
-//! *index terms* (nikud-free, lowercased), this module builds regex patterns
-//! that match the *displayed text* of an open book — which still contains
-//! nikud, cantillation marks, and HTML tags. The Dart layer compiles the
-//! returned pattern strings with `RegExp(pattern, caseSensitive: false)` and
-//! applies them; it performs no pattern construction of its own.
+//! Display word patterns tolerate nikud and quote forms. The prepared matcher
+//! normalizes displayed HTML with source offsets, uses the index tokenizer,
+//! and resolves phrase gaps with dynamic programming. It compiles each word
+//! once; no full-phrase backtracking regex runs in the rendering isolate.
 //!
-//! # Regex dialect
-//!
-//! The output targets Dart's `RegExp` (ECMAScript syntax): non-capturing
-//! groups `(?:…)`, bounded quantifiers `{0,n}`, `\s`/`\S` classes, and
-//! `\uXXXX` escapes. Nothing here is compiled by tantivy-fst.
-//!
-//! # Matching semantics (parity with the historical Dart `highLight`)
-//!
-//! * Every Hebrew base letter in a query word may be followed by attached
-//!   nikud/cantillation marks in the text ([`ATTACHED_MARKS_CLASS`]).
-//! * A trailing geresh matches both the ASCII and the Hebrew form.
-//! * Words are joined by [`WORD_SEPARATOR`], optionally allowing up to the
-//!   configured spacing count of intermediate words ([`INTERMEDIATE_WORD`])
-//!   between adjacent query words. Both are built from the three disjoint
-//!   classes below, which are derived from the tokeniser's own predicates —
-//!   so gap counting follows the index token-for-token in every case those
-//!   predicates decide. Two known gaps remain, because the tokeniser looks at
-//!   *sequences* while a character class cannot: a run of two or more
-//!   gershayim breaks a token in the index (`רמב""ם` is two tokens) but counts
-//!   as one word here, and characters outside [`SEPARATOR_DOMAIN`] default to
-//!   word content.
-//! * A word with a morphological option (prefixes/suffixes/partial) keeps the
-//!   plain root pattern but is flagged as not eligible for the word-boundary
-//!   check, so the root may highlight inside a longer inflected word.
-//! * כתיב מלא/חסר fans each word (and its alternatives) into spelling
-//!   variants, capped at [`hebrew_query`]'s spelling budget — unlike the old
-//!   Dart code, the 2^n fan-out is bounded.
+//! `combined_pattern` remains compatible for a single word. For multiple words
+//! it is the ECMAScript never-match sentinel `(?!)`; callers must use `matcher`.
+//! Morphological bounds belong to each normalized spelling/alternative branch,
+//! rather than the typed word's length. Boundary waiver only applies to the
+//! outer endpoints, preserving the historical root-highlight behavior.
 
 use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 
 use crate::hebrew_query::{
-    aramaic_root_variants, generate_spelling_variations, is_word_mark, normalize_for_index,
-    split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES, MAX_SPELLING_BRANCHES,
+    aramaic_root_variants, generate_spelling_variations, highlight_affix_patterns, is_word_mark,
+    normalize_for_index, split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES,
+    MAX_SPELLING_BRANCHES,
 };
 use crate::hebrew_tokenizer::continues_token;
 
@@ -49,7 +26,7 @@ use crate::hebrew_tokenizer::continues_token;
 
 /// Everything the Dart layer needs to highlight matches in displayed text.
 pub struct DisplayHighlight {
-    /// One regex matching the full query phrase (all words + separators).
+    /// Single-word compatibility pattern, or `(?!)` for multiple words.
     pub combined_pattern: String,
     /// Per-word regex (alternation-wrapped when a word has several branches),
     /// used to locate each word's sub-range inside a combined match.
@@ -57,6 +34,7 @@ pub struct DisplayHighlight {
     /// `true` when the word carries no morphological expansion option and the
     /// UI may therefore require token boundaries around its match.
     pub word_boundary_eligible: Vec<bool>,
+    pub matcher: crate::highlight_matcher::PreparedHighlightMatcher,
 }
 
 // ── Pattern fragments (Dart-RegExp dialect) ────────────────────────────────
@@ -142,6 +120,7 @@ fn escape_in_class(code: u32) -> String {
 /// * [SOFT_CHAR_CLASS] — סימן צמוד, פיסוק שקוף או גרש/גרשיים: ממשיך טוקן
 ///   אך לעולם אינו פותח אותו.
 /// * [BREAK_CHAR_CLASS] — כל השאר: שובר טוקן.
+#[cfg(test)]
 static ALNUM_CLASS: Lazy<String> =
     Lazy::new(|| format!("[^{}]", class_body_excluding(is_alnum_char)));
 
@@ -189,11 +168,11 @@ static BREAKING_TAG_BODY: Lazy<String> = Lazy::new(|| {
 /// Dart) מוציא ממנו את תגי השבירה, כך ששתי חלופות התג נשארות זרות —
 /// הזרות היא מה שמונע התפוצצות backtracking.
 static INLINE_TAG: Lazy<String> =
-    Lazy::new(|| format!("<(?!{body})[^>]*>", body = &*BREAKING_TAG_BODY));
+    Lazy::new(|| format!("<(?!{body})[^>]*>", body = *BREAKING_TAG_BODY));
 
 /// תג שבירה (`<br>`, `</p>`…) — האינדוקס ממיר אותו לרווח
 /// ([`BREAKING_TAG_NAMES`]), ולכן בהדגשה הוא שובר טוקן.
-static BREAKING_TAG: Lazy<String> = Lazy::new(|| format!("<{body}", body = &*BREAKING_TAG_BODY));
+static BREAKING_TAG: Lazy<String> = Lazy::new(|| format!("<{body}", body = *BREAKING_TAG_BODY));
 
 /// מפריד בין שתי מילות שאילתה סמוכות: חייב לכלול לפחות שובר-טוקן אחד
 /// (תו שובר או תג שבירה), ולפניו ואחריו מותרים סימנים רכים ותגי inline.
@@ -202,10 +181,10 @@ static BREAKING_TAG: Lazy<String> = Lazy::new(|| format!("<{body}", body = &*BRE
 static WORD_SEPARATOR: Lazy<String> = Lazy::new(|| {
     format!(
         "(?:{soft}|{tag})*(?:{brk}|{btag})(?:{soft}|{brk}|{tag}|{btag})*",
-        soft = &*SOFT_CHAR_CLASS,
-        brk = &*BREAK_CHAR_CLASS,
-        tag = &*INLINE_TAG,
-        btag = &*BREAKING_TAG,
+        soft = *SOFT_CHAR_CLASS,
+        brk = *BREAK_CHAR_CLASS,
+        tag = *INLINE_TAG,
+        btag = *BREAKING_TAG,
     )
 });
 
@@ -216,38 +195,6 @@ static WORD_SEPARATOR: Lazy<String> = Lazy::new(|| {
 /// short of a strict 3× of the index budget — past ~12k chars the app-side
 /// `RegExp` gets slow while extra branches stop adding visible highlights.
 const MAX_DISPLAY_PATTERN_CHARS: usize = 12_000;
-
-/// מילה שלמה אחת בין שתי מילות השאילתה, כפי שהטוקנייזר של האינדקס מודד
-/// אותה: פותחת ומסתיימת באות/ספרה, ובתוכה מותרים סימנים רכים ותגי inline
-/// (`רמב״ם`, `פ.ב.י`, `מי<b>לה` — טוקן אחד). תג שבירה אינו מותר בתוך
-/// מילה — באינדקס הוא רווח.
-///
-/// ספירה לפי רווחים (`\S+`) אינה שקולה: `כי־גר` הוא שתי מילים באינדקס, ולכן
-/// היא הדגישה `תדע כי־גר יהיה זרעך` במרווח 2 בעוד החיפוש דורש 3 — מילים
-/// מודגשות לצד "אין תוצאות".
-static INTERMEDIATE_WORD: Lazy<String> = Lazy::new(|| {
-    format!(
-        "{alnum}(?:(?:{soft}|{tag})*{alnum})*",
-        alnum = &*ALNUM_CLASS,
-        soft = &*SOFT_CHAR_CLASS,
-        tag = &*INLINE_TAG,
-    )
-});
-
-/// Separator allowing up to `max_intermediate_words` whole words between two
-/// adjacent query words (the "מרווח בין מילים" search option).
-fn separator_with_spacing(max_intermediate_words: u32) -> String {
-    if max_intermediate_words == 0 {
-        WORD_SEPARATOR.to_string()
-    } else {
-        format!(
-            "{sep}(?:{word}{sep}){{0,{n}}}",
-            sep = &*WORD_SEPARATOR,
-            word = &*INTERMEDIATE_WORD,
-            n = max_intermediate_words
-        )
-    }
-}
 
 // ── Spacing resolution ─────────────────────────────────────────────────────
 
@@ -326,7 +273,7 @@ fn push_escaped_char(out: &mut String, ch: char) {
 /// Expands one query word (plus its alternatives) into display branches:
 /// spelling variants when כתיב מלא/חסר is on, then one charwise pattern per
 /// term, deduplicated in insertion order and kept within the length budget.
-fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[String]) -> String {
+fn display_terms(word: &str, flags: &WordFlags, alternatives: &[String]) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
     let mut seen_terms: HashSet<String> = HashSet::new();
 
@@ -365,13 +312,54 @@ fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[Str
     for alt in alternatives {
         push_term(&mut terms, &mut seen_terms, alt);
     }
+    terms
+}
+
+fn bounded_charwise_display_pattern(term: &str) -> Option<String> {
+    // Count characters before allocating a potentially huge display regex.
+    // The same pieces are appended by `charwise_display_pattern` below.
+    let marks = ATTACHED_MARKS_CLASS.chars().count();
+    let mut previous_hebrew = false;
+    let mut length = 0;
+    for c in term.chars() {
+        let hebrew = matches!(c, 'א'..='ת');
+        if previous_hebrew && hebrew {
+            length += OPTIONAL_QUOTES.len();
+        }
+        previous_hebrew = hebrew;
+        length += match c {
+            'א'..='ת' => 1 + marks,
+            '"' => GERSHAYIM_DISPLAY_CLASS.len(),
+            '\'' => GERESH_DISPLAY_CLASS.len(),
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' => 2,
+            _ => 1,
+        };
+        if length > MAX_DISPLAY_PATTERN_CHARS {
+            return None;
+        }
+    }
+    Some(charwise_display_pattern(term))
+}
+
+fn build_word_display_pattern(
+    word: &str,
+    flags: &WordFlags,
+    alternatives: &[String],
+) -> Option<String> {
+    let terms = display_terms(word, flags, alternatives);
 
     // Length budget: keep branches while the cumulative size stays under the
-    // cap; the first branch is always kept so the pattern is never empty.
+    // cap. An oversized first branch fails generation rather than truncating
+    // the typed root or blocking the rendering isolate during compilation.
     let mut branches: Vec<String> = Vec::new();
     let mut total = 0usize;
     for term in &terms {
-        let branch = charwise_display_pattern(term);
+        let Some(branch) = bounded_charwise_display_pattern(term) else {
+            if branches.is_empty() {
+                return None;
+            }
+            break;
+        };
         let len = branch.chars().count();
         if !branches.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
             break;
@@ -380,11 +368,32 @@ fn build_word_display_pattern(word: &str, flags: &WordFlags, alternatives: &[Str
         branches.push(branch);
     }
 
-    match branches.len() {
+    Some(match branches.len() {
         0 => String::new(),
         1 => branches.into_iter().next().unwrap(),
         _ => format!("(?:{})", branches.join("|")),
+    })
+}
+
+fn matcher_branches(
+    word: &str,
+    flags: &WordFlags,
+    alternatives: &[String],
+) -> Vec<(String, String, String)> {
+    let mut branches = Vec::new();
+    let mut total = 0;
+    for root in display_terms(word, flags, alternatives) {
+        let pattern = charwise_display_pattern(&root);
+        let len = pattern.chars().count();
+        if !branches.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
+            break;
+        }
+        total += len;
+        for (lead, trail) in highlight_affix_patterns(&root, flags) {
+            branches.push((lead, pattern.clone(), trail));
+        }
     }
+    branches
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────
@@ -416,13 +425,14 @@ pub fn build_display_highlight(
 
     let mut word_patterns: Vec<String> = Vec::new();
     let mut word_boundary_eligible: Vec<bool> = Vec::new();
+    let mut plans = Vec::new();
     for (i, word) in words.iter().enumerate() {
         let flags = word_flags_at(&words, i, search_options);
         let alts = alternative_words
             .get(&(i as u32))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let pattern = build_word_display_pattern(word, &flags, alts);
+        let pattern = build_word_display_pattern(word, &flags, alts)?;
         if pattern.is_empty() {
             // Word vanished under normalization (e.g. a nikud-only token);
             // skip it rather than emit an empty branch that matches anywhere.
@@ -438,22 +448,25 @@ pub fn build_display_highlight(
             || flags.aramaic_prefix;
         word_patterns.push(pattern);
         word_boundary_eligible.push(!has_expansion);
+        plans.push(matcher_branches(word, &flags, alts));
     }
 
     assemble_display_highlight(
         word_patterns,
         word_boundary_eligible,
+        plans,
         distance,
         custom_spacing,
     )
 }
 
-/// Joins per-word patterns into the final [`DisplayHighlight`]: the combined
-/// pattern chains the words with [`separator_with_spacing`] per gap. Shared by
-/// the query-shape and matched-terms entry points.
+/// Prepares per-word token regexes and the bounded phrase matcher. Single-word
+/// compatibility patterns are retained; multiword patterns are deliberately a
+/// safe never-match sentinel because ECMAScript phrase gaps can backtrack.
 fn assemble_display_highlight(
     word_patterns: Vec<String>,
     word_boundary_eligible: Vec<bool>,
+    plans: Vec<Vec<(String, String, String)>>,
     distance: u32,
     custom_spacing: &HashMap<String, String>,
 ) -> Option<DisplayHighlight> {
@@ -465,20 +478,22 @@ fn assemble_display_highlight(
     let combined_pattern = if word_patterns.len() == 1 {
         word_patterns[0].clone()
     } else {
-        let mut combined = String::new();
-        for (i, pattern) in word_patterns.iter().enumerate() {
-            combined.push_str(pattern);
-            if i < word_patterns.len() - 1 {
-                combined.push_str(&separator_with_spacing(spacing[i]));
-            }
-        }
-        combined
+        // ECMAScript backtracking over multiple independent word gaps can
+        // freeze a rendering isolate. Multiword callers must use `matcher`.
+        "(?!)".to_string()
     };
 
+    let matcher = crate::highlight_matcher::PreparedHighlightMatcher::new(
+        plans,
+        spacing,
+        word_boundary_eligible.clone(),
+    )
+    .ok()?;
     Some(DisplayHighlight {
         combined_pattern,
         word_patterns,
         word_boundary_eligible,
+        matcher,
     })
 }
 
@@ -563,6 +578,7 @@ pub fn build_display_highlight_from_terms(
 
     let mut word_patterns: Vec<String> = Vec::new();
     let mut word_boundary_eligible: Vec<bool> = Vec::new();
+    let mut plans = Vec::new();
     for (i, word) in words.iter().enumerate() {
         let flags = word_flags_at(&words, i, search_options);
         let alts = alternative_words
@@ -582,25 +598,31 @@ pub fn build_display_highlight_from_terms(
             || flags.gram_suffix
             || flags.partial
             || flags.aramaic_prefix;
-        let (pattern, boundary_eligible) = if !matched.is_empty() && !(has_expansion && !flags.typo)
-        {
-            (build_terms_display_pattern(matched, word), !has_expansion)
-        } else {
-            (
-                build_word_display_pattern(word, &flags, alts),
-                !has_expansion,
-            )
-        };
+        // מונחי-האינדקס הם טוקנים שלמים, כולל הקידומת/הסיומת — בלי חלון.
+        let (pattern, boundary_eligible, plan) =
+            if !matched.is_empty() && !(has_expansion && !flags.typo) {
+                let pattern = build_terms_display_pattern(matched, word);
+                let plan = vec![(String::new(), pattern.clone(), String::new())];
+                (pattern, !has_expansion, plan)
+            } else {
+                (
+                    build_word_display_pattern(word, &flags, alts)?,
+                    !has_expansion,
+                    matcher_branches(word, &flags, alts),
+                )
+            };
         if pattern.is_empty() {
             continue;
         }
         word_patterns.push(pattern);
         word_boundary_eligible.push(boundary_eligible);
+        plans.push(plan);
     }
 
     assemble_display_highlight(
         word_patterns,
         word_boundary_eligible,
+        plans,
         distance,
         custom_spacing,
     )
@@ -959,10 +981,26 @@ mod tests {
     }
 
     #[test]
+    fn individual_display_branch_budget_is_checked_before_compilation() {
+        let below = "a".repeat(MAX_DISPLAY_PATTERN_CHARS);
+        assert_eq!(bounded_charwise_display_pattern(&below).unwrap(), below);
+        assert!(bounded_charwise_display_pattern(&format!("{below}a")).is_none());
+        // Escapes, nikud tolerance and optional quotes count toward the same
+        // budget as the output, not just the number of typed root letters.
+        for term in ["אב'\"", "a.*", "תורה", "\u{1F600}"] {
+            assert_eq!(
+                bounded_charwise_display_pattern(term).unwrap(),
+                charwise_display_pattern(term)
+            );
+        }
+    }
+
+    #[test]
     fn multi_word_joined_by_separator() {
         let hl = build("שלום עולם");
         assert_eq!(hl.word_patterns.len(), 2);
-        assert!(hl.combined_pattern.contains(&*WORD_SEPARATOR));
+        assert_eq!(hl.combined_pattern, "(?!)");
+        assert_eq!(hl.matcher.find_matches("שלום עולם", &[]).len(), 1);
         assert!(!hl.combined_pattern.contains("\\S+"));
     }
 
@@ -976,7 +1014,8 @@ mod tests {
             &HashMap::new(),
         )
         .unwrap();
-        assert!(hl.combined_pattern.contains("{0,2}"));
+        assert_eq!(hl.matcher.find_matches("שלום א ב עולם", &[]).len(), 1);
+        assert!(hl.matcher.find_matches("שלום א ב ג עולם", &[]).is_empty());
     }
 
     /// מספר המילים שהטוקנייזר של האינדקס מוצא ב-`text` — מקור האמת שאליו
@@ -1002,9 +1041,7 @@ mod tests {
                 &HashMap::new(),
             )
             .unwrap();
-            // fancy-regex: התבנית המשולבת כוללת lookahead, כמו ב-RegExp של Dart.
-            let re = fancy_regex::Regex::new(&hl.combined_pattern).unwrap();
-            if re.is_match(text).unwrap() {
+            if !hl.matcher.find_matches(text, &[]).is_empty() {
                 return Some(distance);
             }
         }
@@ -1015,9 +1052,9 @@ mod tests {
     fn the_three_classes_partition_every_char_by_tokenizer_rules() {
         // המחלקות נגזרות מהפרדיקטים של הטוקנייזר, והטסט אוכף גם את הגזירה
         // וגם את הזרות שביניהן — הזרות היא מה שמונע התפוצצות backtracking.
-        let alnum = regex::Regex::new(&format!("^{}$", &*ALNUM_CLASS)).unwrap();
-        let soft = regex::Regex::new(&format!("^{}$", &*SOFT_CHAR_CLASS)).unwrap();
-        let brk = regex::Regex::new(&format!("^{}$", &*BREAK_CHAR_CLASS)).unwrap();
+        let alnum = regex::Regex::new(&format!("^{}$", *ALNUM_CLASS)).unwrap();
+        let soft = regex::Regex::new(&format!("^{}$", *SOFT_CHAR_CLASS)).unwrap();
+        let brk = regex::Regex::new(&format!("^{}$", *BREAK_CHAR_CLASS)).unwrap();
 
         for &(start, end) in SEPARATOR_DOMAIN {
             for code in start..=end {
@@ -1185,8 +1222,8 @@ mod tests {
         let hl =
             build_display_highlight("שלום עולם", 1, &spacing, &HashMap::new(), &HashMap::new())
                 .unwrap();
-        assert!(hl.combined_pattern.contains("{0,3}"));
-        assert!(!hl.combined_pattern.contains("{0,1}"));
+        assert_eq!(hl.matcher.find_matches("שלום א ב ג עולם", &[]).len(), 1);
+        assert!(hl.matcher.find_matches("שלום א ב ג ד עולם", &[]).is_empty());
     }
 
     #[test]
@@ -1201,7 +1238,12 @@ mod tests {
         )
         .unwrap();
         // Gap 0-1 has no key → falls back to the max custom value (4).
-        assert_eq!(hl.combined_pattern.matches("{0,4}").count(), 2);
+        assert_eq!(
+            hl.matcher
+                .find_matches("אחד א ב ג ד שנים ה ו ז ח שלוש", &[])
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1258,6 +1300,78 @@ mod tests {
             // widens matching to inflected words.
             assert_eq!(hl.combined_pattern, build("ספר").combined_pattern);
         }
+    }
+
+    fn all_words_option(query: &str, option: &str) -> HashMap<String, HashMap<String, bool>> {
+        split_query_words(query)
+            .iter()
+            .enumerate()
+            .flat_map(|(i, w)| options_for(w, i, option))
+            .collect()
+    }
+
+    fn combined_matches(query: &str, distance: u32, option: &str, text: &str) -> bool {
+        let options = all_words_option(query, option);
+        let hl =
+            build_display_highlight(query, distance, &HashMap::new(), &HashMap::new(), &options)
+                .unwrap();
+        !hl.matcher.find_matches(text, &[]).is_empty()
+    }
+
+    #[test]
+    fn prefix_on_an_inner_word_still_matches_the_phrase() {
+        // #1641: המנוע מוצא "הרשב"א ... דגיטין" עם קידומות, וההדגשה נפלה כולה.
+        let text = "וכתב הרשב\"א ז\"ל בתשובה ובפ\"ב דגיטין";
+        assert!(combined_matches("רשב\"א גיטין", 30, "קידומות", text));
+        assert!(combined_matches(
+            "רשב\"א גיטין",
+            30,
+            "קידומות דקדוקיות",
+            text
+        ));
+        assert!(combined_matches("רשב\"א גיטין", 30, "חלק ממילה", text));
+    }
+
+    #[test]
+    fn suffix_on_an_inner_word_still_matches_the_phrase() {
+        assert!(combined_matches("ספר תורה", 0, "סיומות", "ספרים תורה"));
+        assert!(combined_matches(
+            "ספר תורה",
+            0,
+            "סיומות דקדוקיות",
+            "ספריו תורה"
+        ));
+    }
+
+    #[test]
+    fn affix_window_stays_inside_the_token_and_bounded() {
+        // הקידומת חייבת להיות צמודה למילה — מילה נוספת אינה נבלעת בחלון.
+        assert!(!combined_matches("ספר תורה", 0, "קידומות", "ספר אב תורה"));
+        // חלון הקידומות הדקדוקיות הוא 4 אותיות — חמש כבר מחוץ לו.
+        assert!(combined_matches(
+            "ספר תורה",
+            0,
+            "קידומות דקדוקיות",
+            "ספר כשבהתורה"
+        ));
+        assert!(!combined_matches(
+            "ספר תורה",
+            0,
+            "קידומות דקדוקיות",
+            "ספר אבגדהתורה"
+        ));
+        // בלי אפשרות — אין חלון.
+        assert!(!combined_matches(
+            "ספר תורה",
+            0,
+            "כתיב מלא/חסר",
+            "ספר בתורה"
+        ));
+    }
+
+    #[test]
+    fn prefix_across_nikud_and_inline_tags() {
+        assert!(combined_matches("אמר משה", 0, "קידומות", "אָמַר <b>וּ</b>מֹשֶׁה"));
     }
 
     #[test]
@@ -1415,7 +1529,8 @@ mod tests {
         assert_eq!(hl.word_patterns.len(), 2);
         assert_eq!(hl.word_patterns[0], charwise("שלום"));
         assert_eq!(hl.word_patterns[1], charwise("עולם"));
-        assert!(hl.combined_pattern.contains(&*WORD_SEPARATOR));
+        assert_eq!(hl.combined_pattern, "(?!)");
+        assert_eq!(hl.matcher.find_matches("שלום עולם", &[]).len(), 1);
     }
 
     #[test]
