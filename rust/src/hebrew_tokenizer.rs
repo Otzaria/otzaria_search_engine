@@ -45,6 +45,8 @@ pub struct HebrewTokenStream<'a> {
     emit_quote_free: bool,
     /// טוקן-תאום נטול-גרשיים שממתין להיפלט (ראו `emit_quote_free`).
     pending_quote_free: Option<Token>,
+    /// הטוקן הקודם הוא X של זוג `(X) [Y]` — הבא (Y) נפלט באותה עמדה.
+    share_next_position: bool,
 }
 
 impl Tokenizer for HebrewTokenizer {
@@ -59,6 +61,7 @@ impl Tokenizer for HebrewTokenizer {
             keep_marks: self.keep_marks,
             emit_quote_free: self.emit_quote_free,
             pending_quote_free: None,
+            share_next_position: false,
         }
     }
 }
@@ -218,6 +221,24 @@ pub(crate) fn next_token_boundaries(text: &str, start_byte: usize) -> Option<(us
     Some((tok_start, tok_start + tok_end_rel))
 }
 
+/// זוג קריאות של מילה אחת: `(X) [Y]` — קרי וכתיב במקרא, ותיקון נוסח
+/// "(מחק) [גרוס]" בשאר הספרים. כש-`[tok_start, tok_end)` הוא X, מחזיר את
+/// גבולות Y. שתיהן מאונדקסות באותה עמדה, כך שביטוי נמצא עם כל אחת מהן.
+pub(crate) fn paired_reading_after(
+    text: &str,
+    tok_start: usize,
+    tok_end: usize,
+) -> Option<(usize, usize)> {
+    if !text[..tok_start].ends_with('(') {
+        return None;
+    }
+    let after_close = text[tok_end..].strip_prefix(')')?;
+    let after_open = after_close.trim_start().strip_prefix('[')?;
+    let y_start = text.len() - after_open.len();
+    let (start, end) = next_token_boundaries(text, y_start)?;
+    (start == y_start && text[end..].starts_with(']')).then_some((start, end))
+}
+
 impl<'a> TokenStream for HebrewTokenStream<'a> {
     fn advance(&mut self) -> bool {
         // טוקן-תאום ממתין (נטול-גרשיים, אותה עמדה) — נפלט לפני המילה הבאה.
@@ -276,8 +297,15 @@ impl<'a> TokenStream for HebrewTokenStream<'a> {
                 }
                 self.token.offset_from = tok_start;
                 self.token.offset_to = tok_end;
-                self.token.position = self.token_count;
-                self.token_count += 1;
+                if self.share_next_position {
+                    self.share_next_position = false;
+                    self.token.position = self.token_count - 1;
+                } else {
+                    self.token.position = self.token_count;
+                    self.token_count += 1;
+                }
+                self.share_next_position =
+                    paired_reading_after(self.text, tok_start, tok_end).is_some();
                 self.byte_pos = tok_end;
                 // מצב אינדוקס: מילה עם גרש/גרשיים מטמיעה גם את צורתה
                 // הנקייה באותה עמדה ובאותם offsets — שאילתות phrase רואות
@@ -331,6 +359,46 @@ mod tests {
             out.push((stream.token().offset_from, stream.token().offset_to));
         }
         out
+    }
+
+    fn positions(text: &str) -> Vec<(String, usize)> {
+        let mut tokenizer = HebrewTokenizer::default();
+        let mut stream = tokenizer.token_stream(text);
+        let mut out = Vec::new();
+        while stream.advance() {
+            out.push((stream.token().text.clone(), stream.token().position));
+        }
+        out
+    }
+
+    #[test]
+    fn paired_readings_share_one_position() {
+        let p = |w: &str, n: usize| (w.to_string(), n);
+        assert_eq!(
+            positions("הארץ (הוצא) [היצא] אתך"),
+            vec![p("הארץ", 0), p("הוצא", 1), p("היצא", 1), p("אתך", 2)]
+        );
+        // בלי רווח בין הזוג, ועם גרש בקריאה הראשונה.
+        assert_eq!(
+            positions("סימן (ח')[ו'] שם"),
+            vec![p("סימן", 0), p("ח'", 1), p("ו'", 1), p("שם", 2)]
+        );
+    }
+
+    #[test]
+    fn only_a_full_pair_shares_a_position() {
+        let p = |w: &str, n: usize| (w.to_string(), n);
+        assert_eq!(
+            positions("כי [אם] עונותיכם"),
+            vec![p("כי", 0), p("אם", 1), p("עונותיכם", 2)]
+        );
+        // יותר ממילה אחת בתוך הסוגריים — לא זוג.
+        assert_eq!(
+            positions("(ה' אלי) [אלי ה']"),
+            vec![p("ה'", 0), p("אלי", 1), p("אלי", 2), p("ה'", 3)]
+        );
+        // סוגר מרובע שנמשך לאות (השלמה תוך-מילית) — לא זוג.
+        assert_eq!(positions("(לא) [א]מר"), vec![p("לא", 0), p("אמר", 1)]);
     }
 
     #[test]

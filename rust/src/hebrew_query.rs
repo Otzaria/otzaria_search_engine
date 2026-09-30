@@ -541,6 +541,7 @@ impl WordFlags {
 /// * כיווץ רצפי רווחים לרווח יחיד; trim.
 pub fn sanitize_query(query: &str) -> String {
     const STRIP: &[char] = &['*', '[', ']', '^', '$', '\\', '+', '.', '~', '`'];
+    let query = keep_second_of_paired_readings(query);
     let mut buf = String::with_capacity(query.len());
     for ch in query.chars() {
         match ch {
@@ -554,6 +555,29 @@ pub fn sanitize_query(query: &str) -> String {
         }
     }
     collapse_whitespace(&buf)
+}
+
+/// זוג `(X) [Y]` שהודבק לשאילתה נשאר Y בלבד: באינדקס שתי הקריאות חולקות
+/// עמדה אחת, ושתי מילים בשאילתה היו דורשות שתי עמדות.
+fn keep_second_of_paired_readings(query: &str) -> std::borrow::Cow<'_, str> {
+    use crate::hebrew_tokenizer::{next_token_boundaries, paired_reading_after};
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut pos = 0;
+    while let Some((start, end)) = next_token_boundaries(query, pos) {
+        pos = end;
+        if let Some((y_start, y_end)) = paired_reading_after(query, start, end) {
+            out.push_str(&query[copied..start - 1]);
+            out.push_str(&query[y_start..y_end]);
+            copied = y_end + 1;
+            pos = copied;
+        }
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(query);
+    }
+    out.push_str(&query[copied..]);
+    std::borrow::Cow::Owned(out)
 }
 
 pub(crate) fn collapse_whitespace(s: &str) -> String {
@@ -2641,6 +2665,13 @@ mod tests {
         assert_eq!(sanitize_query("א־ב"), "א ב");
         assert_eq!(sanitize_query("רמב״ם"), "רמב\"ם");
         assert_eq!(sanitize_query("תוס׳"), "תוס'");
+    }
+
+    #[test]
+    fn sanitize_keeps_the_second_of_paired_readings() {
+        assert_eq!(sanitize_query("הארץ (הוצא) [היצא] אתך"), "הארץ היצא אתך");
+        assert_eq!(sanitize_query("(לא) [אפילו] בשביל"), "אפילו בשביל");
+        assert_eq!(sanitize_query("כי [אם] עונותיכם"), "כי אם עונותיכם");
     }
 
     #[test]

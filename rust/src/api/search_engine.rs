@@ -10189,6 +10189,58 @@ mod tests {
     }
 
     #[test]
+    fn paired_readings_share_one_position_so_either_completes_the_phrase() {
+        // בראשית ח, יז כפי שהוא במסד: קרי וכתיב בזוג `(X) [Y]`.
+        let line = "עַל־הָאָ֖רֶץ <span class=\"mam-kq\"><span class=\"mam-kq-k\">(הוצא)</span> \
+                    <span class=\"mam-kq-q\">[הַיְצֵ֣א]</span></span> אִתָּ֑ךְ";
+        let (mut engine, _dir) = make_engine();
+        for (id, text) in [(1, line), (2, "כי [אם] עונותיכם היו מבדילים")] {
+            engine
+                .add_document(
+                    id,
+                    "title",
+                    "ref",
+                    "/root",
+                    text,
+                    id,
+                    false,
+                    &format!("/books/{id}.txt"),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        engine.commit().unwrap();
+        let count = |query: &str, distance: u32| {
+            count_advanced_default(
+                &engine,
+                query.to_string(),
+                vec![],
+                distance,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                false,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(count("הארץ היצא אתך", 0), 1);
+        assert_eq!(count("הארץ הוצא אתך", 0), 1);
+        // הזוג הוא מילה אחת: בלי מרווח הוא אינו נבלע.
+        assert_eq!(count("הארץ אתך", 0), 0);
+        assert_eq!(count("הארץ אתך", 1), 1);
+        // זוג שהודבק לשאילתה מצטמצם לקריאה השנייה.
+        assert_eq!(count("הארץ (הוצא) [היצא] אתך", 0), 1);
+        // מילה בסוגריים מרובעים לבדה אינה זוג, ונשארת מילה נפרדת.
+        assert_eq!(count("כי עונותיכם", 0), 0);
+        assert_eq!(count("כי אם עונותיכם", 0), 1);
+    }
+
+    #[test]
     fn add_document_and_batch_normalize_like_add_text_book() {
         // ה-API הישירים חשופים ב-FFI — ההנחה "הקלט כבר מנורמל" נאכפת:
         // HTML מוסר, ניקוד מוסר מהשדה הרגיל, והעותק המנוקד נבנה מהגולמי.

@@ -262,6 +262,23 @@ fn affix_after(n: usize) -> String {
     )
 }
 
+/// מילה בתוך סוגריי זוג קריאות. מחלקה קומפקטית במקום [`INTERMEDIATE_WORD`],
+/// שהתבנית המשולבת תישאר קצרה; הסוגריים עצמם מגבילים אותה למילה אחת.
+const READING_WORD: &str = r"[^\s()\[\]<>]+";
+
+/// זוג קריאות `(X) [Y]` — מילה אחת באינדקס, שתי קריאותיה באותה עמדה
+/// ([`crate::hebrew_tokenizer::paired_reading_after`]).
+static PAIRED_READING: Lazy<String> =
+    Lazy::new(|| format!(r"\({w}\)(?:\s|<[^>]*>)*\[{w}\]", w = READING_WORD,));
+
+/// לפני מילת שאילתה שהיא Y של זוג: דילוג על `(X) [`.
+static FIRST_READING_BEFORE: Lazy<String> =
+    Lazy::new(|| format!(r"(?:\({w}\)(?:\s|<[^>]*>)*\[)?", w = READING_WORD,));
+
+/// אחרי מילת שאילתה שהיא X של זוג: דילוג על `) [Y]`.
+static SECOND_READING_AFTER: Lazy<String> =
+    Lazy::new(|| format!(r"(?:\)(?:\s|<[^>]*>)*\[{w}\])?", w = READING_WORD,));
+
 /// Separator allowing up to `max_intermediate_words` whole words between two
 /// adjacent query words (the "מרווח בין מילים" search option).
 fn separator_with_spacing(max_intermediate_words: u32) -> String {
@@ -269,8 +286,9 @@ fn separator_with_spacing(max_intermediate_words: u32) -> String {
         WORD_SEPARATOR.to_string()
     } else {
         format!(
-            "{sep}(?:{word}{sep}){{0,{n}}}",
+            "{sep}(?:(?:{pair}|{word}){sep}){{0,{n}}}",
             sep = &*WORD_SEPARATOR,
+            pair = &*PAIRED_READING,
             word = &*INTERMEDIATE_WORD,
             n = max_intermediate_words
         )
@@ -506,11 +524,13 @@ fn assemble_display_highlight(
         for (i, pattern) in word_patterns.iter().enumerate() {
             let (lead, trail) = affixes.get(i).copied().unwrap_or((0, 0));
             if i > 0 {
+                combined.push_str(&FIRST_READING_BEFORE);
                 combined.push_str(&affix_before(lead));
             }
             combined.push_str(pattern);
             if i < last {
                 combined.push_str(&affix_after(trail));
+                combined.push_str(&SECOND_READING_AFTER);
                 combined.push_str(&separator_with_spacing(spacing[i]));
             }
         }
@@ -1384,6 +1404,43 @@ mod tests {
     #[test]
     fn prefix_across_nikud_and_inline_tags() {
         assert!(combined_matches("אמר משה", 0, "קידומות", "אָמַר <b>וּ</b>מֹשֶׁה"));
+    }
+
+    fn plain_matches(query: &str, distance: u32, text: &str) -> bool {
+        let hl = build_display_highlight(
+            query,
+            distance,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        fancy_regex::Regex::new(&hl.combined_pattern)
+            .unwrap()
+            .is_match(text)
+            .unwrap()
+    }
+
+    const KETIV_QERE_LINE: &str = "עַל־הָאָ֖רֶץ <span class=\"mam-kq\"><span class=\"mam-kq-k\">(הוצא)</span> <span class=\"mam-kq-q\">[הַיְצֵ֣א]</span></span> אִתָּ֑ךְ";
+
+    #[test]
+    fn phrase_matches_across_ketiv_qere_with_either_reading() {
+        // בראשית ח, יז: "הארץ (הוצא) [הַיְצֵא] אִתָּךְ".
+        assert!(plain_matches("הארץ היצא אתך", 0, KETIV_QERE_LINE));
+        assert!(plain_matches("הארץ הוצא אתך", 0, KETIV_QERE_LINE));
+    }
+
+    #[test]
+    fn paired_reading_counts_as_one_intermediate_word() {
+        assert!(plain_matches("הארץ אתך", 1, KETIV_QERE_LINE));
+        assert!(!plain_matches("הארץ אתך", 0, KETIV_QERE_LINE));
+    }
+
+    #[test]
+    fn a_lone_bracket_or_parenthesis_word_is_not_skipped() {
+        // רק זוג מלא הוא מילה אחת; "[אם]" לבד הוא מילה נפרדת גם באינדקס.
+        assert!(!plain_matches("כי עונותיכם", 0, "כי [אם] עונותיכם"));
+        assert!(!plain_matches("כי עונותיכם", 0, "כי (אם) עונותיכם"));
     }
 
     #[test]
