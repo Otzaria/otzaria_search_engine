@@ -1,6 +1,7 @@
 pub mod api;
 mod display_highlight;
 mod frb_generated;
+mod highlight_matcher;
 // אכיפת מרווח פר-זוג לשאילתות ביטוי — מחוץ ל-crate::api כדי ש-FRB לא ינסה
 // לגזור לו bindings.
 mod gap_phrase;

@@ -24,6 +24,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_HighlightMatcherPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_RegexBenchmarkerPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
@@ -33,6 +37,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
+
+  @protected
+  HighlightMatcher
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    dynamic raw,
+  );
 
   @protected
   RegexBenchmarker
@@ -55,6 +65,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+    dynamic raw,
+  );
+
+  @protected
+  HighlightMatcher
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
     dynamic raw,
   );
 
@@ -82,6 +98,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw);
+
+  @protected
+  HighlightMatcher
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    dynamic raw,
+  );
 
   @protected
   RegexBenchmarker
@@ -117,6 +139,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  HighlightMatcher
+  dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    dynamic raw,
+  );
 
   @protected
   BenchmarkResult dco_decode_box_autoadd_benchmark_result(dynamic raw);
@@ -180,7 +208,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig dco_decode_highlight_config(dynamic raw);
 
   @protected
+  HighlightMatch dco_decode_highlight_match(dynamic raw);
+
+  @protected
   HighlightPattern dco_decode_highlight_pattern(dynamic raw);
+
+  @protected
+  HighlightRange dco_decode_highlight_range(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -204,6 +238,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<FacetCount> dco_decode_list_facet_count(dynamic raw);
 
   @protected
+  List<HighlightMatch> dco_decode_list_highlight_match(dynamic raw);
+
+  @protected
+  List<HighlightRange> dco_decode_list_highlight_range(dynamic raw);
+
+  @protected
   List<MergedSibling> dco_decode_list_merged_sibling(dynamic raw);
 
   @protected
@@ -217,6 +257,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<QueryWordSpan> dco_decode_list_query_word_span(dynamic raw);
 
   @protected
   List<(String, bool)> dco_decode_list_record_string_bool(dynamic raw);
@@ -268,6 +311,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  HighlightMatcher?
+  dco_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    dynamic raw,
+  );
+
+  @protected
   BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw);
 
   @protected
@@ -307,6 +356,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PdfPageInput dco_decode_pdf_page_input(dynamic raw);
+
+  @protected
+  QueryWordSpan dco_decode_query_word_span(dynamic raw);
 
   @protected
   (String, bool) dco_decode_record_string_bool(dynamic raw);
@@ -419,6 +471,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
+  HighlightMatcher
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RegexBenchmarker
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -439,6 +497,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  HighlightMatcher
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
     SseDeserializer deserializer,
   );
 
@@ -478,6 +542,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  HighlightMatcher
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RegexBenchmarker
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -511,6 +581,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  HighlightMatcher
+  sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BenchmarkResult sse_decode_box_autoadd_benchmark_result(
@@ -590,7 +666,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   HighlightConfig sse_decode_highlight_config(SseDeserializer deserializer);
 
   @protected
+  HighlightMatch sse_decode_highlight_match(SseDeserializer deserializer);
+
+  @protected
   HighlightPattern sse_decode_highlight_pattern(SseDeserializer deserializer);
+
+  @protected
+  HighlightRange sse_decode_highlight_range(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -620,6 +702,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<FacetCount> sse_decode_list_facet_count(SseDeserializer deserializer);
 
   @protected
+  List<HighlightMatch> sse_decode_list_highlight_match(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<HighlightRange> sse_decode_list_highlight_range(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<MergedSibling> sse_decode_list_merged_sibling(
     SseDeserializer deserializer,
   );
@@ -639,6 +731,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  List<QueryWordSpan> sse_decode_list_query_word_span(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<(String, bool)> sse_decode_list_record_string_bool(
@@ -706,6 +803,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  HighlightMatcher?
+  sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BenchmarkResult? sse_decode_opt_box_autoadd_benchmark_result(
     SseDeserializer deserializer,
   );
@@ -757,6 +860,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PdfPageInput sse_decode_pdf_page_input(SseDeserializer deserializer);
+
+  @protected
+  QueryWordSpan sse_decode_query_word_span(SseDeserializer deserializer);
 
   @protected
   (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
@@ -909,6 +1015,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    HighlightMatcher self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -932,6 +1045,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SearchEngine self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    HighlightMatcher self,
     SseSerializer serializer,
   );
 
@@ -975,6 +1095,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_Map_u_32_list_String_None(
     Map<int, List<String>> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    HighlightMatcher self,
     SseSerializer serializer,
   );
 
@@ -1027,6 +1154,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void
+  sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    HighlightMatcher self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_benchmark_result(
@@ -1119,8 +1253,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_highlight_match(
+    HighlightMatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_highlight_pattern(
     HighlightPattern self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_highlight_range(
+    HighlightRange self,
     SseSerializer serializer,
   );
 
@@ -1158,6 +1304,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_highlight_match(
+    List<HighlightMatch> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_highlight_range(
+    List<HighlightRange> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_merged_sibling(
     List<MergedSibling> self,
     SseSerializer serializer,
@@ -1181,6 +1339,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_query_word_span(
+    List<QueryWordSpan> self,
     SseSerializer serializer,
   );
 
@@ -1260,6 +1424,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void
+  sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    HighlightMatcher? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_benchmark_result(
     BenchmarkResult? self,
     SseSerializer serializer,
@@ -1318,6 +1489,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_pdf_page_input(PdfPageInput self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_query_word_span(QueryWordSpan self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_string_bool(
@@ -1506,6 +1680,22 @@ class RustLibWire implements BaseWire {
   RustLibWire.fromExternalLibrary(ExternalLibrary lib);
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+        ptr,
+      );
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     int ptr,
   ) => wasmModule
@@ -1544,6 +1734,16 @@ external RustLibWasmModule get wasmModule;
 @JS()
 @anonymous
 extension type RustLibWasmModule._(JSObject _) implements JSObject {
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    int ptr,
+  );
+
   external void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     int ptr,
