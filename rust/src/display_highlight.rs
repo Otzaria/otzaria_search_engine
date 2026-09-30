@@ -40,8 +40,9 @@ use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 
 use crate::hebrew_query::{
-    aramaic_root_variants, generate_spelling_variations, is_word_mark, normalize_for_index,
-    split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES, MAX_SPELLING_BRANCHES,
+    affix_windows, aramaic_root_variants, generate_spelling_variations, is_word_mark,
+    normalize_for_index, split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES,
+    MAX_SPELLING_BRANCHES,
 };
 use crate::hebrew_tokenizer::continues_token;
 
@@ -234,6 +235,33 @@ static INTERMEDIATE_WORD: Lazy<String> = Lazy::new(|| {
     )
 });
 
+/// עד `n` אותיות-טוקן (עם סימניהן ותגי inline) צמודות לפני מילה — קידומת
+/// שהמנוע מתיר במילה שאינה ראשונה בביטוי.
+fn affix_before(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    format!(
+        "(?:{alnum}(?:{soft}|{tag})*){{0,{n}}}",
+        alnum = &*ALNUM_CLASS,
+        soft = &*SOFT_CHAR_CLASS,
+        tag = &*INLINE_TAG,
+    )
+}
+
+/// כמו [`affix_before`], לסיומת אחרי מילה שאינה אחרונה בביטוי.
+fn affix_after(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    format!(
+        "(?:(?:{soft}|{tag})*{alnum}){{0,{n}}}",
+        alnum = &*ALNUM_CLASS,
+        soft = &*SOFT_CHAR_CLASS,
+        tag = &*INLINE_TAG,
+    )
+}
+
 /// Separator allowing up to `max_intermediate_words` whole words between two
 /// adjacent query words (the "מרווח בין מילים" search option).
 fn separator_with_spacing(max_intermediate_words: u32) -> String {
@@ -416,6 +444,7 @@ pub fn build_display_highlight(
 
     let mut word_patterns: Vec<String> = Vec::new();
     let mut word_boundary_eligible: Vec<bool> = Vec::new();
+    let mut affixes: Vec<(usize, usize)> = Vec::new();
     for (i, word) in words.iter().enumerate() {
         let flags = word_flags_at(&words, i, search_options);
         let alts = alternative_words
@@ -438,11 +467,13 @@ pub fn build_display_highlight(
             || flags.aramaic_prefix;
         word_patterns.push(pattern);
         word_boundary_eligible.push(!has_expansion);
+        affixes.push(affix_windows(word, &flags));
     }
 
     assemble_display_highlight(
         word_patterns,
         word_boundary_eligible,
+        affixes,
         distance,
         custom_spacing,
     )
@@ -451,9 +482,14 @@ pub fn build_display_highlight(
 /// Joins per-word patterns into the final [`DisplayHighlight`]: the combined
 /// pattern chains the words with [`separator_with_spacing`] per gap. Shared by
 /// the query-shape and matched-terms entry points.
+///
+/// `affixes[i]` — letters the engine lets word `i` carry before/after its
+/// pattern. Only the inner sides go into the combined pattern: the outer ends
+/// are handled by waiving the word boundary on the Dart side.
 fn assemble_display_highlight(
     word_patterns: Vec<String>,
     word_boundary_eligible: Vec<bool>,
+    affixes: Vec<(usize, usize)>,
     distance: u32,
     custom_spacing: &HashMap<String, String>,
 ) -> Option<DisplayHighlight> {
@@ -465,10 +501,16 @@ fn assemble_display_highlight(
     let combined_pattern = if word_patterns.len() == 1 {
         word_patterns[0].clone()
     } else {
+        let last = word_patterns.len() - 1;
         let mut combined = String::new();
         for (i, pattern) in word_patterns.iter().enumerate() {
+            let (lead, trail) = affixes.get(i).copied().unwrap_or((0, 0));
+            if i > 0 {
+                combined.push_str(&affix_before(lead));
+            }
             combined.push_str(pattern);
-            if i < word_patterns.len() - 1 {
+            if i < last {
+                combined.push_str(&affix_after(trail));
                 combined.push_str(&separator_with_spacing(spacing[i]));
             }
         }
@@ -563,6 +605,7 @@ pub fn build_display_highlight_from_terms(
 
     let mut word_patterns: Vec<String> = Vec::new();
     let mut word_boundary_eligible: Vec<bool> = Vec::new();
+    let mut affixes: Vec<(usize, usize)> = Vec::new();
     for (i, word) in words.iter().enumerate() {
         let flags = word_flags_at(&words, i, search_options);
         let alts = alternative_words
@@ -582,25 +625,33 @@ pub fn build_display_highlight_from_terms(
             || flags.gram_suffix
             || flags.partial
             || flags.aramaic_prefix;
-        let (pattern, boundary_eligible) = if !matched.is_empty() && !(has_expansion && !flags.typo)
-        {
-            (build_terms_display_pattern(matched, word), !has_expansion)
-        } else {
-            (
-                build_word_display_pattern(word, &flags, alts),
-                !has_expansion,
-            )
-        };
+        // מונחי-האינדקס הם טוקנים שלמים, כולל הקידומת/הסיומת — בלי חלון.
+        let (pattern, boundary_eligible, affix) =
+            if !matched.is_empty() && !(has_expansion && !flags.typo) {
+                (
+                    build_terms_display_pattern(matched, word),
+                    !has_expansion,
+                    (0, 0),
+                )
+            } else {
+                (
+                    build_word_display_pattern(word, &flags, alts),
+                    !has_expansion,
+                    affix_windows(word, &flags),
+                )
+            };
         if pattern.is_empty() {
             continue;
         }
         word_patterns.push(pattern);
         word_boundary_eligible.push(boundary_eligible);
+        affixes.push(affix);
     }
 
     assemble_display_highlight(
         word_patterns,
         word_boundary_eligible,
+        affixes,
         distance,
         custom_spacing,
     )
@@ -1258,6 +1309,81 @@ mod tests {
             // widens matching to inflected words.
             assert_eq!(hl.combined_pattern, build("ספר").combined_pattern);
         }
+    }
+
+    fn all_words_option(query: &str, option: &str) -> HashMap<String, HashMap<String, bool>> {
+        split_query_words(query)
+            .iter()
+            .enumerate()
+            .flat_map(|(i, w)| options_for(w, i, option))
+            .collect()
+    }
+
+    fn combined_matches(query: &str, distance: u32, option: &str, text: &str) -> bool {
+        let options = all_words_option(query, option);
+        let hl =
+            build_display_highlight(query, distance, &HashMap::new(), &HashMap::new(), &options)
+                .unwrap();
+        fancy_regex::Regex::new(&hl.combined_pattern)
+            .unwrap()
+            .is_match(text)
+            .unwrap()
+    }
+
+    #[test]
+    fn prefix_on_an_inner_word_still_matches_the_phrase() {
+        // #1641: המנוע מוצא "הרשב"א ... דגיטין" עם קידומות, וההדגשה נפלה כולה.
+        let text = "וכתב הרשב\"א ז\"ל בתשובה ובפ\"ב דגיטין";
+        assert!(combined_matches("רשב\"א גיטין", 30, "קידומות", text));
+        assert!(combined_matches(
+            "רשב\"א גיטין",
+            30,
+            "קידומות דקדוקיות",
+            text
+        ));
+        assert!(combined_matches("רשב\"א גיטין", 30, "חלק ממילה", text));
+    }
+
+    #[test]
+    fn suffix_on_an_inner_word_still_matches_the_phrase() {
+        assert!(combined_matches("ספר תורה", 0, "סיומות", "ספרים תורה"));
+        assert!(combined_matches(
+            "ספר תורה",
+            0,
+            "סיומות דקדוקיות",
+            "ספריו תורה"
+        ));
+    }
+
+    #[test]
+    fn affix_window_stays_inside_the_token_and_bounded() {
+        // הקידומת חייבת להיות צמודה למילה — מילה נוספת אינה נבלעת בחלון.
+        assert!(!combined_matches("ספר תורה", 0, "קידומות", "ספר אב תורה"));
+        // חלון הקידומות הדקדוקיות הוא 4 אותיות — חמש כבר מחוץ לו.
+        assert!(combined_matches(
+            "ספר תורה",
+            0,
+            "קידומות דקדוקיות",
+            "ספר וכשהתורה"
+        ));
+        assert!(!combined_matches(
+            "ספר תורה",
+            0,
+            "קידומות דקדוקיות",
+            "ספר אבגדהתורה"
+        ));
+        // בלי אפשרות — אין חלון.
+        assert!(!combined_matches(
+            "ספר תורה",
+            0,
+            "כתיב מלא/חסר",
+            "ספר בתורה"
+        ));
+    }
+
+    #[test]
+    fn prefix_across_nikud_and_inline_tags() {
+        assert!(combined_matches("אמר משה", 0, "קידומות", "אָמַר <b>וּ</b>מֹשֶׁה"));
     }
 
     #[test]

@@ -1418,24 +1418,36 @@ fn full_morphological_pattern(root: &str) -> String {
 /// Bounded prefix-search: `.{0,k}` before the root, where `k` shrinks as the
 /// root grows (shorter root → more room for prefix content).
 fn user_prefix_pattern(root: &str) -> String {
-    let window = match root.chars().count() {
-        0 => return String::new(),
+    match user_prefix_window(root.chars().count()) {
+        0 => String::new(),
+        window => format!(".{{0,{}}}{}", window, escape_regex(root)),
+    }
+}
+
+fn user_prefix_window(root_len: usize) -> usize {
+    match root_len {
+        0 => 0,
         1 => 5,
         2 => 4,
         _ => 3,
-    };
-    format!(".{{0,{}}}{}", window, escape_regex(root))
+    }
 }
 
 /// Bounded suffix-search: `.{0,k}` after the root.
 fn user_suffix_pattern(root: &str) -> String {
-    let window = match root.chars().count() {
-        0 => return String::new(),
+    match user_suffix_window(root.chars().count()) {
+        0 => String::new(),
+        window => format!("{}.{{0,{}}}", escape_regex(root), window),
+    }
+}
+
+fn user_suffix_window(root_len: usize) -> usize {
+    match root_len {
+        0 => 0,
         1 => 7,
         2 => 6,
         _ => 5,
-    };
-    format!("{}.{{0,{}}}", escape_regex(root), window)
+    }
 }
 
 /// Bounded anywhere-in-word: `.{0,k}` on both sides.
@@ -1443,8 +1455,76 @@ fn partial_word_pattern(root: &str) -> String {
     if root.is_empty() {
         return String::new();
     }
-    let window = if root.chars().count() <= 3 { 3 } else { 2 };
+    let window = partial_word_window(root.chars().count());
     format!(".{{0,{w}}}{}.{{0,{w}}}", escape_regex(root), w = window)
+}
+
+fn partial_word_window(root_len: usize) -> usize {
+    if root_len <= 3 {
+        3
+    } else {
+        2
+    }
+}
+
+/// האורך המרבי (באותיות) של חלופה בקבוצת תבנית כמו [`GRAM_PREFIX_GROUP`]:
+/// סכום החלופה הארוכה בכל משבצת `(?:…)?`.
+fn group_max_len(group: &str) -> usize {
+    group
+        .split("(?:")
+        .skip(1)
+        .map(|slot| {
+            slot.split(')')
+                .next()
+                .unwrap_or("")
+                .split('|')
+                .map(|alt| alt.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+/// כמה אותיות לכל היותר עשויות להידבק לפני המילה ואחריה בתוך אותו טוקן —
+/// אותו ענף ש-[`word_to_pattern`] בוחר, כדי שההדגשה תתאים בדיוק למה שנמצא.
+pub(crate) fn affix_windows(root: &str, flags: &WordFlags) -> (usize, usize) {
+    let len = root.chars().count();
+    let base = if flags.prefix && flags.suffix {
+        (partial_word_window(len), partial_word_window(len))
+    } else if flags.gram_prefix && flags.gram_suffix {
+        (
+            group_max_len(PREFIX_GROUP),
+            group_max_len(FULL_SUFFIX_PATTERN),
+        )
+    } else if flags.prefix {
+        (user_prefix_window(len), 0)
+    } else if flags.suffix {
+        (0, user_suffix_window(len))
+    } else if flags.gram_prefix {
+        (group_max_len(GRAM_PREFIX_GROUP), 0)
+    } else if flags.gram_suffix {
+        (0, group_max_len(SUFFIX_PATTERN))
+    } else if flags.partial {
+        (partial_word_window(len), partial_word_window(len))
+    } else {
+        (0, 0)
+    };
+    if !flags.aramaic_prefix {
+        return base;
+    }
+    let aramaic = (
+        group_max_len(GRAM_PREFIX_GROUP),
+        if flags.gram_suffix {
+            group_max_len(SUFFIX_PATTERN)
+        } else {
+            0
+        },
+    );
+    if flags.expands_besides_aramaic() {
+        (aramaic.0.max(base.0), aramaic.1.max(base.1))
+    } else {
+        aramaic
+    }
 }
 
 // ── ארמית: שקילות אות סופית + קידומות ─────────────────────────────────────
