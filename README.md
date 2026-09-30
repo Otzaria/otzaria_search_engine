@@ -43,19 +43,84 @@ The native library can optionally link
 [`otzaria-semantic-search`](https://github.com/Otzaria/otzaria-semantic-search)
 into the same Flutter Rust Bridge library as Tantivy:
 
-- `semantic` / `semantic-real` builds the production `llama.cpp` backend —
-  except on 32-bit ARM (`armv7-linux-androideabi`), where the sidecar excludes
-  it by target. `llama-cpp-sys-2` cannot build for that target, and a Q4 0.6B
-  model would be unusable on it regardless. The feature stays on and the build
-  succeeds, but there is no backend behind it. See "Builds without a backend".
+- `semantic` is the production build, and the one Cargokit builds. It compiles
+  both real embedding backends, and the sidecar picks one per model by the
+  model file's format: a path ending in `.onnx` is an ONNX graph for ONNX
+  Runtime (`semantic-onnx`), and every other path is a GGUF for `llama.cpp`
+  (`semantic-llama`). `semantic-real` remains as an alias of `semantic-llama`.
+- The sidecar compiles a backend out on targets it cannot serve. The feature
+  stays on and the build succeeds, with no backend behind that format; see
+  "Builds without a backend".
+  - `llama.cpp` is excluded on 32-bit ARM (`armv7-linux-androideabi`):
+    `llama-cpp-sys-2` cannot build for that target, and a Q4 0.6B model would
+    be unusable on it regardless.
+  - The ONNX backend is built for desktop targets only (Windows, Linux and
+    macOS). Android and iOS have none.
 - `semantic-mock` selects the deterministic test backend and must not be used
   in an application release. CI builds the library with it so the Dart FFI
   suite can drive a configured sidecar.
 
+### Configuring a model
+
+`SemanticConfigInput` states how the vectors are produced, and nothing in it is
+read from the model file, so the values must be the ones the model was built
+for. The sidecar records every field but `rootDir` in its manifest as the
+index's identity (the model file by its checksum, once it has loaded): an index
+built under one value reports `needsFullReindex` under another, instead of
+mixing in vectors that cannot be compared.
+
+| field | Qwen3 GGUF | Meivin ONNX |
+| --- | --- | --- |
+| `modelPath` | the `.gguf` file | `seforim-embed-round2-fp32.onnx`, with `tokenizer.json` beside it |
+| `modelId` | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
+| `embeddingDim` | 1024 | 256 |
+| `pooling` | `last-token` | `in-graph` |
+| `maxTokens` | 512 | 256 |
+| `modelQuantization` | `Q4_K_M` | `fp32` |
+| `embeddingTextVersion` | 1 | 2 |
+
+```dart
+await engine.configureSemantic(
+  config: SemanticConfigInput(
+    rootDir: semanticRoot,
+    modelPath: '$modelDir/seforim-embed-round2-fp32.onnx',
+    modelId: 'ArieLLL123/judaic-semantic-round2-onnx-zayit',
+    embeddingDim: 256,
+    pooling: 'in-graph',
+    maxTokens: 256,
+    modelQuantization: 'fp32',
+    embeddingTextVersion: 2,
+  ),
+);
+```
+
+A value the sidecar does not implement — an unknown pooling, a text recipe
+version it has no code for, a token cap below 2 — is refused by
+`configureSemantic` itself, and so is an empty `modelQuantization`.
+
+### The ONNX Runtime library
+
+The ONNX backend links nothing native. ONNX Runtime is a shared library the
+sidecar loads when an ONNX model loads, so the plugin's build downloads nothing
+and its binary depends on no new system library, and the application has to
+provide the runtime. The first of these that exists is used:
+
+1. the file named by the `OTZARIA_ONNX_RUNTIME` environment variable;
+2. the platform's default file name (`onnxruntime.dll`, `libonnxruntime.so` or
+   `libonnxruntime.dylib`) in the model directory, beside the `.onnx` graph.
+
+The reference runtime is Microsoft's official ONNX Runtime 1.28.0 release on
+GitHub, and the oldest runtime API accepted is ONNX Runtime 1.17's. With no
+runtime found, an ONNX model is unavailable just as on a build without the
+backend, and lexical search is unaffected. The runtime is code rather than
+model data, so it is not part of the model checksum.
+
 ### Builds without a backend
 
-A `semantic` build on 32-bit ARM compiles the integration but has no embedding
-backend. `available` — not `enabled` — is the flag that says so:
+A build can hold the integration with no backend for the configured model's
+format: a GGUF model on 32-bit ARM, an ONNX model on Android or iOS, a build
+whose feature for that format is off, or an ONNX model with no ONNX Runtime
+library to load. `available` — not `enabled` — is the flag that says so:
 
 | call | on such a build |
 | --- | --- |
@@ -115,8 +180,8 @@ Because the store is in-memory, opening an engine drops the manifest records
 whose vectors did not survive, so `configureSemantic` does not re-open a live
 session: calling it again with the same inputs is a no-op, and calling it with
 different inputs fails and names the input that changed. `disableSemantic` is the
-explicit way to switch model or library root, and it discards the session's
-vectors.
+explicit way to switch model, recipe or library root, and it discards the
+session's vectors.
 
 `semanticIndexBooks`, `removeSemanticBooks`, `resetSemanticIndex` and
 `semanticStatus` are all non-exclusive and asynchronous, so lexical search and

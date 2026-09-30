@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+> Breaking for Dart code that constructs `SemanticConfigInput`, so this must
+> not ship as a 0.8.x patch: `^0.8.7` would take it on its own (see 0.8.0).
+
+### Breaking
+
+- **`SemanticConfigInput` states the whole recipe: four new required fields.**
+  `pooling`, `maxTokens`, `modelQuantization` and `embeddingTextVersion` were
+  taken silently from the sidecar's defaults, which fit one model only, and
+  recorded `model_quantization` as `"Q4"` where that model's identity says
+  `"Q4_K_M"`. Each is part of the index's identity, and the ONNX model differs
+  in all four, so they are now the caller's to state:
+
+  | field | Qwen3 GGUF | Meivin ONNX |
+  | --- | --- | --- |
+  | `pooling` | `'last-token'` | `'in-graph'` |
+  | `maxTokens` | 512 | 256 |
+  | `modelQuantization` | `'Q4_K_M'` | `'fp32'` |
+  | `embeddingTextVersion` | 1 | 2 |
+
+  They map onto the sidecar's `pooling`, `embedding_max_tokens`,
+  `model_quantization` and `chunking.embedding_text_version`, and the sidecar
+  validates them when `configureSemantic` opens it; an empty
+  `modelQuantization` is refused before that. `configureSemantic` now compares
+  all eight fields, so a different recipe under the same model file is refused
+  by name, like a different model, instead of being accepted as a repeat.
+
+  **What changes for consumers.** Every construction has to pass the four
+  fields. The Otzaria app constructs `SemanticConfigInput` only in
+  `test/search/semantic_search_gateway_test.dart`. A sidecar root written by
+  0.8.7 or earlier recorded `"Q4"`, so opening it with `"Q4_K_M"` reports
+  `needsFullReindex` once; `resetSemanticIndex` clears it, and the in-memory
+  store needed a full re-index after every restart anyway.
+
+### Added
+
+- **The ONNX embedding backend, `semantic-onnx`**, for ONNX graphs such as the
+  Meivin model. It links nothing native: the sidecar loads the ONNX Runtime
+  shared library when a model loads, from `OTZARIA_ONNX_RUNTIME` or else from
+  the platform's default file name beside the `.onnx` graph. **An application
+  that configures an ONNX model has to provide that library**; the reference is
+  Microsoft's ONNX Runtime 1.28.0 release, and the oldest runtime API accepted
+  is 1.17's. Without one, semantic search reports the backend as unavailable
+  and lexical search is unaffected. The runtime is not part of the model
+  checksum. The backend is built for desktop targets only.
+- **A test against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
+  a handful of lines indexed through the public API, and queries that must rank
+  the line they are about first. `#[ignore]`d, and it skips loudly unless
+  `OTZARIA_TEST_ONNX_MODEL` and `OTZARIA_ONNX_RUNTIME` name the graph and the
+  runtime.
+
+### Changed
+
+- **`semantic` compiles both real backends**: `semantic-llama` (llama.cpp, for
+  GGUF) and `semantic-onnx`. The sidecar picks one per model by the model
+  file's format, `.onnx` or anything else, so the configured model decides.
+  `cargokit.yaml` still builds `--features semantic`, and `semantic-real`
+  remains as an alias of `semantic-llama`, which is all it ever meant.
+- **`build_semantic_artifact` documents an ONNX graph as `--model-file`**, next
+  to a GGUF, and its no-backend message names `semantic-onnx`, `semantic-llama`
+  and `semantic-mock`. The bins that need no model no longer say "GGUF".
+- **The artifact-build tests that drive the stand-in with a stub GGUF run only
+  with `semantic-mock` and without `semantic-llama`.** The binary's test was
+  gated off `semantic-real`, which `semantic` no longer turns on, so llama.cpp
+  could have claimed the stub; the corpus adapter's test had no gate at all and
+  did not compile in a build without the stand-in, such as `semantic-onnx`.
+- **CI checks, lints and builds the tests with `--features semantic-onnx`**,
+  and the real-backend job compiles both backends through `semantic`.
+
 ## 0.9.0 – 2026-10-04
 
 ### Breaking
