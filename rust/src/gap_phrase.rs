@@ -35,6 +35,8 @@
 //! failing — the engine uses it whenever a phrase's expansions outgrow the
 //! exact `RegexPhraseQuery` path.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 use tantivy::postings::{Postings, SegmentPostings};
@@ -240,12 +242,24 @@ impl Weight for TermListPhraseWeight {
     }
 }
 
+// Tiny term sets are cheaper to scan directly; beyond this crossover, the
+// heap avoids touching the many cursors that do not occur in a candidate.
+const LINEAR_POSTINGS_LIMIT: usize = 8;
+
 struct GapVerifiedScorer {
     inner: Box<dyn Scorer>,
     /// Positional postings per word position (≥1 term per word).
     word_postings: Vec<Vec<SegmentPostings>>,
+    /// Per word: `(current doc, postings index)`, smallest doc on top. A word
+    /// can carry thousands of terms; verifying a doc touches only the postings
+    /// that lag behind it or sit on it, instead of seeking every one of them.
+    heaps: Vec<BinaryHeap<Reverse<(DocId, usize)>>>,
     gaps: Vec<u32>,
     // Reused scratch buffers (verification runs per candidate doc).
+    /// Matches from the last candidate stay outside the heap. Seeking these
+    /// directly keeps dense term sets linear instead of repeatedly popping
+    /// and reinserting each matching cursor.
+    on_doc: Vec<Vec<usize>>,
     pos_buf: Vec<u32>,
     cur_positions: Vec<u32>,
     feasible: Vec<u32>,
@@ -258,10 +272,27 @@ impl GapVerifiedScorer {
         word_postings: Vec<Vec<SegmentPostings>>,
         gaps: Vec<u32>,
     ) -> Self {
+        let heaps = word_postings
+            .iter()
+            .map(|postings| {
+                if postings.len() <= LINEAR_POSTINGS_LIMIT {
+                    return BinaryHeap::new();
+                }
+                postings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.doc() != TERMINATED)
+                    .map(|(i, p)| Reverse((p.doc(), i)))
+                    .collect()
+            })
+            .collect();
+        let on_doc = vec![Vec::new(); word_postings.len()];
         let mut scorer = Self {
             inner,
             word_postings,
+            heaps,
             gaps,
+            on_doc,
             pos_buf: Vec::new(),
             cur_positions: Vec::new(),
             feasible: Vec::new(),
@@ -291,13 +322,75 @@ impl GapVerifiedScorer {
             // docs in increasing order, so the postings only ever seek
             // forward.
             self.cur_positions.clear();
-            for postings in &mut self.word_postings[w] {
-                if postings.doc() < doc {
-                    postings.seek(doc);
+            let postings = &mut self.word_postings[w];
+            if postings.len() <= LINEAR_POSTINGS_LIMIT {
+                for posting in postings {
+                    if posting.doc() < doc {
+                        posting.seek(doc);
+                    }
+                    if posting.doc() == doc {
+                        posting.positions(&mut self.pos_buf);
+                        self.cur_positions.extend_from_slice(&self.pos_buf);
+                    }
                 }
-                if postings.doc() == doc {
-                    postings.positions(&mut self.pos_buf);
-                    self.cur_positions.extend_from_slice(&self.pos_buf);
+            } else {
+                let heap = &mut self.heaps[w];
+                let pending = &mut self.on_doc[w];
+                if pending.len() * 2 >= postings.len() {
+                    // Dense candidates favor a contiguous cursor sweep.
+                    // Rebuild only the future heap in linear time, rather
+                    // than paying heap operations or indirect indexing for
+                    // most of the terms. A sparse next candidate immediately
+                    // returns to the heap path; no permanent mode switch.
+                    let mut future = std::mem::take(heap).into_vec();
+                    future.clear();
+                    pending.clear();
+                    for (i, posting) in postings.iter_mut().enumerate() {
+                        let at = if posting.doc() < doc {
+                            posting.seek(doc)
+                        } else {
+                            posting.doc()
+                        };
+                        if at == doc {
+                            posting.positions(&mut self.pos_buf);
+                            self.cur_positions.extend_from_slice(&self.pos_buf);
+                            pending.push(i);
+                        } else if at != TERMINATED {
+                            future.push(Reverse((at, i)));
+                        }
+                    }
+                    *heap = BinaryHeap::from(future);
+                } else {
+                    // `retain` does not rewrite indices until one cursor leaves
+                    // the candidate. Dense sets therefore take the same direct
+                    // seek/positions path without redundant index compaction.
+                    pending.retain(|&i| {
+                        let at = postings[i].seek(doc);
+                        if at == doc {
+                            postings[i].positions(&mut self.pos_buf);
+                            self.cur_positions.extend_from_slice(&self.pos_buf);
+                            true
+                        } else {
+                            if at != TERMINATED {
+                                heap.push(Reverse((at, i)));
+                            }
+                            false
+                        }
+                    });
+                    while let Some(&Reverse((at, i))) = heap.peek() {
+                        if at > doc {
+                            break;
+                        }
+                        heap.pop();
+                        let next = if at < doc { postings[i].seek(doc) } else { at };
+                        if next == doc {
+                            postings[i].positions(&mut self.pos_buf);
+                            self.cur_positions.extend_from_slice(&self.pos_buf);
+                            pending.push(i);
+                        } else if next != TERMINATED {
+                            heap.push(Reverse((next, i)));
+                        }
+                    }
                 }
             }
             if self.cur_positions.is_empty() {
@@ -370,5 +463,233 @@ impl DocSet for GapVerifiedScorer {
 impl Scorer for GapVerifiedScorer {
     fn score(&mut self) -> Score {
         self.inner.score()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tantivy::merge_policy::NoMergePolicy;
+    use tantivy::schema::{Schema, INDEXED, TEXT};
+    use tantivy::TantivyDocument;
+
+    struct Candidates {
+        docs: Vec<DocId>,
+        cursor: usize,
+    }
+
+    impl DocSet for Candidates {
+        fn advance(&mut self) -> DocId {
+            self.cursor = (self.cursor + 1).min(self.docs.len());
+            self.doc()
+        }
+
+        fn seek(&mut self, target: DocId) -> DocId {
+            self.cursor += self.docs[self.cursor..].partition_point(|&doc| doc < target);
+            self.doc()
+        }
+
+        fn doc(&self) -> DocId {
+            self.docs.get(self.cursor).copied().unwrap_or(TERMINATED)
+        }
+
+        fn size_hint(&self) -> u32 {
+            self.docs.len() as u32
+        }
+    }
+
+    impl Scorer for Candidates {
+        fn score(&mut self) -> Score {
+            2.75 + self.doc() as Score * 0.001
+        }
+    }
+
+    // Exhaustively try every valid next occurrence. This deliberately does
+    // not use postings cursors or the verifier's feasibility sweep.
+    fn contains_phrase(tokens: &[&str], words: &[Vec<&str>], gaps: &[u32]) -> bool {
+        fn extend(
+            tokens: &[&str],
+            words: &[Vec<&str>],
+            gaps: &[u32],
+            word: usize,
+            previous: Option<usize>,
+        ) -> bool {
+            if word == words.len() {
+                return true;
+            }
+            tokens.iter().enumerate().any(|(position, token)| {
+                words[word].contains(token)
+                    && previous.is_none_or(|previous| {
+                        position > previous
+                            && (position - previous - 1) as u64 <= gaps[word - 1] as u64
+                    })
+                    && extend(tokens, words, gaps, word + 1, Some(position))
+            })
+        }
+        extend(tokens, words, gaps, 0, None)
+    }
+
+    #[test]
+    fn phrase_cursor_matches_exhaustive_oracle_with_seeks_and_deletes() {
+        let mut schema = Schema::builder();
+        let text = schema.add_text_field("text", TEXT);
+        let id = schema.add_u64_field("id", INDEXED);
+        let index = tantivy::Index::create_in_ram(schema.build());
+        let mut writer = index
+            .writer_with_num_threads::<TantivyDocument>(1, 50_000_000)
+            .unwrap();
+        writer.set_merge_policy(Box::new(NoMergePolicy));
+        let alphabet = [
+            "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "b0", "b1", "b2", "b3", "b4",
+            "b5", "b6", "b7", "b8", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "shared",
+            "filler",
+        ];
+        let mut documents = vec![
+            vec![],
+            vec!["a0", "filler", "b0", "c0"],
+            vec!["a0", "b0", "filler", "c0"],
+            vec!["shared", "shared", "shared"],
+            vec!["a0", "b0", "c0"],
+            vec!["c0", "b0", "a0"],
+        ];
+        let dense: Vec<_> = alphabet
+            .iter()
+            .copied()
+            .filter(|&token| token != "filler")
+            .collect();
+        documents.extend([dense.clone(), dense, vec!["a0", "b0", "c0"], vec![]]);
+        let mut seed = 0x97a23b5du64;
+        for _ in 0..256 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let length = (seed >> 32) as usize % 24;
+            documents.push(
+                (0..length)
+                    .map(|_| {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        alphabet[(seed >> 32) as usize % alphabet.len()]
+                    })
+                    .collect(),
+            );
+        }
+        documents[55] = vec!["deleted", "b0", "c0"];
+        for (doc, tokens) in documents.iter().enumerate() {
+            writer
+                .add_document(tantivy::doc!(text => tokens.join(" "), id => doc as u64))
+                .unwrap();
+        }
+        writer.commit().unwrap();
+        writer.delete_term(Term::from_field_u64(id, 55));
+        writer.commit().unwrap();
+        let reader = index.reader().unwrap();
+        let searcher = reader.searcher();
+        assert_eq!(searcher.segment_readers().len(), 1);
+        let segment = &searcher.segment_readers()[0];
+        let inverted = segment.inverted_index(text).unwrap();
+        // Exercise direct cursors, heaps, and a mixture within one phrase.
+        for words in [
+            vec![
+                vec!["a0", "a1", "shared", "deleted", "missing"],
+                vec!["b0", "b1", "shared"],
+                vec!["c0", "c1", "shared"],
+            ],
+            vec![
+                vec![
+                    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "shared", "deleted",
+                    "missing",
+                ],
+                vec![
+                    "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "shared",
+                ],
+                vec![
+                    "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "shared",
+                ],
+            ],
+            vec![
+                vec![
+                    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "shared", "deleted",
+                    "missing",
+                ],
+                vec!["b0", "b1", "shared"],
+                vec!["c0", "c1", "shared"],
+            ],
+            vec![vec!["deleted"], vec!["b0"], vec!["c0"]],
+        ] {
+            let terms: Vec<Vec<_>> = words
+                .iter()
+                .map(|word| {
+                    word.iter()
+                        .map(|term| Term::from_field_text(text, term))
+                        .collect()
+                })
+                .collect();
+            assert!(positional_postings(
+                &inverted,
+                &[vec![Term::from_field_text(text, "missing")]]
+            )
+            .unwrap()
+            .is_none());
+            for gaps in [
+                vec![0, 0],
+                vec![2, 0],
+                vec![0, 2],
+                vec![4, 7],
+                vec![u32::MAX, u32::MAX],
+            ] {
+                for stride in [1, 2, 7] {
+                    let candidates: Vec<_> = (0..segment.max_doc())
+                        .filter(|&doc| doc != 55 && doc % stride == 0)
+                        .collect();
+                    let expected: Vec<_> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|&doc| contains_phrase(&documents[doc as usize], &words, &gaps))
+                        .collect();
+                    let postings = positional_postings(&inverted, &terms).unwrap().unwrap();
+                    let mut scorer = GapVerifiedScorer::new(
+                        Box::new(Candidates {
+                            docs: candidates,
+                            cursor: 0,
+                        }),
+                        postings,
+                        gaps.clone(),
+                    );
+                    let mut expected_cursor = 0;
+                    let mut step = 0;
+                    loop {
+                        let want = expected.get(expected_cursor).copied().unwrap_or(TERMINATED);
+                        assert_eq!(
+                            scorer.doc(),
+                            want,
+                            "gaps={gaps:?} stride={stride} step={step}"
+                        );
+                        if want == TERMINATED {
+                            break;
+                        }
+                        assert_eq!(scorer.score(), 2.75 + want as Score * 0.001);
+                        // Repeated seeks to/before an already verified doc must
+                        // neither reread positions nor change its score.
+                        assert_eq!(scorer.seek(want), want);
+                        assert_eq!(scorer.seek(want.saturating_sub(1)), want);
+                        if step % 3 == 0 {
+                            let target = want + 5;
+                            expected_cursor +=
+                                expected[expected_cursor..].partition_point(|&doc| doc < target);
+                            assert_eq!(
+                                scorer.seek(target),
+                                expected.get(expected_cursor).copied().unwrap_or(TERMINATED)
+                            );
+                        } else {
+                            expected_cursor += 1;
+                            assert_eq!(
+                                scorer.advance(),
+                                expected.get(expected_cursor).copied().unwrap_or(TERMINATED)
+                            );
+                        }
+                        step += 1;
+                    }
+                    assert_eq!(scorer.seek(TERMINATED), TERMINATED);
+                }
+            }
+        }
     }
 }
