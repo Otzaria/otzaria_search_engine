@@ -4,6 +4,23 @@ A Rust-based full-text search engine for the Otzaria project, built upon Tantivy
 
 this is a Dart library and cannot run by itself.
 
+## Paired readings and existing indexes
+
+A single-token `(X) [Y]` reading pair is indexed as two alternatives at the
+same word position. Either reading can complete a phrase; trailing separators
+inside a reading, such as the maqaf in `(לך) [לכה־]נא`, do not add a word.
+Readings containing multiple tokens are kept as separate words.
+
+Existing indexes remain readable and are not automatically invalidated. Books
+indexed before this change retain their original token positions: re-index the
+affected books, or rebuild the index, to enable paired-reading phrases in those
+documents. Newly indexed books use the new positions immediately.
+
+Pasted query pairs select the second reading. `queryWordSpans` maps those engine
+words to their exact UTF-16 ranges in the original query, so per-word options
+and selections use the same word order. Native library, generated bindings and
+the app's prepared highlight matcher integration must be updated together.
+
 ## Semantic search integration
 
 The native library can optionally link
