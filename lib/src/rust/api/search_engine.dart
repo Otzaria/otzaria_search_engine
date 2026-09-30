@@ -1410,13 +1410,12 @@ class HighlightMatch {
           wordRanges == other.wordRanges;
 }
 
-/// Regex patterns for highlighting query matches in *displayed* book text
-/// (which, unlike index terms, still carries nikud and HTML). All patterns
-/// are ECMAScript-dialect strings; the Dart layer compiles them with
-/// `RegExp(pattern, caseSensitive: false)` and performs no pattern
-/// construction of its own.
+/// Prepared highlighting for displayed book text, including HTML and nikud.
+/// Use `matcher.find_matches` for phrases or `matcher.find_word_matches` for
+/// independent words. The string fields are legacy compatibility metadata.
 class HighlightPattern {
-  /// One regex matching the full query phrase (words + separators).
+  /// Deprecated for phrases: a single-word regex or the safe never-match
+  /// sentinel `(?!)` for multiple words. Use `matcher` for real matching.
   final String combinedPattern;
 
   /// Per-word regex, used to locate each word inside a combined match.
