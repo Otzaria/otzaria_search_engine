@@ -1,6 +1,9 @@
 # אחרי כל `flutter_rust_bridge_codegen generate` יש לנקות רווחי סוף-שורה
 # שהתבנית של FRB פולטת ב-rust/src/frb_generated.rs (שורות ה-wrap_normal):
-#   sed -i 's/[ \t]*$//' rust/src/frb_generated.rs
+#   sed -i 's/[[:blank:]]*$//' rust/src/frb_generated.rs      (Linux)
+#   sed -i '' 's/[[:blank:]]*$//' rust/src/frb_generated.rs   (macOS)
+# [[:blank:]] ולא [ \t]: ה-sed של macOS קורא את \t בתוך סוגריים כ-\ ו-t,
+# ולכן מוחק t ו-\ מסוף השורה (Result נהיה Resul) ומשאיר את הטאבים.
 # הטסט rust/tests/repo_hygiene.rs אוכף זאת — cargo test ייכשל אם שכחתם.
 rust_input: crate::api
 rust_root: rust/
