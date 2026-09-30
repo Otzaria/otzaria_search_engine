@@ -316,15 +316,17 @@ pub enum SemanticResultSource {
 /// value is reported as needing a full re-index under another, rather than
 /// having vectors that cannot be compared mixed into it.
 /// Nothing here is read from the model file, so the values must be the ones the
-/// model was built for. The two models the application knows:
+/// model was built for. The two models the application knows (the Meivin
+/// default is its INT8 graph; the full-precision `seforim-embed-round2-fp32.onnx`
+/// published beside it differs only in `model_path` and `"fp32"`):
 ///
 /// | field | Qwen3 GGUF | Meivin ONNX |
 /// | --- | --- | --- |
-/// | `model_path` | the `.gguf` file | `seforim-embed-round2-fp32.onnx` |
+/// | `model_path` | the `.gguf` file | `seforim-embed-round2-int8.onnx` |
 /// | `embedding_dim` | 1024 | 256 |
 /// | `pooling` | `"last-token"` | `"in-graph"` |
 /// | `max_tokens` | 512 | 256 |
-/// | `model_quantization` | `"Q4_K_M"` | `"fp32"` |
+/// | `model_quantization` | `"Q4_K_M"` | `"int8"` |
 /// | `embedding_text_version` | 1 | 2 |
 pub struct SemanticConfigInput {
     pub root_dir: String,
@@ -370,10 +372,10 @@ pub struct SemanticConfigInput {
     /// so changes its vector. The manifest records the value requested here, not
     /// one a backend may clamp it to.
     pub max_tokens: u32,
-    /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF and
-    /// `"fp32"` for the Meivin graph (the INT8 graph published beside it is a
-    /// different identity). Not the precision the vectors are stored at. Must not
-    /// be empty.
+    /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF,
+    /// `"int8"` for the Meivin INT8 graph the application uses, and `"fp32"` for
+    /// the full-precision graph published beside it, which is a different
+    /// identity. Not the precision the vectors are stored at. Must not be empty.
     ///
     /// Identity because two quantizations of one model produce different
     /// vectors. The model file's checksum catches such a swap as well, but only
@@ -2272,7 +2274,7 @@ impl SearchEngine {
                 return Err(anyhow::anyhow!(
                     "model_quantization is empty; it is part of the semantic index's \
                      identity, so name the precision of the model's weights, e.g. \
-                     \"Q4_K_M\" for the Qwen3 GGUF or \"fp32\" for the Meivin ONNX graph"
+                     \"Q4_K_M\" for the Qwen3 GGUF or \"int8\" for the Meivin ONNX graph"
                 ));
             }
             let embedding_max_tokens = usize::try_from(requested.max_tokens).map_err(|_| {
@@ -17407,20 +17409,20 @@ mod tests {
             }
         }
 
-        /// The Meivin ONNX identity, rooted in `root`. Every field but `root_dir` differs
-        /// from [`qwen3`].
+        /// The Meivin ONNX identity the application uses, the INT8 graph, rooted in `root`.
+        /// Every field but `root_dir` differs from [`qwen3`].
         fn meivin(root: &Path) -> SemanticConfigInput {
             SemanticConfigInput {
                 root_dir: root.join("semantic").to_string_lossy().into_owned(),
                 model_path: root
-                    .join("seforim-embed-round2-fp32.onnx")
+                    .join("seforim-embed-round2-int8.onnx")
                     .to_string_lossy()
                     .into_owned(),
                 model_id: "ArieLLL123/judaic-semantic-round2-onnx-zayit".to_string(),
                 embedding_dim: 256,
                 pooling: "in-graph".to_string(),
                 max_tokens: 256,
-                model_quantization: "fp32".to_string(),
+                model_quantization: "int8".to_string(),
                 embedding_text_version: 2,
             }
         }
@@ -17557,7 +17559,7 @@ mod tests {
                 assert_eq!(recorded["embedding_dim"], 256);
                 assert_eq!(recorded["pooling"], "in-graph");
                 assert_eq!(recorded["embedding_max_tokens"], 256);
-                assert_eq!(recorded["model_quantization"], "fp32");
+                assert_eq!(recorded["model_quantization"], "int8");
                 let chunking = ChunkerConfig {
                     embedding_text_version: recipe.version(),
                     ..ChunkerConfig::default()

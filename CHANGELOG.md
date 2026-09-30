@@ -18,8 +18,13 @@
   | --- | --- | --- |
   | `pooling` | `'last-token'` | `'in-graph'` |
   | `maxTokens` | 512 | 256 |
-  | `modelQuantization` | `'Q4_K_M'` | `'fp32'` |
+  | `modelQuantization` | `'Q4_K_M'` | `'int8'` |
   | `embeddingTextVersion` | 1 | 2 |
+
+  The Meivin column is its INT8 graph, `seforim-embed-round2-int8.onnx`, the
+  model the application uses: negligibly less accurate than the full-precision
+  `seforim-embed-round2-fp32.onnx` and a quarter of its size. The fp32 graph
+  remains an alternative under `'fp32'`, a different identity.
 
   They map onto the sidecar's `pooling`, `embedding_max_tokens`,
   `model_quantization` and `chunking.embedding_text_version`, and the sidecar

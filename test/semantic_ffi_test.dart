@@ -410,7 +410,7 @@ Future<void> main() async {
               embeddingDim: 256,
               pooling: 'in-graph',
               maxTokens: -1,
-              modelQuantization: 'fp32',
+              modelQuantization: 'int8',
               embeddingTextVersion: 2,
             ),
           ),
