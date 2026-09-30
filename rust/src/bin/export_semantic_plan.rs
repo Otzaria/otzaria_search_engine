@@ -15,13 +15,13 @@
 //! Writes `plan.jsonl` — one record per line that gets a vector, carrying the finished
 //! embedding text and both digests — plus `export-manifest.json` and the
 //! `corpus-identity.json` the merge will pack against. **No inference backend is
-//! required**, so this runs in a build that never compiles llama.cpp.
+//! required**, so this runs in a build that compiles neither llama.cpp nor ONNX Runtime.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
     eprintln!(
         "This binary was compiled without the semantic sidecar.\n\
-         Rebuild with --features semantic-integration (no GGUF weights are needed)."
+         Rebuild with --features semantic-integration (no model is needed)."
     );
     std::process::exit(1);
 }
