@@ -47,6 +47,8 @@ use crate::semantic_errors::{self, SidecarCall};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::embedding::EmbeddingDeployment;
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::official_index::{
@@ -2667,6 +2669,11 @@ impl SearchEngine {
                 pooling: requested.pooling.clone(),
                 embedding_max_tokens,
                 model_quantization: requested.model_quantization.clone(),
+                // Where this machine keeps ONNX Runtime: a deployment fact the sidecar
+                // keeps out of the manifest. The default passes no path, so the runtime
+                // is looked for as it always was, through `OTZARIA_ONNX_RUNTIME` and
+                // then beside the graph.
+                deployment: EmbeddingDeployment::default(),
                 ..SemanticConfig::default()
             };
             // The text recipe is part of the chunking configuration rather than a
@@ -2812,6 +2819,9 @@ impl SearchEngine {
                 artifact_path: key.artifact_dir.clone(),
                 corpus: stamp.corpus,
                 model: local,
+                // As for `configure_semantic`: no path, so the sidecar's own lookup.
+                // No identity field reads it, so it makes no artifact the wrong one.
+                deployment: EmbeddingDeployment::default(),
                 published_digest: key.published_digest.clone(),
             })
             .map_err(|err| {
@@ -3451,11 +3461,14 @@ impl SearchEngine {
                             SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
                             SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
                         }),
-                        // Both are per-request overrides the sidecar added; `None` keeps its
-                        // configured profile and flags, which is what this call has always
-                        // used. Choosing either from here is S5's decision, not a repin's.
+                        // All three are per-request overrides the sidecar added; `None`
+                        // keeps its configured profile and flags, which is what this call
+                        // has always used, and `ranking: None` ranks by that preset exactly
+                        // as before. Choosing any of them from here is S5's decision, not a
+                        // repin's.
                         profile: None,
                         feature_flags: None,
+                        ranking: None,
                     },
                 )
                 .map_err(|err| {

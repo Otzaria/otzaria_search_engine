@@ -12,8 +12,9 @@
 //! Every decision here matches a variant. A message is for a person, and the sidecar is
 //! free to reword one; a mapping that read them would move a failure from one kind to
 //! another on a repin, with nothing to say so. The matches on [`SemanticSearchError`],
-//! [`EmbeddingError`] and [`ArtifactError`] name every variant and have no wildcard, so a
-//! repin that adds one fails to compile here until someone has decided what it is.
+//! [`EmbeddingError`], [`VectorStoreError`] and [`ArtifactError`] name every variant and
+//! have no wildcard, so a repin that adds one fails to compile here until someone has
+//! decided what it is.
 //!
 //! Where the type alone does not settle it, a fact does, and still never the text:
 //!
@@ -49,11 +50,11 @@ use otzaria_semantic_search::semantic::versioning::IdentityField;
 use std::ffi::OsString;
 use std::path::Path;
 
-/// The variable the sidecar takes the ONNX Runtime library's path from, and the file it looks
-/// for beside the graph when the variable is unset. Both are private constants of the
-/// sidecar's ONNX backend, repeated here because telling a missing runtime from an unusable
-/// one means looking where it looks; the rule is the one `SemanticConfigInput::model_path`
-/// documents to the application.
+/// The variable the sidecar takes the ONNX Runtime library's path from when the application
+/// passes none, and the file it looks for beside the graph when neither names one. Both are
+/// private constants of the sidecar's ONNX backend, repeated here because telling a missing
+/// runtime from an unusable one means looking where it looks; the rule is the one
+/// `SemanticConfigInput::model_path` documents to the application.
 const ONNX_RUNTIME_ENV: &str = "OTZARIA_ONNX_RUNTIME";
 #[cfg(target_os = "macos")]
 const ONNX_RUNTIME_FILE_NAME: Option<&str> = Some("libonnxruntime.dylib");
@@ -206,14 +207,7 @@ fn classify(
             },
             SidecarCall::Session { .. } => (K::Internal, None),
         },
-        // The read-only store loads an artifact's payload and checks every record as it
-        // does; a session's in-memory store failing is an internal fault.
-        SemanticSearchError::VectorStore(VectorStoreError::Corrupted { .. })
-            if matches!(call, SidecarCall::OpenArtifact { .. }) =>
-        {
-            (K::ArtifactCorrupt, None)
-        }
-        SemanticSearchError::VectorStore(_) => (K::Internal, None),
+        SemanticSearchError::VectorStore(error) => (store_kind(error, call), None),
         // The sidecar's validation of a configuration, when it is handed one. After that it
         // uses `Config` for its own inconsistencies: a runtime that reports no checksum, a
         // backend that returns too few vectors, a model not loaded yet.
@@ -223,11 +217,47 @@ fn classify(
         },
         SemanticSearchError::IncompatibleIndex { .. } => (K::ReindexRequired, None),
         SemanticSearchError::ReadOnlyIndex { .. } => (K::ReadOnlySession, None),
+        // A search abandoned through its token. Not met here: every search this crate makes
+        // goes through the coordinator's `search`, which hands the sidecar a token nobody
+        // cancels, so a search that reported itself cancelled would be a fault.
+        SemanticSearchError::Cancelled => (K::Internal, None),
+        // A ranking passed with one search, refused before the search ran: the caller's
+        // value, which the sidecar names by its path in the profile
+        // (`alpha_by_query_type.short`, `fusion_strategy.k`). No search here passes a
+        // ranking, so none is refused.
+        SemanticSearchError::InvalidRankingParameter { parameter, .. } => {
+            (K::InvalidInput, Some((*parameter).to_string()))
+        }
         SemanticSearchError::Manifest(_)
         | SemanticSearchError::Chunking(_)
         | SemanticSearchError::Fusion(_)
         | SemanticSearchError::Io(_)
         | SemanticSearchError::Serde(_) => (K::Internal, None),
+    }
+}
+
+/// The kind of a vector store failure.
+fn store_kind(error: &VectorStoreError, call: SidecarCall<'_>) -> SemanticErrorKind {
+    use SemanticErrorKind as K;
+    match error {
+        // The read-only store loads an artifact's payload and checks every record as it
+        // does, so at open a corrupted store is a damaged artifact.
+        VectorStoreError::Corrupted { .. } if matches!(call, SidecarCall::OpenArtifact { .. }) => {
+            K::ArtifactCorrupt
+        }
+        // A scan stopped by its token. The sidecar lifts it to `SemanticSearchError::
+        // Cancelled` itself, so it arrives wrapped only if some layer skips that
+        // conversion, and it is the same outcome either way.
+        VectorStoreError::Cancelled => classify(&SemanticSearchError::Cancelled, call).0,
+        // A session's in-memory store failing, and any other store failure, is a fault.
+        VectorStoreError::NotInitialized { .. }
+        | VectorStoreError::OpenFailed { .. }
+        | VectorStoreError::InsertFailed { .. }
+        | VectorStoreError::SearchFailed { .. }
+        | VectorStoreError::DeleteFailed { .. }
+        | VectorStoreError::CommitFailed { .. }
+        | VectorStoreError::DimensionMismatch { .. }
+        | VectorStoreError::Corrupted { .. } => K::Internal,
     }
 }
 
@@ -249,8 +279,10 @@ fn embedding_kind(
             (K::ModelInvalid, None)
         }
         EmbeddingError::BackendUnavailable { .. } => (K::BackendNotInBuild, None),
+        // Nothing here passes the sidecar a runtime of its own (its deployment is the
+        // default), so the first place it looks is always empty.
         EmbeddingError::OnnxRuntimeUnavailable { .. } => (
-            runtime_kind(std::env::var_os(ONNX_RUNTIME_ENV), model_path),
+            runtime_kind(None, std::env::var_os(ONNX_RUNTIME_ENV), model_path),
             None,
         ),
         // A configuration's pooling, refused by the sidecar's model-side checks.
@@ -274,13 +306,27 @@ fn embedding_kind(
 /// missing runtime, and one that did not load is unusable — not a library, not ONNX
 /// Runtime, too old, refused earlier, or not the one this process already runs.
 ///
-/// `env_value` is `OTZARIA_ONNX_RUNTIME`, taken as an argument as the sidecar takes it, so
-/// the rule is testable without changing the process environment. Set, it is the only
-/// place looked; set but empty, it names nothing, which the sidecar refuses as such.
-fn runtime_kind(env_value: Option<OsString>, model_path: Option<&Path>) -> SemanticErrorKind {
-    let present = match env_value {
-        Some(named) => !named.is_empty() && Path::new(&named).exists(),
-        None => match (model_path, ONNX_RUNTIME_FILE_NAME) {
+/// Where it looks is three places, and the first one that is set is the only one looked
+/// at; a later place is never tried in its place (the sidecar's `resolve_runtime_path`,
+/// private to its ONNX backend):
+///
+/// 1. `passed`, the path the application passed (`EmbeddingDeployment::onnx_runtime`);
+/// 2. `env_value`, `OTZARIA_ONNX_RUNTIME`;
+/// 3. the platform's file name beside the graph at `model_path`.
+///
+/// A passed path or a variable that is set but empty names nothing, which the sidecar
+/// refuses as such, so it is missing here; nothing beside the graph is looked at then
+/// either. Both are taken as arguments, as the sidecar takes them, so the rule is testable
+/// without changing the process environment.
+fn runtime_kind(
+    passed: Option<&Path>,
+    env_value: Option<OsString>,
+    model_path: Option<&Path>,
+) -> SemanticErrorKind {
+    let present = match (passed, env_value) {
+        (Some(passed), _) => !passed.as_os_str().is_empty() && passed.exists(),
+        (None, Some(named)) => !named.is_empty() && Path::new(&named).exists(),
+        (None, None) => match (model_path, ONNX_RUNTIME_FILE_NAME) {
             (Some(graph), Some(file)) => onnx_package_root(graph).join(file).exists(),
             _ => false,
         },
@@ -571,8 +617,9 @@ mod tests {
         }
     }
 
-    /// Missing or unusable is a file where the sidecar looks, and nothing else: the
-    /// variable when it is set, else the platform's file beside the graph.
+    /// Missing or unusable is a file where the sidecar looks, and nothing else: the path the
+    /// application passed when it passed one, else the variable when it is set, else the
+    /// platform's file beside the graph.
     #[test]
     fn an_unloadable_runtime_is_missing_without_a_file_and_unusable_with_one() {
         use SemanticErrorKind as K;
@@ -580,33 +627,67 @@ mod tests {
         let graph = dir.path().join("model.onnx");
         let named = dir.path().join("named-runtime");
         std::fs::write(&named, b"not a library").unwrap();
+        let absent = dir.path().join("absent");
+        let variable = |path: &Path| Some(path.as_os_str().to_os_string());
 
-        assert_eq!(runtime_kind(None, Some(&graph)), K::OnnxRuntimeMissing);
-        assert_eq!(runtime_kind(None, None), K::OnnxRuntimeMissing);
         assert_eq!(
-            runtime_kind(Some(named.clone().into_os_string()), Some(&graph)),
+            runtime_kind(None, None, Some(&graph)),
+            K::OnnxRuntimeMissing
+        );
+        assert_eq!(runtime_kind(None, None, None), K::OnnxRuntimeMissing);
+        assert_eq!(
+            runtime_kind(None, variable(&named), Some(&graph)),
             K::OnnxRuntimeUnusable
         );
         assert_eq!(
-            runtime_kind(Some(dir.path().join("absent").into_os_string()), None),
+            runtime_kind(None, variable(&absent), None),
             K::OnnxRuntimeMissing
         );
         // Set but empty names nothing, and is not "unset": nothing beside the graph is
         // looked at either.
         assert_eq!(
-            runtime_kind(Some(OsString::new()), Some(&graph)),
+            runtime_kind(None, Some(OsString::new()), Some(&graph)),
+            K::OnnxRuntimeMissing
+        );
+
+        // A passed path is the first place, and once passed the only one: the variable
+        // naming a file does not make a passed path that names none unusable, nor the
+        // variable naming none make a passed file missing. Empty, it names nothing.
+        assert_eq!(
+            runtime_kind(Some(&named), None, Some(&graph)),
+            K::OnnxRuntimeUnusable
+        );
+        assert_eq!(
+            runtime_kind(Some(&named), variable(&absent), Some(&graph)),
+            K::OnnxRuntimeUnusable
+        );
+        assert_eq!(
+            runtime_kind(Some(&absent), variable(&named), Some(&graph)),
+            K::OnnxRuntimeMissing
+        );
+        assert_eq!(
+            runtime_kind(Some(Path::new("")), variable(&named), Some(&graph)),
             K::OnnxRuntimeMissing
         );
 
         if let Some(file) = ONNX_RUNTIME_FILE_NAME {
             std::fs::write(dir.path().join(file), b"not a library").unwrap();
-            assert_eq!(runtime_kind(None, Some(&graph)), K::OnnxRuntimeUnusable);
-            // The variable, when set, is the only place looked.
             assert_eq!(
-                runtime_kind(
-                    Some(dir.path().join("absent").into_os_string()),
-                    Some(&graph)
-                ),
+                runtime_kind(None, None, Some(&graph)),
+                K::OnnxRuntimeUnusable
+            );
+            // The variable, when set, is the only place looked; and so is a passed path,
+            // with or without the variable.
+            assert_eq!(
+                runtime_kind(None, variable(&absent), Some(&graph)),
+                K::OnnxRuntimeMissing
+            );
+            assert_eq!(
+                runtime_kind(Some(&absent), None, Some(&graph)),
+                K::OnnxRuntimeMissing
+            );
+            assert_eq!(
+                runtime_kind(Some(Path::new("")), None, Some(&graph)),
                 K::OnnxRuntimeMissing
             );
         }
@@ -847,6 +928,48 @@ mod tests {
         );
     }
 
+    /// Every store failure, by variant: corruption is a damaged artifact only where an
+    /// artifact's payload is being read, a scan stopped by its token is the same outcome
+    /// however it arrives, and everything else is a fault.
+    #[test]
+    fn each_store_failure_has_its_kind() {
+        use SemanticErrorKind as K;
+        let open = SidecarCall::OpenArtifact {
+            artifact_dir: Path::new("/artifact"),
+            model_path: Path::new(MODEL),
+        };
+        let store = SemanticSearchError::VectorStore;
+        let reason = || "r".to_string();
+        let faults = || {
+            [
+                VectorStoreError::NotInitialized { path: reason() },
+                VectorStoreError::OpenFailed { reason: reason() },
+                VectorStoreError::InsertFailed { reason: reason() },
+                VectorStoreError::SearchFailed { reason: reason() },
+                VectorStoreError::DeleteFailed { reason: reason() },
+                VectorStoreError::CommitFailed { reason: reason() },
+                VectorStoreError::DimensionMismatch {
+                    store_dim: 256,
+                    vector_dim: 1024,
+                },
+            ]
+        };
+        for call in [open, session()] {
+            for fault in faults() {
+                let described = format!("{fault:?} in {call:?}");
+                assert_eq!(kind(store(fault), call), K::Internal, "{described}");
+            }
+            assert_eq!(
+                kind(store(VectorStoreError::Cancelled), call),
+                kind(SemanticSearchError::Cancelled, call),
+                "{call:?}"
+            );
+        }
+        let corrupted = || store(VectorStoreError::Corrupted { reason: reason() });
+        assert_eq!(kind(corrupted(), open), K::ArtifactCorrupt);
+        assert_eq!(kind(corrupted(), session()), K::Internal);
+    }
+
     /// The session-wide states the sidecar types, and the rest of its top-level variants.
     #[test]
     fn the_session_states_and_the_internal_faults_have_their_kinds() {
@@ -869,7 +992,24 @@ mod tests {
             ),
             K::ReadOnlySession
         );
+        // A ranking parameter is the caller's value, and is named as the sidecar names it.
+        assert_eq!(
+            classify(
+                &SemanticSearchError::InvalidRankingParameter {
+                    parameter: "alpha_by_query_type.short",
+                    value: "-0.2".into(),
+                    requirement: "a number from 0 to 1",
+                },
+                session()
+            ),
+            (
+                K::InvalidInput,
+                Some("alpha_by_query_type.short".to_string())
+            )
+        );
         for internal in [
+            // No search here hands the sidecar a token that can be cancelled.
+            SemanticSearchError::Cancelled,
             SemanticSearchError::Manifest(ManifestError::WriteFailed { reason: "r".into() }),
             SemanticSearchError::Fusion("f".into()),
             SemanticSearchError::Io(std::io::Error::other("e")),
