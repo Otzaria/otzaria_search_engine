@@ -21,10 +21,10 @@
 //! the `tokenizer.json` beside it, and every other path is a GGUF.
 //!
 //! Requires an inference backend for that format, because a build *is* inference: compile
-//! with `--features semantic-onnx` for an ONNX graph, `--features semantic-llama` for GGUF
-//! weights (`semantic` has both), or `--features semantic-mock` for the deterministic
-//! stand-in, which then also needs `--allow-non-semantic` because its vectors carry no
-//! meaning.
+//! with `--features semantic-onnx` for an ONNX graph (`semantic`, the production feature,
+//! is that backend alone), `--features semantic-llama` for GGUF weights, or
+//! `--features semantic-mock` for the deterministic stand-in, which then also needs
+//! `--allow-non-semantic` because its vectors carry no meaning.
 //!
 //! `--stamp-index` also writes the index's corpus stamp into `--index`
 //! ([`CORPUS_STAMP_FILE_NAME`](search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME)): the
