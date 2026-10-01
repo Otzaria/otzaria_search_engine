@@ -44,27 +44,17 @@ The native library can optionally link
 into the same Flutter Rust Bridge library as Tantivy:
 
 - `semantic` is the production build, and the one Cargokit builds: the ONNX
-  backend alone (`semantic-onnx`), for the Meivin model the application uses.
-  It does not compile `llama.cpp` or ggml, the part of the build that needed
-  cmake.
-- `semantic-llama` is the GGUF backend on `llama.cpp`, for the Qwen3 model. It
-  is opt-in, since it compiles `llama.cpp` and ggml through cmake; enable it
-  beside `semantic` for a build that serves both formats. `semantic-real`
-  remains as an alias of `semantic-llama`.
-- The sidecar picks the backend per model by the model file's format: a path
-  ending in `.onnx` is an ONNX graph for ONNX Runtime, and every other path is
-  a GGUF for `llama.cpp`. A format the build has no backend for is refused,
-  not served, so on the production build a GGUF model fails with "No embedding
-  backend is available in this build"; see "Builds without a backend".
-- The sidecar compiles a backend out on targets it cannot serve. The feature
-  stays on and the build succeeds, with no backend behind that format; see
-  "Builds without a backend".
-  - `llama.cpp` is excluded on 32-bit ARM (`armv7-linux-androideabi`):
-    `llama-cpp-sys-2` cannot build for that target, and a Q4 0.6B model would
-    be unusable on it regardless.
-  - The ONNX backend is built for desktop targets only (Windows, Linux and
-    macOS). Android and iOS have none, so there the production build serves
-    no model at all.
+  backend (`semantic-onnx`), for the Meivin model the application uses. ONNX
+  is the only model format there is a backend for.
+- GGUF models and `llama.cpp` are not supported. No feature compiles
+  `llama.cpp` or ggml, and a model path that does not end in `.onnx`, a GGUF
+  included, is refused by its name rather than served: opening an artifact
+  with it, or loading it on the development path, fails with `modelInvalid`,
+  whose `field` is `model_path`.
+- The sidecar builds the ONNX backend for desktop targets only (Windows, Linux
+  and macOS) and compiles it out elsewhere. The feature stays on and the build
+  succeeds, so Android and iOS have no backend behind it, and there the
+  production build serves no model at all; see "Builds without a backend".
 - `semantic-mock` selects the deterministic test backend and must not be used
   in an application release. CI builds the library with it so the Dart FFI
   suite can drive a configured sidecar.
@@ -158,10 +148,10 @@ On the application's path:
 | `artifactNotPublished` | `openSemanticArtifact` | not the artifact whose digest was published: download the official one |
 | `artifactIncompatible` | `openSemanticArtifact` | built for something else; `field` names the first field that disagreed: `corpus.*` for another release of the library, `model.*` for another model, `store.*` or `metadata_version` for another release of the application. Install the artifact built for this one |
 | `indexNotStamped`, `indexStampMismatch` | `openSemanticArtifact` | the index has no corpus stamp this build reads, or changed after it was stamped: install the release's index with its artifact |
-| `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package |
+| `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package. `modelInvalid` with `field` `model_path` is a path that names no ONNX graph, such as a GGUF: point `modelPath` at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
-| `backendNotInBuild` | `openSemanticArtifact` | this build cannot run the model's format |
+| `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
 | `readOnlySession` | the calls that build vectors | refused on an opened artifact; nothing to fix |
 | `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after the artifact was opened |
@@ -380,11 +370,10 @@ signed with the application's identity, and passing its path as
 
 ### Builds without a backend
 
-A build can hold the integration with no backend for the model's format: a GGUF
-model on the production build, which has no `llama.cpp`, or on 32-bit ARM; an
-ONNX model on Android or iOS; or any build whose feature for that format is off.
-An ONNX model whose runtime cannot be loaded behaves the same way; only the
-message differs (see above).
+A build can hold the integration with no backend for the model: an ONNX model
+on Android or iOS, or on a build without `semantic-onnx`. An ONNX model whose
+runtime cannot be loaded behaves the same way; only the message differs (see
+above).
 
 On such a build `openSemanticArtifact` throws, since the model it has to embed
 queries with cannot load, and nothing is left open: `searchSemantic` then falls
@@ -431,18 +420,17 @@ loaded): an index built under one value reports `needsFullReindex` under
 another, instead of mixing in vectors that cannot be compared. `onnxRuntimePath`
 is optional and works as on `SemanticArtifactInput`: configuring again with
 another path while a session is open is a `sessionConflict`, as for any other
-changed input. The Qwen3 GGUF needs a build with
-`semantic-llama`.
+changed input.
 
-| field | Qwen3 GGUF | Meivin ONNX |
-| --- | --- | --- |
-| `modelPath` | the `.gguf` file | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
-| `modelId` | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
-| `embeddingDim` | 1024 | 256 |
-| `pooling` | `last-token` | `in-graph` |
-| `maxTokens` | 512 | 256 |
-| `modelQuantization` | `Q4_K_M` | `int8` (`fp32` for the full-precision graph) |
-| `embeddingTextVersion` | 1 | 2 |
+| field | Meivin ONNX |
+| --- | --- |
+| `modelPath` | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
+| `modelId` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
+| `embeddingDim` | 256 |
+| `pooling` | `in-graph` |
+| `maxTokens` | 256 |
+| `modelQuantization` | `int8` (`fp32` for the full-precision graph) |
+| `embeddingTextVersion` | 2 |
 
 ```dart
 await engine.configureSemantic(
@@ -460,12 +448,11 @@ await engine.configureSemantic(
 ```
 
 A value the sidecar does not implement — an unknown pooling, a text recipe
-version it has no code for, a token cap below 2, or for an ONNX model a cap
-above 65,536 — is refused by `configureSemantic` itself, and so is an empty
-`modelQuantization`. The ONNX ceiling is past the context of any ONNX sentence
-encoder, and it is what keeps a negative `maxTokens`, which arrives as a cap in
-the billions, from reaching the model's load-time probe. A GGUF cap has no
-such bound: llama.cpp clamps it to the model's context.
+version it has no code for, a token cap below 2 or above 65,536 — is refused by
+`configureSemantic` itself, and so is an empty `modelQuantization`. The ceiling
+is past the context of any ONNX sentence encoder, and it is what keeps a
+negative `maxTokens`, which arrives as a cap in the billions, from reaching the
+model's load-time probe.
 
 ### The display contract
 

@@ -914,12 +914,12 @@ mod tests {
 
     fn model_for(chunking: &ChunkerConfig) -> ModelIdentity {
         ModelIdentity {
-            model_id: "EMD123/Otzaria-Embedding-V1-Flash-0.6B".to_string(),
+            model_id: "test-mock".to_string(),
             model_checksum: "ab".repeat(32),
-            model_quantization: "Q4_K_M".to_string(),
+            model_quantization: "int8".to_string(),
             embedding_backend: "mock-hash-v1".to_string(),
             embedding_dim: 64,
-            pooling: "last-token".to_string(),
+            pooling: "in-graph".to_string(),
             max_tokens: 512,
             embedding_text_version: chunking.embedding_text_version,
             normalization_version: 1,
@@ -1520,24 +1520,27 @@ mod tests {
     /// the join, the coverage and the identity, none of which depend on that.
     ///
     /// Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the stand-in and
-    /// its stub GGUF exist only with `semantic-mock`, and `semantic-llama` would take the
-    /// stub ahead of the stand-in and fail to load it.
-    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+    /// its stub ONNX package exist only with `semantic-mock`, and `semantic-onnx` would take
+    /// the stub ahead of the stand-in and fail to load it.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
     #[test]
     fn a_tantivy_index_and_a_model_produce_an_artifact_that_verifies() {
         use otzaria_semantic_search::distribution::builder::{build, BuildRequest};
         use otzaria_semantic_search::distribution::packer::validate_artifact;
-        use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};
+        use otzaria_semantic_search::semantic::embedding::mock;
+        use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 
         let dir = TempDir::new().unwrap();
         let engine = engine_with_books(&dir);
         let corpus = corpus(&engine);
         let chunking = ChunkerConfig::default();
 
-        let model_file = dir.path().join("model.gguf");
-        mock::write_stub_gguf(&model_file, 3).unwrap();
+        let model_file = mock::write_stub_onnx_package(&dir.path().join("model"));
         let model = ModelIdentity {
-            model_checksum: validate_and_checksum_gguf(&model_file).unwrap(),
+            model_checksum: validate_onnx_package(&model_file)
+                .unwrap()
+                .checksum()
+                .to_string(),
             ..model_for(&chunking)
         };
 

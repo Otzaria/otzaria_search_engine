@@ -338,25 +338,29 @@ pub enum SemanticResultSource {
 /// built under one value is reported as needing a full re-index under another,
 /// rather than having vectors that cannot be compared mixed into it.
 /// Nothing here is read from the model file, so the values must be the ones the
-/// model was built for. The two models the application knows (the Meivin
-/// default is its INT8 graph; the full-precision `seforim-embed-round2-fp32.onnx`
-/// published beside it differs only in `model_path` and `"fp32"`):
+/// model was built for. The model the application knows is the Meivin ONNX
+/// model: its INT8 graph by default, or the full-precision
+/// `seforim-embed-round2-fp32.onnx` published beside it, which differs only in
+/// `model_path` and `"fp32"`:
 ///
-/// | field | Qwen3 GGUF | Meivin ONNX |
-/// | --- | --- | --- |
-/// | `model_path` | the `.gguf` file | `seforim-embed-round2-int8.onnx` |
-/// | `embedding_dim` | 1024 | 256 |
-/// | `pooling` | `"last-token"` | `"in-graph"` |
-/// | `max_tokens` | 512 | 256 |
-/// | `model_quantization` | `"Q4_K_M"` | `"int8"` |
-/// | `embedding_text_version` | 1 | 2 |
+/// | field | Meivin ONNX |
+/// | --- | --- |
+/// | `model_path` | `seforim-embed-round2-int8.onnx` |
+/// | `embedding_dim` | 256 |
+/// | `pooling` | `"in-graph"` |
+/// | `max_tokens` | 256 |
+/// | `model_quantization` | `"int8"` |
+/// | `embedding_text_version` | 2 |
 pub struct SemanticConfigInput {
     pub root_dir: String,
-    /// The model file, whose extension selects the backend. A path ending in
-    /// `.onnx` (in any letter case) is an ONNX graph for ONNX Runtime, with its
-    /// `tokenizer.json` in the same directory; every other path is a GGUF for
-    /// llama.cpp. A build without that format's backend cannot serve the model:
-    /// loading it, which indexing does, fails with `BackendUnavailable`.
+    /// The model file: an ONNX graph, a path ending in `.onnx` (in any letter
+    /// case), with its `tokenizer.json` in the same directory. ONNX Runtime is
+    /// the only embedding backend there is. GGUF models, which llama.cpp served
+    /// until it was removed, are not supported, and nor is any other file: a
+    /// path that does not end in `.onnx` is refused by its name when the model
+    /// loads, which indexing does, as `ModelInvalid` with `field` `model_path`.
+    /// An ONNX graph on a build without the ONNX backend fails to load as
+    /// `BackendNotInBuild`.
     ///
     /// An ONNX graph also needs the ONNX Runtime shared library, which this
     /// library does not link but loads when the model loads, from the first of
@@ -370,35 +374,32 @@ pub struct SemanticConfigInput {
     pub model_path: String,
     pub model_id: String,
     pub embedding_dim: u32,
-    /// How the model's output becomes one vector per text. `"last-token"` takes
-    /// the hidden state of the final token, which is what the Qwen3 GGUF was
-    /// trained for. `"in-graph"` means the graph itself emits the finished
-    /// sentence vector (the Meivin graph pools, projects and normalizes inside),
-    /// so nothing is pooled outside it. Spellings are matched exactly, and
-    /// `"mean"`, which parses but which no backend performs, is refused like an
-    /// unknown one.
+    /// How the model's output becomes one vector per text. `"in-graph"`, the
+    /// pooling the ONNX backend performs, means the graph itself emits the
+    /// finished sentence vector (the Meivin graph pools, projects and normalizes
+    /// inside), so nothing is pooled outside it. Spellings are matched exactly,
+    /// and a pooling the backend does not perform, such as `"mean"`, is refused
+    /// like an unknown one.
     ///
     /// Identity because the same weights pooled two ways produce two unrelated
     /// vector spaces.
     pub pooling: String,
     /// The token cap per embedded text, counted the way the model's backend
-    /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
-    /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
+    /// counts it: the whole sequence. 256 for the Meivin graph, where `[CLS]`,
     /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
-    /// and a cap that leaves no room for content is refused. So is an ONNX cap
-    /// above 65,536, past the context of any ONNX sentence encoder, when
-    /// configuring: a negative Dart value arrives here as a cap in the billions,
-    /// and the load-time probe of that many tokens could not even be allocated.
-    /// A GGUF cap has no such bound; llama.cpp clamps it to the model's context.
+    /// and a cap that leaves no room for content is refused. So is a cap above
+    /// 65,536, past the context of any ONNX sentence encoder, when configuring:
+    /// a negative Dart value arrives here as a cap in the billions, and the
+    /// load-time probe of that many tokens could not even be allocated.
     ///
     /// Identity because a different cap cuts every long text somewhere else, and
     /// so changes its vector. The manifest records the value requested here, not
     /// one a backend may clamp it to.
     pub max_tokens: u32,
-    /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF,
-    /// `"int8"` for the Meivin INT8 graph the application uses, and `"fp32"` for
-    /// the full-precision graph published beside it, which is a different
-    /// identity. Not the precision the vectors are stored at. Must not be empty.
+    /// The precision of the model's weights: `"int8"` for the Meivin INT8 graph
+    /// the application uses, and `"fp32"` for the full-precision graph published
+    /// beside it, which is a different identity. Not the precision the vectors
+    /// are stored at. Must not be empty.
     ///
     /// Identity because two quantizations of one model produce different
     /// vectors. The model file's checksum catches such a swap as well, but only
@@ -406,11 +407,10 @@ pub struct SemanticConfigInput {
     /// index is opened.
     pub model_quantization: String,
     /// Which text each chunk, and each query, carries to the model. Version 1
-    /// embeds the line itself, or a short line together with its neighbours,
-    /// which is what the Qwen3 GGUF expects. Version 2 prefixes `"[PASSAGE] "`
-    /// to that same text and `"[QUERY] "` to the query: the Meivin model's
-    /// learned role tokens, which it was trained to see. A version the sidecar
-    /// does not implement is refused.
+    /// embeds the line itself, or a short line together with its neighbours.
+    /// Version 2 prefixes `"[PASSAGE] "` to that same text and `"[QUERY] "` to
+    /// the query: the Meivin model's learned role tokens, which it was trained to
+    /// see. A version the sidecar does not implement is refused.
     ///
     /// Identity because it changes the string that is embedded. It is folded
     /// into the chunking identity that the manifest and every book record carry.
@@ -419,7 +419,7 @@ pub struct SemanticConfigInput {
     /// application that ships the runtime itself: on macOS inside its signed
     /// bundle, which is where a Hardened Runtime application can load it from.
     /// An absolute path; a relative one is resolved against the process's
-    /// current directory. Ignored for a GGUF, whose backend is linked in.
+    /// current directory.
     ///
     /// Passed, it is the first place the runtime is looked for and the only
     /// one: a path that names no file is `OnnxRuntimeMissing` and one that does
@@ -476,10 +476,9 @@ pub struct SemanticArtifactInput {
     /// `pack_semantic_artifact` wrote it: `manifest.json`, `payloads.json` and
     /// the payload files.
     pub artifact_dir: String,
-    /// The model queries are embedded with. An `.onnx` graph, with its
-    /// `tokenizer.json` beside it, or a GGUF; the extension selects the backend,
-    /// as for [`SemanticConfigInput::model_path`], and an ONNX graph needs the
-    /// ONNX Runtime library described there.
+    /// The model queries are embedded with: an `.onnx` graph, with its
+    /// `tokenizer.json` beside it, as for [`SemanticConfigInput::model_path`],
+    /// and needing the ONNX Runtime library described there.
     pub model_path: String,
     /// The text of the model's identity file: the JSON `ModelIdentity` the
     /// artifact was built with (`--model` of `build_semantic_artifact`), such as
@@ -536,11 +535,11 @@ pub struct SemanticArtifactInput {
 /// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
 /// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
-/// | `ModelInvalid` | the file at `model_path` is not a usable model of its format (a truncated download, a placeholder), or its backend could not load it | download the model again | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelInvalid` | the file at `model_path` is not a usable model (a truncated download, a placeholder), or its backend could not load it; or `model_path` names no ONNX graph, such as a GGUF, which no build serves since GGUF support was removed (`field` is `model_path` then) | download the model again; for a path that names no ONNX graph, install the ONNX model and point `model_path` at its graph | `open_semantic_artifact`, `semantic_index_books` |
 /// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
-/// | `BackendNotInBuild` | this build has no embedding backend for the model's format: an ONNX graph on Android or iOS, a GGUF on 32-bit ARM, or a build without that format's feature | use a model of a format this build serves; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
+/// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
@@ -572,7 +571,7 @@ pub enum SemanticErrorKind {
     ModelMissing,
     /// An ONNX graph without its `tokenizer.json`.
     TokenizerMissing,
-    /// The model file is not a usable model, or could not be loaded.
+    /// The model file is not a usable model, could not be loaded, or is no ONNX graph.
     ModelInvalid,
     /// The model identity in hand does not describe the model file.
     ModelIdentityMismatch,
@@ -580,7 +579,7 @@ pub enum SemanticErrorKind {
     OnnxRuntimeMissing,
     /// The ONNX Runtime library found cannot be used.
     OnnxRuntimeUnusable,
-    /// No embedding backend for the model's format in this build.
+    /// No embedding backend for the model in this build: no ONNX backend here.
     BackendNotInBuild,
     /// Another semantic session is open, or this one with different inputs.
     SessionConflict,
@@ -611,6 +610,7 @@ pub enum SemanticErrorKind {
 /// | --- | --- |
 /// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///
@@ -3047,7 +3047,7 @@ impl SearchEngine {
                     SemanticErrorKind::InvalidInput,
                     "model_quantization is empty; it is part of the semantic index's \
                      identity, so name the precision of the model's weights, e.g. \
-                     \"Q4_K_M\" for the Qwen3 GGUF or \"int8\" for the Meivin ONNX graph",
+                     \"int8\" for the Meivin INT8 graph or \"fp32\" for the full-precision one",
                 )
                 .with_field("model_quantization"));
             }
@@ -18847,26 +18847,7 @@ mod tests {
         /// A field's name, and one edit of that field alone.
         type FieldEdit = (&'static str, fn(&mut SemanticConfigInput));
 
-        /// The production Qwen3 GGUF identity, rooted in `root`.
-        fn qwen3(root: &Path) -> SemanticConfigInput {
-            SemanticConfigInput {
-                root_dir: root.join("semantic").to_string_lossy().into_owned(),
-                model_path: root
-                    .join("otzaria-embedding-v1-flash-q4.gguf")
-                    .to_string_lossy()
-                    .into_owned(),
-                model_id: "EMD123/Otzaria-Embedding-V1-Flash-0.6B".to_string(),
-                embedding_dim: 1024,
-                pooling: "last-token".to_string(),
-                max_tokens: 512,
-                model_quantization: "Q4_K_M".to_string(),
-                embedding_text_version: 1,
-                onnx_runtime_path: None,
-            }
-        }
-
         /// The Meivin ONNX identity the application uses, the INT8 graph, rooted in `root`.
-        /// Every field but `root_dir` differs from [`qwen3`].
         fn meivin(root: &Path) -> SemanticConfigInput {
             SemanticConfigInput {
                 root_dir: root.join("semantic").to_string_lossy().into_owned(),
@@ -18884,6 +18865,19 @@ mod tests {
             }
         }
 
+        /// The full-precision graph published beside it, rooted in `root`: an identity of its
+        /// own, which differs from [`meivin`] in the graph and the quantization alone.
+        fn meivin_fp32(root: &Path) -> SemanticConfigInput {
+            SemanticConfigInput {
+                model_path: root
+                    .join("seforim-embed-round2-fp32.onnx")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_quantization: "fp32".to_string(),
+                ..meivin(root)
+            }
+        }
+
         fn manifest(root_dir: &str) -> JsonValue {
             let path = Path::new(root_dir).join(MANIFEST);
             let text = fs::read_to_string(&path)
@@ -18894,8 +18888,8 @@ mod tests {
         #[test]
         fn an_identical_configuration_is_the_same_key_and_names_no_change() {
             let root = Path::new("/library");
-            let active = SemanticConfigKey::from_input(&qwen3(root));
-            let repeat = SemanticConfigKey::from_input(&qwen3(root));
+            let active = SemanticConfigKey::from_input(&meivin(root));
+            let repeat = SemanticConfigKey::from_input(&meivin(root));
 
             assert_eq!(active, repeat);
             assert_eq!(active.changed_fields(&repeat), "");
@@ -18906,18 +18900,19 @@ mod tests {
         #[test]
         fn a_change_to_any_single_input_is_detected_and_named() {
             let root = Path::new("/library");
-            let active = SemanticConfigKey::from_input(&qwen3(root));
+            let active = SemanticConfigKey::from_input(&meivin(root));
             let changes: [FieldEdit; 9] = [
                 ("root_dir", |c| c.root_dir.push_str("-elsewhere")),
                 ("model_path", |c| c.model_path.push_str(".bak")),
                 ("model_id", |c| c.model_id.push_str("-v2")),
                 ("embedding_dim", |c| c.embedding_dim = 768),
-                ("pooling", |c| c.pooling = "in-graph".to_string()),
-                ("max_tokens", |c| c.max_tokens = 256),
+                // Compared as given: whether a backend performs it is the sidecar's to say.
+                ("pooling", |c| c.pooling = "mean".to_string()),
+                ("max_tokens", |c| c.max_tokens = 512),
                 ("model_quantization", |c| {
-                    c.model_quantization = "Q8_0".to_string()
+                    c.model_quantization = "fp32".to_string()
                 }),
-                ("embedding_text_version", |c| c.embedding_text_version = 2),
+                ("embedding_text_version", |c| c.embedding_text_version = 1),
                 // Not identity, and a change all the same: the process keeps the first
                 // runtime it loads.
                 ("onnx_runtime_path", |c| {
@@ -18926,7 +18921,7 @@ mod tests {
             ];
 
             for (field, change) in changes {
-                let mut input = qwen3(root);
+                let mut input = meivin(root);
                 change(&mut input);
                 let requested = SemanticConfigKey::from_input(&input);
                 assert_ne!(active, requested, "{field} must be part of the key");
@@ -18937,13 +18932,30 @@ mod tests {
         #[test]
         fn switching_models_names_every_input_that_differs() {
             let root = Path::new("/library");
-            let qwen3 = SemanticConfigKey::from_input(&qwen3(root));
-            let meivin = SemanticConfigKey::from_input(&meivin(root));
+            let int8 = SemanticConfigKey::from_input(&meivin(root));
+            let fp32 = SemanticConfigKey::from_input(&meivin_fp32(root));
+            assert_eq!(int8.changed_fields(&fp32), "model_path, model_quantization");
 
+            // Another encoder altogether: every input but the root differs, and each is named,
+            // in the order the configuration declares them.
+            let other = SemanticConfigKey::from_input(&SemanticConfigInput {
+                model_path: root
+                    .join("another-encoder.onnx")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_id: "example/another-encoder".to_string(),
+                embedding_dim: 768,
+                pooling: "mean".to_string(),
+                max_tokens: 512,
+                model_quantization: "fp32".to_string(),
+                embedding_text_version: 1,
+                onnx_runtime_path: Some("/app/Frameworks/libonnxruntime.dylib".to_string()),
+                ..meivin(root)
+            });
             assert_eq!(
-                qwen3.changed_fields(&meivin),
+                int8.changed_fields(&other),
                 "model_path, model_id, embedding_dim, pooling, max_tokens, \
-                 model_quantization, embedding_text_version"
+                 model_quantization, embedding_text_version, onnx_runtime_path"
             );
         }
 
@@ -18954,10 +18966,10 @@ mod tests {
         fn configure_semantic_ignores_a_repeat_and_refuses_a_change_by_name() {
             let (mut engine, _index) = make_engine();
             let semantic = TempDir::new().unwrap();
-            let config = || qwen3(semantic.path());
+            let config = || meivin(semantic.path());
             engine
                 .configure_semantic(config())
-                .expect("the Qwen3 identity configures");
+                .expect("the Meivin identity configures");
             let manifest = Path::new(&config().root_dir).join(MANIFEST);
             assert!(manifest.exists(), "opening the sidecar writes its manifest");
             fs::remove_file(&manifest).unwrap();
@@ -18969,12 +18981,12 @@ mod tests {
             assert!(!manifest.exists(), "an identical repeat must not re-open");
 
             let changes: [FieldEdit; 4] = [
-                ("pooling", |c| c.pooling = "in-graph".to_string()),
-                ("max_tokens", |c| c.max_tokens = 256),
+                ("pooling", |c| c.pooling = "mean".to_string()),
+                ("max_tokens", |c| c.max_tokens = 512),
                 ("model_quantization", |c| {
                     c.model_quantization = "fp32".to_string()
                 }),
-                ("embedding_text_version", |c| c.embedding_text_version = 2),
+                ("embedding_text_version", |c| c.embedding_text_version = 1),
             ];
             for (field, change) in changes {
                 let mut input = config();
@@ -19055,7 +19067,7 @@ mod tests {
             ];
 
             for (named, spoil) in spoiled {
-                let mut input = qwen3(semantic.path());
+                let mut input = meivin(semantic.path());
                 spoil(&mut input);
                 let error = match engine.configure_semantic(input) {
                     Ok(_) => panic!("a configuration with a bad {named} must be refused"),
@@ -19069,16 +19081,16 @@ mod tests {
                 assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{named}");
             }
             engine
-                .configure_semantic(qwen3(semantic.path()))
+                .configure_semantic(meivin(semantic.path()))
                 .expect("a refused configuration leaves no session behind");
         }
 
         /// The ONNX token cap has a ceiling, 65,536, and it binds before the manifest
         /// records the cap. `u32::MAX` is the case it exists for: a negative Dart value
         /// arrives as a cap in the billions, and the load-time probe of that many tokens
-        /// cannot be allocated. A GGUF cap is llama.cpp's to clamp, so it has none.
+        /// cannot be allocated. The ceiling itself is accepted.
         #[test]
-        fn an_onnx_cap_past_the_ceiling_is_refused_when_configuring_and_a_gguf_one_is_not() {
+        fn an_onnx_cap_past_the_ceiling_is_refused_when_configuring() {
             const CEILING: u32 = 65_536;
             let (mut engine, _index) = make_engine();
 
@@ -19106,24 +19118,13 @@ mod tests {
                 );
             }
 
-            let onnx_root = TempDir::new().unwrap();
-            let gguf_root = TempDir::new().unwrap();
-            for accepted in [
-                SemanticConfigInput {
+            let root = TempDir::new().unwrap();
+            engine
+                .configure_semantic(SemanticConfigInput {
                     max_tokens: CEILING,
-                    ..meivin(onnx_root.path())
-                },
-                SemanticConfigInput {
-                    max_tokens: u32::MAX,
-                    ..qwen3(gguf_root.path())
-                },
-            ] {
-                let model_path = accepted.model_path.clone();
-                engine
-                    .configure_semantic(accepted)
-                    .unwrap_or_else(|error| panic!("{model_path}: {error:#}"));
-                engine.disable_semantic();
-            }
+                    ..meivin(root.path())
+                })
+                .unwrap_or_else(|error| panic!("a cap of {CEILING}: {error:#}"));
         }
     }
 
@@ -19318,13 +19319,13 @@ mod tests {
     /// over, and this crate's before hydration and before painting. The probe cancels at the
     /// look a test names, so where the search stops is the test's choice, not a race.
     ///
-    /// On the stand-in, which serves the stub GGUF only in a build without llama.cpp, as in
-    /// the integration suites.
-    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+    /// On the stand-in, which serves the stub ONNX package only in a build without the ONNX
+    /// backend, as in the integration suites.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
     mod semantic_cancellation {
         use super::*;
         use crate::search_cancellation::{cancelling_at, SearchCheckpoint as At};
-        use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
+        use otzaria_semantic_search::semantic::embedding::mock::write_stub_onnx_package;
 
         const BOOK: &str = "/books/genesis.txt";
         const LINES: [(u64, &str); 3] = [
@@ -19344,8 +19345,7 @@ mod tests {
             }
             engine.commit().unwrap();
             let semantic = TempDir::new().unwrap();
-            let model = semantic.path().join("mock.gguf");
-            write_stub_gguf(&model, 3).unwrap();
+            let model = write_stub_onnx_package(&semantic.path().join("model"));
             engine
                 .configure_semantic(SemanticConfigInput {
                     root_dir: semantic
@@ -19356,9 +19356,9 @@ mod tests {
                     model_path: model.to_string_lossy().into_owned(),
                     model_id: "test-mock".to_string(),
                     embedding_dim: 64,
-                    pooling: "last-token".to_string(),
+                    pooling: "in-graph".to_string(),
                     max_tokens: 512,
-                    model_quantization: "Q4_K_M".to_string(),
+                    model_quantization: "int8".to_string(),
                     embedding_text_version: 1,
                     onnx_runtime_path: None,
                 })
