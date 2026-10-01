@@ -15,7 +15,7 @@
 //! Writes `plan.jsonl` — one record per line that gets a vector, carrying the finished
 //! embedding text and both digests — plus `export-manifest.json` and the
 //! `corpus-identity.json` the merge will pack against. **No inference backend is
-//! required**, so this runs in a build that compiles neither llama.cpp nor ONNX Runtime.
+//! required**, so this runs in a build that has no ONNX Runtime bindings.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {

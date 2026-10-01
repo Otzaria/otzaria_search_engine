@@ -19318,9 +19318,8 @@ mod tests {
     /// over, and this crate's before hydration and before painting. The probe cancels at the
     /// look a test names, so where the search stops is the test's choice, not a race.
     ///
-    /// On the stand-in, which serves the stub GGUF only in a build without llama.cpp, as in
-    /// the integration suites.
-    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+    /// On the stand-in, as in the integration suites.
+    #[cfg(feature = "semantic-mock")]
     mod semantic_cancellation {
         use super::*;
         use crate::search_cancellation::{cancelling_at, SearchCheckpoint as At};

@@ -1520,9 +1520,8 @@ mod tests {
     /// the join, the coverage and the identity, none of which depend on that.
     ///
     /// Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the stand-in and
-    /// its stub GGUF exist only with `semantic-mock`, and `semantic-llama` would take the
-    /// stub ahead of the stand-in and fail to load it.
-    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+    /// its stub GGUF exist only with `semantic-mock`.
+    #[cfg(feature = "semantic-mock")]
     #[test]
     fn a_tantivy_index_and_a_model_produce_an_artifact_that_verifies() {
         use otzaria_semantic_search::distribution::builder::{build, BuildRequest};
