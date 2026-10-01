@@ -146,6 +146,14 @@ are now documented as development and testing scaffolding, not for the library.
 - **CI checks, lints and runs the tests with `--features semantic-onnx`**, the
   one job that runs the integration's tests without the stand-in, and the
   real-backend job compiles both backends through `semantic`.
+- **CI runs the real-model tests on Linux, macOS and Windows.** The new "Real
+  ONNX model" job fetches the INT8 graph and its `tokenizer.json` from the
+  project's private Hugging Face mirror with the `OTZARIA_HF_TOKEN` secret and
+  checks their SHA-256, fetches Microsoft's ONNX Runtime 1.28.0 as the
+  sidecar's CI does, takes the model's identity files from the sidecar at the
+  pinned revision, and runs `rust/tests/semantic_onnx_model.rs` under
+  `OTZARIA_REQUIRE_ONNX_MODEL`. Without the secret it fails rather than skips;
+  it does not run for pull requests from forks, which get no secrets.
 
 ## 0.9.0 – 2026-10-04
 
