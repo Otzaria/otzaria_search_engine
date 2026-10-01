@@ -21,7 +21,9 @@
 //! It needs the model, which is gated and not in the repository, and an ONNX Runtime shared
 //! library, which the sidecar loads rather than links. So the tests are `#[ignore]`d *and*
 //! skip loudly unless both `OTZARIA_TEST_ONNX_MODEL` and `OTZARIA_ONNX_RUNTIME` name
-//! existing files, the pattern of the sidecar's `golden` suite. The sidecar reads
+//! existing files, the pattern of the sidecar's `golden` suite. Where the files are meant
+//! to be there, `OTZARIA_REQUIRE_ONNX_MODEL` turns each skip into a failure; CI's
+//! real-model job, which runs them on Linux, macOS and Windows, sets it. The sidecar reads
 //! `OTZARIA_ONNX_RUNTIME` itself; the reference runtime is Microsoft's ONNX Runtime 1.28.0
 //! release. `tokenizer.json` must sit beside the graph, as it does in the published
 //! package.
@@ -63,6 +65,10 @@ const IDENTITY_ENV: &str = "OTZARIA_TEST_ONNX_IDENTITY";
 /// Read by the sidecar, not by this test: checked here only so that a missing runtime
 /// is a loud skip rather than an "ONNX Runtime could not be loaded" failure.
 const RUNTIME_ENV: &str = "OTZARIA_ONNX_RUNTIME";
+/// Set, to anything, where the files are meant to be there, as in CI's real-model job: a
+/// skip there would be a green run that tested nothing, so each one fails the test
+/// instead. The Dart suites' `OTZARIA_REQUIRE_NATIVE` does the same for the library.
+const REQUIRE_ENV: &str = "OTZARIA_REQUIRE_ONNX_MODEL";
 const BOOK_KEY: &str = "/library/meivin-probe.txt";
 const TITLE: &str = "probe";
 const TOPICS: &str = "/probe";
@@ -107,40 +113,64 @@ const QUERIES: [(&str, u64); 3] = [
     ("זמן קריאת שמע של ערבית", 101),
 ];
 
-/// The file `variable` names, or `None` with a loud explanation of what is missing.
-/// Skipping rather than failing because CI has neither file, and a test that fails there
-/// teaches everyone to ignore it.
-fn required_file(variable: &str, needed: &str) -> Option<PathBuf> {
+/// The file `variable` names, or what is missing.
+fn required_file(variable: &str, needed: &str) -> Result<PathBuf, String> {
     match std::env::var(variable) {
         Ok(path) if !path.trim().is_empty() => {
             let path = PathBuf::from(path.trim());
             if path.exists() {
-                return Some(path);
+                Ok(path)
+            } else {
+                Err(format!(
+                    "{variable} points at {path:?}, which does not exist"
+                ))
             }
-            println!("SKIPPED: {variable} points at {path:?}, which does not exist");
-            None
         }
-        _ => {
-            println!("SKIPPED: {variable} is not set. This test needs {needed}.");
-            None
-        }
+        _ => Err(format!("{variable} is not set. This test needs {needed}.")),
     }
 }
 
-/// The graph, when both it and a runtime are there to run it.
-fn model_and_runtime() -> Option<PathBuf> {
-    // Both looked up before either is acted on, so one run reports everything missing.
-    let model = required_file(
+/// The graph.
+fn model_file() -> Result<PathBuf, String> {
+    required_file(
         MODEL_ENV,
         "seforim-embed-round2-int8.onnx (or its -fp32 twin), with its tokenizer.json \
          beside it, from the gated judaic-semantic-round2-onnx-zayit model",
-    );
-    let runtime = required_file(
+    )
+}
+
+/// The runtime the sidecar will load.
+fn runtime_library() -> Result<PathBuf, String> {
+    required_file(
         RUNTIME_ENV,
         "the ONNX Runtime shared library (libonnxruntime.dylib, libonnxruntime.so or \
          onnxruntime.dll), such as the one in Microsoft's 1.28.0 release",
+    )
+}
+
+/// Every file a test needs, or `None` once each one missing has been reported. All of
+/// them are looked up before any is acted on, so one run reports everything missing.
+///
+/// A missing file skips the test, loudly, rather than failing it: most runs have none of
+/// them — a contributor's, and every CI job but the real-model one — and a test that
+/// fails there teaches everyone to ignore it. Under [`REQUIRE_ENV`] it fails the test.
+fn needed<const N: usize>(lookups: [Result<PathBuf, String>; N]) -> Option<[PathBuf; N]> {
+    let missing: Vec<String> = lookups
+        .iter()
+        .filter_map(|lookup| lookup.as_ref().err().cloned())
+        .collect();
+    if missing.is_empty() {
+        return Some(lookups.map(Result::unwrap));
+    }
+    assert!(
+        std::env::var_os(REQUIRE_ENV).is_none(),
+        "{REQUIRE_ENV} is set, so this test may not skip, and it would have:\n{}",
+        missing.join("\n")
     );
-    model.zip(runtime).map(|(model, _)| model)
+    for reason in missing {
+        println!("SKIPPED: {reason}");
+    }
+    None
 }
 
 /// The quantization label of a Meivin Round 2 graph, read off its published file name:
@@ -296,7 +326,7 @@ fn ranking(engine: &SearchEngine, query: &str) -> Vec<(u64, f32)> {
 #[ignore = "needs the Meivin ONNX model and an ONNX Runtime; set OTZARIA_TEST_ONNX_MODEL \
             and OTZARIA_ONNX_RUNTIME and pass --ignored"]
 fn the_meivin_model_ranks_the_line_a_query_is_about_first() {
-    let Some(model) = model_and_runtime() else {
+    let Some([model, _runtime]) = needed([model_file(), runtime_library()]) else {
         return;
     };
     let root = TempDir::new().unwrap();
@@ -326,7 +356,7 @@ fn the_meivin_model_ranks_the_line_a_query_is_about_first() {
 #[ignore = "needs the Meivin ONNX model and an ONNX Runtime; set OTZARIA_TEST_ONNX_MODEL \
             and OTZARIA_ONNX_RUNTIME and pass --ignored"]
 fn recipe_two_scores_exactly_like_the_role_prefixed_text_it_is_defined_as() {
-    let Some(model) = model_and_runtime() else {
+    let Some([model, _runtime]) = needed([model_file(), runtime_library()]) else {
         return;
     };
     let recipe_two_root = TempDir::new().unwrap();
@@ -367,13 +397,13 @@ fn recipe_two_scores_exactly_like_the_role_prefixed_text_it_is_defined_as() {
             OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
             pass --ignored"]
 fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line_first() {
-    let model = model_and_runtime();
     let identity = required_file(
         IDENTITY_ENV,
         "the directory with the model's model.json and chunking.json, such as the sidecar's \
          config/models/meivin-round2-onnx",
     );
-    let (Some(model), Some(identity)) = (model, identity) else {
+    let Some([model, _runtime, identity]) = needed([model_file(), runtime_library(), identity])
+    else {
         return;
     };
 

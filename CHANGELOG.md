@@ -102,7 +102,8 @@ are now documented as development and testing scaffolding, not for the library.
   using the model's published identity files from `OTZARIA_TEST_ONNX_IDENTITY`.
   `#[ignore]`d, and they skip loudly unless `OTZARIA_TEST_ONNX_MODEL`,
   `OTZARIA_ONNX_RUNTIME` and, for the third, `OTZARIA_TEST_ONNX_IDENTITY` name
-  what they need.
+  what they need; with `OTZARIA_REQUIRE_ONNX_MODEL` set, as the Dart suites
+  have `OTZARIA_REQUIRE_NATIVE`, each skip is a failure instead.
 - **Tests of the artifact path with the stand-in**, `rust/tests/semantic_artifact.rs`:
   an artifact built by the binary from a small index, opened, searched both
   ways and hydrated; refusals of a missing, foreign or outdated stamp, of every
