@@ -256,6 +256,7 @@ fn search(
             None,
             false,
             false,
+            None,
             &SemanticCancellationToken::new(),
         )
         .unwrap()

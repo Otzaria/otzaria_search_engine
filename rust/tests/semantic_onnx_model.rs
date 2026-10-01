@@ -75,7 +75,8 @@ const REQUIRE_ENV: &str = "OTZARIA_REQUIRE_ONNX_MODEL";
 /// runs itself in: the runtime to pass as `onnx_runtime_path`. The parent sets it, and is
 /// the only thing that does, so it is also how the child knows it is the child.
 const PASSED_RUNTIME_ENV: &str = "OTZARIA_TEST_PASSED_ONNX_RUNTIME";
-/// The platform's ONNX Runtime file name, as the sidecar looks for it beside the graph.
+/// The platform's ONNX Runtime file name, as the sidecar looks for it beside the graph. The
+/// ONNX backend is built for these three systems only.
 #[cfg(target_os = "macos")]
 const RUNTIME_FILE_NAME: &str = "libonnxruntime.dylib";
 #[cfg(target_os = "linux")]
@@ -309,6 +310,7 @@ fn ranking(engine: &SearchEngine, query: &str) -> Vec<(u64, f32)> {
             None,
             false,
             false,
+            None,
             &SemanticCancellationToken::new(),
         )
         .unwrap();
@@ -550,6 +552,7 @@ fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line
 /// instead, in a child process of this test binary filtered to this one test, with the
 /// variable removed and the runtime handed over in [`PASSED_RUNTIME_ENV`]; the parent passes
 /// when the child does, and the child does the work.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 #[test]
 #[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
             OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
@@ -594,6 +597,7 @@ fn the_runtime_the_application_passes_is_the_one_that_loads() {
 }
 
 /// The child's half of [`the_runtime_the_application_passes_is_the_one_that_loads`].
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn the_passed_runtime_loads_alone(runtime: PathBuf) {
     assert!(
         std::env::var_os(RUNTIME_ENV).is_none(),

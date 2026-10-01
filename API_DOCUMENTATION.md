@@ -235,7 +235,7 @@ Returns the distinct `filePath` values present in the index — i.e. which books
 Future<SemanticStatus> openSemanticArtifact({required SemanticArtifactInput config})
 Future<void> disableSemantic()
 Future<SemanticStatus> semanticStatus()
-Future<SemanticSearchResponse> searchSemantic({..., required SemanticCancellationToken cancellation})
+Future<SemanticSearchResponse> searchSemantic({..., SemanticRankingOptions? ranking, required SemanticCancellationToken cancellation})
 
 // Development and testing: vectors built on this device.
 Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})
@@ -349,6 +349,35 @@ last look returns its results. A token cannot be reset. It is required, since
 flutter_rust_bridge 2.13 cannot pass an optional borrowed object: a fresh token
 changes nothing.
 
+**Tuning the ranking.** `searchSemantic` takes an optional `ranking`, a
+`SemanticRankingOptions` holding every parameter hybrid ranking runs on, in place
+of the ranking a search runs on without it. Its constructor's defaults are that
+ranking, so a caller names only what it changes, and
+`SemanticRankingOptions.defaults()` reads them from the engine; passing them is
+passing nothing. **The defaults are unmeasured placeholders**: calibrating them
+needs a labelled relevance set and a metric over the page, and this option exists
+so that can happen from the application without a release of the engine.
+
+| option | default | allowed | what it does |
+| --- | --- | --- | --- |
+| `fusionStrategy` | `weighted` | `weighted`, `rrf`, `adaptive` | by weight; by rank, `1 / (rrfK + rank)` from each side; or by weight with BM25 min-max normalized when its scores run high |
+| `rrfK` | 60 | at least 1, with `rrf` | RRF's `k`; read by nothing else |
+| `alphaOverride` | null | 0 to 1 | one lexical weight for every query |
+| `alphaByQueryType` | quoted phrase 1, reference 0.85, one or two words 0.7, three or four 0.5, five or more 0.3, none 0.5 | each 0 to 1 | the lexical weight per kind of query; `1 - alpha` is the semantic side's |
+| `bm25SaturationK` | 10 | above 0 | `k` in BM25's normalization `score / (k + score)` |
+| `semanticThreshold` | 0 | 0 to 1 | below this normalized similarity a semantic candidate counts for nothing |
+| `agreementBonus` | 0.1 | 0 to 1 | added to a line both sides found, fused by weight |
+| `phraseMatchBonus`, `rareTermBonus` | 0 | 0 to 1 | scaled by the share of the query's quoted phrases, or rare words, a line contains |
+| `sectionCoverageBonus` | 0 | 0 to 1 | added to a line whose section holds another result |
+| `duplicatePenalty` | 0 | 0 to 1 | taken from each later line with the same text |
+| `metadataRankingEnabled` | false | | a semantic candidate's book and facets add to its score |
+| `candidateWindowMultiplier` | 2 | 1 to 10 | semantic candidates fetched for each place in the window |
+
+A value outside its range, or not a number, is refused before the search runs,
+with or without a session: `invalidInput`, whose `field` is the option's name in
+the Rust struct (`alpha_by_query_type.short`, `rrf_k`). A build without semantic
+support ignores the options.
+
 **Failures and states.** A failed semantic call throws `SemanticError`, an
 `FrbException` with three fields: `kind`, a `SemanticErrorKind` to branch on;
 `message`, the detailed text the call has always produced; and `field`, the
@@ -394,7 +423,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
 | `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
 | `cancelled` | `searchSemantic` | its `SemanticCancellationToken` was cancelled before it finished | drop it: nothing failed |
-| `invalidInput` | `configureSemantic`, `openSemanticArtifact` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`) | fix the call |
+| `invalidInput` | `configureSemantic`, `openSemanticArtifact`, `searchSemantic` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`, or a ranking option: `alpha_by_query_type.short`, `rrf_k`, …) | fix the call |
 | `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
 
 ---

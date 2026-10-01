@@ -19,8 +19,9 @@ use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
 use search_engine::api::search_engine::{
     ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
-    SemanticExecutedMode, SemanticGroupingMode, SemanticIndexingSummary, SemanticLexicalMode,
-    SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
+    SemanticExecutedMode, SemanticFusionStrategy, SemanticGroupingMode, SemanticIndexingSummary,
+    SemanticLexicalMode, SemanticQueryTypeAlphas, SemanticRankingOptions, SemanticResultSource,
+    SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
 };
 use tempfile::TempDir;
 
@@ -180,6 +181,7 @@ fn search(
             grouping,
             false,
             false,
+            None,
             &SemanticCancellationToken::new(),
         )
         .unwrap()
@@ -669,6 +671,7 @@ fn a_cancelled_search_is_cancelled_in_every_mode_and_the_next_one_is_served() {
                 None,
                 false,
                 false,
+                None,
                 &cancelled,
             ),
             "a search whose token is cancelled must not be served",
@@ -681,6 +684,158 @@ fn a_cancelled_search_is_cancelled_in_every_mode_and_the_next_one_is_served() {
         assert_eq!(served.fallback_kind, None, "{mode:?}");
     }
     assert!(engine.semantic_status().available);
+}
+
+// ── Ranking options ──────────────────────────────────────────────────────────
+
+/// An exact search for `query` in `mode`, ranked by `ranking`.
+fn ranked(
+    engine: &SearchEngine,
+    query: &str,
+    mode: SemanticRetrievalMode,
+    ranking: Option<SemanticRankingOptions>,
+) -> Result<SemanticSearchResponse, SemanticError> {
+    engine.search_semantic(
+        query.to_owned(),
+        Vec::new(),
+        10,
+        0,
+        SemanticLexicalMode::Exact,
+        0,
+        mode,
+        None,
+        false,
+        false,
+        ranking,
+        &SemanticCancellationToken::new(),
+    )
+}
+
+/// A page as bits: the ranking of two searches is the same only if this is.
+fn page_bits(response: &SemanticSearchResponse) -> Vec<(u64, u32, Option<u32>, Option<u32>)> {
+    response
+        .results
+        .iter()
+        .map(|hit| {
+            (
+                hit.id,
+                hit.fused_score.to_bits(),
+                hit.lexical_score.map(f32::to_bits),
+                hit.semantic_score.map(f32::to_bits),
+            )
+        })
+        .collect()
+}
+
+/// Passing the defaults is passing nothing: every page, in every mode, is the same to the
+/// bit. Two sessions over the same lines, so that neither answers from the other's cache.
+#[test]
+fn the_default_ranking_options_rank_exactly_as_none() {
+    let lines = vec![
+        line(9_001, "בראשית א:א", "בראשית ברא אלהים את השמים ואת הארץ", 2),
+        line(
+            9_002,
+            "בראשית א:ב",
+            "והארץ היתה תהו ובהו וחשך על פני תהום",
+            2,
+        ),
+        line(9_003, "בראשית א:ג", "ויאמר אלהים יהי אור ויהי אור", 2),
+    ];
+    let (without, _without_root) = fixture(&lines);
+    let (with_defaults, _defaults_root) = fixture(&lines);
+
+    for mode in [
+        SemanticRetrievalMode::Hybrid,
+        SemanticRetrievalMode::SemanticOnly,
+        SemanticRetrievalMode::LexicalOnly,
+    ] {
+        for query in ["בראשית ברא", "ויאמר אלהים יהי אור", "\"יהי אור\"", "אור"]
+        {
+            let none = ranked(&without, query, mode, None).unwrap();
+            let defaults = ranked(
+                &with_defaults,
+                query,
+                mode,
+                Some(SemanticRankingOptions::defaults()),
+            )
+            .unwrap();
+            assert_eq!(page_bits(&none), page_bits(&defaults), "{mode:?} {query}");
+            assert_eq!(
+                none.executed_mode, defaults.executed_mode,
+                "{mode:?} {query}"
+            );
+        }
+    }
+}
+
+/// The options reach the ranking: with reciprocal rank fusion at `rrf_k` 30, the one line,
+/// first on both sides, scores 1 / 31 from each, which no weighted fusion gives it.
+#[test]
+fn a_ranking_option_is_the_ranking_the_search_runs_on() {
+    let lines = one_line_corpus();
+    let (engine, _root) = fixture(&lines);
+    let rrf = SemanticRankingOptions {
+        fusion_strategy: SemanticFusionStrategy::Rrf,
+        rrf_k: 30,
+        ..SemanticRankingOptions::defaults()
+    };
+
+    let fused = ranked(
+        &engine,
+        "בראשית ברא",
+        SemanticRetrievalMode::Hybrid,
+        Some(rrf),
+    )
+    .unwrap();
+    let hit = fused.results.first().expect("the line both sides found");
+    assert_eq!(hit.source, SemanticResultSource::Both);
+    let from_each_side = 1.0f32 / 31.0;
+    assert_eq!(hit.fused_score, from_each_side + from_each_side);
+
+    let weighted = ranked(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid, None).unwrap();
+    assert_ne!(weighted.results[0].fused_score, hit.fused_score);
+}
+
+/// An option out of range is refused before the search runs, naming it, in every mode and
+/// with no session open as with one: a lexical fallback would hide the mistake.
+#[test]
+fn an_option_out_of_range_is_refused_with_or_without_a_session() {
+    let lines = one_line_corpus();
+    let (mut engine, _root) = fixture(&lines);
+    let spoiled = SemanticRankingOptions {
+        alpha_by_query_type: SemanticQueryTypeAlphas {
+            short: -0.2,
+            ..SemanticRankingOptions::defaults().alpha_by_query_type
+        },
+        ..SemanticRankingOptions::defaults()
+    };
+
+    for open in [true, false] {
+        if !open {
+            engine.disable_semantic();
+        }
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::SemanticOnly,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let error = refusal(
+                ranked(&engine, "בראשית ברא", mode, Some(spoiled.clone())),
+                "an alpha below 0 must be refused",
+            );
+            assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{mode:?}");
+            assert_eq!(
+                error.field.as_deref(),
+                Some("alpha_by_query_type.short"),
+                "{mode:?}"
+            );
+            assert!(
+                error.message.contains("-0.2"),
+                "{mode:?}: {}",
+                error.message
+            );
+        }
+    }
 }
 
 // ── Reconfiguration ──────────────────────────────────────────────────────────

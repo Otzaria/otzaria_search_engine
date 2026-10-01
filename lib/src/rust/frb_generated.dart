@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1075702083;
+  int get rustContentHash => 462886284;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -842,6 +842,7 @@ abstract class RustLibApi extends BaseApi {
     SemanticGroupingMode? grouping,
     required bool matchNikud,
     required bool matchTaamim,
+    SemanticRankingOptions? ranking,
     required SemanticCancellationToken cancellation,
   });
 
@@ -985,6 +986,8 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark();
 
   String crateApiSearchEngineSanitizeQuery({required String query});
+
+  SemanticRankingOptions crateApiSearchEngineSemanticRankingOptionsDefaults();
 
   List<String> crateApiSearchEngineSplitQueryWords({required String query});
 
@@ -5688,6 +5691,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SemanticGroupingMode? grouping,
     required bool matchNikud,
     required bool matchTaamim,
+    SemanticRankingOptions? ranking,
     required SemanticCancellationToken cancellation,
   }) {
     return handler.executeNormal(
@@ -5711,6 +5715,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_semantic_ranking_options(
+            ranking,
+            serializer,
+          );
           sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
             cancellation,
             serializer,
@@ -5739,6 +5747,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           grouping,
           matchNikud,
           matchTaamim,
+          ranking,
           cancellation,
         ],
         apiImpl: this,
@@ -5761,6 +5770,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "matchNikud",
           "matchTaamim",
+          "ranking",
           "cancellation",
         ],
       );
@@ -6848,6 +6858,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "sanitize_query", argNames: ["query"]);
 
   @override
+  SemanticRankingOptions crateApiSearchEngineSemanticRankingOptionsDefaults() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 107,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_ranking_options,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineSemanticRankingOptionsDefaultsConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSemanticRankingOptionsDefaultsConstMeta =>
+      const TaskConstMeta(
+        debugName: "semantic_ranking_options_defaults",
+        argNames: [],
+      );
+
+  @override
   List<String> crateApiSearchEngineSplitQueryWords({required String query}) {
     return handler.executeSync(
       SyncTask(
@@ -6857,7 +6897,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 107,
+            funcId: 108,
           )!;
         },
         codec: SseCodec(
@@ -7186,6 +7226,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  double dco_decode_box_autoadd_f_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as double;
+  }
+
+  @protected
   HighlightConfig dco_decode_box_autoadd_highlight_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_highlight_config(raw);
@@ -7237,6 +7283,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_semantic_grouping_mode(raw);
+  }
+
+  @protected
+  SemanticRankingOptions dco_decode_box_autoadd_semantic_ranking_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_semantic_ranking_options(raw);
   }
 
   @protected
@@ -7620,6 +7674,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  double? dco_decode_opt_box_autoadd_f_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_f_64(raw);
+  }
+
+  @protected
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_highlight_config(raw);
@@ -7659,6 +7719,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_semantic_grouping_mode(raw);
+  }
+
+  @protected
+  SemanticRankingOptions? dco_decode_opt_box_autoadd_semantic_ranking_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_semantic_ranking_options(raw);
   }
 
   @protected
@@ -7944,6 +8014,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticFusionStrategy dco_decode_semantic_fusion_strategy(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SemanticFusionStrategy.values[raw as int];
+  }
+
+  @protected
   SemanticGroupingMode dco_decode_semantic_grouping_mode(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SemanticGroupingMode.values[raw as int];
@@ -7986,6 +8062,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticLexicalMode dco_decode_semantic_lexical_mode(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SemanticLexicalMode.values[raw as int];
+  }
+
+  @protected
+  SemanticQueryTypeAlphas dco_decode_semantic_query_type_alphas(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return SemanticQueryTypeAlphas(
+      quotedPhrase: dco_decode_f_64(arr[0]),
+      exactReference: dco_decode_f_64(arr[1]),
+      short: dco_decode_f_64(arr[2]),
+      mixed: dco_decode_f_64(arr[3]),
+      conceptual: dco_decode_f_64(arr[4]),
+      unknown: dco_decode_f_64(arr[5]),
+    );
+  }
+
+  @protected
+  SemanticRankingOptions dco_decode_semantic_ranking_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    return SemanticRankingOptions(
+      fusionStrategy: dco_decode_semantic_fusion_strategy(arr[0]),
+      rrfK: dco_decode_u_32(arr[1]),
+      alphaOverride: dco_decode_opt_box_autoadd_f_64(arr[2]),
+      alphaByQueryType: dco_decode_semantic_query_type_alphas(arr[3]),
+      bm25SaturationK: dco_decode_f_64(arr[4]),
+      semanticThreshold: dco_decode_f_64(arr[5]),
+      agreementBonus: dco_decode_f_64(arr[6]),
+      phraseMatchBonus: dco_decode_f_64(arr[7]),
+      rareTermBonus: dco_decode_f_64(arr[8]),
+      sectionCoverageBonus: dco_decode_f_64(arr[9]),
+      duplicatePenalty: dco_decode_f_64(arr[10]),
+      metadataRankingEnabled: dco_decode_bool(arr[11]),
+      candidateWindowMultiplier: dco_decode_f_64(arr[12]),
+    );
   }
 
   @protected
@@ -8480,6 +8595,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  double sse_decode_box_autoadd_f_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_f_64(deserializer));
+  }
+
+  @protected
   HighlightConfig sse_decode_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   ) {
@@ -8541,6 +8662,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_semantic_grouping_mode(deserializer));
+  }
+
+  @protected
+  SemanticRankingOptions sse_decode_box_autoadd_semantic_ranking_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_semantic_ranking_options(deserializer));
   }
 
   @protected
@@ -9116,6 +9245,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_f_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   HighlightConfig? sse_decode_opt_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   ) {
@@ -9188,6 +9328,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_semantic_grouping_mode(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  SemanticRankingOptions? sse_decode_opt_box_autoadd_semantic_ranking_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_semantic_ranking_options(deserializer));
     } else {
       return null;
     }
@@ -9525,6 +9678,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticFusionStrategy sse_decode_semantic_fusion_strategy(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SemanticFusionStrategy.values[inner];
+  }
+
+  @protected
   SemanticGroupingMode sse_decode_semantic_grouping_mode(
     SseDeserializer deserializer,
   ) {
@@ -9584,6 +9746,64 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return SemanticLexicalMode.values[inner];
+  }
+
+  @protected
+  SemanticQueryTypeAlphas sse_decode_semantic_query_type_alphas(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_quotedPhrase = sse_decode_f_64(deserializer);
+    var var_exactReference = sse_decode_f_64(deserializer);
+    var var_short = sse_decode_f_64(deserializer);
+    var var_mixed = sse_decode_f_64(deserializer);
+    var var_conceptual = sse_decode_f_64(deserializer);
+    var var_unknown = sse_decode_f_64(deserializer);
+    return SemanticQueryTypeAlphas(
+      quotedPhrase: var_quotedPhrase,
+      exactReference: var_exactReference,
+      short: var_short,
+      mixed: var_mixed,
+      conceptual: var_conceptual,
+      unknown: var_unknown,
+    );
+  }
+
+  @protected
+  SemanticRankingOptions sse_decode_semantic_ranking_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fusionStrategy = sse_decode_semantic_fusion_strategy(deserializer);
+    var var_rrfK = sse_decode_u_32(deserializer);
+    var var_alphaOverride = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_alphaByQueryType = sse_decode_semantic_query_type_alphas(
+      deserializer,
+    );
+    var var_bm25SaturationK = sse_decode_f_64(deserializer);
+    var var_semanticThreshold = sse_decode_f_64(deserializer);
+    var var_agreementBonus = sse_decode_f_64(deserializer);
+    var var_phraseMatchBonus = sse_decode_f_64(deserializer);
+    var var_rareTermBonus = sse_decode_f_64(deserializer);
+    var var_sectionCoverageBonus = sse_decode_f_64(deserializer);
+    var var_duplicatePenalty = sse_decode_f_64(deserializer);
+    var var_metadataRankingEnabled = sse_decode_bool(deserializer);
+    var var_candidateWindowMultiplier = sse_decode_f_64(deserializer);
+    return SemanticRankingOptions(
+      fusionStrategy: var_fusionStrategy,
+      rrfK: var_rrfK,
+      alphaOverride: var_alphaOverride,
+      alphaByQueryType: var_alphaByQueryType,
+      bm25SaturationK: var_bm25SaturationK,
+      semanticThreshold: var_semanticThreshold,
+      agreementBonus: var_agreementBonus,
+      phraseMatchBonus: var_phraseMatchBonus,
+      rareTermBonus: var_rareTermBonus,
+      sectionCoverageBonus: var_sectionCoverageBonus,
+      duplicatePenalty: var_duplicatePenalty,
+      metadataRankingEnabled: var_metadataRankingEnabled,
+      candidateWindowMultiplier: var_candidateWindowMultiplier,
+    );
   }
 
   @protected
@@ -10168,6 +10388,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_f_64(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_highlight_config(
     HighlightConfig self,
     SseSerializer serializer,
@@ -10237,6 +10463,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_semantic_grouping_mode(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_semantic_ranking_options(
+    SemanticRankingOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_ranking_options(self, serializer);
   }
 
   @protected
@@ -10738,6 +10973,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_f_64(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_highlight_config(
     HighlightConfig? self,
     SseSerializer serializer,
@@ -10812,6 +11057,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_semantic_grouping_mode(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_ranking_options(
+    SemanticRankingOptions? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_semantic_ranking_options(self, serializer);
     }
   }
 
@@ -11093,6 +11351,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_semantic_fusion_strategy(
+    SemanticFusionStrategy self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_semantic_grouping_mode(
     SemanticGroupingMode self,
     SseSerializer serializer,
@@ -11137,6 +11404,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_query_type_alphas(
+    SemanticQueryTypeAlphas self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_f_64(self.quotedPhrase, serializer);
+    sse_encode_f_64(self.exactReference, serializer);
+    sse_encode_f_64(self.short, serializer);
+    sse_encode_f_64(self.mixed, serializer);
+    sse_encode_f_64(self.conceptual, serializer);
+    sse_encode_f_64(self.unknown, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_ranking_options(
+    SemanticRankingOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_fusion_strategy(self.fusionStrategy, serializer);
+    sse_encode_u_32(self.rrfK, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.alphaOverride, serializer);
+    sse_encode_semantic_query_type_alphas(self.alphaByQueryType, serializer);
+    sse_encode_f_64(self.bm25SaturationK, serializer);
+    sse_encode_f_64(self.semanticThreshold, serializer);
+    sse_encode_f_64(self.agreementBonus, serializer);
+    sse_encode_f_64(self.phraseMatchBonus, serializer);
+    sse_encode_f_64(self.rareTermBonus, serializer);
+    sse_encode_f_64(self.sectionCoverageBonus, serializer);
+    sse_encode_f_64(self.duplicatePenalty, serializer);
+    sse_encode_bool(self.metadataRankingEnabled, serializer);
+    sse_encode_f_64(self.candidateWindowMultiplier, serializer);
   }
 
   @protected
@@ -12911,6 +13213,13 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// to branch on, `fallback_kind`. What fails the call is the lexical half
   /// failing, which is an `Internal` [`SemanticError`].
   ///
+  /// `ranking` replaces, for this search, every parameter hybrid ranking runs on (see
+  /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by the preset
+  /// every search has used, exactly as before, and so does
+  /// [`SemanticRankingOptions::defaults`]. An option outside its range is refused before the
+  /// search runs, as `InvalidInput` naming it, whether or not a session is open to rank by
+  /// it: a build without semantic support ignores the options.
+  ///
   /// `cancellation` abandons the search: once it is cancelled, the next look at it
   /// ends the search with a `Cancelled` [`SemanticError`], never with lexical results
   /// in its place. The search looks before its lexical phase, hands the token to the
@@ -12931,6 +13240,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     SemanticGroupingMode? grouping,
     required bool matchNikud,
     required bool matchTaamim,
+    SemanticRankingOptions? ranking,
     required SemanticCancellationToken cancellation,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchSemantic(
     that: this,
@@ -12944,6 +13254,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     grouping: grouping,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    ranking: ranking,
     cancellation: cancellation,
   );
 

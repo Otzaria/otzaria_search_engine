@@ -46,6 +46,10 @@ use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 #[cfg(feature = "semantic-integration")]
 use crate::semantic_errors::{self, SidecarCall};
 #[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::config::profiles::{
+    FusionStrategy, QueryTypeAlphas, RankingProfile, SearchProfile,
+};
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::embedding::EmbeddingDeployment;
@@ -542,7 +546,7 @@ pub struct SemanticArtifactInput {
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
 /// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters | `search_semantic` |
-/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SemanticErrorKind {
@@ -608,7 +612,7 @@ pub enum SemanticErrorKind {
 /// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
 /// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
-/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path` |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
 #[frb(dart_code = r#"
@@ -904,6 +908,169 @@ impl Default for SemanticCancellationToken {
     }
 }
 
+/// How [`SemanticRankingOptions::fusion_strategy`] combines the two sides' scores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticFusionStrategy {
+    /// By weight: `alpha` of the normalized BM25 score and `1 - alpha` of the semantic one,
+    /// with the agreement bonus and the other bonuses on top.
+    Weighted,
+    /// Reciprocal rank fusion, `1 / (rrf_k + rank)` from each side. It needs no calibration of
+    /// either side's scores; the semantic threshold only decides which semantic candidates
+    /// take part, and no bonus or penalty applies.
+    Rrf,
+    /// By weight, with BM25 min-max normalized when its scores run high.
+    Adaptive,
+}
+
+/// The lexical weight `alpha` for each kind of query the sidecar tells apart, by the words
+/// in it; `1 - alpha` goes to the semantic side. Each a number from 0 to 1. The defaults are
+/// the weights the ranking has always used, and are unmeasured (see
+/// [`SemanticRankingOptions`]).
+// `non_opaque` binds it as every struct of plain values is bound already. It is there
+// because an `#[frb]` on the struct is what takes the `#[frb(default)]`s off its fields,
+// where rustc would refuse them, and leaves them to the Dart constructor.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticQueryTypeAlphas {
+    /// A query with a quoted phrase: a verbatim lookup, where the lexical engine is
+    /// authoritative. At 1 a hybrid search does not ask the semantic path at all.
+    #[frb(default = 1.0)]
+    pub quoted_phrase: f64,
+    /// One or two words, one of them with a digit: a reference, such as a page or a verse.
+    #[frb(default = 0.85)]
+    pub exact_reference: f64,
+    /// One or two words without a digit.
+    #[frb(default = 0.7)]
+    pub short: f64,
+    /// Three or four words.
+    #[frb(default = 0.5)]
+    pub mixed: f64,
+    /// Five words or more: a question or a description more than a lookup.
+    #[frb(default = 0.3)]
+    pub conceptual: f64,
+    /// No words at all. Nothing can be embedded, so a hybrid search serves its lexical
+    /// results whatever this is; at 1 the semantic path is not even tried.
+    #[frb(default = 0.5)]
+    pub unknown: f64,
+}
+
+/// Every parameter a hybrid search ranks by, passed with one [`SearchEngine::search_semantic`]
+/// in place of the ranking the engine uses when it is passed none. What lets the application
+/// calibrate and tune the ranking without a release of the engine.
+///
+/// **The defaults are unmeasured placeholders.** They are the ranking the engine has always
+/// produced, the sidecar's `Balanced` preset value for value, and none has been checked
+/// against what a reader of this library finds relevant: each was reasoned from a scale (BM25's
+/// typical range, a cosine of about 0.1 meaning unrelated) or carried over from the
+/// literature, as RRF's `k` of 60 is. Calibrating them needs a labelled relevance set, Hebrew
+/// queries of every type each with the lines judged relevant to it; a metric over the page a
+/// user sees, nDCG@10 or recall at the page size; and runs over that set that vary one family
+/// of parameters at a time, the fusion strategy and RRF's `k` first, since RRF needs no score
+/// calibration, then alpha per query type, BM25's `k`, the semantic threshold and the bonuses.
+///
+/// The Dart constructor's defaults are these values, so a caller names only the options it
+/// changes; [`Self::defaults`] reads them from the engine. Passed as they are, they rank
+/// exactly as passing no options does.
+///
+/// | option | default | allowed |
+/// | --- | --- | --- |
+/// | `fusion_strategy` | `Weighted` | |
+/// | `rrf_k` | 60 | at least 1, when `fusion_strategy` is `Rrf`; read by nothing else |
+/// | `alpha_override` | none | 0 to 1 |
+/// | `alpha_by_query_type` | 1, 0.85, 0.7, 0.5, 0.3, 0.5 | each 0 to 1 |
+/// | `bm25_saturation_k` | 10 | above 0 |
+/// | `semantic_threshold` | 0 | 0 to 1 |
+/// | `agreement_bonus` | 0.1 | 0 to 1 |
+/// | `phrase_match_bonus`, `rare_term_bonus`, `section_coverage_bonus` | 0 | 0 to 1 |
+/// | `duplicate_penalty` | 0 | 0 to 1 |
+/// | `metadata_ranking_enabled` | false | |
+/// | `candidate_window_multiplier` | 2 | 1 to 10 |
+///
+/// A value outside its range, or one that is not a number, is refused before the search runs,
+/// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
+/// (`alpha_by_query_type.short`, `rrf_k`), rather than clamped into a value nobody chose: a
+/// calibration run is exactly where a substituted value would go unnoticed. The rules are the
+/// sidecar's own (`RankingProfile::validate`), applied to each value at the 32-bit precision the
+/// ranking computes in. A build without semantic support has no ranking to apply, and ignores
+/// the options as it ignores every semantic input.
+// `non_opaque` for the reason given on `SemanticQueryTypeAlphas`.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticRankingOptions {
+    /// How the two sides' scores are combined.
+    #[frb(default = "SemanticFusionStrategy.weighted")]
+    pub fusion_strategy: SemanticFusionStrategy,
+    /// RRF's `k`, for [`SemanticFusionStrategy::Rrf`]: the larger it is, the less the first
+    /// ranks of either side count over the ones after them.
+    #[frb(default = 60)]
+    pub rrf_k: u32,
+    /// One alpha for every query, in place of [`Self::alpha_by_query_type`].
+    pub alpha_override: Option<f64>,
+    /// The lexical weight for each kind of query, when [`Self::alpha_override`] is `None`.
+    #[frb(default = "const SemanticQueryTypeAlphas()")]
+    pub alpha_by_query_type: SemanticQueryTypeAlphas,
+    /// `k` in BM25's normalization `score / (k + score)`: where the curve bends, so that a
+    /// score well above it is hardly told apart from the scores above it.
+    #[frb(default = 10.0)]
+    pub bm25_saturation_k: f64,
+    /// Below this normalized similarity a semantic candidate contributes nothing. A cosine is
+    /// mapped to `(cosine + 1) / 2`, so an unrelated line, cosine 0, is 0.5.
+    #[frb(default = 0.0)]
+    pub semantic_threshold: f64,
+    /// Added to a line both sides found, in a hybrid search fused by weight.
+    #[frb(default = 0.1)]
+    pub agreement_bonus: f64,
+    /// Scaled by the share of the query's quoted phrases a line contains, and added.
+    #[frb(default = 0.0)]
+    pub phrase_match_bonus: f64,
+    /// Scaled by the share of the query's rare words a line contains, and added.
+    #[frb(default = 0.0)]
+    pub rare_term_bonus: f64,
+    /// Added to a line whose section holds another result.
+    #[frb(default = 0.0)]
+    pub section_coverage_bonus: f64,
+    /// Taken from every line after the first with the same text.
+    #[frb(default = 0.0)]
+    pub duplicate_penalty: f64,
+    /// Whether a semantic candidate gains a signal from its metadata, when fused by weight:
+    /// a primary source, by its book, and an era or a category the search's facets match.
+    #[frb(default = false)]
+    pub metadata_ranking_enabled: bool,
+    /// How many semantic candidates are fetched for each place in the candidate window.
+    #[frb(default = 2.0)]
+    pub candidate_window_multiplier: f64,
+}
+
+impl SemanticRankingOptions {
+    /// The ranking a search runs on when it is passed none, read from the engine: the defaults
+    /// of the Dart constructor, and unmeasured.
+    #[frb(sync)]
+    pub fn defaults() -> Self {
+        Self {
+            fusion_strategy: SemanticFusionStrategy::Weighted,
+            rrf_k: 60,
+            alpha_override: None,
+            alpha_by_query_type: SemanticQueryTypeAlphas {
+                quoted_phrase: 1.0,
+                exact_reference: 0.85,
+                short: 0.7,
+                mixed: 0.5,
+                conceptual: 0.3,
+                unknown: 0.5,
+            },
+            bm25_saturation_k: 10.0,
+            semantic_threshold: 0.0,
+            agreement_bonus: 0.1,
+            phrase_match_bonus: 0.0,
+            rare_term_bonus: 0.0,
+            section_coverage_bonus: 0.0,
+            duplicate_penalty: 0.0,
+            metadata_ranking_enabled: false,
+            candidate_window_multiplier: 2.0,
+        }
+    }
+}
+
 /// Every input that decides which vectors a sidecar session holds: the whole
 /// of [`SemanticConfigInput`]. Kept beside the open engine so
 /// [`SearchEngine::configure_semantic`] can tell a harmless repeat call from a
@@ -1038,6 +1205,53 @@ fn check_onnx_runtime_path(path: Option<&str>) -> Result<(), SemanticError> {
         .with_field("onnx_runtime_path"));
     }
     Ok(())
+}
+
+/// `options` as the sidecar's `RankingProfile`, refused by the sidecar's own
+/// `RankingProfile::validate` when a value is outside its range.
+///
+/// Every field is named, with no `..` from a preset, so that a repin that gives the profile
+/// another parameter fails to compile here until someone decides what the application passes
+/// for it. What is not a ranking parameter is the `Balanced` preset's, the one a search with no
+/// options ranks by: the label, which only telemetry reads, and the caches and telemetry, which
+/// change no ranking. The values are narrowed to the 32 bits the ranking computes in.
+#[cfg(feature = "semantic-integration")]
+fn ranking_profile(options: &SemanticRankingOptions) -> Result<RankingProfile, SemanticError> {
+    let preset = RankingProfile::from_profile(SearchProfile::Balanced);
+    let alphas = &options.alpha_by_query_type;
+    let profile = RankingProfile {
+        profile: preset.profile,
+        fusion_strategy: match options.fusion_strategy {
+            SemanticFusionStrategy::Weighted => FusionStrategy::Weighted,
+            SemanticFusionStrategy::Rrf => FusionStrategy::RRF { k: options.rrf_k },
+            SemanticFusionStrategy::Adaptive => FusionStrategy::Adaptive,
+        },
+        alpha_override: options.alpha_override.map(|alpha| alpha as f32),
+        alpha_by_query_type: QueryTypeAlphas {
+            quoted_phrase: alphas.quoted_phrase as f32,
+            exact_reference: alphas.exact_reference as f32,
+            short: alphas.short as f32,
+            mixed: alphas.mixed as f32,
+            conceptual: alphas.conceptual as f32,
+            unknown: alphas.unknown as f32,
+        },
+        bm25_saturation_k: options.bm25_saturation_k as f32,
+        semantic_threshold: options.semantic_threshold as f32,
+        agreement_bonus: options.agreement_bonus as f32,
+        phrase_match_bonus: options.phrase_match_bonus as f32,
+        rare_term_bonus: options.rare_term_bonus as f32,
+        section_coverage_bonus: options.section_coverage_bonus as f32,
+        duplicate_penalty: options.duplicate_penalty as f32,
+        metadata_ranking_enabled: options.metadata_ranking_enabled,
+        candidate_window_multiplier: options.candidate_window_multiplier as f32,
+        query_cache_enabled: preset.query_cache_enabled,
+        embedding_cache_enabled: preset.embedding_cache_enabled,
+        telemetry_enabled: preset.telemetry_enabled,
+    };
+    profile
+        .validate()
+        .map_err(|err| semantic_errors::ranking_error(&err))?;
+    Ok(profile)
 }
 
 /// A prebuilt artifact as it was opened: its key, and the segment set the index's corpus
@@ -3529,6 +3743,13 @@ impl SearchEngine {
     /// to branch on, `fallback_kind`. What fails the call is the lexical half
     /// failing, which is an `Internal` [`SemanticError`].
     ///
+    /// `ranking` replaces, for this search, every parameter hybrid ranking runs on (see
+    /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by the preset
+    /// every search has used, exactly as before, and so does
+    /// [`SemanticRankingOptions::defaults`]. An option outside its range is refused before the
+    /// search runs, as `InvalidInput` naming it, whether or not a session is open to rank by
+    /// it: a build without semantic support ignores the options.
+    ///
     /// `cancellation` abandons the search: once it is cancelled, the next look at it
     /// ends the search with a `Cancelled` [`SemanticError`], never with lexical results
     /// in its place. The search looks before its lexical phase, hands the token to the
@@ -3551,6 +3772,7 @@ impl SearchEngine {
         grouping: Option<SemanticGroupingMode>,
         match_nikud: bool,
         match_taamim: bool,
+        ranking: Option<SemanticRankingOptions>,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticSearchResponse, SemanticError> {
         let started = Instant::now();
@@ -3560,6 +3782,10 @@ impl SearchEngine {
         search_cancellation::look(cancel, SearchCheckpoint::Start)?;
         #[cfg(feature = "semantic-integration")]
         {
+            // By the rules the coordinator checks it by, but before the lexical phase rather
+            // than after it, and whether or not there is a session to rank: an option out of
+            // range is a mistake in the call, and a fallback would hide it.
+            let ranking = ranking.as_ref().map(ranking_profile).transpose()?;
             let Some(session) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
@@ -3682,14 +3908,13 @@ impl SearchEngine {
                             SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
                             SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
                         }),
-                        // All three are per-request overrides the sidecar added; `None`
-                        // keeps its configured profile and flags, which is what this call
-                        // has always used, and `ranking: None` ranks by that preset exactly
-                        // as before. Choosing any of them from here is S5's decision, not a
-                        // repin's.
+                        // `ranking` is the caller's, and replaces the preset `profile` names
+                        // when it is passed; `None` ranks by that preset exactly as before.
+                        // The preset and the feature flags, which clamp where `ranking` is
+                        // refused, stay the sidecar's defaults.
                         profile: None,
                         feature_flags: None,
-                        ranking: None,
+                        ranking,
                     },
                     cancel,
                 )
@@ -3895,6 +4120,8 @@ impl SearchEngine {
 
         #[cfg(not(feature = "semantic-integration"))]
         {
+            // No sidecar, so nothing to rank by them, and no rules to check them by.
+            let _ = ranking;
             self.semantic_lexical_fallback_response(
                 &query,
                 &facets,
@@ -11500,6 +11727,7 @@ mod tests {
                     None,
                     false,
                     false,
+                    None,
                     &SemanticCancellationToken::new(),
                 )
                 .unwrap();
@@ -11547,6 +11775,7 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
                 token,
             )
         };
@@ -11610,6 +11839,7 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
                 &SemanticCancellationToken::new(),
             )
             .unwrap();
@@ -18897,6 +19127,192 @@ mod tests {
         }
     }
 
+    /// [`SemanticRankingOptions`] as the sidecar's `RankingProfile`, and what the sidecar's rules
+    /// refuse of it. Nothing here searches, so every build with the integration runs it.
+    #[cfg(feature = "semantic-integration")]
+    mod semantic_ranking {
+        use super::*;
+
+        /// The options a test changes one field of.
+        fn defaults() -> SemanticRankingOptions {
+            SemanticRankingOptions::defaults()
+        }
+
+        /// The defaults are the preset a search passed no options ranks by, value for value:
+        /// what keeps passing them from moving a single score.
+        #[test]
+        fn the_defaults_are_the_preset_a_search_without_options_ranks_by() {
+            assert_eq!(
+                ranking_profile(&defaults()).unwrap(),
+                RankingProfile::from_profile(SearchProfile::Balanced)
+            );
+        }
+
+        /// Each option lands on the profile field of its name, narrowed to 32 bits: values
+        /// that differ from one another and from the defaults, so a swap or a dropped field
+        /// shows.
+        #[test]
+        fn each_option_reaches_the_profile_field_it_names() {
+            let options = SemanticRankingOptions {
+                fusion_strategy: SemanticFusionStrategy::Rrf,
+                rrf_k: 30,
+                alpha_override: Some(0.25),
+                alpha_by_query_type: SemanticQueryTypeAlphas {
+                    quoted_phrase: 0.9,
+                    exact_reference: 0.8,
+                    short: 0.6,
+                    mixed: 0.4,
+                    conceptual: 0.2,
+                    unknown: 0.1,
+                },
+                bm25_saturation_k: 5.0,
+                semantic_threshold: 0.55,
+                agreement_bonus: 0.2,
+                phrase_match_bonus: 0.15,
+                rare_term_bonus: 0.05,
+                section_coverage_bonus: 0.03,
+                duplicate_penalty: 0.08,
+                metadata_ranking_enabled: true,
+                candidate_window_multiplier: 3.0,
+            };
+            let preset = RankingProfile::from_profile(SearchProfile::Balanced);
+            assert_eq!(
+                ranking_profile(&options).unwrap(),
+                RankingProfile {
+                    profile: preset.profile,
+                    fusion_strategy: FusionStrategy::RRF { k: 30 },
+                    alpha_override: Some(0.25),
+                    alpha_by_query_type: QueryTypeAlphas {
+                        quoted_phrase: 0.9,
+                        exact_reference: 0.8,
+                        short: 0.6,
+                        mixed: 0.4,
+                        conceptual: 0.2,
+                        unknown: 0.1,
+                    },
+                    bm25_saturation_k: 5.0,
+                    semantic_threshold: 0.55,
+                    agreement_bonus: 0.2,
+                    phrase_match_bonus: 0.15,
+                    rare_term_bonus: 0.05,
+                    section_coverage_bonus: 0.03,
+                    duplicate_penalty: 0.08,
+                    metadata_ranking_enabled: true,
+                    candidate_window_multiplier: 3.0,
+                    query_cache_enabled: preset.query_cache_enabled,
+                    embedding_cache_enabled: preset.embedding_cache_enabled,
+                    telemetry_enabled: preset.telemetry_enabled,
+                }
+            );
+            for (strategy, expected) in [
+                (SemanticFusionStrategy::Weighted, FusionStrategy::Weighted),
+                (SemanticFusionStrategy::Adaptive, FusionStrategy::Adaptive),
+            ] {
+                let options = SemanticRankingOptions {
+                    fusion_strategy: strategy,
+                    ..defaults()
+                };
+                assert_eq!(ranking_profile(&options).unwrap().fusion_strategy, expected);
+            }
+        }
+
+        /// Each option outside its range is refused, as `InvalidInput` naming it by its name
+        /// in the options, and never clamped; the ends of every range are accepted, and RRF's
+        /// `k` is held to its range only where RRF reads it.
+        #[test]
+        fn an_option_out_of_range_is_refused_by_its_name() {
+            type Spoil = fn(&mut SemanticRankingOptions);
+            let cases: [(&str, Spoil); 20] = [
+                ("rrf_k", |o| {
+                    o.fusion_strategy = SemanticFusionStrategy::Rrf;
+                    o.rrf_k = 0;
+                }),
+                ("alpha_override", |o| o.alpha_override = Some(1.5)),
+                ("alpha_override", |o| o.alpha_override = Some(f64::NAN)),
+                ("alpha_by_query_type.quoted_phrase", |o| {
+                    o.alpha_by_query_type.quoted_phrase = -0.1
+                }),
+                ("alpha_by_query_type.exact_reference", |o| {
+                    o.alpha_by_query_type.exact_reference = 1.01
+                }),
+                ("alpha_by_query_type.short", |o| {
+                    o.alpha_by_query_type.short = f64::INFINITY
+                }),
+                ("alpha_by_query_type.mixed", |o| {
+                    o.alpha_by_query_type.mixed = 2.0
+                }),
+                ("alpha_by_query_type.conceptual", |o| {
+                    o.alpha_by_query_type.conceptual = f64::NAN
+                }),
+                ("alpha_by_query_type.unknown", |o| {
+                    o.alpha_by_query_type.unknown = -1.0
+                }),
+                ("bm25_saturation_k", |o| o.bm25_saturation_k = 0.0),
+                // Positive as a double, and zero in the 32 bits the ranking computes in.
+                ("bm25_saturation_k", |o| o.bm25_saturation_k = 1e-60),
+                ("semantic_threshold", |o| o.semantic_threshold = 1.5),
+                ("agreement_bonus", |o| o.agreement_bonus = -0.1),
+                ("phrase_match_bonus", |o| o.phrase_match_bonus = 10.0),
+                ("rare_term_bonus", |o| o.rare_term_bonus = f64::NAN),
+                ("section_coverage_bonus", |o| o.section_coverage_bonus = 1.5),
+                ("duplicate_penalty", |o| o.duplicate_penalty = -0.5),
+                ("candidate_window_multiplier", |o| {
+                    o.candidate_window_multiplier = 0.5
+                }),
+                ("candidate_window_multiplier", |o| {
+                    o.candidate_window_multiplier = 11.0
+                }),
+                ("candidate_window_multiplier", |o| {
+                    o.candidate_window_multiplier = f64::NEG_INFINITY
+                }),
+            ];
+            for (field, spoil) in cases {
+                let mut options = defaults();
+                spoil(&mut options);
+                let error = ranking_profile(&options).expect_err(field);
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{field}");
+                assert_eq!(error.field.as_deref(), Some(field), "{}", error.message);
+                assert!(
+                    error
+                        .message
+                        .starts_with("the ranking passed with this search is refused: "),
+                    "{}",
+                    error.message
+                );
+            }
+
+            let unread = SemanticRankingOptions {
+                rrf_k: 0,
+                ..defaults()
+            };
+            assert!(ranking_profile(&unread).is_ok(), "only RRF reads its k");
+            let ends = SemanticRankingOptions {
+                fusion_strategy: SemanticFusionStrategy::Rrf,
+                rrf_k: 1,
+                alpha_override: Some(0.0),
+                alpha_by_query_type: SemanticQueryTypeAlphas {
+                    quoted_phrase: 0.0,
+                    exact_reference: 1.0,
+                    short: 0.0,
+                    mixed: 1.0,
+                    conceptual: 0.0,
+                    unknown: 1.0,
+                },
+                bm25_saturation_k: f64::from(f32::MIN_POSITIVE),
+                semantic_threshold: 1.0,
+                agreement_bonus: 0.0,
+                phrase_match_bonus: 1.0,
+                rare_term_bonus: 0.0,
+                section_coverage_bonus: 1.0,
+                duplicate_penalty: 0.0,
+                metadata_ranking_enabled: true,
+                candidate_window_multiplier: 10.0,
+            };
+            ranking_profile(&ends)
+                .expect("the ends of every range are values a calibration may land on");
+        }
+    }
+
     /// Where a search with a session stops once its token is cancelled, at each look in
     /// turn: the sidecar's own first look, which sees the token only if this crate handed it
     /// over, and this crate's before hydration and before painting. The probe cancels at the
@@ -19003,6 +19419,7 @@ mod tests {
                     None,
                     false,
                     false,
+                    None,
                     token,
                 )
             };

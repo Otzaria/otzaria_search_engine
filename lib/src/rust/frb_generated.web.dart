@@ -175,6 +175,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double dco_decode_box_autoadd_f_32(dynamic raw);
 
   @protected
+  double dco_decode_box_autoadd_f_64(dynamic raw);
+
+  @protected
   HighlightConfig dco_decode_box_autoadd_highlight_config(dynamic raw);
 
   @protected
@@ -199,6 +202,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticGroupingMode dco_decode_box_autoadd_semantic_grouping_mode(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticRankingOptions dco_decode_box_autoadd_semantic_ranking_options(
     dynamic raw,
   );
 
@@ -348,6 +356,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double? dco_decode_opt_box_autoadd_f_32(dynamic raw);
 
   @protected
+  double? dco_decode_opt_box_autoadd_f_64(dynamic raw);
+
+  @protected
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw);
 
   @protected
@@ -366,6 +377,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticGroupingMode? dco_decode_opt_box_autoadd_semantic_grouping_mode(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticRankingOptions? dco_decode_opt_box_autoadd_semantic_ranking_options(
     dynamic raw,
   );
 
@@ -450,6 +466,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticExecutedMode dco_decode_semantic_executed_mode(dynamic raw);
 
   @protected
+  SemanticFusionStrategy dco_decode_semantic_fusion_strategy(dynamic raw);
+
+  @protected
   SemanticGroupingMode dco_decode_semantic_grouping_mode(dynamic raw);
 
   @protected
@@ -460,6 +479,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticLexicalMode dco_decode_semantic_lexical_mode(dynamic raw);
+
+  @protected
+  SemanticQueryTypeAlphas dco_decode_semantic_query_type_alphas(dynamic raw);
+
+  @protected
+  SemanticRankingOptions dco_decode_semantic_ranking_options(dynamic raw);
 
   @protected
   SemanticRemoveResult dco_decode_semantic_remove_result(dynamic raw);
@@ -654,6 +679,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double sse_decode_box_autoadd_f_32(SseDeserializer deserializer);
 
   @protected
+  double sse_decode_box_autoadd_f_64(SseDeserializer deserializer);
+
+  @protected
   HighlightConfig sse_decode_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   );
@@ -690,6 +718,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticGroupingMode sse_decode_box_autoadd_semantic_grouping_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRankingOptions sse_decode_box_autoadd_semantic_ranking_options(
     SseDeserializer deserializer,
   );
 
@@ -879,6 +912,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double? sse_decode_opt_box_autoadd_f_32(SseDeserializer deserializer);
 
   @protected
+  double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer);
+
+  @protected
   HighlightConfig? sse_decode_opt_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   );
@@ -905,6 +941,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticGroupingMode? sse_decode_opt_box_autoadd_semantic_grouping_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRankingOptions? sse_decode_opt_box_autoadd_semantic_ranking_options(
     SseDeserializer deserializer,
   );
 
@@ -1009,6 +1050,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticFusionStrategy sse_decode_semantic_fusion_strategy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticGroupingMode sse_decode_semantic_grouping_mode(
     SseDeserializer deserializer,
   );
@@ -1025,6 +1071,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticLexicalMode sse_decode_semantic_lexical_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticQueryTypeAlphas sse_decode_semantic_query_type_alphas(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRankingOptions sse_decode_semantic_ranking_options(
     SseDeserializer deserializer,
   );
 
@@ -1271,6 +1327,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_f_32(double self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_highlight_config(
     HighlightConfig self,
     SseSerializer serializer,
@@ -1315,6 +1374,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_semantic_grouping_mode(
     SemanticGroupingMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_ranking_options(
+    SemanticRankingOptions self,
     SseSerializer serializer,
   );
 
@@ -1545,6 +1610,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_f_32(double? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_highlight_config(
     HighlightConfig? self,
     SseSerializer serializer,
@@ -1577,6 +1645,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_semantic_grouping_mode(
     SemanticGroupingMode? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_ranking_options(
+    SemanticRankingOptions? self,
     SseSerializer serializer,
   );
 
@@ -1707,6 +1781,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_fusion_strategy(
+    SemanticFusionStrategy self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_grouping_mode(
     SemanticGroupingMode self,
     SseSerializer serializer,
@@ -1727,6 +1807,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_lexical_mode(
     SemanticLexicalMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_query_type_alphas(
+    SemanticQueryTypeAlphas self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_ranking_options(
+    SemanticRankingOptions self,
     SseSerializer serializer,
   );
 

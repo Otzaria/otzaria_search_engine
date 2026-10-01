@@ -163,6 +163,31 @@ are now documented as development and testing scaffolding, not for the library.
   build; through the public API and across the bridge, a cancelled search throws
   `cancelled` in every mode, the token outlives the search that borrowed it, and
   `cancel()` returns while a search holds it.
+- **Every ranking parameter can be passed with a search.** `searchSemantic`
+  takes an optional `ranking`, a `SemanticRankingOptions`: the fusion strategy
+  (`SemanticFusionStrategy`: weighted, RRF with its `rrfK`, adaptive), one
+  `alphaOverride` or an alpha per kind of query (`SemanticQueryTypeAlphas`),
+  BM25's saturation `k`, the semantic threshold, the agreement, phrase,
+  rare-word and section bonuses and the duplicate penalty, metadata ranking and
+  the semantic candidate window's multiplier, mirroring the sidecar's
+  `RankingProfile` field for field and handed to it as `HybridSearchParams::ranking`
+  (pinned 62f0c44). Without it, or with the defaults, which the Dart constructor
+  carries and `SemanticRankingOptions.defaults()` reads from the engine, a
+  search ranks exactly as before: the defaults are the sidecar's `Balanced`
+  preset, value for value. **They are unmeasured placeholders**; calibrating
+  them needs a labelled relevance set, and this lets that happen from the
+  application without a release of the engine. An option out of its range, or
+  not a number, is refused before the search runs, with or without a session,
+  by the sidecar's own `RankingProfile::validate`: `invalidInput`, whose
+  `field` names the option (`alpha_by_query_type.short`, `rrf_k`), never a
+  clamped value. Values are passed as doubles and ranked at 32 bits. A build
+  without semantic support ignores them. Tested: the defaults map to the
+  preset exactly, every option to its own field, and every out-of-range value
+  is refused by name, in the unit tests; `None` and the defaults rank every
+  page alike to the bit, an RRF ranking scores the line both sides rank first
+  `1 / 31` from each, and a bad option is refused with no session open, in the
+  mock suite; and the same across the bridge, where the Dart defaults equal the
+  engine's.
 - **`openSemanticArtifact`: the application's semantic path.** It opens a
   prebuilt artifact read-only, verifies every field of its identity against
   this installation, and serves `searchSemantic` from it with each result

@@ -191,6 +191,16 @@ Future<void> main() async {
       },
     );
 
+    test('the ranking options default to the ranking of a search without', () {
+      // The constructor's defaults are written in Dart, `defaults()` is read from
+      // the engine: one value apart and they would rank differently.
+      expect(const SemanticRankingOptions(), SemanticRankingOptions.defaults());
+      expect(
+        SemanticRankingOptions.defaults().fusionStrategy,
+        SemanticFusionStrategy.weighted,
+      );
+    });
+
     test('grouping and fuzzy options survive the round trip', () async {
       final response = await engine.searchSemantic(
         query: 'בראשי',
@@ -412,6 +422,65 @@ Future<void> main() async {
       matchTaamim: false,
       cancellation: token,
     );
+
+    test('ranking options cross into the ranking, and are checked', () async {
+      Future<SemanticSearchResponse> ranked(SemanticRankingOptions? ranking) =>
+          engine.searchSemantic(
+            query: 'בראשית ברא',
+            facets: const [],
+            limit: 10,
+            offset: 0,
+            lexicalMode: SemanticLexicalMode.exact,
+            fuzzyMaxDistance: 0,
+            retrievalMode: SemanticRetrievalMode.hybrid,
+            matchNikud: false,
+            matchTaamim: false,
+            ranking: ranking,
+            cancellation: SemanticCancellationToken(),
+          );
+
+      final none = (await ranked(null)).results.single;
+      final defaults = (await ranked(
+        const SemanticRankingOptions(),
+      )).results.single;
+      expect(defaults.fusedScore, none.fusedScore);
+
+      // Reciprocal rank fusion at k = 30: the one line, first on both sides,
+      // scores 1 / 31 from each.
+      final rrf = (await ranked(
+        const SemanticRankingOptions(
+          fusionStrategy: SemanticFusionStrategy.rrf,
+          rrfK: 30,
+        ),
+      )).results.single;
+      expect(rrf.source, SemanticResultSource.both);
+      expect(rrf.fusedScore, closeTo(2 / 31, 1e-6));
+
+      await expectLater(
+        ranked(
+          const SemanticRankingOptions(
+            alphaByQueryType: SemanticQueryTypeAlphas(short: -0.2),
+          ),
+        ),
+        throwsA(
+          isSemanticError(
+            SemanticErrorKind.invalidInput,
+            field: 'alpha_by_query_type.short',
+          ),
+        ),
+      );
+      await expectLater(
+        ranked(
+          const SemanticRankingOptions(
+            fusionStrategy: SemanticFusionStrategy.rrf,
+            rrfK: 0,
+          ),
+        ),
+        throwsA(
+          isSemanticError(SemanticErrorKind.invalidInput, field: 'rrf_k'),
+        ),
+      );
+    });
 
     test('a cancelled search throws cancelled in every mode', () async {
       final token = SemanticCancellationToken()..cancel();

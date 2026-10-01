@@ -168,7 +168,7 @@ On the application's path:
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
 | `cancelled` | `searchSemantic` | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, drop it |
-| `invalidInput` | `openSemanticArtifact`, `configureSemantic` | a value the call cannot take: fix the call |
+| `invalidInput` | `openSemanticArtifact`, `configureSemantic`, `searchSemantic` | a value the call cannot take, a ranking option out of its range among them: fix the call |
 | `internal` | any call | a fault, including the lexical index failing under `searchSemantic`: report `message` |
 
 The development path adds `reindexRequired`, and the states `empty` (nothing
@@ -246,6 +246,50 @@ page answers. A token cannot be reset: a new search takes a new one. The token
 is required, because flutter_rust_bridge 2.13 cannot pass an optional borrowed
 object; a search with nothing to cancel passes a fresh one, which changes
 nothing.
+
+### Tuning the ranking
+
+`searchSemantic` takes an optional `ranking`, a `SemanticRankingOptions` with
+every parameter hybrid ranking runs on: the fusion strategy (`weighted`,
+`rrf` with its `rrfK`, or `adaptive`); one `alphaOverride`, or the lexical
+weight for each kind of query in `alphaByQueryType` (a quoted phrase, a
+reference, one or two words, three or four, five or more, none); BM25's
+`bm25SaturationK`; the `semanticThreshold`; the agreement, phrase, rare-word
+and section bonuses and the duplicate penalty; metadata ranking; and how many
+semantic candidates are fetched for each place in the window. Without it a
+search ranks exactly as it always has, and so it does with
+`const SemanticRankingOptions()`, whose defaults are the same values;
+`SemanticRankingOptions.defaults()` reads them from the engine. A caller names
+only the options it changes:
+
+```dart
+final response = await engine.searchSemantic(
+  query: query,
+  // ... the other parameters ...
+  ranking: const SemanticRankingOptions(
+    fusionStrategy: SemanticFusionStrategy.rrf,
+    rrfK: 30,
+  ),
+  cancellation: token,
+);
+```
+
+An option outside its range, or not a number, is refused before the search
+runs, whether or not a session is open: a `SemanticError` of kind
+`invalidInput` whose `field` names the option (`alpha_by_query_type.short`,
+`rrf_k`), rather than a value clamped into one nobody chose. The ranges are the
+sidecar's own; a value is used at the 32-bit precision the ranking computes in.
+
+**The defaults are unmeasured placeholders.** Each was reasoned from a scale or
+carried over from the literature, as RRF's `k` of 60 is, and none has been
+checked against what a reader of this library finds relevant. Calibrating them
+needs a labelled relevance set (Hebrew queries of every type, each with the
+lines judged relevant to it), a metric over the page a user sees, such as
+nDCG@10 or recall at the page size, and runs that vary one family of options at
+a time: the strategy and RRF's `k` first, since RRF needs no calibration of
+either side's scores, then the alphas, BM25's `k`, the threshold and the
+bonuses. That is what this option is for: the runs, and the tuning after them,
+happen from the application, without a release of the engine.
 
 ### The model
 
