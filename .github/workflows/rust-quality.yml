@@ -57,8 +57,8 @@ jobs:
 
       # The ONNX backend alone, without llama.cpp and without the stand-in. It
       # loads ONNX Runtime when a model loads rather than linking it, so the
-      # build downloads nothing; running a model needs that runtime, and belongs
-      # in a model-gated job.
+      # build downloads nothing; running a model needs that runtime, and is the
+      # real-model job's.
       - name: Check semantic ONNX integration
         if: matrix.features == 'semantic-onnx'
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
@@ -86,7 +86,7 @@ jobs:
       # stand-in nor llama.cpp. The mock job runs them with the stand-in compiled
       # in, and no other job runs them without it. Nothing in the suite loads a
       # model, so it needs no ONNX Runtime; the tests that run the real model are
-      # `#[ignore]`d.
+      # `#[ignore]`d, and the real-model job runs them.
       - name: Test semantic ONNX integration
         if: matrix.features == 'semantic-onnx'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
@@ -134,6 +134,207 @@ jobs:
       - name: Test normal writer merge policy on Windows
         if: matrix.os == 'windows-2022'
         run: cargo test --manifest-path rust/Cargo.toml --locked --lib normal_writer_ -- --test-threads=1
+
+  # rust/tests/semantic_onnx_model.rs on the Meivin INT8 graph, the model the
+  # application uses: lines indexed and queried through the public API, text
+  # recipe 2 checked against its definition, and an artifact built by the build
+  # binary and opened the way the application opens one. Every other job runs
+  # the sidecar on its stand-in or on no model at all, so this is the only one
+  # in which real vectors cross this crate. On all three desktop platforms,
+  # since each loads its own build of ONNX Runtime and its own INT8 kernels.
+  #
+  # The model is gated, so the job runs off the OTZARIA_HF_TOKEN secret on every
+  # push and same-repo pull request, and fails rather than skips when the secret
+  # is unset: a green tick here must never mean "the model was not run".
+  # OTZARIA_REQUIRE_ONNX_MODEL holds the tests to the same rule, since on their
+  # own they skip, and pass, when a file they need is missing. Skipped only for
+  # pull requests from forks, which GitHub deliberately denies secrets; those
+  # need a maintainer `workflow_dispatch` on the branch before merge.
+  #
+  # The files come from the project's private mirror,
+  # `otzaria/judaic-semantic-round2-onnx-zayit`, never from the gated original
+  # (`ArieLLL123/judaic-semantic-round2-onnx-zayit`), whose access is one
+  # person's manual approval. The Hugging Face account behind OTZARIA_HF_TOKEN
+  # needs read access to the mirror, or every download answers 401 and the job
+  # fails. The SHA-256 digests are the ones the sidecar's INT8 goldens record
+  # for the graph and tokenizer.json (tests/data/onnx_golden_vectors_int8.json);
+  # a sidecar pin that changes the package changes them too.
+  #
+  # ONNX Runtime is Microsoft's 1.28.0 release, the reference runtime, fetched
+  # exactly as the sidecar's `onnx-backend` job fetches it: the same archives,
+  # digests and library paths, pinned because a re-uploaded asset is a different
+  # runtime. Bump the two together.
+  real-onnx-model:
+    name: Real ONNX model (${{ matrix.os }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            ort_archive: onnxruntime-linux-x64-1.28.0.tgz
+            ort_sha256: a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407
+            ort_library: onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0
+          # arm64: there is no macOS x86_64 build of 1.28.0.
+          - os: macos-15
+            ort_archive: onnxruntime-osx-arm64-1.28.0.tgz
+            ort_sha256: 1268b359718099bde2cedb55787f182a130067bc4f31e8c88478c445b850d3d8
+            ort_library: onnxruntime-osx-arm64-1.28.0/lib/libonnxruntime.1.28.0.dylib
+          - os: windows-2022
+            ort_archive: onnxruntime-win-x64-1.28.0.zip
+            ort_sha256: abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc
+            ort_library: onnxruntime-win-x64-1.28.0/lib/onnxruntime.dll
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The artifact test builds and opens with the model's published identity
+      # files, and they have to be those of the sidecar this crate is built
+      # against: an identity from another revision can declare a recipe or a
+      # `model_checksum` the pinned sidecar does not produce. So the revision is
+      # read from the pin itself. Cargo.lock holds the same one, or the
+      # `--locked` test below fails.
+      - name: Read the sidecar revision rust/Cargo.toml pins
+        id: sidecar
+        shell: bash
+        run: |
+          rev=$(sed -n 's/^otzaria-semantic-search = {.*[[:space:]]rev = "\([0-9a-f]*\)".*/\1/p' rust/Cargo.toml)
+          if ! [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::rust/Cargo.toml does not pin otzaria-semantic-search to one full commit (read '$rev')."
+            exit 1
+          fi
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      # The sidecar repository is public, so the job's own token reads it.
+      - name: Check out the sidecar's model identities at that revision
+        uses: actions/checkout@v5
+        with:
+          repository: Otzaria/otzaria-semantic-search
+          ref: ${{ steps.sidecar.outputs.rev }}
+          path: otzaria-semantic-search
+          sparse-checkout: config/models
+          persist-credentials: false
+
+      # Downloaded fresh every run and deliberately NOT cached: an Actions cache
+      # on the default branch is readable by a workflow run from a fork's pull
+      # request, so caching these would publish a gated model to anyone who
+      # opens one. The URL is public; only the token is secret, and it reaches
+      # curl through a config on stdin rather than argv — no process listing, no
+      # `set -x`.
+      #
+      # `--retry` because Hugging Face rate-limits with a 429 that is not a
+      # refusal, and with nothing cached each of the three jobs fetches the
+      # graph on every run. curl counts 429 as transient and backs off;
+      # `--retry-all-errors` extends that to a connection dropped mid-transfer,
+      # and `-f` is what makes the status visible to it at all. Not raised
+      # further: five attempts cannot turn a revoked token into a pass, and a
+      # 401 still fails the job.
+      #
+      # Bash on every runner, Windows included, where `$RUNNER_TEMP` is a native
+      # path: the tests hand the model's path to native code, which an
+      # MSYS-style `/d/a/...` would not reach. Hashed from stdin because GNU
+      # sha256sum escapes a file name that has a backslash in it, and prefixes
+      # the digest with one.
+      - name: Fetch the model
+        id: model
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.OTZARIA_HF_TOKEN }}
+        run: |
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "::error::The OTZARIA_HF_TOKEN secret is not set. The real-model tests cannot run, and are NOT being reported as passing."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/onnx-model"
+          mkdir -p "$dir"
+          for file in seforim-embed-round2-int8.onnx tokenizer.json; do
+            printf 'header = "Authorization: Bearer %s"\n' "$HF_TOKEN" |
+              curl -fSL --retry 5 --retry-all-errors --output "$dir/$file" -K - \
+                "https://huggingface.co/otzaria/judaic-semantic-round2-onnx-zayit/resolve/main/$file"
+          done
+          # A mismatch must read as "wrong model" rather than as a confusing
+          # ranking or identity failure.
+          verify() {
+            if command -v sha256sum > /dev/null; then
+              actual=$(sha256sum < "$dir/$1" | cut -d' ' -f1)
+            else
+              actual=$(shasum -a 256 < "$dir/$1" | cut -d' ' -f1)
+            fi
+            if [ "$actual" != "$2" ]; then
+              echo "::error::$1: SHA-256 $actual, expected $2."
+              exit 1
+            fi
+          }
+          verify seforim-embed-round2-int8.onnx 659226865abd3a1bc833565ae6b2e2f48abdd7136285824a12966d4d3294cbf8
+          verify tokenizer.json 0664287976ecb078bdfd8f5e5515dc87d8cb7f985a79a481aa1cdf7a7321c0e9
+          echo "int8=$dir/seforim-embed-round2-int8.onnx" >> "$GITHUB_OUTPUT"
+
+      # Only the library is extracted from the archive.
+      - name: Fetch ONNX Runtime 1.28.0
+        if: runner.os != 'Windows'
+        run: |
+          archive="$RUNNER_TEMP/${{ matrix.ort_archive }}"
+          curl -fSL --retry 5 --retry-all-errors --output "$archive" \
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/${{ matrix.ort_archive }}"
+          echo "${{ matrix.ort_sha256 }}  $archive" | shasum -a 256 -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" "${{ matrix.ort_library }}"
+          test -f "$RUNNER_TEMP/${{ matrix.ort_library }}"
+          echo "OTZARIA_ONNX_RUNTIME=$RUNNER_TEMP/${{ matrix.ort_library }}" >> "$GITHUB_ENV"
+
+      # PowerShell and .NET's zip reader rather than bash: the Windows runner's
+      # bash has no dependable zip tool, and the archive also holds a 408 MB PDB
+      # that extracting everything would write out. The path handed on is a
+      # native Windows one, which the loader needs; an MSYS-style `/d/a/...` is
+      # not.
+      - name: Fetch ONNX Runtime 1.28.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP '${{ matrix.ort_archive }}'
+          curl.exe -fSL --retry 5 --retry-all-errors --output $archive `
+            'https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/${{ matrix.ort_archive }}'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actual -ne '${{ matrix.ort_sha256 }}') {
+            Write-Output "::error::${{ matrix.ort_archive }}: SHA-256 $actual, expected ${{ matrix.ort_sha256 }}"
+            exit 1
+          }
+          $member = '${{ matrix.ort_library }}'
+          $folder = $member.Substring(0, $member.LastIndexOf('/'))
+          $target = Join-Path $env:RUNNER_TEMP ($folder -replace '/', '\')
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            foreach ($entry in $zip.Entries) {
+              if ($entry.FullName -like "$folder/*.dll") {
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target $entry.Name), $true)
+              }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+          $library = Join-Path $env:RUNNER_TEMP ($member -replace '/', '\')
+          if (-not (Test-Path -LiteralPath $library)) {
+            Write-Output "::error::$member is not in ${{ matrix.ort_archive }}"
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "OTZARIA_ONNX_RUNTIME=$library"
+
+      # `--ignored` is what selects them. The sidecar reads
+      # OTZARIA_ONNX_RUNTIME, which the step above left in the environment.
+      - name: Real-model tests (INT8 graph)
+        env:
+          OTZARIA_TEST_ONNX_MODEL: ${{ steps.model.outputs.int8 }}
+          OTZARIA_TEST_ONNX_IDENTITY: ${{ github.workspace }}/otzaria-semantic-search/config/models/meivin-round2-onnx
+          OTZARIA_REQUIRE_ONNX_MODEL: "1"
+        run: >
+          cargo test --manifest-path rust/Cargo.toml --locked --features semantic-onnx
+          --test semantic_onnx_model -- --ignored --nocapture
 
   generated-bindings:
     name: FRB bindings and Flutter tests
