@@ -142,8 +142,9 @@ are now documented as development and testing scaffolding, not for the library.
   not compile in a build without the stand-in, such as `semantic-onnx`; and
   `tests/semantic_mock_integration.rs`, gated on `semantic-mock` alone, failed
   every test beside `semantic` because llama.cpp claimed its stub.
-- **CI checks, lints and builds the tests with `--features semantic-onnx`**,
-  and the real-backend job compiles both backends through `semantic`.
+- **CI checks, lints and runs the tests with `--features semantic-onnx`**, the
+  one job that runs the integration's tests without the stand-in, and the
+  real-backend job compiles both backends through `semantic`.
 
 ## 0.9.0 – 2026-10-04
 
