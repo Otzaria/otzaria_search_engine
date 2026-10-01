@@ -157,8 +157,10 @@ are now documented as development and testing scaffolding, not for the library.
   `tests/semantic_mock_integration.rs`, gated on `semantic-mock` alone, failed
   every test in a build with llama.cpp, which claimed its stub.
 - **CI checks, lints and runs the tests with `--features semantic-onnx`**, the
-  one job that runs the integration's tests without the stand-in, and the
-  real-backend job compiles both backends through `semantic`.
+  one job that runs the integration's tests without the stand-in, and exactly
+  what `semantic` turns on. The real-backend job compiles `semantic` on Linux,
+  macOS and Windows, and llama.cpp beside it (`semantic,semantic-llama`), the
+  one place CI still compiles llama.cpp.
 - **CI runs the real-model tests on Linux, macOS and Windows.** The new "Real
   ONNX model" job fetches the INT8 graph and its `tokenizer.json` from the
   project's private Hugging Face mirror with the `OTZARIA_HF_TOKEN` secret and

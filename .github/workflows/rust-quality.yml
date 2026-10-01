@@ -55,9 +55,10 @@ jobs:
         if: matrix.features == 'semantic-mock'
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
 
-      # The ONNX backend alone, without llama.cpp and without the stand-in. It
-      # loads ONNX Runtime when a model loads rather than linking it, so the
-      # build downloads nothing; running a model needs that runtime, and is the
+      # The ONNX backend alone, without llama.cpp and without the stand-in:
+      # exactly what `semantic`, the production feature, turns on. It loads
+      # ONNX Runtime when a model loads rather than linking it, so the build
+      # downloads nothing; running a model needs that runtime, and is the
       # real-model job's.
       - name: Check semantic ONNX integration
         if: matrix.features == 'semantic-onnx'
@@ -118,11 +119,21 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # `semantic` is both backends, llama.cpp for GGUF and ONNX Runtime for
-      # `.onnx` graphs, as the application builds them. ONNX Runtime is loaded
-      # at run time, so this compiles its bindings without downloading it.
-      - name: Compile the production semantic backends
+      # `semantic` is the ONNX backend alone, as the application builds it.
+      # ONNX Runtime is loaded at run time, so this compiles its bindings
+      # without downloading it.
+      - name: Compile the production semantic backend
         run: cargo check --manifest-path rust/Cargo.toml --locked --lib --features semantic
+
+      # llama.cpp, for GGUF, is the opt-in `semantic-llama`, and no other job
+      # compiles it. Beside `semantic`, as a build that serves both formats has
+      # it; ggml's cmake build is the platform-sensitive part, so it stays on
+      # all three systems. The step above has already checked most of what
+      # this one needs.
+      - name: Compile the opt-in llama.cpp backend beside it
+        run: >
+          cargo check --manifest-path rust/Cargo.toml --locked --lib
+          --features semantic,semantic-llama
 
       # The GC regression is platform-sensitive: Windows cannot unlink files
       # still held by a searcher. These tests all create and compact temporary
