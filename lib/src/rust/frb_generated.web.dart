@@ -173,6 +173,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticConfigInput dco_decode_box_autoadd_semantic_config_input(dynamic raw);
 
   @protected
+  SemanticErrorKind dco_decode_box_autoadd_semantic_error_kind(dynamic raw);
+
+  @protected
   SemanticGroupingMode dco_decode_box_autoadd_semantic_grouping_mode(
     dynamic raw,
   );
@@ -335,6 +338,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
 
   @protected
+  SemanticErrorKind? dco_decode_opt_box_autoadd_semantic_error_kind(
+    dynamic raw,
+  );
+
+  @protected
   SemanticGroupingMode? dco_decode_opt_box_autoadd_semantic_grouping_mode(
     dynamic raw,
   );
@@ -448,6 +456,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticSearchResult dco_decode_semantic_search_result(dynamic raw);
+
+  @protected
+  SemanticState dco_decode_semantic_state(dynamic raw);
 
   @protected
   SemanticStatus dco_decode_semantic_status(dynamic raw);
@@ -629,6 +640,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticConfigInput sse_decode_box_autoadd_semantic_config_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticErrorKind sse_decode_box_autoadd_semantic_error_kind(
     SseDeserializer deserializer,
   );
 
@@ -843,6 +859,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticErrorKind? sse_decode_opt_box_autoadd_semantic_error_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticGroupingMode? sse_decode_opt_box_autoadd_semantic_grouping_mode(
     SseDeserializer deserializer,
   );
@@ -996,6 +1017,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticSearchResult sse_decode_semantic_search_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  SemanticState sse_decode_semantic_state(SseDeserializer deserializer);
 
   @protected
   SemanticStatus sse_decode_semantic_status(SseDeserializer deserializer);
@@ -1218,6 +1242,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_semantic_config_input(
     SemanticConfigInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_error_kind(
+    SemanticErrorKind self,
     SseSerializer serializer,
   );
 
@@ -1478,6 +1508,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_semantic_error_kind(
+    SemanticErrorKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_semantic_grouping_mode(
     SemanticGroupingMode? self,
     SseSerializer serializer,
@@ -1668,6 +1704,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SemanticSearchResult self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_semantic_state(SemanticState self, SseSerializer serializer);
 
   @protected
   void sse_encode_semantic_status(

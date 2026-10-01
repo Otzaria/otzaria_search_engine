@@ -75,6 +75,9 @@ Future<void> main() async {
         expect(status.available, isFalse);
         expect(status.lastError, isNotNull);
         expect(status.vectorsPersisted, isFalse);
+        // Which of the two depends on the build, and each says so as a state
+        // and as the kind of `lastError`.
+        expect(status.errorKind, closedKind(status.state));
       },
     );
 
@@ -94,8 +97,10 @@ Future<void> main() async {
       expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
       expect(response.requestedMode, SemanticRetrievalMode.hybrid);
       expect(response.semanticAvailable, isFalse);
-      // A fallback always says why, so the UI can distinguish it from a choice.
+      // A fallback always says why, so the UI can distinguish it from a choice,
+      // and says it as a kind to branch on too.
       expect(response.fallbackReason, isNotNull);
+      expect(response.fallbackKind, isIn(closedKinds));
       expect(response.results, hasLength(1));
 
       final hit = response.results.single;
@@ -140,6 +145,7 @@ Future<void> main() async {
       expect(response.lexicalTotalCount, 1);
       expect(response.totalCount, 0);
       expect(response.fallbackReason, isNotNull);
+      expect(response.fallbackKind, isIn(closedKinds));
     });
 
     test('grouping and fuzzy options survive the round trip', () async {
@@ -276,6 +282,8 @@ Future<void> main() async {
 
       expect(status.enabled, isTrue);
       expect(status.available, isTrue);
+      expect(status.state, SemanticState.ready);
+      expect(status.errorKind, isNull);
       expect(status.modelId, 'test-mock');
       expect(status.embeddingDim, 64);
       expect(status.indexedBookCount, 1);
@@ -300,6 +308,7 @@ Future<void> main() async {
       expect(response.executedMode, SemanticExecutedMode.hybrid);
       expect(response.semanticAvailable, isTrue);
       expect(response.fallbackReason, isNull);
+      expect(response.fallbackKind, isNull);
       expect(response.results, hasLength(1));
 
       final hit = response.results.single;
@@ -549,6 +558,8 @@ Future<void> main() async {
       final status = await engine.openSemanticArtifact(config: input(identity));
       expect(status.enabled, isTrue);
       expect(status.available, isTrue, reason: status.lastError);
+      expect(status.state, SemanticState.ready);
+      expect(status.errorKind, isNull);
       expect(status.embeddingBackend, MockBackend.id);
       expect(status.vectorCount, 2);
       expect(status.vectorsPersisted, isTrue);
@@ -566,6 +577,7 @@ Future<void> main() async {
       );
       expect(response.executedMode, SemanticExecutedMode.semanticOnly);
       expect(response.semanticAvailable, isTrue);
+      expect(response.fallbackKind, isNull);
       final hit = response.results.first;
       expect(hit.source, SemanticResultSource.semantic);
       expect(hit.needsHydration, isFalse);
@@ -624,7 +636,9 @@ Future<void> main() async {
             ),
           ),
         );
-        expect((await engine.semanticStatus()).enabled, isFalse);
+        final status = await engine.semanticStatus();
+        expect(status.enabled, isFalse);
+        expect(status.state, SemanticState.notConfigured);
       },
     );
 
@@ -652,8 +666,60 @@ Future<void> main() async {
         ),
       );
     });
+
+    test(
+      'a commit after opening makes the artifact stale, in status and search',
+      () async {
+        await engine.openSemanticArtifact(config: input(identity));
+        await engine.addDocument(
+          id: BigInt.from(99),
+          title: 'נוסף',
+          reference: 'נוסף א',
+          topics: '/אחר',
+          text: 'שורה שלא הייתה בספרייה כשהארטיפקט נבנה ממנה',
+          segment: BigInt.zero,
+          isPdf: false,
+          filePath: '/books/another.txt',
+        );
+        await engine.commit();
+
+        final status = await engine.semanticStatus();
+        expect(status.state, SemanticState.stale);
+        expect(status.errorKind, SemanticErrorKind.artifactStale);
+        expect(status.available, isFalse);
+
+        final response = await engine.searchSemantic(
+          query: probeLine,
+          facets: const [],
+          limit: 10,
+          offset: 0,
+          lexicalMode: SemanticLexicalMode.exact,
+          fuzzyMaxDistance: 0,
+          retrievalMode: SemanticRetrievalMode.hybrid,
+          matchNikud: false,
+          matchTaamim: false,
+        );
+        expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
+        expect(response.fallbackKind, SemanticErrorKind.artifactStale);
+        expect(response.fallbackReason, status.lastError);
+      },
+    );
   }, skip: artifactSkipReason ?? false);
 }
+
+/// The two states a library reports with no session open, and the kind of
+/// `lastError` each comes with: no session, in a build with semantic support,
+/// or no semantic support at all.
+const closedKinds = [
+  SemanticErrorKind.notConfigured,
+  SemanticErrorKind.featureNotInBuild,
+];
+
+SemanticErrorKind closedKind(SemanticState state) => switch (state) {
+  SemanticState.notConfigured => SemanticErrorKind.notConfigured,
+  SemanticState.notInBuild => SemanticErrorKind.featureNotInBuild,
+  _ => throw StateError('a session is open: $state'),
+};
 
 /// A `SemanticError` of [kind], naming [field] when it is given.
 TypeMatcher<SemanticError> isSemanticError(

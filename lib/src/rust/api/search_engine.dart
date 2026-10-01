@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
@@ -306,7 +306,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Open a semantic session whose vectors are built on this device, and wire
   /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
   /// Tantivy stays owned here. When this crate was built without the optional
-  /// semantic feature this is a no-op that returns an explicit Disabled status.
+  /// semantic feature this is a no-op that returns an explicit `NotInBuild`
+  /// status.
   ///
   /// **Development and testing scaffolding.** The application never builds
   /// the library's vectors; it opens the artifact the build machine made with
@@ -791,7 +792,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// semantic path**: the library's vectors are built on the build machine,
   /// and the device embeds only the query. When this crate was built without
   /// the optional semantic feature this is a no-op that returns an explicit
-  /// Disabled status.
+  /// `NotInBuild` status.
   ///
   /// Opening verifies the artifact against this installation, all of it and
   /// before reading a vector:
@@ -1131,8 +1132,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// to since it was opened) is not asked, and the lexical fallback says why.
   ///
   /// A semantic path that cannot serve is not an error here: the response falls
-  /// back to lexical results and says why, in `fallback_reason`. What fails the
-  /// call is the lexical half failing, which is an `Internal` [`SemanticError`].
+  /// back to lexical results and says why, in `fallback_reason` and, as a value
+  /// to branch on, `fallback_kind`. What fails the call is the lexical half
+  /// failing, which is an `Internal` [`SemanticError`].
   Future<SemanticSearchResponse> searchSemantic({
     required String query,
     required List<String> facets,
@@ -2263,7 +2265,9 @@ class SemanticError implements FrbException {
 }
 
 /// What stopped the semantic path, as a value an application can switch on to choose a
-/// message and an action. A [`SemanticError`] carries one when a semantic call fails.
+/// message and an action. A [`SemanticError`] carries one when a semantic call fails,
+/// [`SemanticStatus::error_kind`] when a session cannot serve, and
+/// [`SemanticSearchResponse::fallback_kind`] when a search fell back to lexical results.
 ///
 /// The message beside it is unchanged, and is still the one for a developer to read: it
 /// names every path, value and field involved. The kind is what to branch on, never the
@@ -2279,10 +2283,13 @@ class SemanticError implements FrbException {
 ///
 /// | kind | means | the application should | reported by |
 /// | --- | --- | --- | --- |
+/// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the artifact; lexical search is unaffected | status, search fallback |
+/// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no artifact at `artifact_dir`: no directory, or no `manifest.json` in it | download and install the artifact | `open_semantic_artifact` |
 /// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
 /// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
 /// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
+/// | `ArtifactStale` | the lexical index was committed to after the artifact was opened, so its line ids may name lines that moved | `disable_semantic`, then open the artifact built for this index | status, search fallback |
 /// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |
 /// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
@@ -2295,9 +2302,16 @@ class SemanticError implements FrbException {
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
+/// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
-/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call |
+/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 enum SemanticErrorKind {
+  /// No semantic session is open.
+  notConfigured,
+
+  /// This library was built without semantic support.
+  featureNotInBuild,
+
   /// No artifact at the artifact directory.
   artifactMissing,
 
@@ -2309,6 +2323,9 @@ enum SemanticErrorKind {
 
   /// The artifact is not the one whose digest was published.
   artifactNotPublished,
+
+  /// The lexical index changed after the artifact was opened.
+  artifactStale,
 
   /// The lexical index carries no corpus stamp this build reads.
   indexNotStamped,
@@ -2345,6 +2362,9 @@ enum SemanticErrorKind {
 
   /// A session built on this device holds vectors from another configuration.
   reindexRequired,
+
+  /// The semantic half of one search failed; lexical results were served.
+  queryFailed,
 
   /// An input the call cannot take.
   invalidInput,
@@ -2505,6 +2525,14 @@ class SemanticSearchResponse {
   final SemanticExecutedMode executedMode;
   final bool semanticAvailable;
   final String? fallbackReason;
+
+  /// Why the semantic path did not serve this search, when it was asked to and did not:
+  /// `NotConfigured`, `FeatureNotInBuild`, `ArtifactStale` or `QueryFailed`. `None` when
+  /// it served the search, and when it was not asked (`LexicalOnly`, or a quoted phrase
+  /// the sidecar answers lexically). `fallback_reason` can still carry a note then, about
+  /// stale records dropped or the candidate window capped, which has no kind:
+  /// `candidate_window_truncated` is the cap's typed flag.
+  final SemanticErrorKind? fallbackKind;
   final BigInt latencyMs;
 
   /// The sidecar input window hit its hard memory-safety ceiling. This is
@@ -2522,6 +2550,7 @@ class SemanticSearchResponse {
     required this.executedMode,
     required this.semanticAvailable,
     this.fallbackReason,
+    this.fallbackKind,
     required this.latencyMs,
     required this.candidateWindowTruncated,
     required this.truncated,
@@ -2538,6 +2567,7 @@ class SemanticSearchResponse {
       executedMode.hashCode ^
       semanticAvailable.hashCode ^
       fallbackReason.hashCode ^
+      fallbackKind.hashCode ^
       latencyMs.hashCode ^
       candidateWindowTruncated.hashCode ^
       truncated.hashCode;
@@ -2556,6 +2586,7 @@ class SemanticSearchResponse {
           executedMode == other.executedMode &&
           semanticAvailable == other.semanticAvailable &&
           fallbackReason == other.fallbackReason &&
+          fallbackKind == other.fallbackKind &&
           latencyMs == other.latencyMs &&
           candidateWindowTruncated == other.candidateWindowTruncated &&
           truncated == other.truncated;
@@ -2656,10 +2687,49 @@ class SemanticSearchResult {
           needsHydration == other.needsHydration;
 }
 
+/// What the semantic session can do right now, the value a status view switches on.
+/// [`SemanticStatus::available`] says only whether semantic search is served; this says
+/// why it is not, and so what to offer.
+///
+/// Only `NotInBuild`, `NotConfigured`, `Ready` and `Stale` occur on the application's path.
+/// An artifact either opens and serves, or is refused by
+/// [`SearchEngine::open_semantic_artifact`] with a [`SemanticError`] and leaves no session
+/// behind; the other states belong to a session whose vectors are built on this device.
+enum SemanticState {
+  /// Semantic support is not compiled into this library: an explicit state rather than a
+  /// silent fallback. `error_kind` is `FeatureNotInBuild`.
+  notInBuild,
+
+  /// No session is open: none was opened, or `disable_semantic` closed it. `error_kind` is
+  /// `NotConfigured`.
+  notConfigured,
+
+  /// A session is open and serves semantic and hybrid search.
+  ready,
+
+  /// A session built on this device is open and has nothing to serve yet: its model is not
+  /// loaded or it holds no vectors. Indexing is what loads the model.
+  empty,
+
+  /// The opened artifact no longer describes the index, which was committed to after it
+  /// was opened. `error_kind` is `ArtifactStale`, and `last_error` says what changed.
+  stale,
+
+  /// A session built on this device holds vectors built under another configuration, and
+  /// `needs_full_reindex` says which: reset it and index again.
+  needsReindex,
+
+  /// A session built on this device is open and cannot serve, for the reason in
+  /// `last_error`.
+  failed,
+}
+
 /// A serializable, feature-independent projection of sidecar status. It is
 /// intentionally available without the `semantic` Cargo feature so Dart can
-/// render an explicit Disabled state rather than silently falling back.
+/// render an explicit `NotInBuild` state rather than silently falling back.
 class SemanticStatus {
+  /// What the session can do, and the field to switch on.
+  final SemanticState state;
   final bool enabled;
   final bool available;
   final bool modelLoaded;
@@ -2673,7 +2743,13 @@ class SemanticStatus {
   final String? needsFullReindex;
   final String? lastError;
 
+  /// The kind of `last_error`, and `Some` exactly when it is. A session built on this
+  /// device reports its own failures as text only, so they are `Internal` here; the call
+  /// that failed, usually `semantic_index_books`, threw the precise kind.
+  final SemanticErrorKind? errorKind;
+
   const SemanticStatus({
+    required this.state,
     required this.enabled,
     required this.available,
     required this.modelLoaded,
@@ -2686,10 +2762,12 @@ class SemanticStatus {
     required this.vectorsPersisted,
     this.needsFullReindex,
     this.lastError,
+    this.errorKind,
   });
 
   @override
   int get hashCode =>
+      state.hashCode ^
       enabled.hashCode ^
       available.hashCode ^
       modelLoaded.hashCode ^
@@ -2701,13 +2779,15 @@ class SemanticStatus {
       vectorBackend.hashCode ^
       vectorsPersisted.hashCode ^
       needsFullReindex.hashCode ^
-      lastError.hashCode;
+      lastError.hashCode ^
+      errorKind.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SemanticStatus &&
           runtimeType == other.runtimeType &&
+          state == other.state &&
           enabled == other.enabled &&
           available == other.available &&
           modelLoaded == other.modelLoaded &&
@@ -2719,7 +2799,8 @@ class SemanticStatus {
           vectorBackend == other.vectorBackend &&
           vectorsPersisted == other.vectorsPersisted &&
           needsFullReindex == other.needsFullReindex &&
-          lastError == other.lastError;
+          lastError == other.lastError &&
+          errorKind == other.errorKind;
 }
 
 /// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).

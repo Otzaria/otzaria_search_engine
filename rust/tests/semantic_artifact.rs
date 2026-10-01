@@ -23,6 +23,7 @@ use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
     SemanticConfigInput, SemanticError, SemanticErrorKind, SemanticExecutedMode,
     SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse,
+    SemanticState,
 };
 use search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME;
 use serde_json::Value as JsonValue;
@@ -280,6 +281,8 @@ fn an_artifact_built_from_the_index_opens_and_answers_with_hydrated_lines() {
         status.vectors_persisted,
         "an artifact's vectors are on disk"
     );
+    assert_eq!(status.state, SemanticState::Ready);
+    assert_eq!((status.last_error, status.error_kind), (None, None));
 
     // Semantic-only: the one line the query repeats comes back first, hydrated from this
     // index and not from the artifact.
@@ -290,6 +293,7 @@ fn an_artifact_built_from_the_index_opens_and_answers_with_hydrated_lines() {
         "{:?}",
         response.fallback_reason
     );
+    assert_eq!(response.fallback_kind, None);
     let top = response.results.first().expect("a semantic hit");
     assert_eq!(top.source, SemanticResultSource::Semantic);
     assert!(!top.needs_hydration);
@@ -309,6 +313,7 @@ fn an_artifact_built_from_the_index_opens_and_answers_with_hydrated_lines() {
         "{:?}",
         response.fallback_reason
     );
+    assert_eq!(response.fallback_kind, None);
     let top = response.results.first().expect("a fused hit");
     assert_eq!(top.id, stored.id);
     assert_eq!(top.source, SemanticResultSource::Both);
@@ -610,10 +615,9 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
     );
     assert_eq!(error.kind, SemanticErrorKind::SessionConflict);
 
-    assert!(
-        engine.semantic_status().available,
-        "the refusals left the session serving"
-    );
+    let status = engine.semantic_status();
+    assert!(status.available, "the refusals left the session serving");
+    assert_eq!(status.state, SemanticState::Ready);
 }
 
 /// A session opened by `configure_semantic` is not silently replaced by an artifact.
@@ -642,6 +646,11 @@ fn an_artifact_does_not_replace_a_session_built_on_the_device() {
         error.message
     );
     assert_eq!(error.kind, SemanticErrorKind::SessionConflict);
+    assert_eq!(
+        engine.semantic_status().state,
+        SemanticState::Empty,
+        "the session built on the device is still the open one, with nothing indexed"
+    );
 
     engine.disable_semantic();
     assert!(
@@ -663,6 +672,8 @@ fn a_commit_after_opening_makes_the_artifact_stale_and_says_so() {
 
     let status = engine.semantic_status();
     assert!(status.enabled && !status.available);
+    assert_eq!(status.state, SemanticState::Stale);
+    assert_eq!(status.error_kind, Some(SemanticErrorKind::ArtifactStale));
     let reason = status.last_error.expect("the status says why");
     assert!(
         reason.contains("has changed since the semantic artifact"),
@@ -672,6 +683,7 @@ fn a_commit_after_opening_makes_the_artifact_stale_and_says_so() {
     let hybrid = search(&engine, PROBE_LINE, SemanticRetrievalMode::Hybrid);
     assert_eq!(hybrid.executed_mode, SemanticExecutedMode::LexicalOnly);
     assert_eq!(hybrid.fallback_reason.as_deref(), Some(reason.as_str()));
+    assert_eq!(hybrid.fallback_kind, Some(SemanticErrorKind::ArtifactStale));
     assert!(
         !hybrid.results.is_empty(),
         "lexical results are still served"
@@ -680,8 +692,13 @@ fn a_commit_after_opening_makes_the_artifact_stale_and_says_so() {
     let semantic = search(&engine, PROBE_LINE, SemanticRetrievalMode::SemanticOnly);
     assert!(semantic.results.is_empty());
     assert_eq!(semantic.fallback_reason.as_deref(), Some(reason.as_str()));
+    assert_eq!(
+        semantic.fallback_kind,
+        Some(SemanticErrorKind::ArtifactStale)
+    );
 
     engine.disable_semantic();
+    assert_eq!(engine.semantic_status().state, SemanticState::NotConfigured);
     let error = open_refusal(&engine, library.input());
     assert!(
         error
@@ -834,4 +851,30 @@ fn an_identity_value_no_build_serves_is_invalid_input() {
         );
         assert_refused(&engine, &error, SemanticErrorKind::InvalidInput, field);
     }
+}
+
+/// A query with nothing to embed fails the semantic half of that one search: the lexical
+/// half is served and the session goes on serving.
+#[test]
+fn a_query_with_nothing_to_embed_falls_back_for_that_query_only() {
+    let library = build_library(true);
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let response = search(&engine, " ", SemanticRetrievalMode::SemanticOnly);
+    assert!(!response.semantic_available);
+    assert!(
+        response
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("nothing to embed")),
+        "{:?}",
+        response.fallback_reason
+    );
+    assert_eq!(response.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
+    let next = search(&engine, PROBE_LINE, SemanticRetrievalMode::SemanticOnly);
+    assert!(next.semantic_available);
+    assert_eq!(next.fallback_kind, None);
 }
