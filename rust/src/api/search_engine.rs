@@ -43,11 +43,7 @@ use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 
 #[cfg(feature = "semantic-integration")]
-use otzaria_semantic_search::api::hybrid_search::{
-    OtzariaHybridEngine, SearchRequest as SidecarSearchRequest,
-};
-#[cfg(feature = "semantic-integration")]
-use otzaria_semantic_search::hybrid::coordinator::HybridCoordinator;
+use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
 #[cfg(feature = "semantic-integration")]
@@ -57,9 +53,9 @@ use otzaria_semantic_search::semantic::official_index::{
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::types::{
     BookForIndexing as SidecarBookForIndexing, BookLine as SidecarBookLine,
-    GroupingMode as SidecarGroupingMode, LexicalCandidate as SidecarLexicalCandidate,
-    ResultSource as SidecarResultSource, SearchFilters as SidecarSearchFilters,
-    SearchMode as SidecarSearchMode,
+    ContentFingerprint as SidecarContentFingerprint, GroupingMode as SidecarGroupingMode,
+    LexicalCandidate as SidecarLexicalCandidate, ResultSource as SidecarResultSource,
+    SearchFilters as SidecarSearchFilters, SearchMode as SidecarSearchMode,
 };
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::versioning::ModelIdentity;
@@ -676,10 +672,17 @@ enum SemanticSource {
     Artifact(OpenedArtifact),
 }
 
-/// An open sidecar session: the engine, and what it was opened from.
+/// An open sidecar session: the coordinator, and what it was opened from.
 #[cfg(feature = "semantic-integration")]
 struct ConfiguredSemantic {
-    engine: OtzariaHybridEngine,
+    /// The sidecar's `HybridCoordinator` itself, not the `OtzariaHybridEngine` wrapper the
+    /// sidecar offers as a bridge: that wrapper turns every error into its message, and one
+    /// failure could then be told from another only by reading it. The coordinator returns
+    /// the typed [`SemanticSearchError`](otzaria_semantic_search::errors::SemanticSearchError),
+    /// and the wrapper adds nothing else — the sidecar leaves the surface the application
+    /// sees to this layer. Behind an `Arc` for the reason the wrapper held one: a call
+    /// clones the handle and holds no lock while it runs.
+    coordinator: Arc<HybridCoordinator>,
     source: SemanticSource,
 }
 
@@ -2425,7 +2428,7 @@ impl SearchEngine {
                 .semantic_runtime
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner) = Some(ConfiguredSemantic {
-                engine: OtzariaHybridEngine::new(HybridCoordinator::new(Some(engine))),
+                coordinator: Arc::new(HybridCoordinator::new(Some(engine))),
                 source: SemanticSource::SelfBuilt(requested),
             });
             Ok(self.semantic_status())
@@ -2575,7 +2578,7 @@ impl SearchEngine {
                 };
             }
             *active = Some(ConfiguredSemantic {
-                engine: OtzariaHybridEngine::new(HybridCoordinator::with_official_index(index)),
+                coordinator: Arc::new(HybridCoordinator::with_official_index(index)),
                 source: SemanticSource::Artifact(OpenedArtifact {
                     key,
                     segments_sha256,
@@ -2648,16 +2651,16 @@ impl SearchEngine {
         }
     }
 
-    /// The open sidecar engine, or `None` when semantic search has not been
+    /// The open sidecar coordinator, or `None` when semantic search has not been
     /// configured in this session. A clone of the handle, which is an `Arc`, so no
     /// lock is held while it is used.
     #[cfg(feature = "semantic-integration")]
-    fn semantic_engine(&self) -> Option<OtzariaHybridEngine> {
+    fn semantic_engine(&self) -> Option<Arc<HybridCoordinator>> {
         self.semantic_runtime
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(|active| active.engine.clone())
+            .map(|active| Arc::clone(&active.coordinator))
     }
 
     /// Why an opened artifact must not be asked, or `None` when it may be — or when
@@ -2696,8 +2699,8 @@ impl SearchEngine {
     pub fn semantic_status(&self) -> SemanticStatus {
         #[cfg(feature = "semantic-integration")]
         {
-            if let Some(runtime) = self.semantic_engine() {
-                let status = runtime.get_semantic_status();
+            if let Some(coordinator) = self.semantic_engine() {
+                let status = coordinator.status();
                 // A stale artifact is not served, and the status says so rather than
                 // reporting vectors a search will not use.
                 let stale = self.stale_artifact_reason();
@@ -2745,7 +2748,7 @@ impl SearchEngine {
     ) -> Result<SemanticIndexingSummary> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(coordinator) = self.semantic_engine() else {
                 return Ok(SemanticIndexingSummary {
                     enabled: false,
                     books_indexed: 0,
@@ -2777,7 +2780,7 @@ impl SearchEngine {
                         .collect(),
                 })
                 .collect();
-            let summary = runtime
+            let summary = coordinator
                 .index_books(&sidecar_books)
                 .map_err(|err| anyhow::anyhow!("semantic indexing failed: {err}"))?;
             let summary = summary.unwrap_or_default();
@@ -2813,16 +2816,23 @@ impl SearchEngine {
     pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(coordinator) = self.semantic_engine() else {
                 return Ok(Self::semantic_disabled_diff());
             };
-            let fingerprints = self.get_book_fingerprints()?;
+            // Raw lexical hashes, each as the sidecar's own conversion reads one: zero is
+            // "no fingerprint", so a PDF lands in `unverifiable_books` and never passes
+            // for up to date.
+            let fingerprints = self
+                .get_book_fingerprints()?
+                .into_iter()
+                .map(|(book, hash)| (book, SidecarContentFingerprint::from_lexical_hash(hash)))
+                .collect();
             // The sidecar now separates "the semantic path is off" from "the comparison
             // itself failed": the first is `Ok(None)`, the second an error. Collapsing
             // them would report a broken manifest as a disabled feature, and the app
             // would offer indexing as the fix.
-            let diff = runtime
-                .get_semantic_index_diff_from_lexical_hashes(&fingerprints)
+            let diff = coordinator
+                .semantic_index_diff(&fingerprints)
                 .map_err(|err| anyhow::anyhow!("semantic index diff failed: {err}"))?;
             let Some(diff) = diff else {
                 return Ok(Self::semantic_disabled_diff());
@@ -2858,13 +2868,13 @@ impl SearchEngine {
     ) -> Result<SemanticRemoveResult> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(coordinator) = self.semantic_engine() else {
                 return Ok(SemanticRemoveResult {
                     enabled: false,
                     vectors_removed: 0,
                 });
             };
-            let removed = runtime
+            let removed = coordinator
                 .remove_semantic_books(&source_book_keys)
                 .map_err(|err| anyhow::anyhow!("semantic remove failed: {err}"))?
                 .unwrap_or(0);
@@ -2894,13 +2904,13 @@ impl SearchEngine {
     pub fn reset_semantic_index(&self) -> Result<SemanticResetResult> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(coordinator) = self.semantic_engine() else {
                 return Ok(SemanticResetResult {
                     enabled: false,
                     vectors_removed: 0,
                 });
             };
-            let removed = runtime
+            let removed = coordinator
                 .reset_semantic_index()
                 .map_err(|err| anyhow::anyhow!("semantic reset failed: {err}"))?
                 .unwrap_or(0);
@@ -2920,7 +2930,7 @@ impl SearchEngine {
     }
 
     /// Search through the sidecar exactly once. Tantivy supplies scored lexical
-    /// candidates; `OtzariaHybridEngine` alone performs hybrid fusion/grouping.
+    /// candidates; the sidecar's coordinator alone performs hybrid fusion/grouping.
     /// Semantic-only items are hydrated from Tantivy before crossing FFI. The
     /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
     /// development session, except that a stale artifact (the index committed
@@ -2942,7 +2952,7 @@ impl SearchEngine {
         let started = Instant::now();
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(coordinator) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
                     &facets,
@@ -3032,32 +3042,36 @@ impl SearchEngine {
                     )?,
                 }
             };
-            let result = runtime
-                .search(SidecarSearchRequest {
-                    query,
+            let result = coordinator
+                .search(
+                    &query,
                     lexical_candidates,
-                    limit: Some(candidate_window),
-                    offset: Some(0),
-                    grouping: grouping.map(|value| match value {
-                        SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
-                        SemanticGroupingMode::IdenticalText => SidecarGroupingMode::IdenticalText,
-                    }),
-                    filters: Some(SidecarSearchFilters {
-                        book_paths: None,
-                        facets: (!facets.is_empty()).then_some(facets),
-                        include_pdf: None,
-                    }),
-                    force_mode: Some(match retrieval_mode {
-                        SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
-                        SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
-                        SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
-                    }),
-                    // Both are per-request overrides the sidecar added; `None` keeps its
-                    // configured profile and flags, which is what this call has always
-                    // used. Choosing either from here is S5's decision, not a repin's.
-                    profile: None,
-                    feature_flags: None,
-                })
+                    &HybridSearchParams {
+                        limit: candidate_window as usize,
+                        offset: 0,
+                        grouping: grouping.map(|value| match value {
+                            SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
+                            SemanticGroupingMode::IdenticalText => {
+                                SidecarGroupingMode::IdenticalText
+                            }
+                        }),
+                        filters: Some(SidecarSearchFilters {
+                            book_paths: None,
+                            facets: (!facets.is_empty()).then_some(facets),
+                            include_pdf: None,
+                        }),
+                        force_mode: Some(match retrieval_mode {
+                            SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
+                            SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
+                            SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
+                        }),
+                        // Both are per-request overrides the sidecar added; `None` keeps its
+                        // configured profile and flags, which is what this call has always
+                        // used. Choosing either from here is S5's decision, not a repin's.
+                        profile: None,
+                        feature_flags: None,
+                    },
+                )
                 .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
 
             // Phase 1 — drop stale primaries across the whole window, keeping
