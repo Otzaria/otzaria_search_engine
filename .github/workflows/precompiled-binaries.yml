@@ -183,7 +183,11 @@ jobs:
 
       # llama.cpp rejects the Visual Studio/MSVC compiler for Windows ARM.
       # The hosted ARM image includes LLVM and Ninja; selecting them here
-      # makes cmake-rs invoke clang-cl instead of its MSVC default.
+      # makes cmake-rs invoke clang-cl instead of its MSVC default. Since
+      # `semantic` dropped llama.cpp, only a build with `semantic-llama` added
+      # to cargokit.yaml needs this; it stays so the C dependencies that remain
+      # (SQLite, zstd) keep the compiler the published Windows ARM binaries
+      # have been built with.
       - name: Configure LLVM for Windows ARM
         if: matrix.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
