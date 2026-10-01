@@ -7,15 +7,17 @@
 //! are the files the build used: the model's identity JSON, and the corpus stamp the build
 //! wrote into the index directory.
 //!
-//! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the model is a stub
-//! GGUF, which only the deterministic stand-in serves. The stand-in embeds a text as a hash of
-//! it, so a query that is a line's exact text scores that line 1.0 and nothing else as high,
+//! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the model is the stub
+//! ONNX package, which only the deterministic stand-in serves, and `semantic-onnx` would take
+//! it ahead of the stand-in and fail to load it. The stand-in embeds a text as a hash of it,
+//! so a query that is a line's exact text scores that line 1.0 and nothing else as high,
 //! which is what lets these tests know which line must come back.
 
-#![cfg(feature = "semantic-mock")]
+#![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
-use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};
+use otzaria_semantic_search::semantic::embedding::mock;
+use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 use otzaria_semantic_search::semantic::versioning::ModelIdentity;
 use otzaria_semantic_search::semantic::zevc_store::VECTORS_FILENAME;
 use search_engine::api::search_engine::{
@@ -140,16 +142,18 @@ fn build_library(stamp: bool) -> Library {
     std::fs::create_dir_all(&work).unwrap();
     add_books(&mut SearchEngine::new(index.to_str().unwrap()));
 
-    let model_file = work.join("model.gguf");
-    mock::write_stub_gguf(&model_file, 3).unwrap();
+    let model_file = mock::write_stub_onnx_package(&work.join("model"));
     let chunking = ChunkerConfig::default();
     let model = ModelIdentity {
         model_id: "test-mock".to_string(),
-        model_checksum: validate_and_checksum_gguf(&model_file).unwrap(),
-        model_quantization: "Q4_K_M".to_string(),
+        model_checksum: validate_onnx_package(&model_file)
+            .unwrap()
+            .checksum()
+            .to_string(),
+        model_quantization: "int8".to_string(),
         embedding_backend: "mock-hash-v1".to_string(),
         embedding_dim: 64,
-        pooling: "last-token".to_string(),
+        pooling: "in-graph".to_string(),
         max_tokens: 512,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
@@ -446,7 +450,7 @@ fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
             m.model_id = "another-model".to_string()
         }),
         ("model.model_quantization", |m| {
-            m.model_quantization = "Q8_0".to_string()
+            m.model_quantization = "fp32".to_string()
         }),
         ("model.chunking_identity", |m| m.chunking_identity ^= 1),
     ];
@@ -602,9 +606,9 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
         model_path: library.model_file.to_string_lossy().into_owned(),
         model_id: "test-mock".to_string(),
         embedding_dim: 64,
-        pooling: "last-token".to_string(),
+        pooling: "in-graph".to_string(),
         max_tokens: 512,
-        model_quantization: "Q4_K_M".to_string(),
+        model_quantization: "int8".to_string(),
         embedding_text_version: 1,
         onnx_runtime_path: None,
     }) {
@@ -635,9 +639,9 @@ fn an_artifact_does_not_replace_a_session_built_on_the_device() {
             model_path: library.model_file.to_string_lossy().into_owned(),
             model_id: "test-mock".to_string(),
             embedding_dim: 64,
-            pooling: "last-token".to_string(),
+            pooling: "in-graph".to_string(),
             max_tokens: 512,
-            model_quantization: "Q4_K_M".to_string(),
+            model_quantization: "int8".to_string(),
             embedding_text_version: 1,
             onnx_runtime_path: None,
         })
@@ -837,35 +841,33 @@ fn a_damaged_artifact_is_corrupt() {
     }
 }
 
-/// The model this device embeds queries with: absent, not a model, and an ONNX graph
-/// without the tokenizer its package needs. Each is a different file to install.
+/// The model this device embeds queries with: absent, a package whose graph is not a
+/// model, and a graph without the tokenizer its package needs. Each is a different file to
+/// install.
 #[test]
 fn a_missing_or_unusable_model_is_named_by_kind() {
     let library = build_library(true);
     let engine = library.engine();
     let work = TempDir::new().unwrap();
 
-    let absent = work.path().join("absent.gguf");
-    let garbage = work.path().join("garbage.gguf");
+    let absent = work.path().join("absent").join("model.onnx");
+    // The tokenizer is checked first, so the package has one, and only the graph is wrong.
+    let garbage = mock::write_stub_onnx_package(&work.path().join("garbage"));
     std::fs::write(&garbage, b"not a model").unwrap();
     // A graph alone: the tokenizer is looked for beside it, and is not there.
-    let graph = work.path().join("model.onnx");
-    std::fs::write(&graph, b"not inspected: the tokenizer is checked first").unwrap();
-    let onnx_identity = ModelIdentity {
-        pooling: "in-graph".to_string(),
-        ..library.model.clone()
-    };
+    let graph = mock::write_stub_onnx_package(&work.path().join("graph-alone"));
+    std::fs::remove_file(graph.with_file_name("tokenizer.json")).unwrap();
 
-    for (model_path, identity, kind) in [
-        (&absent, &library.model, SemanticErrorKind::ModelMissing),
-        (&garbage, &library.model, SemanticErrorKind::ModelInvalid),
-        (&graph, &onnx_identity, SemanticErrorKind::TokenizerMissing),
+    for (model_path, kind) in [
+        (&absent, SemanticErrorKind::ModelMissing),
+        (&garbage, SemanticErrorKind::ModelInvalid),
+        (&graph, SemanticErrorKind::TokenizerMissing),
     ] {
         let error = open_refusal(
             &engine,
             SemanticArtifactInput {
                 model_path: model_path.to_string_lossy().into_owned(),
-                ..library.input_with_identity(serde_json::to_string(identity).unwrap())
+                ..library.input()
             },
         );
         assert!(
