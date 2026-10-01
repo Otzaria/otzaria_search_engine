@@ -9,19 +9,22 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [features]
 default = []
 # The production feature, and the one cargokit.yaml builds the application with.
-# It compiles both real embedding backends, and the sidecar picks one per model
-# by the model file's format: an `*.onnx` graph runs on ONNX Runtime, and every
-# other path is GGUF and runs on llama.cpp. Which backend serves a library is
-# decided by the model it is configured with, not by this build. The sidecar
-# deliberately has no default backend, so a backend missing from this list is a
-# model format the application refuses with `BackendUnavailable` instead of
-# serving it.
-semantic = ["semantic-llama", "semantic-onnx"]
+# It is the ONNX backend alone, because the application's model is the Meivin
+# ONNX graph: llama.cpp and ggml, which compile through cmake, stay behind the
+# opt-in `semantic-llama`, and no application build compiles them. The sidecar
+# picks a backend per model by the model file's format, an `*.onnx` graph for
+# ONNX Runtime and every other path a GGUF for llama.cpp, and deliberately has
+# no default backend: a GGUF model on this build is refused with
+# `BackendUnavailable` rather than served, and the reason names the sidecar's
+# `llama-backend`, which `semantic-llama` turns on. On Android and iOS, where
+# the sidecar builds no ONNX backend, this build serves no model at all.
+semantic = ["semantic-onnx"]
 # Internal gate for code that talks to the sidecar. Every backend feature below
 # turns it on; on its own it compiles the integration with no backend behind it.
 semantic-integration = ["dep:otzaria-semantic-search"]
 # GGUF weights on llama.cpp (the Qwen3 model). Compiles llama.cpp and ggml
-# through cmake.
+# through cmake, which is why `semantic` leaves it out; enable it beside
+# `semantic` for a build that serves both formats.
 semantic-llama = ["semantic-integration", "otzaria-semantic-search/llama-backend"]
 # Backwards-compatible alias. It predates the ONNX backend and never meant more
 # than llama.cpp, so it does not grow to include it; production uses `semantic`.

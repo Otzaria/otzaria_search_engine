@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-> Breaking for Dart code that constructs `SemanticConfigInput`, so this must
-> not ship as a 0.8.x patch: `^0.8.7` would take it on its own (see 0.8.0).
+> Breaking for Dart code that constructs `SemanticConfigInput`, and for an
+> application that configures a GGUF model, so this must not ship as a 0.8.x
+> patch: `^0.8.7` would take it on its own (see 0.8.0).
 
 **The application never builds the library's vectors.** The build machine
 embeds the whole library into a semantic artifact; the application opens it
@@ -49,6 +50,23 @@ are now documented as development and testing scaffolding, not for the library.
   0.8.7 or earlier recorded `"Q4"`, so opening it with `"Q4_K_M"` reports
   `needsFullReindex` once; `resetSemanticIndex` clears it, and the in-memory
   store needed a full re-index after every restart anyway.
+- **`semantic`, the production feature, is the ONNX backend alone.** It was
+  llama.cpp in 0.8.7. The library Cargokit builds, precompiled binaries
+  included, therefore no longer serves a GGUF model such as the Qwen3 one:
+  loading it fails with "No embedding backend is available in this build",
+  whose reason names the sidecar's `llama-backend`, and the library behaves as
+  the README's "Builds without a backend" describes. The application's model
+  is the Meivin ONNX graph, and with llama.cpp left out no application build
+  compiles it, or ggml, through cmake any more. GGUF is the opt-in
+  `semantic-llama`, which `semantic-real` remains an alias of; beside
+  `semantic` it gives a build that serves both formats, the sidecar picking the
+  backend per model by the model file's format, `.onnx` or anything else.
+  `cargokit.yaml` still builds `--features semantic`. On Android and iOS, which
+  have no ONNX backend, the production build now serves no model at all.
+
+  **What changes for consumers.** An application that configures a GGUF model
+  needs a library built with `semantic-llama` added to the flags in
+  `rust/cargokit.yaml`; the precompiled binaries are ONNX only.
 
 ### Added
 
@@ -128,21 +146,16 @@ are now documented as development and testing scaffolding, not for the library.
   flutter_rust_bridge's codegen does not carry the attribute to Dart, so the
   application would see nothing, while every Rust call site would warn, the
   generated wrappers included.
-- **`semantic` compiles both real backends**: `semantic-llama` (llama.cpp, for
-  GGUF) and `semantic-onnx`. The sidecar picks one per model by the model
-  file's format, `.onnx` or anything else, so the configured model decides.
-  `cargokit.yaml` still builds `--features semantic`, and `semantic-real`
-  remains as an alias of `semantic-llama`, which is all it ever meant.
 - **`build_semantic_artifact` documents an ONNX graph as `--model-file`**, next
   to a GGUF, and its no-backend message names `semantic-onnx`, `semantic-llama`
   and `semantic-mock`. The bins that need no model no longer say "GGUF".
 - **The Rust tests that drive the stand-in with a stub GGUF run only with
   `semantic-mock` and without `semantic-llama`.** The binary's test was gated
-  off `semantic-real`, which `semantic` no longer turns on, so llama.cpp could
-  have claimed the stub; the corpus adapter's test had no gate at all and did
-  not compile in a build without the stand-in, such as `semantic-onnx`; and
+  off `semantic-real`, which `semantic-llama` does not turn on, so llama.cpp
+  could have claimed the stub; the corpus adapter's test had no gate at all and
+  did not compile in a build without the stand-in, such as `semantic-onnx`; and
   `tests/semantic_mock_integration.rs`, gated on `semantic-mock` alone, failed
-  every test beside `semantic` because llama.cpp claimed its stub.
+  every test in a build with llama.cpp, which claimed its stub.
 - **CI checks, lints and runs the tests with `--features semantic-onnx`**, the
   one job that runs the integration's tests without the stand-in, and the
   real-backend job compiles both backends through `semantic`.

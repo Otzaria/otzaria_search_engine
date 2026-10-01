@@ -43,11 +43,19 @@ The native library can optionally link
 [`otzaria-semantic-search`](https://github.com/Otzaria/otzaria-semantic-search)
 into the same Flutter Rust Bridge library as Tantivy:
 
-- `semantic` is the production build, and the one Cargokit builds. It compiles
-  both real embedding backends, and the sidecar picks one per model by the
-  model file's format: a path ending in `.onnx` is an ONNX graph for ONNX
-  Runtime (`semantic-onnx`), and every other path is a GGUF for `llama.cpp`
-  (`semantic-llama`). `semantic-real` remains as an alias of `semantic-llama`.
+- `semantic` is the production build, and the one Cargokit builds: the ONNX
+  backend alone (`semantic-onnx`), for the Meivin model the application uses.
+  It does not compile `llama.cpp` or ggml, the part of the build that needed
+  cmake.
+- `semantic-llama` is the GGUF backend on `llama.cpp`, for the Qwen3 model. It
+  is opt-in, since it compiles `llama.cpp` and ggml through cmake; enable it
+  beside `semantic` for a build that serves both formats. `semantic-real`
+  remains as an alias of `semantic-llama`.
+- The sidecar picks the backend per model by the model file's format: a path
+  ending in `.onnx` is an ONNX graph for ONNX Runtime, and every other path is
+  a GGUF for `llama.cpp`. A format the build has no backend for is refused,
+  not served, so on the production build a GGUF model fails with "No embedding
+  backend is available in this build"; see "Builds without a backend".
 - The sidecar compiles a backend out on targets it cannot serve. The feature
   stays on and the build succeeds, with no backend behind that format; see
   "Builds without a backend".
@@ -55,7 +63,8 @@ into the same Flutter Rust Bridge library as Tantivy:
     `llama-cpp-sys-2` cannot build for that target, and a Q4 0.6B model would
     be unusable on it regardless.
   - The ONNX backend is built for desktop targets only (Windows, Linux and
-    macOS). Android and iOS have none.
+    macOS). Android and iOS have none, so there the production build serves
+    no model at all.
 - `semantic-mock` selects the deterministic test backend and must not be used
   in an application release. CI builds the library with it so the Dart FFI
   suite can drive a configured sidecar.
@@ -168,9 +177,10 @@ signed with the application's identity, and naming it with
 ### Builds without a backend
 
 A build can hold the integration with no backend for the model's format: a GGUF
-model on 32-bit ARM, an ONNX model on Android or iOS, or a build whose feature
-for that format is off. An ONNX model whose runtime cannot be loaded behaves the
-same way; only the message differs (see above).
+model on the production build, which has no `llama.cpp`, or on 32-bit ARM; an
+ONNX model on Android or iOS; or any build whose feature for that format is off.
+An ONNX model whose runtime cannot be loaded behaves the same way; only the
+message differs (see above).
 
 On such a build `openSemanticArtifact` throws, since the model it has to embed
 queries with cannot load, and nothing is left open: `searchSemantic` then falls
@@ -214,7 +224,8 @@ read from the model file, so the values must be the ones the model was built
 for. The sidecar records every field but `rootDir` in its manifest as the
 index's identity (the model file by its checksum, once it has loaded): an index
 built under one value reports `needsFullReindex` under another, instead of
-mixing in vectors that cannot be compared.
+mixing in vectors that cannot be compared. The Qwen3 GGUF needs a build with
+`semantic-llama`.
 
 | field | Qwen3 GGUF | Meivin ONNX |
 | --- | --- | --- |

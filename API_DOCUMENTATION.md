@@ -247,9 +247,11 @@ Future<SemanticResetResult> resetSemanticIndex()
 
 These reach the semantic sidecar only in a library built with a semantic
 feature; any other build reports an explicit disabled state and serves lexical
-results. The README's "Semantic search integration" section covers the
-features, the release contract, the session lifecycle and the fallback
-contract.
+results. Cargokit builds the library with `semantic`, the ONNX backend alone:
+a GGUF model needs a build with `semantic-llama`, and on any other build
+loading one fails with "No embedding backend is available in this build". The
+README's "Semantic search integration" section covers the features, the release
+contract, the session lifecycle and the fallback contract.
 
 **The application never builds the library's vectors.** The build machine
 embeds the library into an artifact; the application opens it with
@@ -265,7 +267,7 @@ its input is a value to type in:
 | field | meaning |
 | --- | --- |
 | `artifactDir` | the artifact directory the build binary wrote |
-| `modelPath` | the model queries are embedded with: `.onnx` selects ONNX Runtime, any other path llama.cpp; for the Meivin model, `seforim-embed-round2-int8.onnx` with `tokenizer.json` beside it |
+| `modelPath` | the model queries are embedded with: `.onnx` selects ONNX Runtime, any other path llama.cpp (only in a build with `semantic-llama`); for the Meivin model, `seforim-embed-round2-int8.onnx` with `tokenizer.json` beside it |
 | `modelIdentityJson` | the text of the model's identity file, the one the artifact was built with: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph |
 | `publishedDigest` | optional: the artifact's digest as published outside it |
 
@@ -287,7 +289,7 @@ checksum, once it has loaded), so an index built under one value reports
 | field | meaning | Qwen3 GGUF | Meivin ONNX |
 | --- | --- | --- | --- |
 | `rootDir` | the sidecar's own directory | | |
-| `modelPath` | the model file: `.onnx` selects ONNX Runtime, any other path llama.cpp | the `.gguf` file | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
+| `modelPath` | the model file: `.onnx` selects ONNX Runtime, any other path llama.cpp (only in a build with `semantic-llama`) | the `.gguf` file | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
 | `modelId` | the model's name | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
 | `embeddingDim` | the width of every vector | 1024 | 256 |
 | `pooling` | how one vector is made from each text | `last-token` | `in-graph` |
