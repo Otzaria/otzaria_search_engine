@@ -99,7 +99,7 @@ sha2 = "0.10"
 # (llama.cpp, ONNX Runtime) are part of the index identity.  A branch dependency
 # can silently change any of them; pin the exact reviewed revision and retain it
 # in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "d154a90b6a3c61085be5fdadc71829f553edfa39", optional = true }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "712f70c0cc54382b9a0562a4d62e9c37196e9b53", optional = true }
 
 [dev-dependencies]
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),
