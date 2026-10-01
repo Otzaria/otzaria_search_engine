@@ -246,12 +246,14 @@ Future<SemanticResetResult> resetSemanticIndex()
 ```
 
 These reach the semantic sidecar only in a library built with a semantic
-feature; any other build reports an explicit disabled state and serves lexical
-results. Cargokit builds the library with `semantic`, the ONNX backend alone:
-a GGUF model needs a build with `semantic-llama`, and on any other build
-loading one fails with "No embedding backend is available in this build". The
+feature; any other build reports an explicit `notInBuild` state and serves
+lexical results. Cargokit builds the library with `semantic`, the ONNX backend
+alone: a GGUF model needs a build with `semantic-llama`, and on any other build
+loading one fails with a `SemanticError` of kind `backendNotInBuild`. The
 README's "Semantic search integration" section covers the features, the release
-contract, the session lifecycle and the fallback contract.
+contract, the session lifecycle and the fallback contract. Every one of them but
+`semanticStatus` and `disableSemantic` throws a `SemanticError` when it fails
+(see "Failures and states" below).
 
 **The application never builds the library's vectors.** The build machine
 embeds the library into an artifact; the application opens it with
@@ -312,6 +314,53 @@ library, not a rebuild. On macOS, a Hardened Runtime application loads only
 libraries signed by Apple or with its own Team ID, so ship the runtime inside
 the signed application bundle and name it with `OTZARIA_ONNX_RUNTIME`. The
 ONNX backend is built for desktop targets (Windows, Linux and macOS) only.
+
+**Failures and states.** A failed semantic call throws `SemanticError`, an
+`FrbException` with three fields: `kind`, a `SemanticErrorKind` to branch on;
+`message`, the detailed text the call has always produced; and `field`, the
+field the failure is about when it is about one. Before, these calls threw
+`AnyhowException` with the same text. The status and the search envelope carry
+kinds too:
+
+| type | field | meaning |
+| --- | --- | --- |
+| `SemanticStatus` | `state` | a `SemanticState`: `notInBuild`, `notConfigured`, `ready`, `stale`; and for a development session `empty` (nothing indexed yet), `needsReindex` or `failed` |
+| `SemanticStatus` | `errorKind` | the kind of `lastError`, non-null exactly when it is; a development session's sidecar reports its failures as text only, so they are `internal` here |
+| `SemanticSearchResponse` | `fallbackKind` | why the semantic path did not serve the search, when it was asked to: `notConfigured`, `featureNotInBuild`, `artifactStale` or `queryFailed`; null when it served it, or was not asked |
+
+A kind is decided from the type of the failure, never from its message. Where
+one type covers two states, a fact decides: a missing `manifest.json` makes
+unusable metadata a missing artifact, and a file where ONNX Runtime is looked
+for makes a runtime that did not load unusable rather than missing. The
+installation's own identity values are checked first, by the sidecar's own
+functions, so a value no build serves is `invalidInput`, and what opening refuses
+after that is the artifact's, the model's or the runtime's. More kinds will be
+added: a `switch` needs a default branch, which is best treated as `internal`.
+
+| kind | thrown by, or reported in | means | what to do |
+| --- | --- | --- | --- |
+| `notConfigured` | `state`, `fallbackKind` | no session is open | open the artifact |
+| `featureNotInBuild` | `state`, `fallbackKind` | no semantic support in this build | hide semantic search |
+| `artifactMissing` | `openSemanticArtifact` | no directory, or no `manifest.json` in it | download the artifact |
+| `artifactCorrupt` | `openSemanticArtifact` | damaged metadata or payload, or an identity left unfilled (`field`) | download it again |
+| `artifactIncompatible` | `openSemanticArtifact` | built for another corpus, model or store format; `field` is the first identity field that disagreed (`corpus.library_version`, `model.model_id`, `store.store_format_version`, `metadata_version`) | install the artifact built for this release |
+| `artifactNotPublished` | `openSemanticArtifact` | its digest is not the published one | download the official artifact |
+| `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after opening | `disableSemantic`, open the matching pair |
+| `indexNotStamped` | `openSemanticArtifact` | no corpus stamp this build reads | install the release's index |
+| `indexStampMismatch` | `openSemanticArtifact` | the index changed after it was stamped | install the release's index |
+| `modelMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no file at `modelPath` | download the model |
+| `tokenizerMissing` | `openSemanticArtifact`, `semanticIndexBooks` | an ONNX graph without `tokenizer.json` beside it | install the whole package |
+| `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model of its format, or its backend could not load it | download the model again |
+| `modelIdentityMismatch` | `openSemanticArtifact`, `semanticIndexBooks` | the identity does not describe the model; `field`: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` | ship the matching identity file or model |
+| `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for | provide ONNX Runtime |
+| `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
+| `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no backend for the model's format in this build | a model this build serves |
+| `sessionConflict` | `configureSemantic`, `openSemanticArtifact` | another session, or other inputs, is open | `disableSemantic` first |
+| `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened artifact | nothing |
+| `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
+| `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
+| `invalidInput` | `configureSemantic`, `openSemanticArtifact` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`) | fix the call |
+| `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
 
 ---
 

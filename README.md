@@ -114,22 +114,84 @@ wherever it is shipped. An index added to, deleted from or merged since is
 refused, since the artifact's line ids may then name lines that moved, so the
 build machine stamps the index as it will ship, after any optimize.
 
-Every refusal names every field that disagreed, and leaves no session open. An
-opened artifact is read-only: `semanticIndexBooks`, `removeSemanticBooks`,
-`resetSemanticIndex`, `semanticIndexDiff` and `configureSemantic` are refused by
-name. A commit to the index after opening makes the artifact stale: searches then
-fall back to lexical results with the reason as `fallbackReason`, and
-`semanticStatus` reports `available: false` with the reason as `lastError`, until
-the session is disabled and a matching pair opened. Opening the same artifact
-again is a no-op; opening another needs `disableSemantic` first. Opening does
-not hold the engine's write lock, so lexical search keeps serving while the model
-and the vectors load.
+Every refusal names every field that disagreed, and leaves no session open. It is
+a `SemanticError`, whose `kind` says which refusal it was (see "Telling failures
+apart" below). An opened artifact is read-only: `semanticIndexBooks`,
+`removeSemanticBooks`, `resetSemanticIndex`, `semanticIndexDiff` and
+`configureSemantic` are refused by name. A commit to the index after opening
+makes the artifact stale: searches then fall back to lexical results with the
+reason as `fallbackReason`, and `semanticStatus` reports `available: false` with
+the reason as `lastError`, until the session is disabled and a matching pair
+opened; `state` is then `stale`, and `fallbackKind` and `errorKind` are
+`artifactStale`. Opening the same artifact again is a no-op; opening another
+needs `disableSemantic` first. Opening does not hold the engine's write lock, so
+lexical search keeps serving while the model and the vectors load.
 
 INT8 vectors depend on the CPU's INT8 kernels: ARM (KleidiAI) and x86 (MLAS)
 land about cosine 0.999 apart, the same order as INT8 against fp32. A library
 built on x86 and queried on an ARM Mac therefore meets at about 0.999. The
 sidecar records this as accepted, and as a measurement still to be made on a
 weak PC.
+
+### Telling failures apart
+
+A semantic call that fails throws a `SemanticError`, where it used to throw
+`AnyhowException`. Its `kind`, a `SemanticErrorKind`, is what to branch on;
+`message` is the detailed text, as before, for a developer; and `field` names
+the field the failure is about, when it is about one. Beside them,
+`SemanticStatus.state` says what the session can do, `SemanticStatus.errorKind`
+is the kind of `lastError`, and `SemanticSearchResponse.fallbackKind` says why a
+search fell back to lexical results. The kind is decided from the type of the
+failure, the sidecar's typed errors and the engine's own, and never from a
+message, so rewording a message cannot change it.
+
+On the application's path:
+
+| kind | reported by | means, and what to do |
+| --- | --- | --- |
+| `artifactMissing` | `openSemanticArtifact` | nothing installed at `artifactDir`: download the artifact |
+| `artifactCorrupt` | `openSemanticArtifact` | a damaged artifact (metadata, a payload, a checksum): download it again |
+| `artifactNotPublished` | `openSemanticArtifact` | not the artifact whose digest was published: download the official one |
+| `artifactIncompatible` | `openSemanticArtifact` | built for something else; `field` names the first field that disagreed: `corpus.*` for another release of the library, `model.*` for another model, `store.*` or `metadata_version` for another release of the application. Install the artifact built for this one |
+| `indexNotStamped`, `indexStampMismatch` | `openSemanticArtifact` | the index has no corpus stamp this build reads, or changed after it was stamped: install the release's index with its artifact |
+| `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package |
+| `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
+| `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, or one that does not load (see "The ONNX Runtime library") |
+| `backendNotInBuild` | `openSemanticArtifact` | this build cannot run the model's format |
+| `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
+| `readOnlySession` | the calls that build vectors | refused on an opened artifact; nothing to fix |
+| `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after the artifact was opened |
+| `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
+| `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
+| `invalidInput` | `openSemanticArtifact`, `configureSemantic` | a value the call cannot take: fix the call |
+| `internal` | any call | a fault, including the lexical index failing under `searchSemantic`: report `message` |
+
+The development path adds `reindexRequired`, and the states `empty` (nothing
+indexed yet), `needsReindex` and `failed`. The doc comment of
+`SemanticErrorKind` has every kind, and API_DOCUMENTATION.md the full table.
+
+More kinds will be added, so a `switch` over the kind needs a default branch,
+and a kind the application does not know is best handled as `internal`:
+
+```dart
+try {
+  await engine.openSemanticArtifact(config: input);
+} on SemanticError catch (error) {
+  switch (error.kind) {
+    case SemanticErrorKind.artifactMissing:
+    case SemanticErrorKind.artifactCorrupt:
+    case SemanticErrorKind.artifactNotPublished:
+      offerArtifactDownload();
+    case SemanticErrorKind.modelMissing:
+    case SemanticErrorKind.tokenizerMissing:
+    case SemanticErrorKind.modelInvalid:
+      offerModelDownload();
+    default:
+      // 'SemanticError(<kind>[, <field>]): <message>'
+      log(error.toString());
+  }
+}
+```
 
 ### The model
 
@@ -163,8 +225,11 @@ could not be loaded: …", which names both places above. That text is in the
 error `openSemanticArtifact` throws (and, on the development path,
 `semanticIndexBooks` and `SemanticStatus.lastError`). It is not the "No
 embedding backend is available in this build" of a build without the backend:
-here the fix is the library, not a rebuild. Otherwise the model behaves as on
-such a build (see below), and lexical search is unaffected.
+here the fix is the library, not a rebuild. The error's kind says which:
+`onnxRuntimeMissing` when there is no file in either place, `onnxRuntimeUnusable`
+when there is one that does not load, and `backendNotInBuild` on a build without
+the backend. Otherwise the model behaves as on such a build (see below), and
+lexical search is unaffected.
 
 On macOS, an application built with the Hardened Runtime, which notarization
 requires, loads only libraries signed by Apple or with its own Team ID. It may
@@ -192,7 +257,7 @@ path `available`, not `enabled`, is the flag that says so:
 | `configureSemantic` | succeeds: `enabled: true`, `available: false`, `embeddingBackend: null` |
 | `searchSemantic` | falls back to lexical with an explicit `fallbackReason` |
 | `semanticIndexDiff` | reports `enabled: true` and lists the books as new |
-| `semanticIndexBooks` | **throws** — there is nothing to embed with |
+| `semanticIndexBooks` | **throws** `backendNotInBuild` — there is nothing to embed with |
 
 So a caller must gate indexing on `available`, not on `enabled` or on a
 non-empty diff. Search needs no such guard: it degrades on its own.
