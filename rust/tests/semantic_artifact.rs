@@ -75,6 +75,7 @@ impl Library {
             model_path: self.model_file.to_string_lossy().into_owned(),
             model_identity_json,
             published_digest: None,
+            onnx_runtime_path: None,
         }
     }
 
@@ -604,6 +605,7 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
         max_tokens: 512,
         model_quantization: "Q4_K_M".to_string(),
         embedding_text_version: 1,
+        onnx_runtime_path: None,
     }) {
         Ok(_) => panic!("configure_semantic must not replace an opened artifact"),
         Err(error) => error,
@@ -636,6 +638,7 @@ fn an_artifact_does_not_replace_a_session_built_on_the_device() {
             max_tokens: 512,
             model_quantization: "Q4_K_M".to_string(),
             embedding_text_version: 1,
+            onnx_runtime_path: None,
         })
         .unwrap();
 
@@ -658,6 +661,67 @@ fn an_artifact_does_not_replace_a_session_built_on_the_device() {
             .open_semantic_artifact(library.input())
             .unwrap()
             .available
+    );
+}
+
+/// The runtime path on the application's own path. No identity field reads it, so the
+/// stand-in, which loads nothing, opens the artifact whatever it names. A repeat is compared
+/// on it, since the process keeps the first runtime it loads: the same path is a repeat, and
+/// none, or another, is refused naming it. An empty one is refused before anything opens.
+#[test]
+fn a_runtime_path_opens_no_other_artifact_and_is_compared_on_a_repeat() {
+    let library = build_library(true);
+    let mut engine = library.engine();
+    let with_runtime = |path: Option<&Path>| SemanticArtifactInput {
+        onnx_runtime_path: path.map(|path| path.to_string_lossy().into_owned()),
+        ..library.input()
+    };
+    let bundled = library
+        .index
+        .join("Frameworks")
+        .join("libonnxruntime.dylib");
+
+    let status = engine
+        .open_semantic_artifact(with_runtime(Some(&bundled)))
+        .expect("the runtime path is not part of the artifact's identity");
+    assert!(status.available, "{:?}", status.last_error);
+    let again = engine
+        .open_semantic_artifact(with_runtime(Some(&bundled)))
+        .expect("the same runtime path is a repeat");
+    assert_eq!(again.state, SemanticState::Ready);
+
+    let elsewhere = library.index.join("libonnxruntime.dylib");
+    for changed in [None, Some(elsewhere.as_path())] {
+        let error = match engine.open_semantic_artifact(with_runtime(changed)) {
+            Ok(_) => panic!("{changed:?}: another runtime path must not pass for a repeat"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.kind,
+            SemanticErrorKind::SessionConflict,
+            "{changed:?}"
+        );
+        assert!(
+            error.message.contains("and onnx_runtime_path changed"),
+            "{}",
+            error.message
+        );
+    }
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
+
+    engine.disable_semantic();
+    let error = open_refusal(
+        &engine,
+        SemanticArtifactInput {
+            onnx_runtime_path: Some(String::new()),
+            ..library.input()
+        },
+    );
+    assert_refused(
+        &engine,
+        &error,
+        SemanticErrorKind::InvalidInput,
+        Some("onnx_runtime_path"),
     );
 }
 

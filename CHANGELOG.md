@@ -159,18 +159,48 @@ are now documented as development and testing scaffolding, not for the library.
   still write nothing outside `--out`.
 - **The ONNX embedding backend, `semantic-onnx`**, for ONNX graphs such as the
   Meivin model. It links nothing native: the sidecar loads the ONNX Runtime
-  shared library when a model loads, from `OTZARIA_ONNX_RUNTIME` or else from
-  the platform's default file name beside the `.onnx` graph. **An application
-  that configures an ONNX model has to provide that library**; the reference is
+  shared library when a model loads, from the path the application passes
+  (`onnxRuntimePath`, next entry), else `OTZARIA_ONNX_RUNTIME`, else the
+  platform's default file name beside the `.onnx` graph. **An application that
+  configures an ONNX model has to provide that library**; the reference is
   Microsoft's ONNX Runtime 1.28.0 release, and the oldest runtime API accepted
   is 1.17's. Without one that loads, opening an artifact (or, on the
   development path, indexing) throws an error that says "ONNX Runtime could not
-  be loaded: …" and names both places, not the no-backend error of a build
+  be loaded: …" and what each place held, not the no-backend error of a build
   without it; semantic search reports itself unavailable, and lexical search is
   unaffected. On macOS a Hardened Runtime application loads
   only libraries signed by Apple or with its own Team ID, so the runtime belongs
-  inside the signed bundle, named through `OTZARIA_ONNX_RUNTIME`. The runtime is
+  inside the signed bundle, passed as `onnxRuntimePath`. The runtime is
   not part of the model checksum. The backend is built for desktop targets only.
+- **`onnxRuntimePath`: the ONNX Runtime the application ships.**
+  `SemanticArtifactInput` and `SemanticConfigInput` gain an optional
+  `onnxRuntimePath`, the shared library an ONNX model runs on, which the plugin
+  hands to the sidecar as its `EmbeddingDeployment` (the sidecar is pinned at
+  62f0c44, which added it). It is the first place looked and, once passed, the
+  only one: a path that names no file is `onnxRuntimeMissing` and one that does
+  not load `onnxRuntimeUnusable`, never a fall-back to `OTZARIA_ONNX_RUNTIME` or
+  to the file beside the graph, which stay the second and third places; an empty
+  one is `invalidInput` before anything is opened. No identity reads it: the
+  manifest does not record it, and an artifact opens whatever it names. Both
+  calls compare it on a repeat all the same, since a process keeps the first
+  runtime it loads and cannot replace it: another path while a session is open
+  is a `sessionConflict` naming `onnx_runtime_path`, rather than a no-op that
+  would leave the caller believing its runtime is in use, and after
+  `disableSemantic` a session that names another runtime is
+  `onnxRuntimeUnusable` until the process restarts. The README and
+  API_DOCUMENTATION give the layout the application installs: `<root>/otzaria/`
+  holds `seforim.db` and the model package's folder (the graph,
+  `tokenizer.json` and the identity file `model.json`), `<root>/index/` the
+  lexical index, and the artifact a folder of its own beside `index/`; the
+  runtime ships with the application, or sits beside the graph as the build for
+  that machine. Microsoft's macOS build of 1.28.0 is arm64 only and needs macOS
+  14 (its `LC_BUILD_VERSION` minimum), so on macOS 12 and 13, which the plugin
+  supports, it is `onnxRuntimeUnusable`. Tested: a passed path that names no
+  file, and one that does not load, in `rust/tests/semantic_onnx_errors.rs`; the
+  comparison on a repeat and the empty path, for both calls, with the stand-in
+  and across the bridge; and in the real-model suite, the artifact opened on the
+  passed runtime alone, in a child process without `OTZARIA_ONNX_RUNTIME` and
+  with nothing beside the graph, and a second runtime refused after it.
 - **Tests against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
   a handful of lines indexed through the public API, and queries that must rank
   the line they are about first. A ranking cannot tell whether the role

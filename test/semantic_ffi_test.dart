@@ -441,6 +441,50 @@ Future<void> main() async {
       },
     );
 
+    test(
+      'the runtime path reaches Rust and is an input of the session',
+      () async {
+        // The stand-in loads no runtime, so the path need not name a file. That
+        // it arrived is shown by the session open without one refusing it as a
+        // change, by name; an empty one is refused as an input.
+        await expectLater(
+          engine.configureSemantic(
+            config: stubGgufConfig(
+              rootDir: '${root.path}/semantic',
+              modelPath: '${root.path}/mock.gguf',
+              modelId: 'test-mock',
+              maxTokens: maxTokens,
+              onnxRuntimePath: '${root.path}/Frameworks/libonnxruntime.dylib',
+            ),
+          ),
+          throwsA(
+            isSemanticError(SemanticErrorKind.sessionConflict).having(
+              (error) => error.message,
+              'message',
+              contains('onnx_runtime_path changed'),
+            ),
+          ),
+        );
+        await engine.disableSemantic();
+        await expectLater(
+          engine.configureSemantic(
+            config: stubGgufConfig(
+              rootDir: '${root.path}/semantic',
+              modelPath: '${root.path}/mock.gguf',
+              modelId: 'test-mock',
+              onnxRuntimePath: '',
+            ),
+          ),
+          throwsA(
+            isSemanticError(
+              SemanticErrorKind.invalidInput,
+              field: 'onnx_runtime_path',
+            ),
+          ),
+        );
+      },
+    );
+
     test('the index diff sees the indexed book', () async {
       final diff = await engine.semanticIndexDiff();
 
@@ -472,12 +516,15 @@ Future<void> main() async {
     late SearchEngine engine;
     late Map<String, Object> identity;
 
-    SemanticArtifactInput input(Map<String, Object> modelIdentity) =>
-        SemanticArtifactInput(
-          artifactDir: '${root.path}/artifact',
-          modelPath: '${root.path}/model.gguf',
-          modelIdentityJson: jsonEncode(modelIdentity),
-        );
+    SemanticArtifactInput input(
+      Map<String, Object> modelIdentity, {
+      String? onnxRuntimePath,
+    }) => SemanticArtifactInput(
+      artifactDir: '${root.path}/artifact',
+      modelPath: '${root.path}/model.gguf',
+      modelIdentityJson: jsonEncode(modelIdentity),
+      onnxRuntimePath: onnxRuntimePath,
+    );
 
     setUp(() async {
       root = Directory.systemTemp.createTempSync('otzaria_ffi_artifact');
@@ -584,6 +631,34 @@ Future<void> main() async {
       expect(hit.snippetHtml, probeLine);
       expect(hit.filePath, bookKey);
     });
+
+    test(
+      'the runtime path is compared when the artifact is opened again',
+      () async {
+        // No identity field reads the runtime path, and the stand-in loads no
+        // runtime, so the artifact opens; opening it again is a repeat only with
+        // the same path, since the process keeps the first runtime it loads.
+        final bundled = '${root.path}/Frameworks/libonnxruntime.dylib';
+        final opened = await engine.openSemanticArtifact(
+          config: input(identity, onnxRuntimePath: bundled),
+        );
+        expect(opened.available, isTrue, reason: opened.lastError);
+        final again = await engine.openSemanticArtifact(
+          config: input(identity, onnxRuntimePath: bundled),
+        );
+        expect(again.state, SemanticState.ready);
+        await expectLater(
+          engine.openSemanticArtifact(config: input(identity)),
+          throwsA(
+            isSemanticError(SemanticErrorKind.sessionConflict).having(
+              (error) => error.message,
+              'message',
+              contains('onnx_runtime_path changed'),
+            ),
+          ),
+        );
+      },
+    );
 
     test('indexing on an opened artifact is refused as read-only', () async {
       await engine.openSemanticArtifact(config: input(identity));

@@ -33,13 +33,14 @@
 //! the quantization label is read off the file name, so each graph is configured under
 //! its own identity.
 //!
-//! One test is the application's own path rather than the scaffolding's: the build binary
+//! Two tests are the application's own path rather than the scaffolding's: the build binary
 //! embeds the lines into an artifact and stamps the index, and `open_semantic_artifact`
-//! opens it and serves the queries, embedding nothing but them. It also needs the model's
-//! published identity files, `model.json` and `chunking.json`, from the directory
-//! `OTZARIA_TEST_ONNX_IDENTITY` names: the sidecar's `config/models/meivin-round2-onnx`
-//! for the INT8 graph, `config/models/meivin-round2-onnx-fp32` for the fp32 one. Run them
-//! with:
+//! opens it and serves the queries, embedding nothing but them; the second opens it with the
+//! runtime passed as `onnx_runtime_path`, in a child process of its own from which
+//! `OTZARIA_ONNX_RUNTIME` is removed. They also need the model's published identity files,
+//! `model.json` and `chunking.json`, from the directory `OTZARIA_TEST_ONNX_IDENTITY` names:
+//! the sidecar's `config/models/meivin-round2-onnx` for the INT8 graph,
+//! `config/models/meivin-round2-onnx-fp32` for the fp32 one. Run them with:
 //!
 //! ```sh
 //! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-int8.onnx \
@@ -53,7 +54,8 @@
 
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticConfigInput, SemanticExecutedMode, SemanticLexicalMode, SemanticRetrievalMode,
+    SemanticConfigInput, SemanticErrorKind, SemanticExecutedMode, SemanticLexicalMode,
+    SemanticRetrievalMode,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -69,6 +71,17 @@ const RUNTIME_ENV: &str = "OTZARIA_ONNX_RUNTIME";
 /// skip there would be a green run that tested nothing, so each one fails the test
 /// instead. The Dart suites' `OTZARIA_REQUIRE_NATIVE` does the same for the library.
 const REQUIRE_ENV: &str = "OTZARIA_REQUIRE_ONNX_MODEL";
+/// Read by the child process `the_runtime_the_application_passes_is_the_one_that_loads`
+/// runs itself in: the runtime to pass as `onnx_runtime_path`. The parent sets it, and is
+/// the only thing that does, so it is also how the child knows it is the child.
+const PASSED_RUNTIME_ENV: &str = "OTZARIA_TEST_PASSED_ONNX_RUNTIME";
+/// The platform's ONNX Runtime file name, as the sidecar looks for it beside the graph.
+#[cfg(target_os = "macos")]
+const RUNTIME_FILE_NAME: &str = "libonnxruntime.dylib";
+#[cfg(target_os = "linux")]
+const RUNTIME_FILE_NAME: &str = "libonnxruntime.so";
+#[cfg(target_os = "windows")]
+const RUNTIME_FILE_NAME: &str = "onnxruntime.dll";
 const BOOK_KEY: &str = "/library/meivin-probe.txt";
 const TITLE: &str = "probe";
 const TOPICS: &str = "/probe";
@@ -205,6 +218,7 @@ fn meivin(root: &TempDir, model: &Path) -> SemanticConfigInput {
         max_tokens: 256,
         model_quantization: quantization_of(model).to_owned(),
         embedding_text_version: 2,
+        onnx_runtime_path: None,
     }
 }
 
@@ -387,30 +401,19 @@ fn recipe_two_scores_exactly_like_the_role_prefixed_text_it_is_defined_as() {
     }
 }
 
-/// The application's path with the real model: the build binary embeds the library into an
-/// artifact and stamps the index, and the device opens that artifact against the index and
-/// embeds nothing but the queries. The identity files are the model's published ones, used
-/// by both sides exactly as a release would use them, so this also shows the published
-/// `model_checksum` names the graph on disk.
-#[test]
-#[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
-            OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
-            pass --ignored"]
-fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line_first() {
-    let identity = required_file(
-        IDENTITY_ENV,
-        "the directory with the model's model.json and chunking.json, such as the sidecar's \
-         config/models/meivin-round2-onnx",
-    );
-    let Some([model, _runtime, identity]) = needed([model_file(), runtime_library(), identity])
-    else {
-        return;
-    };
-
-    // The library, closed before the build reads it, as a release builds it. One book, so
-    // the ids are the ones `add_text_book` composes; every line is long enough to embed on
-    // its own, so none borrows a neighbour's text.
-    let root = TempDir::new().unwrap();
+/// The library as a release builds it, closed before the build reads it, and the artifact the
+/// build binary embeds it into, stamping the index: the index's directory and the artifact's.
+/// One book, so the ids are the ones `add_text_book` composes; every line is long enough to
+/// embed on its own, so none borrows a neighbour's text.
+///
+/// `runtime` is the ONNX Runtime the build binary loads, through `OTZARIA_ONNX_RUNTIME` as
+/// the build machine does; `None` leaves the variable as this process has it.
+fn build_artifact(
+    root: &TempDir,
+    model: &Path,
+    identity: &Path,
+    runtime: Option<&Path>,
+) -> (PathBuf, PathBuf) {
     let index = root.path().join("tantivy");
     std::fs::create_dir_all(&index).unwrap();
     {
@@ -431,54 +434,61 @@ fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line
     }
 
     let artifact = root.path().join("artifact");
-    let built = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"))
-        .args([
-            "--index",
-            index.to_str().unwrap(),
-            "--library-version",
-            "meivin-probe",
-            "--model",
-            identity.join("model.json").to_str().unwrap(),
-            "--model-file",
-            model.to_str().unwrap(),
-            "--chunking",
-            identity.join("chunking.json").to_str().unwrap(),
-            "--out",
-            artifact.to_str().unwrap(),
-            "--stamp-index",
-        ])
-        .output()
-        .expect("the build binary runs");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"));
+    command.args([
+        "--index",
+        index.to_str().unwrap(),
+        "--library-version",
+        "meivin-probe",
+        "--model",
+        identity.join("model.json").to_str().unwrap(),
+        "--model-file",
+        model.to_str().unwrap(),
+        "--chunking",
+        identity.join("chunking.json").to_str().unwrap(),
+        "--out",
+        artifact.to_str().unwrap(),
+        "--stamp-index",
+    ]);
+    if let Some(runtime) = runtime {
+        command.env(RUNTIME_ENV, runtime);
+    }
+    let built = command.output().expect("the build binary runs");
     assert!(
         built.status.success(),
         "build failed:\n{}\n{}",
         String::from_utf8_lossy(&built.stdout),
         String::from_utf8_lossy(&built.stderr)
     );
+    (index, artifact)
+}
 
-    let engine = SearchEngine::new(index.to_str().unwrap());
-    let status = engine
-        .open_semantic_artifact(SemanticArtifactInput {
-            artifact_dir: artifact.to_string_lossy().into_owned(),
-            model_path: model.to_string_lossy().into_owned(),
-            model_identity_json: std::fs::read_to_string(identity.join("model.json")).unwrap(),
-            published_digest: None,
-        })
-        .expect("the artifact built from this index opens against it");
-    assert!(status.available, "{:?}", status.last_error);
-    assert_eq!(
-        status.embedding_backend.as_deref(),
-        Some("onnxruntime-sentence-v1")
-    );
-    assert_eq!(status.vector_count, LINES.len() as u32);
+/// How the device opens the artifact: the model's published identity file, and the runtime
+/// the application passes, if it passes one.
+fn artifact_input(
+    artifact: &Path,
+    model: &Path,
+    identity: &Path,
+    runtime: Option<&Path>,
+) -> SemanticArtifactInput {
+    SemanticArtifactInput {
+        artifact_dir: artifact.to_string_lossy().into_owned(),
+        model_path: model.to_string_lossy().into_owned(),
+        model_identity_json: std::fs::read_to_string(identity.join("model.json")).unwrap(),
+        published_digest: None,
+        onnx_runtime_path: runtime.map(|runtime| runtime.to_string_lossy().into_owned()),
+    }
+}
 
+/// Every query ranks the line it is about first, hydrated from the index by its text.
+fn assert_each_query_ranks_its_line_first(engine: &SearchEngine) {
     for (query, expected) in QUERIES {
         let expected_text = LINES
             .iter()
             .find(|(id, _)| *id == expected)
             .map(|(_, text)| *text)
             .unwrap();
-        let ranking = ranking(&engine, query);
+        let ranking = ranking(engine, query);
         let texts: Vec<(String, f32)> = ranking
             .iter()
             .map(|&(id, score)| {
@@ -493,4 +503,157 @@ fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line
             "the line the query is about must rank first; ranking (text, score): {texts:?}"
         );
     }
+}
+
+/// The application's path with the real model: the build binary embeds the library into an
+/// artifact and stamps the index, and the device opens that artifact against the index and
+/// embeds nothing but the queries. The identity files are the model's published ones, used
+/// by both sides exactly as a release would use them, so this also shows the published
+/// `model_checksum` names the graph on disk.
+#[test]
+#[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
+            OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
+            pass --ignored"]
+fn an_artifact_built_on_the_build_machine_opens_on_the_device_and_ranks_the_line_first() {
+    let identity = required_file(
+        IDENTITY_ENV,
+        "the directory with the model's model.json and chunking.json, such as the sidecar's \
+         config/models/meivin-round2-onnx",
+    );
+    let Some([model, _runtime, identity]) = needed([model_file(), runtime_library(), identity])
+    else {
+        return;
+    };
+    let root = TempDir::new().unwrap();
+    let (index, artifact) = build_artifact(&root, &model, &identity, None);
+
+    let engine = SearchEngine::new(index.to_str().unwrap());
+    let status = engine
+        .open_semantic_artifact(artifact_input(&artifact, &model, &identity, None))
+        .expect("the artifact built from this index opens against it");
+    assert!(status.available, "{:?}", status.last_error);
+    assert_eq!(
+        status.embedding_backend.as_deref(),
+        Some("onnxruntime-sentence-v1")
+    );
+    assert_eq!(status.vector_count, LINES.len() as u32);
+    assert_each_query_ranks_its_line_first(&engine);
+}
+
+/// The application's path with the runtime the application ships: the artifact opened with
+/// `onnx_runtime_path` naming the runtime, in a process where `OTZARIA_ONNX_RUNTIME` is unset
+/// and no runtime sits beside the graph, so the passed path is the only way one can load.
+///
+/// A process holds one ONNX Runtime, and the variable is read by the sidecar, so the test
+/// cannot unset it around itself while other tests run in this process. It runs itself again
+/// instead, in a child process of this test binary filtered to this one test, with the
+/// variable removed and the runtime handed over in [`PASSED_RUNTIME_ENV`]; the parent passes
+/// when the child does, and the child does the work.
+#[test]
+#[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
+            OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
+            pass --ignored"]
+fn the_runtime_the_application_passes_is_the_one_that_loads() {
+    const NAME: &str = "the_runtime_the_application_passes_is_the_one_that_loads";
+    if let Some(passed) = std::env::var_os(PASSED_RUNTIME_ENV) {
+        return the_passed_runtime_loads_alone(PathBuf::from(passed));
+    }
+    let identity = required_file(
+        IDENTITY_ENV,
+        "the directory with the model's model.json and chunking.json, such as the sidecar's \
+         config/models/meivin-round2-onnx",
+    );
+    let Some([_model, runtime, _identity]) = needed([model_file(), runtime_library(), identity])
+    else {
+        return;
+    };
+    let child = Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            NAME,
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_remove(RUNTIME_ENV)
+        .env(PASSED_RUNTIME_ENV, &runtime)
+        .output()
+        .expect("this test binary runs again");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    println!("{stdout}");
+    assert!(
+        child.status.success(),
+        "the child process failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the child process ran no test:\n{stdout}"
+    );
+}
+
+/// The child's half of [`the_runtime_the_application_passes_is_the_one_that_loads`].
+fn the_passed_runtime_loads_alone(runtime: PathBuf) {
+    assert!(
+        std::env::var_os(RUNTIME_ENV).is_none(),
+        "the parent process removes {RUNTIME_ENV}"
+    );
+    let identity = required_file(
+        IDENTITY_ENV,
+        "the directory with the model's model.json and chunking.json",
+    );
+    let Some([model, identity]) = needed([model_file(), identity]) else {
+        return;
+    };
+    let beside = model.with_file_name(RUNTIME_FILE_NAME);
+    assert!(
+        !beside.exists(),
+        "{} sits beside the graph, so a runtime could load without the passed path, and this \
+         test would prove nothing",
+        beside.display()
+    );
+    // The build machine's half finds its runtime as the build machine does.
+    let root = TempDir::new().unwrap();
+    let (index, artifact) = build_artifact(&root, &model, &identity, Some(&runtime));
+
+    let mut engine = SearchEngine::new(index.to_str().unwrap());
+    let status = engine
+        .open_semantic_artifact(artifact_input(&artifact, &model, &identity, Some(&runtime)))
+        .expect("the runtime the application passes loads, and is the only one that could");
+    assert!(status.available, "{:?}", status.last_error);
+    assert_eq!(
+        status.embedding_backend.as_deref(),
+        Some("onnxruntime-sentence-v1")
+    );
+    assert_each_query_ranks_its_line_first(&engine);
+
+    // The process keeps that runtime when the session closes: another one named afterwards
+    // is refused, as unusable, and the one it runs opens again.
+    engine.disable_semantic();
+    let other = root.path().join(RUNTIME_FILE_NAME);
+    std::fs::write(&other, b"not the runtime this process runs").unwrap();
+    let error = match engine.open_semantic_artifact(artifact_input(
+        &artifact,
+        &model,
+        &identity,
+        Some(&other),
+    )) {
+        Ok(_) => panic!("a second runtime in one process must be refused"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::OnnxRuntimeUnusable,
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("already runs ONNX Runtime"),
+        "{}",
+        error.message
+    );
+    let reopened = engine
+        .open_semantic_artifact(artifact_input(&artifact, &model, &identity, Some(&runtime)))
+        .expect("the runtime this process runs opens again");
+    assert!(reopened.available, "{:?}", reopened.last_error);
 }

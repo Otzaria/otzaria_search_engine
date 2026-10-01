@@ -84,11 +84,15 @@ scaffolding, described at the end; they are not for the library.
 ```dart
 final status = await engine.openSemanticArtifact(
   config: SemanticArtifactInput(
-    artifactDir: '$releaseDir/semantic',
-    modelPath: '$modelDir/seforim-embed-round2-int8.onnx',
-    // The model's identity file, shipped with the application.
-    modelIdentityJson: await rootBundle.loadString('assets/model.json'),
+    artifactDir: '$root/semantic',
+    modelPath: '$root/otzaria/meivin/seforim-embed-round2-int8.onnx',
+    // The model's identity file, from the model's folder or the app's assets.
+    modelIdentityJson: await File('$root/otzaria/meivin/model.json')
+        .readAsString(),
     publishedDigest: release.semanticDigest,
+    // The ONNX Runtime the application ships; leave it out to use the one
+    // beside the graph (see "The ONNX Runtime library").
+    onnxRuntimePath: bundledOnnxRuntimePath,
   ),
 );
 ```
@@ -156,7 +160,7 @@ On the application's path:
 | `indexNotStamped`, `indexStampMismatch` | `openSemanticArtifact` | the index has no corpus stamp this build reads, or changed after it was stamped: install the release's index with its artifact |
 | `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package |
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
-| `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, or one that does not load (see "The ONNX Runtime library") |
+| `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
 | `backendNotInBuild` | `openSemanticArtifact` | this build cannot run the model's format |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
 | `readOnlySession` | the calls that build vectors | refused on an opened artifact; nothing to fix |
@@ -209,35 +213,76 @@ never compared with the other's.
 The ONNX backend links nothing native. ONNX Runtime is a shared library the
 sidecar loads when an ONNX model loads, so the plugin's build downloads nothing
 and its binary depends on no new system library, and the application has to
-provide the runtime. The first of these that exists is used:
+provide the runtime. It is looked for in three places, and the first one that
+is set is the only one looked at:
 
-1. the file named by the `OTZARIA_ONNX_RUNTIME` environment variable;
-2. the platform's default file name (`onnxruntime.dll`, `libonnxruntime.so` or
+1. `onnxRuntimePath`, on `SemanticArtifactInput` (and on the development
+   path's `SemanticConfigInput`): the library the application ships;
+2. the file named by the `OTZARIA_ONNX_RUNTIME` environment variable;
+3. the platform's default file name (`onnxruntime.dll`, `libonnxruntime.so` or
    `libonnxruntime.dylib`) in the model directory, beside the `.onnx` graph.
 
+A path passed, or a variable set, that names nothing is refused rather than
+skipped for the next place, since falling back would load a runtime nobody
+chose; an empty `onnxRuntimePath` is refused as `invalidInput` before anything
+is opened. Pass an absolute path. Where the runtime lives is not part of any
+identity: no manifest or artifact records it, and moving it invalidates
+nothing. A process holds one runtime and can neither unload nor replace it, so
+`onnxRuntimePath` is compared when the same call is repeated: opening the same
+artifact with another path is a `sessionConflict`, not a no-op, and after
+`disableSemantic` a session that names a runtime other than the one already
+loaded is refused as `onnxRuntimeUnusable` until the process restarts.
+
+The application's installation, and what each input names:
+
+```text
+<root>/
+├── otzaria/                  the data folder
+│   ├── seforim.db
+│   └── <model>/              the model package
+│       ├── seforim-embed-round2-int8.onnx      modelPath
+│       ├── tokenizer.json
+│       └── model.json        the identity file, modelIdentityJson
+├── index/                    the lexical index, with its corpus stamp
+└── <artifact>/               the vectors artifact, artifactDir
+```
+
+The artifact is a folder of its own beside `index/`. The runtime either ships
+with the application, which passes its path as `onnxRuntimePath` (on macOS
+from inside the signed application bundle, below), or sits in `<model>/` beside
+the graph under the platform's file name, where it is found with no path
+passed; it must then be the build for that machine's operating system and
+architecture. Neither the identity file nor a runtime in that folder is part of
+the model package's checksum: the runtime is code, not model data.
+
 The reference runtime is Microsoft's official ONNX Runtime 1.28.0 release on
-GitHub, and the oldest runtime API accepted is ONNX Runtime 1.17's. The runtime
-is code rather than model data, so it is not part of the model checksum.
+GitHub, and the oldest runtime API accepted is ONNX Runtime 1.17's.
+Microsoft's macOS build of 1.28.0 is arm64 only and needs macOS 14 or later
+(its `LC_BUILD_VERSION` minimum is 14.0), while this plugin supports macOS 12:
+on macOS 12 and 13 that library does not load, and opening reports
+`onnxRuntimeUnusable`. An Intel Mac, and macOS 12 or 13, need a runtime built
+for them; lexical search is unaffected either way.
 
 Without a runtime that loads (none found, not a runtime, too old, or a different
 one already loaded in the process), loading the model fails with "ONNX Runtime
-could not be loaded: …", which names both places above. That text is in the
+could not be loaded: …", which says what each of the places above held, and
+names a library it refused with the place it came from. That text is in the
 error `openSemanticArtifact` throws (and, on the development path,
 `semanticIndexBooks` and `SemanticStatus.lastError`). It is not the "No
 embedding backend is available in this build" of a build without the backend:
 here the fix is the library, not a rebuild. The error's kind says which:
-`onnxRuntimeMissing` when there is no file in either place, `onnxRuntimeUnusable`
-when there is one that does not load, and `backendNotInBuild` on a build without
-the backend. Otherwise the model behaves as on such a build (see below), and
-lexical search is unaffected.
+`onnxRuntimeMissing` when there is no file where the runtime was looked for,
+`onnxRuntimeUnusable` when there is one that does not load, and
+`backendNotInBuild` on a build without the backend. Otherwise the model behaves
+as on such a build (see below), and lexical search is unaffected.
 
 On macOS, an application built with the Hardened Runtime, which notarization
 requires, loads only libraries signed by Apple or with its own Team ID. It may
 therefore refuse Microsoft's `libonnxruntime.dylib` from the model directory
 even when the file is intact, and the loader's reason then appears in that
 message. What works is shipping the library inside the application bundle,
-signed with the application's identity, and naming it with
-`OTZARIA_ONNX_RUNTIME`.
+signed with the application's identity, and passing its path as
+`onnxRuntimePath`.
 
 ### Builds without a backend
 
@@ -286,10 +331,13 @@ application code still references them; the doc comments say what they are for.
 
 `SemanticConfigInput` states how the vectors are produced, and nothing in it is
 read from the model file, so the values must be the ones the model was built
-for. The sidecar records every field but `rootDir` in its manifest as the
-index's identity (the model file by its checksum, once it has loaded): an index
-built under one value reports `needsFullReindex` under another, instead of
-mixing in vectors that cannot be compared. The Qwen3 GGUF needs a build with
+for. The sidecar records every field but `rootDir` and `onnxRuntimePath` in its
+manifest as the index's identity (the model file by its checksum, once it has
+loaded): an index built under one value reports `needsFullReindex` under
+another, instead of mixing in vectors that cannot be compared. `onnxRuntimePath`
+is optional and works as on `SemanticArtifactInput`: configuring again with
+another path while a session is open is a `sessionConflict`, as for any other
+changed input. The Qwen3 GGUF needs a build with
 `semantic-llama`.
 
 | field | Qwen3 GGUF | Meivin ONNX |

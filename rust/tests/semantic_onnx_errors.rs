@@ -9,9 +9,11 @@
 //!
 //! The ONNX model is a stub package: a graph that passes the sidecar's structural checks and
 //! that no runtime could run, and a tokenizer that loads. Loading stops at the runtime, which
-//! is what is being tested, before the graph is ever handed to one. The runtime's own path is
-//! the `OTZARIA_ONNX_RUNTIME` variable or the file beside the graph; with the variable set,
-//! the tests cannot tell which runtime they are testing, and they skip, loudly.
+//! is what is being tested, before the graph is ever handed to one. The runtime's path is the
+//! one the application passes, `onnx_runtime_path`; else the `OTZARIA_ONNX_RUNTIME` variable;
+//! else the file beside the graph. The tests that pass a path test it wherever they run, since
+//! a passed path is the only place looked. The others place a file beside the graph, and with
+//! the variable set they cannot tell which runtime they are testing, so they skip, loudly.
 
 #![cfg(all(
     feature = "semantic-onnx",
@@ -203,6 +205,7 @@ fn onnx_config(root: &TempDir, graph: &Path) -> SemanticConfigInput {
         max_tokens: 256,
         model_quantization: "int8".to_string(),
         embedding_text_version: 2,
+        onnx_runtime_path: None,
     }
 }
 
@@ -246,6 +249,7 @@ fn a_gguf_on_a_build_with_only_the_onnx_backend_is_backend_not_in_build() {
             max_tokens: 512,
             model_quantization: "Q4_K_M".to_string(),
             embedding_text_version: 1,
+            onnx_runtime_path: None,
         },
     );
 
@@ -314,6 +318,76 @@ fn an_onnx_runtime_that_does_not_load_is_onnx_runtime_unusable() {
     );
     assert!(
         error.message.contains("ONNX Runtime could not be loaded")
+            && error.message.contains(RUNTIME_FILE_NAME),
+        "{}",
+        error.message
+    );
+}
+
+/// A path the application passes is the only place looked: one that names no file is a
+/// missing runtime even with a file beside the graph, which the lookup without a path would
+/// have found and called unusable. The message names the path and where it came from, which
+/// is also what shows that the path reached the sidecar.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+#[test]
+fn a_passed_runtime_path_that_names_no_file_is_onnx_runtime_missing() {
+    let root = TempDir::new().unwrap();
+    let package = root.path().join("model");
+    let graph = stub_onnx_package(&package);
+    std::fs::write(package.join(RUNTIME_FILE_NAME), b"not a shared library").unwrap();
+    let passed = root.path().join("bundle").join(RUNTIME_FILE_NAME);
+    let engine = configured(
+        &root,
+        SemanticConfigInput {
+            onnx_runtime_path: Some(passed.to_string_lossy().into_owned()),
+            ..onnx_config(&root, &graph)
+        },
+    );
+
+    let error = index_failure(&engine);
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::OnnxRuntimeMissing,
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("the application passed")
+            && error.message.contains(&passed.display().to_string()),
+        "{}",
+        error.message
+    );
+}
+
+/// A passed path that names a file that is not a runtime: unusable, named as the
+/// application's, and refused before the runtime binding is ever handed it, so a later load
+/// in this process is not affected.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+#[test]
+fn a_passed_runtime_that_does_not_load_is_onnx_runtime_unusable() {
+    let root = TempDir::new().unwrap();
+    let graph = stub_onnx_package(&root.path().join("model"));
+    let bundle = root.path().join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let passed = bundle.join(RUNTIME_FILE_NAME);
+    std::fs::write(&passed, b"not a shared library").unwrap();
+    let engine = configured(
+        &root,
+        SemanticConfigInput {
+            onnx_runtime_path: Some(passed.to_string_lossy().into_owned()),
+            ..onnx_config(&root, &graph)
+        },
+    );
+
+    let error = index_failure(&engine);
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::OnnxRuntimeUnusable,
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("(passed by the application)")
             && error.message.contains(RUNTIME_FILE_NAME),
         "{}",
         error.message
