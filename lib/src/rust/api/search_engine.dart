@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `write_current_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
@@ -327,6 +327,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   ///   which input changed. Switching model, text recipe or library root is an
   ///   explicit act: call [`Self::disable_semantic`] first and accept the
   ///   rebuild.
+  ///
+  /// A refusal is a [`SemanticError`]: `SessionConflict` while another session,
+  /// or this one with other inputs, is open, and `InvalidInput` for a value the
+  /// sidecar cannot serve. The model loads lazily, so a missing or unusable model
+  /// is not refused here but by the first [`Self::semantic_index_books`].
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   });
@@ -816,6 +821,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// - Called while another session is open it fails: call
   ///   [`Self::disable_semantic`] first.
   ///
+  /// Every refusal is a [`SemanticError`] whose kind says which of these it was,
+  /// so the application can tell the user what to install: the artifact, the
+  /// release's index, the model or ONNX Runtime. The table on
+  /// [`SemanticErrorKind`] has each kind, and `field` names the identity field
+  /// that disagreed when the artifact was built for something else.
+  ///
   /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
   /// the artifact's vectors, which takes time, and a `&mut self` binding would
   /// hold the engine's write lock throughout, stalling every lexical search.
@@ -1118,6 +1129,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
   /// development session, except that a stale artifact (the index committed
   /// to since it was opened) is not asked, and the lexical fallback says why.
+  ///
+  /// A semantic path that cannot serve is not an error here: the response falls
+  /// back to lexical results and says why, in `fallback_reason`. What fails the
+  /// call is the lexical half failing, which is an `Internal` [`SemanticError`].
   Future<SemanticSearchResponse> searchSemantic({
     required String query,
     required List<String> facets,
@@ -1170,6 +1185,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
   /// lock on the whole engine for the entire run, blocking every concurrent
   /// *lexical* search for as long as the library takes to embed.
+  ///
+  /// The first call with something to embed loads the model, so this is where
+  /// a session from [`Self::configure_semantic`] meets a missing or unusable
+  /// model, tokenizer or ONNX Runtime, each as its own [`SemanticErrorKind`];
+  /// `ReindexRequired` when the session holds vectors from another
+  /// configuration, and `ReadOnlySession` on an opened artifact.
   Future<SemanticIndexingSummary> semanticIndexBooks({
     required List<SemanticBookInput> books,
   });
@@ -2193,6 +2214,143 @@ class SemanticConfigInput {
           maxTokens == other.maxTokens &&
           modelQuantization == other.modelQuantization &&
           embeddingTextVersion == other.embeddingTextVersion;
+}
+
+/// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
+/// `FrbException`, where these calls used to throw `AnyhowException`: flutter_rust_bridge
+/// throws the error type of a `Result` as an exception class of its own.
+///
+/// `message` is the text the call has always produced, with every path, value and field that
+/// disagreed, and is for a developer to read. `kind` is what an application branches on —
+/// [`SemanticErrorKind`] says what each means and what to do — and `field` names the one
+/// field the failure is about, when there is one:
+///
+/// | kind | `field` |
+/// | --- | --- |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
+/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir` |
+///
+/// It is `None` for every other kind, and wherever the failure does not say.
+class SemanticError implements FrbException {
+  /// What went wrong, as the value to branch on.
+  final SemanticErrorKind kind;
+
+  /// The detailed description, as the call produced it before it had a kind.
+  final String message;
+
+  /// The field the failure is about, when it is about one.
+  final String? field;
+
+  const SemanticError({required this.kind, required this.message, this.field});
+
+  @override
+  String toString() =>
+      'SemanticError(${kind.name}${field == null ? '' : ', $field'}): $message';
+
+  @override
+  int get hashCode => kind.hashCode ^ message.hashCode ^ field.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticError &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          message == other.message &&
+          field == other.field;
+}
+
+/// What stopped the semantic path, as a value an application can switch on to choose a
+/// message and an action. A [`SemanticError`] carries one when a semantic call fails.
+///
+/// The message beside it is unchanged, and is still the one for a developer to read: it
+/// names every path, value and field involved. The kind is what to branch on, never the
+/// message. It is decided from the type of the failure, the sidecar's typed errors and this
+/// crate's own, and never by reading a message, so a reworded error cannot move a failure
+/// from one kind to another. Where the type alone cannot settle it, a fact does: whether the
+/// artifact's `manifest.json` exists (missing, or damaged), and whether there is a file where
+/// ONNX Runtime is looked for (missing, or unusable). A failure that still cannot be placed
+/// precisely gets the broad kind that is true of it, `Internal` last.
+///
+/// More kinds will be added. A Dart `switch` over this enum therefore needs a default
+/// branch, and a kind the application does not know yet is best handled as `internal`.
+///
+/// | kind | means | the application should | reported by |
+/// | --- | --- | --- | --- |
+/// | `ArtifactMissing` | there is no artifact at `artifact_dir`: no directory, or no `manifest.json` in it | download and install the artifact | `open_semantic_artifact` |
+/// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
+/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
+/// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
+/// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |
+/// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
+/// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
+/// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelInvalid` | the file at `model_path` is not a usable model of its format (a truncated download, a placeholder), or its backend could not load it | download the model again | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: `OTZARIA_ONNX_RUNTIME` unset or naming no file, and none beside the graph | install ONNX Runtime beside the model, or name it with `OTZARIA_ONNX_RUNTIME` | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
+/// | `BackendNotInBuild` | this build has no embedding backend for the model's format: an ONNX graph on Android or iOS, a GGUF on 32-bit ARM, or a build without that format's feature | use a model of a format this build serves; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
+/// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
+/// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
+/// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
+/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call |
+enum SemanticErrorKind {
+  /// No artifact at the artifact directory.
+  artifactMissing,
+
+  /// The artifact is damaged.
+  artifactCorrupt,
+
+  /// A sound artifact, built for another corpus, model or store format.
+  artifactIncompatible,
+
+  /// The artifact is not the one whose digest was published.
+  artifactNotPublished,
+
+  /// The lexical index carries no corpus stamp this build reads.
+  indexNotStamped,
+
+  /// The lexical index changed after its corpus stamp was written.
+  indexStampMismatch,
+
+  /// No model file at the model path.
+  modelMissing,
+
+  /// An ONNX graph without its `tokenizer.json`.
+  tokenizerMissing,
+
+  /// The model file is not a usable model, or could not be loaded.
+  modelInvalid,
+
+  /// The model identity in hand does not describe the model file.
+  modelIdentityMismatch,
+
+  /// An ONNX model, and no ONNX Runtime library where one is looked for.
+  onnxRuntimeMissing,
+
+  /// The ONNX Runtime library found cannot be used.
+  onnxRuntimeUnusable,
+
+  /// No embedding backend for the model's format in this build.
+  backendNotInBuild,
+
+  /// Another semantic session is open, or this one with different inputs.
+  sessionConflict,
+
+  /// A call that builds vectors, on a read-only artifact.
+  readOnlySession,
+
+  /// A session built on this device holds vectors from another configuration.
+  reindexRequired,
+
+  /// An input the call cannot take.
+  invalidInput,
+
+  /// Anything else; the message says what.
+  internal,
 }
 
 enum SemanticExecutedMode { disabled, hybrid, semanticOnly, lexicalOnly }

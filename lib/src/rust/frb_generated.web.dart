@@ -411,6 +411,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticConfigInput dco_decode_semantic_config_input(dynamic raw);
 
   @protected
+  SemanticError dco_decode_semantic_error(dynamic raw);
+
+  @protected
+  SemanticErrorKind dco_decode_semantic_error_kind(dynamic raw);
+
+  @protected
   SemanticExecutedMode dco_decode_semantic_executed_mode(dynamic raw);
 
   @protected
@@ -925,6 +931,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticConfigInput sse_decode_semantic_config_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticError sse_decode_semantic_error(SseDeserializer deserializer);
+
+  @protected
+  SemanticErrorKind sse_decode_semantic_error_kind(
     SseDeserializer deserializer,
   );
 
@@ -1577,6 +1591,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_config_input(
     SemanticConfigInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_error(SemanticError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_semantic_error_kind(
+    SemanticErrorKind self,
     SseSerializer serializer,
   );
 

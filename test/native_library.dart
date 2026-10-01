@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 
@@ -106,7 +105,7 @@ SemanticConfigInput stubGgufConfig({
 /// | after | mock build | backend-less build |
 /// | --- | --- | --- |
 /// | `configureSemantic` | `available: false` | `available: false` |
-/// | `semanticIndexBooks` | `available: true`, `mock-hash-v1` | throws |
+/// | `semanticIndexBooks` | `available: true`, `mock-hash-v1` | throws `backendNotInBuild` |
 ///
 /// Checking `available` before indexing would therefore skip the whole suite on
 /// a build that can run it perfectly well.
@@ -163,8 +162,8 @@ Future<String?> semanticSidecarSkipReason() async {
       failure =
           'available=${status.available} '
           'embeddingBackend=${status.embeddingBackend}';
-    } on AnyhowException catch (error) {
-      failure = error.message.trim();
+    } on SemanticError catch (error) {
+      failure = error.toString();
     }
 
     const message =

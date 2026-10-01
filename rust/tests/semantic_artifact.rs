@@ -18,10 +18,11 @@
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};
 use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+use otzaria_semantic_search::semantic::zevc_store::VECTORS_FILENAME;
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticConfigInput, SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource,
-    SemanticRetrievalMode, SemanticSearchResponse,
+    SemanticConfigInput, SemanticError, SemanticErrorKind, SemanticExecutedMode,
+    SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse,
 };
 use search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME;
 use serde_json::Value as JsonValue;
@@ -210,14 +211,30 @@ fn build_library(stamp: bool) -> Library {
     }
 }
 
-fn open_refusal(engine: &SearchEngine, input: SemanticArtifactInput) -> String {
+fn open_refusal(engine: &SearchEngine, input: SemanticArtifactInput) -> SemanticError {
     match engine.open_semantic_artifact(input) {
         Ok(status) => panic!(
             "the artifact must be refused, and opened: {:?}",
             status.model_id
         ),
-        Err(error) => format!("{error:#}"),
+        Err(error) => error,
     }
+}
+
+/// The refusal's kind and field, which an application branches on, and nothing left open:
+/// every refusal leaves the engine as it was.
+fn assert_refused(
+    engine: &SearchEngine,
+    error: &SemanticError,
+    kind: SemanticErrorKind,
+    field: Option<&str>,
+) {
+    assert_eq!(error.kind, kind, "{}", error.message);
+    assert_eq!(error.field.as_deref(), field, "{}", error.message);
+    assert!(
+        !engine.semantic_status().enabled,
+        "a refusal leaves no session open"
+    );
 }
 
 fn search(
@@ -337,11 +354,30 @@ fn the_stamp_is_the_one_file_the_build_writes_into_the_index() {
 #[test]
 fn an_index_without_a_corpus_stamp_is_refused_and_says_how_to_make_one() {
     let library = build_library(false);
-    let message = open_refusal(&library.engine(), library.input());
+    let engine = library.engine();
+    let error = open_refusal(&engine, library.input());
+    let message = &error.message;
     assert!(
         message.contains(CORPUS_STAMP_FILE_NAME) && message.contains("--stamp-index"),
         "{message}"
     );
+    assert_refused(&engine, &error, SemanticErrorKind::IndexNotStamped, None);
+}
+
+/// A stamp this build cannot read says nothing about the index, and is no stamp to it.
+#[test]
+fn a_damaged_corpus_stamp_is_no_stamp() {
+    let library = build_library(true);
+    std::fs::write(library.stamp_path(), "{ not a stamp").unwrap();
+
+    let engine = library.engine();
+    let error = open_refusal(&engine, library.input());
+    assert!(
+        error.message.contains("is not a corpus stamp"),
+        "{}",
+        error.message
+    );
+    assert_refused(&engine, &error, SemanticErrorKind::IndexNotStamped, None);
 }
 
 /// A stamp that names another corpus — another release of the library — is refused by the
@@ -354,8 +390,19 @@ fn a_stamp_for_another_corpus_is_refused_by_name() {
     stamp["corpus"]["library_version"] = JsonValue::from("otzaria-library-1999-01");
     std::fs::write(library.stamp_path(), stamp.to_string()).unwrap();
 
-    let message = open_refusal(&library.engine(), library.input());
-    assert!(message.contains("corpus.library_version"), "{message}");
+    let engine = library.engine();
+    let error = open_refusal(&engine, library.input());
+    assert!(
+        error.message.contains("corpus.library_version"),
+        "{}",
+        error.message
+    );
+    assert_refused(
+        &engine,
+        &error,
+        SemanticErrorKind::ArtifactIncompatible,
+        Some("corpus.library_version"),
+    );
 }
 
 /// The index this artifact was built for, changed afterwards: the stamp no longer vouches
@@ -366,11 +413,15 @@ fn an_index_changed_after_it_was_stamped_is_refused() {
     let mut engine = library.engine();
     add_another_book(&mut engine);
 
-    let message = open_refusal(&engine, library.input());
+    let error = open_refusal(&engine, library.input());
     assert!(
-        message.contains("has changed since its corpus stamp was written"),
-        "{message}"
+        error
+            .message
+            .contains("has changed since its corpus stamp was written"),
+        "{}",
+        error.message
     );
+    assert_refused(&engine, &error, SemanticErrorKind::IndexStampMismatch, None);
 }
 
 /// A model-identity field, and one edit of it alone.
@@ -395,28 +446,61 @@ fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
     for (field, edit) in edits {
         let mut model = library.model.clone();
         edit(&mut model);
-        let message = open_refusal(
+        let error = open_refusal(
             &engine,
             library.input_with_identity(serde_json::to_string(&model).unwrap()),
         );
-        assert!(message.contains(field), "{field}: {message}");
+        assert!(error.message.contains(field), "{field}: {}", error.message);
+        // An artifact built for another model; `field` is the path the message names.
+        assert_refused(
+            &engine,
+            &error,
+            SemanticErrorKind::ArtifactIncompatible,
+            Some(field),
+        );
     }
 
-    // Not compared with the artifact by the sidecar, which takes it from the loaded model:
-    // an identity file that disagrees with the model describes other weights.
-    let mut model = library.model.clone();
-    model.model_checksum = "0".repeat(64);
-    let message = open_refusal(
-        &engine,
-        library.input_with_identity(serde_json::to_string(&model).unwrap()),
-    );
-    assert!(
-        message.contains("model_checksum") && message.contains("describes other weights"),
-        "{message}"
-    );
+    // Not compared with the artifact by the sidecar, which takes them from the loaded
+    // model: an identity file that disagrees with the model describes other weights, and
+    // `field` is the identity file's own key.
+    let edits: [IdentityEdit; 2] = [
+        ("model_checksum", |m| m.model_checksum = "0".repeat(64)),
+        ("embedding_backend", |m| {
+            m.embedding_backend = "onnxruntime-sentence-v1".to_string()
+        }),
+    ];
+    for (field, edit) in edits {
+        let mut model = library.model.clone();
+        edit(&mut model);
+        let error = open_refusal(
+            &engine,
+            library.input_with_identity(serde_json::to_string(&model).unwrap()),
+        );
+        let message = &error.message;
+        assert!(
+            message.contains(field) && message.contains("describes other weights"),
+            "{message}"
+        );
+        assert_refused(
+            &engine,
+            &error,
+            SemanticErrorKind::ModelIdentityMismatch,
+            Some(field),
+        );
+    }
 
-    let message = open_refusal(&engine, library.input_with_identity("{".to_string()));
-    assert!(message.contains("not a model identity"), "{message}");
+    let error = open_refusal(&engine, library.input_with_identity("{".to_string()));
+    assert!(
+        error.message.contains("not a model identity"),
+        "{}",
+        error.message
+    );
+    assert_refused(
+        &engine,
+        &error,
+        SemanticErrorKind::InvalidInput,
+        Some("model_identity_json"),
+    );
 
     let status = engine
         .open_semantic_artifact(library.input())
@@ -433,8 +517,18 @@ fn a_published_digest_is_checked() {
         published_digest: Some("0".repeat(64)),
         ..library.input()
     };
-    let message = open_refusal(&engine, wrong);
-    assert!(message.contains("was published for it"), "{message}");
+    let error = open_refusal(&engine, wrong);
+    assert!(
+        error.message.contains("was published for it"),
+        "{}",
+        error.message
+    );
+    assert_refused(
+        &engine,
+        &error,
+        SemanticErrorKind::ArtifactNotPublished,
+        None,
+    );
 
     let right = SemanticArtifactInput {
         published_digest: Some(library.digest.clone()),
@@ -482,14 +576,17 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
         ("semantic_index_diff", engine.semantic_index_diff().err()),
     ];
     for (call, refusal) in refusals {
-        let message = format!(
-            "{:#}",
-            refusal.unwrap_or_else(|| panic!("{call} succeeded"))
+        let error = refusal.unwrap_or_else(|| panic!("{call} succeeded"));
+        assert!(
+            error.message.contains("read-only"),
+            "{call}: {}",
+            error.message
         );
-        assert!(message.contains("read-only"), "{call}: {message}");
+        assert_eq!(error.kind, SemanticErrorKind::ReadOnlySession, "{call}");
+        assert_eq!(error.field, None, "{call}");
     }
 
-    let message = match engine.configure_semantic(SemanticConfigInput {
+    let error = match engine.configure_semantic(SemanticConfigInput {
         root_dir: library
             .index
             .join("semantic")
@@ -504,12 +601,14 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
         embedding_text_version: 1,
     }) {
         Ok(_) => panic!("configure_semantic must not replace an opened artifact"),
-        Err(error) => error.to_string(),
+        Err(error) => error,
     };
     assert!(
-        message.contains("prebuilt semantic artifact is open"),
-        "{message}"
+        error.message.contains("prebuilt semantic artifact is open"),
+        "{}",
+        error.message
     );
+    assert_eq!(error.kind, SemanticErrorKind::SessionConflict);
 
     assert!(
         engine.semantic_status().available,
@@ -536,8 +635,13 @@ fn an_artifact_does_not_replace_a_session_built_on_the_device() {
         })
         .unwrap();
 
-    let message = open_refusal(&engine, library.input());
-    assert!(message.contains("configure_semantic"), "{message}");
+    let error = open_refusal(&engine, library.input());
+    assert!(
+        error.message.contains("configure_semantic"),
+        "{}",
+        error.message
+    );
+    assert_eq!(error.kind, SemanticErrorKind::SessionConflict);
 
     engine.disable_semantic();
     assert!(
@@ -578,9 +682,156 @@ fn a_commit_after_opening_makes_the_artifact_stale_and_says_so() {
     assert_eq!(semantic.fallback_reason.as_deref(), Some(reason.as_str()));
 
     engine.disable_semantic();
-    let message = open_refusal(&engine, library.input());
+    let error = open_refusal(&engine, library.input());
     assert!(
-        message.contains("has changed since its corpus stamp was written"),
-        "a stale index is refused at open too: {message}"
+        error
+            .message
+            .contains("has changed since its corpus stamp was written"),
+        "a stale index is refused at open too: {}",
+        error.message
     );
+    assert_refused(&engine, &error, SemanticErrorKind::IndexStampMismatch, None);
+}
+
+/// Nothing at the artifact directory, and a directory with nothing installed in it: either
+/// way there is no artifact to open, which is not the same as a damaged one.
+#[test]
+fn a_missing_artifact_is_missing_and_not_corrupt() {
+    let library = build_library(true);
+    let engine = library.engine();
+    let empty = TempDir::new().unwrap();
+
+    for artifact_dir in [library.artifact.join("absent"), empty.path().to_path_buf()] {
+        let error = open_refusal(
+            &engine,
+            SemanticArtifactInput {
+                artifact_dir: artifact_dir.to_string_lossy().into_owned(),
+                ..library.input()
+            },
+        );
+        assert!(
+            error.message.contains("manifest.json"),
+            "{}: {}",
+            artifact_dir.display(),
+            error.message
+        );
+        assert_refused(&engine, &error, SemanticErrorKind::ArtifactMissing, None);
+    }
+}
+
+/// One way to damage each layer the open checks: the metadata, a payload's presence, and a
+/// payload's bytes. All three are the artifact to download again.
+#[test]
+fn a_damaged_artifact_is_corrupt() {
+    type Damage = (&'static str, fn(&Path));
+    let damages: [Damage; 3] = [
+        ("garbled manifest", |artifact| {
+            std::fs::write(artifact.join("manifest.json"), "{ not json").unwrap()
+        }),
+        ("missing payload", |artifact| {
+            std::fs::remove_file(artifact.join(VECTORS_FILENAME)).unwrap()
+        }),
+        // Same length, so only the payload's checksums can see it.
+        ("flipped payload byte", |artifact| {
+            let path = artifact.join(VECTORS_FILENAME);
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[0] ^= 0xff;
+            std::fs::write(&path, bytes).unwrap();
+        }),
+    ];
+    for (damage, apply) in damages {
+        let library = build_library(true);
+        apply(&library.artifact);
+
+        let engine = library.engine();
+        let error = open_refusal(&engine, library.input());
+        assert_eq!(
+            error.kind,
+            SemanticErrorKind::ArtifactCorrupt,
+            "{damage}: {}",
+            error.message
+        );
+        assert_refused(&engine, &error, SemanticErrorKind::ArtifactCorrupt, None);
+    }
+}
+
+/// The model this device embeds queries with: absent, not a model, and an ONNX graph
+/// without the tokenizer its package needs. Each is a different file to install.
+#[test]
+fn a_missing_or_unusable_model_is_named_by_kind() {
+    let library = build_library(true);
+    let engine = library.engine();
+    let work = TempDir::new().unwrap();
+
+    let absent = work.path().join("absent.gguf");
+    let garbage = work.path().join("garbage.gguf");
+    std::fs::write(&garbage, b"not a model").unwrap();
+    // A graph alone: the tokenizer is looked for beside it, and is not there.
+    let graph = work.path().join("model.onnx");
+    std::fs::write(&graph, b"not inspected: the tokenizer is checked first").unwrap();
+    let onnx_identity = ModelIdentity {
+        pooling: "in-graph".to_string(),
+        ..library.model.clone()
+    };
+
+    for (model_path, identity, kind) in [
+        (&absent, &library.model, SemanticErrorKind::ModelMissing),
+        (&garbage, &library.model, SemanticErrorKind::ModelInvalid),
+        (&graph, &onnx_identity, SemanticErrorKind::TokenizerMissing),
+    ] {
+        let error = open_refusal(
+            &engine,
+            SemanticArtifactInput {
+                model_path: model_path.to_string_lossy().into_owned(),
+                ..library.input_with_identity(serde_json::to_string(identity).unwrap())
+            },
+        );
+        assert!(
+            error
+                .message
+                .contains(&*model_path.parent().unwrap().to_string_lossy()),
+            "{kind:?}: {}",
+            error.message
+        );
+        assert_refused(&engine, &error, kind, None);
+    }
+}
+
+/// Values in the installation's own identity that no build could serve are the caller's
+/// input to fix, and the message is the one the sidecar's own refusal of them has.
+#[test]
+fn an_identity_value_no_build_serves_is_invalid_input() {
+    let library = build_library(true);
+    let engine = library.engine();
+
+    // The field the refusal names, if it names one, what its message says, and the edit.
+    type Refused = (Option<&'static str>, &'static str, fn(&mut ModelIdentity));
+    let edits: [Refused; 3] = [
+        (
+            Some("embedding_text_version"),
+            "embedding_text_version is 99",
+            |m| m.embedding_text_version = 99,
+        ),
+        (Some("pooling"), "last_token", |m| {
+            m.pooling = "last_token".to_string()
+        }),
+        (None, "max_tokens is 1", |m| m.max_tokens = 1),
+    ];
+    for (field, named, edit) in edits {
+        let mut model = library.model.clone();
+        edit(&mut model);
+        let error = open_refusal(
+            &engine,
+            library.input_with_identity(serde_json::to_string(&model).unwrap()),
+        );
+        assert!(
+            error
+                .message
+                .starts_with("failed to open the semantic artifact at")
+                && error.message.contains(named),
+            "{named}: {}",
+            error.message
+        );
+        assert_refused(&engine, &error, SemanticErrorKind::InvalidInput, field);
+    }
 }

@@ -1615,7 +1615,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_status,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineConfigureSemanticConstMeta,
         argValues: [that, config],
@@ -4008,7 +4008,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_status,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineOpenSemanticArtifactConstMeta,
@@ -4125,7 +4125,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_remove_result,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineRemoveSemanticBooksConstMeta,
@@ -4164,7 +4164,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_reset_result,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineResetSemanticIndexConstMeta,
         argValues: [that],
@@ -5699,7 +5699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_search_response,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineSearchSemanticConstMeta,
         argValues: [
@@ -5845,7 +5845,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_indexing_summary,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineSemanticIndexBooksConstMeta,
         argValues: [that, books],
@@ -5882,7 +5882,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_semantic_index_diff,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineSemanticIndexDiffConstMeta,
         argValues: [that],
@@ -7730,6 +7730,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticError dco_decode_semantic_error(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SemanticError(
+      kind: dco_decode_semantic_error_kind(arr[0]),
+      message: dco_decode_String(arr[1]),
+      field: dco_decode_opt_String(arr[2]),
+    );
+  }
+
+  @protected
+  SemanticErrorKind dco_decode_semantic_error_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SemanticErrorKind.values[raw as int];
+  }
+
+  @protected
   SemanticExecutedMode dco_decode_semantic_executed_mode(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SemanticExecutedMode.values[raw as int];
@@ -9216,6 +9235,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticError sse_decode_semantic_error(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_semantic_error_kind(deserializer);
+    var var_message = sse_decode_String(deserializer);
+    var var_field = sse_decode_opt_String(deserializer);
+    return SemanticError(
+      kind: var_kind,
+      message: var_message,
+      field: var_field,
+    );
+  }
+
+  @protected
+  SemanticErrorKind sse_decode_semantic_error_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SemanticErrorKind.values[inner];
+  }
+
+  @protected
   SemanticExecutedMode sse_decode_semantic_executed_mode(
     SseDeserializer deserializer,
   ) {
@@ -10687,6 +10728,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_semantic_error(SemanticError self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_error_kind(self.kind, serializer);
+    sse_encode_String(self.message, serializer);
+    sse_encode_opt_String(self.field, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_error_kind(
+    SemanticErrorKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_semantic_executed_mode(
     SemanticExecutedMode self,
     SseSerializer serializer,
@@ -11165,6 +11223,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///   which input changed. Switching model, text recipe or library root is an
   ///   explicit act: call [`Self::disable_semantic`] first and accept the
   ///   rebuild.
+  ///
+  /// A refusal is a [`SemanticError`]: `SessionConflict` while another session,
+  /// or this one with other inputs, is open, and `InvalidInput` for a value the
+  /// sidecar cannot serve. The model loads lazily, so a missing or unusable model
+  /// is not refused here but by the first [`Self::semantic_index_books`].
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineConfigureSemantic(
@@ -11946,6 +12009,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// - Called while another session is open it fails: call
   ///   [`Self::disable_semantic`] first.
   ///
+  /// Every refusal is a [`SemanticError`] whose kind says which of these it was,
+  /// so the application can tell the user what to install: the artifact, the
+  /// release's index, the model or ONNX Runtime. The table on
+  /// [`SemanticErrorKind`] has each kind, and `field` names the identity field
+  /// that disagreed when the artifact was built for something else.
+  ///
   /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
   /// the artifact's vectors, which takes time, and a `&mut self` binding would
   /// hold the engine's write lock throughout, stalling every lexical search.
@@ -12483,6 +12552,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
   /// development session, except that a stale artifact (the index committed
   /// to since it was opened) is not asked, and the lexical fallback says why.
+  ///
+  /// A semantic path that cannot serve is not an error here: the response falls
+  /// back to lexical results and says why, in `fallback_reason`. What fails the
+  /// call is the lexical half failing, which is an `Internal` [`SemanticError`].
   Future<SemanticSearchResponse> searchSemantic({
     required String query,
     required List<String> facets,
@@ -12558,6 +12631,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
   /// lock on the whole engine for the entire run, blocking every concurrent
   /// *lexical* search for as long as the library takes to embed.
+  ///
+  /// The first call with something to embed loads the model, so this is where
+  /// a session from [`Self::configure_semantic`] meets a missing or unusable
+  /// model, tokenizer or ONNX Runtime, each as its own [`SemanticErrorKind`];
+  /// `ReindexRequired` when the session holds vectors from another
+  /// configuration, and `ReadOnlySession` on an opened artifact.
   Future<SemanticIndexingSummary> semanticIndexBooks({
     required List<SemanticBookInput> books,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticIndexBooks(

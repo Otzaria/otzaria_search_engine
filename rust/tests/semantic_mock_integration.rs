@@ -18,8 +18,9 @@
 use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
 use search_engine::api::search_engine::{
     ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticConfigInput,
-    SemanticExecutedMode, SemanticGroupingMode, SemanticIndexingSummary, SemanticLexicalMode,
-    SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse,
+    SemanticError, SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode,
+    SemanticIndexingSummary, SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
+    SemanticSearchResponse,
 };
 use tempfile::TempDir;
 
@@ -108,27 +109,41 @@ fn configure(engine: &mut SearchEngine, root: &TempDir) {
 }
 
 fn index_books(engine: &SearchEngine, lines: &[Line]) -> SemanticIndexingSummary {
-    engine
-        .semantic_index_books(vec![SemanticBookInput {
-            source_book_key: BOOK_KEY.to_owned(),
-            title: "בראשית".to_owned(),
-            content_fingerprint: 123,
-            is_pdf: false,
-            topics: TOPICS.to_owned(),
-            extra_facets: Vec::new(),
-            lines: lines
-                .iter()
-                .map(|line| SemanticBookLineInput {
-                    line_id: line.id,
-                    section_id: SECTION,
-                    text: line.text.clone(),
-                    line_hash: 100 + line.id,
-                    reference: line.reference.clone(),
-                    segment: line.segment,
-                })
-                .collect(),
-        }])
-        .unwrap()
+    try_index_books(engine, lines).unwrap()
+}
+
+/// The refusal a call was expected to end in. The results it would otherwise have
+/// returned are not `Debug`, so `expect_err` is not available.
+fn refusal<T>(result: Result<T, SemanticError>, expected: &str) -> SemanticError {
+    match result {
+        Ok(_) => panic!("{expected}, and it succeeded"),
+        Err(error) => error,
+    }
+}
+
+fn try_index_books(
+    engine: &SearchEngine,
+    lines: &[Line],
+) -> Result<SemanticIndexingSummary, SemanticError> {
+    engine.semantic_index_books(vec![SemanticBookInput {
+        source_book_key: BOOK_KEY.to_owned(),
+        title: "בראשית".to_owned(),
+        content_fingerprint: 123,
+        is_pdf: false,
+        topics: TOPICS.to_owned(),
+        extra_facets: Vec::new(),
+        lines: lines
+            .iter()
+            .map(|line| SemanticBookLineInput {
+                line_id: line.id,
+                section_id: SECTION,
+                text: line.text.clone(),
+                line_hash: 100 + line.id,
+                reference: line.reference.clone(),
+                segment: line.segment,
+            })
+            .collect(),
+    }])
 }
 
 /// Lexical index + open sidecar + indexed vectors: the fully wired route.
@@ -637,14 +652,16 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
     let before = engine.semantic_status();
 
     let attempt = engine.configure_semantic(mock_config(&root, "a-different-model"));
-    let message = match attempt {
+    let error = match attempt {
         Ok(_) => panic!("changing the model while a session is open must fail"),
-        Err(error) => error.to_string(),
+        Err(error) => error,
     };
     assert!(
-        message.contains("model_id"),
-        "the refusal must name the input that changed: {message}"
+        error.message.contains("model_id"),
+        "the refusal must name the input that changed: {}",
+        error.message
     );
+    assert_eq!(error.kind, SemanticErrorKind::SessionConflict);
 
     // A different recipe under the same model file asks for different vectors
     // just the same, and is refused the same way.
@@ -661,14 +678,16 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
     for (field, change) in recipe_changes {
         let mut config = mock_config(&root, "test-mock");
         change(&mut config);
-        let message = match engine.configure_semantic(config) {
+        let error = match engine.configure_semantic(config) {
             Ok(_) => panic!("changing {field} while a session is open must fail"),
-            Err(error) => error.to_string(),
+            Err(error) => error,
         };
         assert!(
-            message.contains(field),
-            "the refusal must name the input that changed: {message}"
+            error.message.contains(field),
+            "the refusal must name the input that changed: {}",
+            error.message
         );
+        assert_eq!(error.kind, SemanticErrorKind::SessionConflict, "{field}");
     }
 
     // The refusals left the session untouched.
@@ -734,4 +753,112 @@ fn lexical_search_and_status_stay_available_while_indexing_runs() {
     });
 
     assert!(engine.semantic_status().vector_count > 0);
+}
+
+// ── Typed states and failures ────────────────────────────────────────────────
+
+/// The model loads at the first indexing, so that is where a missing or unusable one is
+/// refused, each by its own kind.
+#[test]
+fn indexing_names_a_missing_or_unusable_model_by_kind() {
+    let lines = one_line_corpus();
+    type Plant = fn(&TempDir) -> SemanticConfigInput;
+    let models: [(SemanticErrorKind, Plant); 3] = [
+        (SemanticErrorKind::ModelMissing, |root| {
+            mock_config(root, "test-mock")
+        }),
+        (SemanticErrorKind::ModelInvalid, |root| {
+            std::fs::write(root.path().join("mock.gguf"), b"not a model").unwrap();
+            mock_config(root, "test-mock")
+        }),
+        // An ONNX graph without the tokenizer its package needs beside it. The stand-in
+        // serves either format, so nothing but the package is at fault.
+        (SemanticErrorKind::TokenizerMissing, |root| {
+            let graph = root.path().join("model.onnx");
+            std::fs::write(&graph, b"not inspected: the tokenizer is checked first").unwrap();
+            SemanticConfigInput {
+                model_path: graph.to_string_lossy().into_owned(),
+                pooling: "in-graph".to_owned(),
+                max_tokens: 256,
+                model_quantization: "int8".to_owned(),
+                embedding_text_version: 2,
+                ..mock_config(root, "test-mock")
+            }
+        }),
+    ];
+    for (kind, plant) in models {
+        let (mut engine, root) = lexical_engine(&lines);
+        engine
+            .configure_semantic(plant(&root))
+            .expect("configuring loads no model");
+
+        let error = refusal(try_index_books(&engine, &lines), "the model cannot load");
+        assert_eq!(error.kind, kind, "{}", error.message);
+        assert!(
+            error.message.starts_with("semantic indexing failed: "),
+            "{}",
+            error.message
+        );
+    }
+}
+
+/// Configuring over a root built under another model: the sidecar keeps the old manifest
+/// and refuses its vectors until a reset, which indexing says by type.
+#[test]
+fn a_root_built_under_another_configuration_needs_a_reindex() {
+    let lines = one_line_corpus();
+    let (mut engine, root) = fixture(&lines);
+    engine.disable_semantic();
+    engine
+        .configure_semantic(mock_config(&root, "a-different-model"))
+        .expect("an explicit disable clears the way for a new configuration");
+
+    assert!(engine.semantic_status().needs_full_reindex.is_some());
+
+    let error = refusal(
+        try_index_books(&engine, &lines),
+        "the old vectors are refused",
+    );
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::ReindexRequired,
+        "{}",
+        error.message
+    );
+
+    engine.reset_semantic_index().unwrap();
+    index_books(&engine, &lines);
+    assert!(engine.semantic_status().available);
+}
+
+/// A configuration the sidecar cannot serve is the caller's input to fix, refused before
+/// anything is opened; the field is named where the refusal says which.
+#[test]
+fn a_configuration_the_sidecar_cannot_serve_is_invalid_input() {
+    let (mut engine, root) = lexical_engine(&one_line_corpus());
+    type Spoil = fn(&mut SemanticConfigInput);
+    let spoiled: [(Option<&str>, &str, Spoil); 4] = [
+        (Some("model_quantization"), "model_quantization", |c| {
+            c.model_quantization = " ".to_owned()
+        }),
+        (
+            Some("embedding_text_version"),
+            "embedding_text_version",
+            |c| c.embedding_text_version = 99,
+        ),
+        (None, "last_token", |c| c.pooling = "last_token".to_owned()),
+        (None, "embedding_max_tokens is 1", |c| c.max_tokens = 1),
+    ];
+    for (field, named, spoil) in spoiled {
+        let mut config = mock_config(&root, "test-mock");
+        spoil(&mut config);
+        let error = refusal(
+            engine.configure_semantic(config),
+            "the configuration is refused",
+        );
+        assert!(error.message.contains(named), "{named}: {}", error.message);
+        assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{named}");
+        assert_eq!(error.field.as_deref(), field, "{named}");
+        assert!(!engine.semantic_status().enabled, "{named}");
+    }
 }

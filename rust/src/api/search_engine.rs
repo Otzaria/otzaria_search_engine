@@ -43,6 +43,8 @@ use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 
 #[cfg(feature = "semantic-integration")]
+use crate::semantic_errors::{self, SidecarCall};
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
@@ -442,6 +444,151 @@ pub struct SemanticArtifactInput {
     pub published_digest: Option<String>,
 }
 
+/// What stopped the semantic path, as a value an application can switch on to choose a
+/// message and an action. A [`SemanticError`] carries one when a semantic call fails.
+///
+/// The message beside it is unchanged, and is still the one for a developer to read: it
+/// names every path, value and field involved. The kind is what to branch on, never the
+/// message. It is decided from the type of the failure, the sidecar's typed errors and this
+/// crate's own, and never by reading a message, so a reworded error cannot move a failure
+/// from one kind to another. Where the type alone cannot settle it, a fact does: whether the
+/// artifact's `manifest.json` exists (missing, or damaged), and whether there is a file where
+/// ONNX Runtime is looked for (missing, or unusable). A failure that still cannot be placed
+/// precisely gets the broad kind that is true of it, `Internal` last.
+///
+/// More kinds will be added. A Dart `switch` over this enum therefore needs a default
+/// branch, and a kind the application does not know yet is best handled as `internal`.
+///
+/// | kind | means | the application should | reported by |
+/// | --- | --- | --- | --- |
+/// | `ArtifactMissing` | there is no artifact at `artifact_dir`: no directory, or no `manifest.json` in it | download and install the artifact | `open_semantic_artifact` |
+/// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
+/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
+/// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
+/// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |
+/// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
+/// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
+/// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelInvalid` | the file at `model_path` is not a usable model of its format (a truncated download, a placeholder), or its backend could not load it | download the model again | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: `OTZARIA_ONNX_RUNTIME` unset or naming no file, and none beside the graph | install ONNX Runtime beside the model, or name it with `OTZARIA_ONNX_RUNTIME` | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
+/// | `BackendNotInBuild` | this build has no embedding backend for the model's format: an ONNX graph on Android or iOS, a GGUF on 32-bit ARM, or a build without that format's feature | use a model of a format this build serves; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
+/// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
+/// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
+/// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
+/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call |
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticErrorKind {
+    /// No artifact at the artifact directory.
+    ArtifactMissing,
+    /// The artifact is damaged.
+    ArtifactCorrupt,
+    /// A sound artifact, built for another corpus, model or store format.
+    ArtifactIncompatible,
+    /// The artifact is not the one whose digest was published.
+    ArtifactNotPublished,
+    /// The lexical index carries no corpus stamp this build reads.
+    IndexNotStamped,
+    /// The lexical index changed after its corpus stamp was written.
+    IndexStampMismatch,
+    /// No model file at the model path.
+    ModelMissing,
+    /// An ONNX graph without its `tokenizer.json`.
+    TokenizerMissing,
+    /// The model file is not a usable model, or could not be loaded.
+    ModelInvalid,
+    /// The model identity in hand does not describe the model file.
+    ModelIdentityMismatch,
+    /// An ONNX model, and no ONNX Runtime library where one is looked for.
+    OnnxRuntimeMissing,
+    /// The ONNX Runtime library found cannot be used.
+    OnnxRuntimeUnusable,
+    /// No embedding backend for the model's format in this build.
+    BackendNotInBuild,
+    /// Another semantic session is open, or this one with different inputs.
+    SessionConflict,
+    /// A call that builds vectors, on a read-only artifact.
+    ReadOnlySession,
+    /// A session built on this device holds vectors from another configuration.
+    ReindexRequired,
+    /// An input the call cannot take.
+    InvalidInput,
+    /// Anything else; the message says what.
+    Internal,
+}
+
+/// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
+/// `FrbException`, where these calls used to throw `AnyhowException`: flutter_rust_bridge
+/// throws the error type of a `Result` as an exception class of its own.
+///
+/// `message` is the text the call has always produced, with every path, value and field that
+/// disagreed, and is for a developer to read. `kind` is what an application branches on —
+/// [`SemanticErrorKind`] says what each means and what to do — and `field` names the one
+/// field the failure is about, when there is one:
+///
+/// | kind | `field` |
+/// | --- | --- |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
+/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir` |
+///
+/// It is `None` for every other kind, and wherever the failure does not say.
+#[frb(dart_code = r#"
+  @override
+  String toString() =>
+      'SemanticError(${kind.name}${field == null ? '' : ', $field'}): $message';
+"#)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticError {
+    /// What went wrong, as the value to branch on.
+    pub kind: SemanticErrorKind,
+    /// The detailed description, as the call produced it before it had a kind.
+    pub message: String,
+    /// The field the failure is about, when it is about one.
+    pub field: Option<String>,
+}
+
+impl SemanticError {
+    pub(crate) fn new(kind: SemanticErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            field: None,
+        }
+    }
+
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    pub(crate) fn with_field(self, field: impl Into<String>) -> Self {
+        Self {
+            field: Some(field.into()),
+            ..self
+        }
+    }
+}
+
+/// The message alone, as these errors read before they had a kind: Rust callers that format
+/// one see the same text Dart's `message` holds.
+impl std::fmt::Display for SemanticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SemanticError {}
+
+/// What a semantic call's `?` meets when the lexical index fails under it: the one source of
+/// `anyhow` errors on that path. A failure that has a kind of its own is converted where it
+/// arises, never through this, so what arrives here is `Internal`. The whole context chain
+/// is kept, on one line.
+impl From<anyhow::Error> for SemanticError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(SemanticErrorKind::Internal, format!("{error:#}"))
+    }
+}
+
 /// A serializable, feature-independent projection of sidecar status. It is
 /// intentionally available without the `semantic` Cargo feature so Dart can
 /// render an explicit Disabled state rather than silently falling back.
@@ -684,6 +831,36 @@ struct ConfiguredSemantic {
     /// clones the handle and holds no lock while it runs.
     coordinator: Arc<HybridCoordinator>,
     source: SemanticSource,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl ConfiguredSemantic {
+    /// The model this session embeds with, which deciding a failure's kind can need: whether
+    /// there is an ONNX Runtime beside it.
+    fn model_path(&self) -> &Path {
+        match &self.source {
+            SemanticSource::SelfBuilt(key) => &key.model_path,
+            SemanticSource::Artifact(opened) => &opened.key.model_path,
+        }
+    }
+}
+
+/// What a semantic call works with once it has let go of the session lock: a clone of the
+/// coordinator handle, and the session's model path.
+#[cfg(feature = "semantic-integration")]
+struct OpenSession {
+    coordinator: Arc<HybridCoordinator>,
+    model_path: PathBuf,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl OpenSession {
+    /// The call that a failure of this session's sidecar came from.
+    fn call(&self) -> SidecarCall<'_> {
+        SidecarCall::Session {
+            model_path: &self.model_path,
+        }
+    }
 }
 
 /// Behind a lock, not a plain field, so that [`SearchEngine::open_semantic_artifact`] can
@@ -2348,7 +2525,15 @@ impl SearchEngine {
     ///   which input changed. Switching model, text recipe or library root is an
     ///   explicit act: call [`Self::disable_semantic`] first and accept the
     ///   rebuild.
-    pub fn configure_semantic(&mut self, config: SemanticConfigInput) -> Result<SemanticStatus> {
+    ///
+    /// A refusal is a [`SemanticError`]: `SessionConflict` while another session,
+    /// or this one with other inputs, is open, and `InvalidInput` for a value the
+    /// sidecar cannot serve. The model loads lazily, so a missing or unusable model
+    /// is not refused here but by the first [`Self::semantic_index_books`].
+    pub fn configure_semantic(
+        &mut self,
+        config: SemanticConfigInput,
+    ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
             let requested = SemanticConfigKey::from_input(&config);
@@ -2362,20 +2547,26 @@ impl SearchEngine {
                     return Ok(self.semantic_status());
                 }
                 Some(SemanticSource::SelfBuilt(key)) => {
-                    return Err(anyhow::anyhow!(
-                        "the semantic sidecar is already configured and {} changed; the \
-                         vector store is in-memory, so re-opening would discard the vectors \
-                         indexed in this session. Call disable_semantic() first if that is \
-                         intended",
-                        key.changed_fields(&requested)
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::SessionConflict,
+                        format!(
+                            "the semantic sidecar is already configured and {} changed; the \
+                             vector store is in-memory, so re-opening would discard the vectors \
+                             indexed in this session. Call disable_semantic() first if that is \
+                             intended",
+                            key.changed_fields(&requested)
+                        ),
                     ));
                 }
                 Some(SemanticSource::Artifact(opened)) => {
-                    return Err(anyhow::anyhow!(
-                        "a prebuilt semantic artifact is open ({}); configure_semantic would \
-                         replace it with vectors built on this device. Call \
-                         disable_semantic() first if that is intended",
-                        opened.key.artifact_dir.display()
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::SessionConflict,
+                        format!(
+                            "a prebuilt semantic artifact is open ({}); configure_semantic would \
+                             replace it with vectors built on this device. Call \
+                             disable_semantic() first if that is intended",
+                            opened.key.artifact_dir.display()
+                        ),
                     ));
                 }
             }
@@ -2384,17 +2575,23 @@ impl SearchEngine {
             // pooling, text recipe and token cap. A blank quantization it would
             // record as given, leaving an index whose identity names no weights.
             if requested.model_quantization.trim().is_empty() {
-                return Err(anyhow::anyhow!(
+                return Err(SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
                     "model_quantization is empty; it is part of the semantic index's \
                      identity, so name the precision of the model's weights, e.g. \
-                     \"Q4_K_M\" for the Qwen3 GGUF or \"int8\" for the Meivin ONNX graph"
-                ));
+                     \"Q4_K_M\" for the Qwen3 GGUF or \"int8\" for the Meivin ONNX graph",
+                )
+                .with_field("model_quantization"));
             }
             let embedding_max_tokens = usize::try_from(requested.max_tokens).map_err(|_| {
-                anyhow::anyhow!(
-                    "max_tokens {} does not fit this platform's address width",
-                    requested.max_tokens
+                SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
+                    format!(
+                        "max_tokens {} does not fit this platform's address width",
+                        requested.max_tokens
+                    ),
                 )
+                .with_field("max_tokens")
             })?;
 
             // Each input lands on the one sidecar field that carries it. What stays
@@ -2422,8 +2619,13 @@ impl SearchEngine {
             semantic_config.store.embedding_dim = requested.embedding_dim;
             semantic_config.store.db_path = requested.root_dir.join("vectors");
 
-            let engine = SemanticEngine::open(semantic_config)
-                .map_err(|err| anyhow::anyhow!("failed to open semantic sidecar: {err}"))?;
+            let engine = SemanticEngine::open(semantic_config).map_err(|err| {
+                semantic_errors::sidecar_error(
+                    &err,
+                    SidecarCall::Configure,
+                    format!("failed to open semantic sidecar: {err}"),
+                )
+            })?;
             *self
                 .semantic_runtime
                 .get_mut()
@@ -2477,19 +2679,32 @@ impl SearchEngine {
     /// - Called while another session is open it fails: call
     ///   [`Self::disable_semantic`] first.
     ///
+    /// Every refusal is a [`SemanticError`] whose kind says which of these it was,
+    /// so the application can tell the user what to install: the artifact, the
+    /// release's index, the model or ONNX Runtime. The table on
+    /// [`SemanticErrorKind`] has each kind, and `field` names the identity field
+    /// that disagreed when the artifact was built for something else.
+    ///
     /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
     /// the artifact's vectors, which takes time, and a `&mut self` binding would
     /// hold the engine's write lock throughout, stalling every lexical search.
-    pub fn open_semantic_artifact(&self, config: SemanticArtifactInput) -> Result<SemanticStatus> {
+    pub fn open_semantic_artifact(
+        &self,
+        config: SemanticArtifactInput,
+    ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
             let model: ModelIdentity =
                 serde_json::from_str(&config.model_identity_json).map_err(|err| {
-                    anyhow::anyhow!(
-                        "model_identity_json is not a model identity: {err}. It is the JSON \
-                         the artifact was built with, such as the sidecar's \
-                         config/models/meivin-round2-onnx/model.json"
+                    SemanticError::new(
+                        SemanticErrorKind::InvalidInput,
+                        format!(
+                            "model_identity_json is not a model identity: {err}. It is the \
+                             JSON the artifact was built with, such as the sidecar's \
+                             config/models/meivin-round2-onnx/model.json"
+                        ),
                     )
+                    .with_field("model_identity_json")
                 })?;
             let key = SemanticArtifactKey {
                 artifact_dir: PathBuf::from(&config.artifact_dir),
@@ -2501,33 +2716,52 @@ impl SearchEngine {
                 return refusal;
             }
 
-            let stamp = crate::semantic_corpus::CorpusStamp::read(&self.index_path)?;
+            let stamp = crate::semantic_corpus::CorpusStamp::read(&self.index_path)
+                .map_err(|err| semantic_errors::stamp_error(&err))?;
             let segments = self.index_reader.searcher();
-            stamp.ensure_describes(&segments, &self.index_path)?;
+            stamp
+                .ensure_describes(&segments, &self.index_path)
+                .map_err(|err| semantic_errors::stamp_error(&err))?;
             let segments_sha256 = stamp.segments_sha256.clone();
             drop(segments);
 
-            let max_tokens = key.model.max_tokens;
+            let local = LocalModel {
+                model_path: key.model_path.clone(),
+                model_id: key.model.model_id.clone(),
+                model_quantization: key.model.model_quantization.clone(),
+                embedding_dim: key.model.embedding_dim,
+                pooling: key.model.pooling.clone(),
+                max_tokens: key.model.max_tokens,
+                embedding_text_version: key.model.embedding_text_version,
+                normalization_version: key.model.normalization_version,
+                chunking_identity: key.model.chunking_identity,
+            };
+            let refused = |err: &dyn std::fmt::Display| {
+                format!(
+                    "failed to open the semantic artifact at {}: {err}",
+                    key.artifact_dir.display()
+                )
+            };
+            // The installation's own half first, by the checks the sidecar makes of it
+            // before it reads the artifact: the sidecar reports a refusal of either side
+            // in the same types, and settling this one first is what makes the kind of
+            // whatever it refuses afterwards that of the artifact, the model or the
+            // runtime.
+            semantic_errors::check_local_model(&local, |err| refused(err))?;
             let index = OfficialSemanticIndex::open(OfficialIndexConfig {
                 artifact_path: key.artifact_dir.clone(),
                 corpus: stamp.corpus,
-                model: LocalModel {
-                    model_path: key.model_path.clone(),
-                    model_id: key.model.model_id.clone(),
-                    model_quantization: key.model.model_quantization.clone(),
-                    embedding_dim: key.model.embedding_dim,
-                    pooling: key.model.pooling.clone(),
-                    max_tokens,
-                    embedding_text_version: key.model.embedding_text_version,
-                    normalization_version: key.model.normalization_version,
-                    chunking_identity: key.model.chunking_identity,
-                },
+                model: local,
                 published_digest: key.published_digest.clone(),
             })
             .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to open the semantic artifact at {}: {err}",
-                    key.artifact_dir.display()
+                semantic_errors::sidecar_error(
+                    &err,
+                    SidecarCall::OpenArtifact {
+                        artifact_dir: &key.artifact_dir,
+                        model_path: &key.model_path,
+                    },
+                    refused(&err),
                 )
             })?;
 
@@ -2549,12 +2783,16 @@ impl SearchEngine {
                 ),
             ] {
                 if declared != actual {
-                    return Err(anyhow::anyhow!(
-                        "model_identity_json declares {field} '{declared}', but the model at \
-                         {} is '{actual}', as is the artifact: the identity file describes \
-                         other weights",
-                        key.model_path.display()
-                    ));
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::ModelIdentityMismatch,
+                        format!(
+                            "model_identity_json declares {field} '{declared}', but the model \
+                             at {} is '{actual}', as is the artifact: the identity file \
+                             describes other weights",
+                            key.model_path.display()
+                        ),
+                    )
+                    .with_field(field));
                 }
             }
 
@@ -2570,10 +2808,13 @@ impl SearchEngine {
                 return if same {
                     Ok(self.semantic_status())
                 } else {
-                    Err(anyhow::anyhow!(
-                        "another semantic session was opened while this artifact was loading; \
-                         call disable_semantic() first to open {}",
-                        key.artifact_dir.display()
+                    Err(SemanticError::new(
+                        SemanticErrorKind::SessionConflict,
+                        format!(
+                            "another semantic session was opened while this artifact was \
+                             loading; call disable_semantic() first to open {}",
+                            key.artifact_dir.display()
+                        ),
                     ))
                 };
             }
@@ -2602,10 +2843,13 @@ impl SearchEngine {
     }
 
     /// What [`Self::open_semantic_artifact`] answers while a session is already open:
-    /// the status for a repeat of the same artifact, a refusal for anything else, and
-    /// `None` when nothing is open.
+    /// the status for a repeat of the same artifact, a `SessionConflict` for anything
+    /// else, and `None` when nothing is open.
     #[cfg(feature = "semantic-integration")]
-    fn refuse_second_session(&self, key: &SemanticArtifactKey) -> Option<Result<SemanticStatus>> {
+    fn refuse_second_session(
+        &self,
+        key: &SemanticArtifactKey,
+    ) -> Option<Result<SemanticStatus, SemanticError>> {
         let active = self
             .semantic_runtime
             .read()
@@ -2628,7 +2872,10 @@ impl SearchEngine {
         drop(active);
         Some(match refusal {
             None => Ok(self.semantic_status()),
-            Some(refusal) => Err(anyhow::anyhow!(refusal)),
+            Some(refusal) => Err(SemanticError::new(
+                SemanticErrorKind::SessionConflict,
+                refusal,
+            )),
         })
     }
 
@@ -2651,16 +2898,19 @@ impl SearchEngine {
         }
     }
 
-    /// The open sidecar coordinator, or `None` when semantic search has not been
+    /// The open sidecar session, or `None` when semantic search has not been
     /// configured in this session. A clone of the handle, which is an `Arc`, so no
     /// lock is held while it is used.
     #[cfg(feature = "semantic-integration")]
-    fn semantic_engine(&self) -> Option<Arc<HybridCoordinator>> {
+    fn semantic_engine(&self) -> Option<OpenSession> {
         self.semantic_runtime
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(|active| Arc::clone(&active.coordinator))
+            .map(|active| OpenSession {
+                coordinator: Arc::clone(&active.coordinator),
+                model_path: active.model_path().to_path_buf(),
+            })
     }
 
     /// Why an opened artifact must not be asked, or `None` when it may be — or when
@@ -2699,8 +2949,8 @@ impl SearchEngine {
     pub fn semantic_status(&self) -> SemanticStatus {
         #[cfg(feature = "semantic-integration")]
         {
-            if let Some(coordinator) = self.semantic_engine() {
-                let status = coordinator.status();
+            if let Some(session) = self.semantic_engine() {
+                let status = session.coordinator.status();
                 // A stale artifact is not served, and the status says so rather than
                 // reporting vectors a search will not use.
                 let stale = self.stale_artifact_reason();
@@ -2742,13 +2992,19 @@ impl SearchEngine {
     /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
     /// lock on the whole engine for the entire run, blocking every concurrent
     /// *lexical* search for as long as the library takes to embed.
+    ///
+    /// The first call with something to embed loads the model, so this is where
+    /// a session from [`Self::configure_semantic`] meets a missing or unusable
+    /// model, tokenizer or ONNX Runtime, each as its own [`SemanticErrorKind`];
+    /// `ReindexRequired` when the session holds vectors from another
+    /// configuration, and `ReadOnlySession` on an opened artifact.
     pub fn semantic_index_books(
         &self,
         books: Vec<SemanticBookInput>,
-    ) -> Result<SemanticIndexingSummary> {
+    ) -> Result<SemanticIndexingSummary, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(coordinator) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticIndexingSummary {
                     enabled: false,
                     books_indexed: 0,
@@ -2780,9 +3036,16 @@ impl SearchEngine {
                         .collect(),
                 })
                 .collect();
-            let summary = coordinator
+            let summary = session
+                .coordinator
                 .index_books(&sidecar_books)
-                .map_err(|err| anyhow::anyhow!("semantic indexing failed: {err}"))?;
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic indexing failed: {err}"),
+                    )
+                })?;
             let summary = summary.unwrap_or_default();
             Ok(SemanticIndexingSummary {
                 enabled: true,
@@ -2813,10 +3076,10 @@ impl SearchEngine {
     /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
     /// is: it answers which books this device should embed. On an opened
     /// artifact it is refused as read-only, since nothing there is re-indexed.
-    pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff> {
+    pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(coordinator) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(Self::semantic_disabled_diff());
             };
             // Raw lexical hashes, each as the sidecar's own conversion reads one: zero is
@@ -2831,9 +3094,16 @@ impl SearchEngine {
             // itself failed": the first is `Ok(None)`, the second an error. Collapsing
             // them would report a broken manifest as a disabled feature, and the app
             // would offer indexing as the fix.
-            let diff = coordinator
+            let diff = session
+                .coordinator
                 .semantic_index_diff(&fingerprints)
-                .map_err(|err| anyhow::anyhow!("semantic index diff failed: {err}"))?;
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic index diff failed: {err}"),
+                    )
+                })?;
             let Some(diff) = diff else {
                 return Ok(Self::semantic_disabled_diff());
             };
@@ -2865,18 +3135,25 @@ impl SearchEngine {
     pub fn remove_semantic_books(
         &self,
         source_book_keys: Vec<String>,
-    ) -> Result<SemanticRemoveResult> {
+    ) -> Result<SemanticRemoveResult, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(coordinator) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticRemoveResult {
                     enabled: false,
                     vectors_removed: 0,
                 });
             };
-            let removed = coordinator
+            let removed = session
+                .coordinator
                 .remove_semantic_books(&source_book_keys)
-                .map_err(|err| anyhow::anyhow!("semantic remove failed: {err}"))?
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic remove failed: {err}"),
+                    )
+                })?
                 .unwrap_or(0);
             Ok(SemanticRemoveResult {
                 enabled: true,
@@ -2901,18 +3178,25 @@ impl SearchEngine {
     /// is; refused as read-only on an opened artifact.
     ///
     /// `&self` for the same reason as [`Self::semantic_index_books`].
-    pub fn reset_semantic_index(&self) -> Result<SemanticResetResult> {
+    pub fn reset_semantic_index(&self) -> Result<SemanticResetResult, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(coordinator) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticResetResult {
                     enabled: false,
                     vectors_removed: 0,
                 });
             };
-            let removed = coordinator
+            let removed = session
+                .coordinator
                 .reset_semantic_index()
-                .map_err(|err| anyhow::anyhow!("semantic reset failed: {err}"))?
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic reset failed: {err}"),
+                    )
+                })?
                 .unwrap_or(0);
             Ok(SemanticResetResult {
                 enabled: true,
@@ -2935,6 +3219,10 @@ impl SearchEngine {
     /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
     /// development session, except that a stale artifact (the index committed
     /// to since it was opened) is not asked, and the lexical fallback says why.
+    ///
+    /// A semantic path that cannot serve is not an error here: the response falls
+    /// back to lexical results and says why, in `fallback_reason`. What fails the
+    /// call is the lexical half failing, which is an `Internal` [`SemanticError`].
     #[allow(clippy::too_many_arguments)]
     pub fn search_semantic(
         &self,
@@ -2948,11 +3236,11 @@ impl SearchEngine {
         grouping: Option<SemanticGroupingMode>,
         match_nikud: bool,
         match_taamim: bool,
-    ) -> Result<SemanticSearchResponse> {
+    ) -> Result<SemanticSearchResponse, SemanticError> {
         let started = Instant::now();
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(coordinator) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
                     &facets,
@@ -3042,7 +3330,8 @@ impl SearchEngine {
                     )?,
                 }
             };
-            let result = coordinator
+            let result = session
+                .coordinator
                 .search(
                     &query,
                     lexical_candidates,
@@ -3072,7 +3361,13 @@ impl SearchEngine {
                         feature_flags: None,
                     },
                 )
-                .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic search failed: {err}"),
+                    )
+                })?;
 
             // Phase 1 — drop stale primaries across the whole window, keeping
             // the hydrated document so the surviving page needs no second
@@ -3341,7 +3636,7 @@ impl SearchEngine {
         match_taamim: bool,
         fallback_reason: Option<String>,
         latency_ms: u64,
-    ) -> Result<SemanticSearchResponse> {
+    ) -> Result<SemanticSearchResponse, SemanticError> {
         if matches!(requested_mode, SemanticRetrievalMode::SemanticOnly) {
             let count = match lexical_mode {
                 SemanticLexicalMode::Exact => self.count_exact_with_status(
@@ -10764,6 +11059,19 @@ mod tests {
         assert!(status.last_error.is_some());
     }
 
+    /// A lexical failure under a semantic call is what `?` turns into a `SemanticError`, and
+    /// it is `Internal`, with the whole context chain in the message.
+    #[test]
+    fn an_anyhow_error_under_a_semantic_call_is_internal_and_keeps_its_chain() {
+        let error = SemanticError::from(
+            anyhow::anyhow!("the segment file is gone").context("reading the index"),
+        );
+        assert_eq!(error.kind, SemanticErrorKind::Internal);
+        assert_eq!(error.message, "reading the index: the segment file is gone");
+        assert_eq!(error.field, None);
+        assert_eq!(error.to_string(), error.message);
+    }
+
     #[test]
     fn hybrid_request_falls_back_to_ranked_lexical_results_with_reason() {
         let (mut engine, _dir) = make_engine();
@@ -17912,14 +18220,16 @@ mod tests {
             for (field, change) in changes {
                 let mut input = config();
                 change(&mut input);
-                let message = match engine.configure_semantic(input) {
+                let error = match engine.configure_semantic(input) {
                     Ok(_) => panic!("changing {field} while a session is open must fail"),
-                    Err(error) => error.to_string(),
+                    Err(error) => error,
                 };
                 assert!(
-                    message.contains(&format!("and {field} changed")),
-                    "the refusal must name {field}: {message}"
+                    error.message.contains(&format!("and {field} changed")),
+                    "the refusal must name {field}: {}",
+                    error.message
                 );
+                assert_eq!(error.kind, SemanticErrorKind::SessionConflict, "{field}");
             }
             assert!(
                 !manifest.exists(),
@@ -17984,14 +18294,16 @@ mod tests {
             for (named, spoil) in spoiled {
                 let mut input = qwen3(semantic.path());
                 spoil(&mut input);
-                let message = match engine.configure_semantic(input) {
+                let error = match engine.configure_semantic(input) {
                     Ok(_) => panic!("a configuration with a bad {named} must be refused"),
-                    Err(error) => format!("{error:#}"),
+                    Err(error) => error,
                 };
                 assert!(
-                    message.contains(named),
-                    "the refusal must name {named}: {message}"
+                    error.message.contains(named),
+                    "the refusal must name {named}: {}",
+                    error.message
                 );
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{named}");
             }
             engine
                 .configure_semantic(qwen3(semantic.path()))
@@ -18014,15 +18326,17 @@ mod tests {
                     ..meivin(semantic.path())
                 };
                 let root_dir = input.root_dir.clone();
-                let message = match engine.configure_semantic(input) {
+                let error = match engine.configure_semantic(input) {
                     Ok(_) => panic!("an ONNX cap of {cap} must be refused"),
-                    Err(error) => format!("{error:#}"),
+                    Err(error) => error,
                 };
+                let message = &error.message;
                 assert!(
                     message.contains(&format!("embedding_max_tokens is {cap}"))
                         && message.contains(&CEILING.to_string()),
                     "the refusal must name the cap and the ceiling: {message}"
                 );
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
                 assert!(
                     !Path::new(&root_dir).join(MANIFEST).exists(),
                     "a refused cap must not be recorded as an index's identity"
