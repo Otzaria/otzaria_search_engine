@@ -82,12 +82,14 @@ jobs:
         if: matrix.features == 'semantic-mock'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
 
-      # Built, not run: the only tests that exercise the backend need the model
-      # and ONNX Runtime and skip without them, so running the suite here would
-      # repeat what the default and mock jobs already run.
-      - name: Build semantic ONNX tests
+      # The integration's tests with the ONNX backend wired in and neither the
+      # stand-in nor llama.cpp. The mock job runs them with the stand-in compiled
+      # in, and no other job runs them without it. Nothing in the suite loads a
+      # model, so it needs no ONNX Runtime; the tests that run the real model are
+      # `#[ignore]`d.
+      - name: Test semantic ONNX integration
         if: matrix.features == 'semantic-onnx'
-        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx --no-run
+        run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
 
       - name: Clippy
         if: matrix.features == 'default'
