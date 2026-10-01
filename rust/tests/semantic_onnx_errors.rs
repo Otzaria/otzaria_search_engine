@@ -1,6 +1,6 @@
 //! The failures only a build with the ONNX backend and nothing else can show, each by its
-//! `SemanticErrorKind`: a GGUF model, which nothing in the build serves, and an ONNX model
-//! whose ONNX Runtime is missing or unusable.
+//! `SemanticErrorKind`: a GGUF model, which no build serves, and an ONNX model whose ONNX
+//! Runtime is missing or unusable.
 //!
 //! Neither needs the real model, nor any ONNX Runtime at all, so these run in every
 //! `semantic-onnx` job rather than behind `--ignored` with `tests/semantic_onnx_model.rs`.
@@ -117,8 +117,9 @@ fn stub_graph() -> Vec<u8> {
 /// truncation, which happens before the runtime is looked for.
 const STUB_TOKENIZER_JSON: &str = r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"Whitespace"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"[CLS]":1,"[SEP]":2,"[QUERY]":3,"[PASSAGE]":4},"unk_token":"[UNK]"}}"#;
 
-/// The smallest file the sidecar accepts as a GGUF: a v3 header with one empty F32 tensor,
-/// as the sidecar's stand-in fixture writes it.
+/// The smallest file the sidecar validates as a GGUF container: a v3 header with one empty
+/// F32 tensor. It passes the container check, so what refuses it is that nothing serves the
+/// format.
 fn write_stub_gguf(path: &Path) {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"GGUF");
@@ -227,10 +228,10 @@ fn runtime_lookup_is_ours() -> bool {
     true
 }
 
-/// A build with only the ONNX backend has nothing for a GGUF: no file fixes that, which is
-/// what sets it apart from a runtime that is missing.
+/// No build serves a GGUF model any more, this one included: indexing refuses it by kind, as
+/// `BackendNotInBuild`, and not as a model to download again or a runtime to install.
 #[test]
-fn a_gguf_on_a_build_with_only_the_onnx_backend_is_backend_not_in_build() {
+fn a_gguf_model_is_refused_as_backend_not_in_build() {
     let root = TempDir::new().unwrap();
     let model = root.path().join("model.gguf");
     write_stub_gguf(&model);

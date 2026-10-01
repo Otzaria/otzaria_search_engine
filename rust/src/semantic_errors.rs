@@ -322,11 +322,13 @@ fn embedding_kind(
         EmbeddingError::ModelNotFound { .. } => (K::ModelMissing, None),
         EmbeddingError::TokenizerNotFound { .. } => (K::TokenizerMissing, None),
         // A file that is not a model of its format, and a model its backend could not load
-        // (llama.cpp or ONNX Runtime refusing the weights, a session that will not
-        // allocate): to the application both are a model to download again.
+        // (ONNX Runtime refusing the graph, a session that will not allocate): to the
+        // application both are a model to download again.
         EmbeddingError::InvalidModelFile { .. } | EmbeddingError::LoadFailed { .. } => {
             (K::ModelInvalid, None)
         }
+        // Nothing in the build serves the model: an ONNX graph where the ONNX backend is not
+        // built, or a model of a format no build serves, such as a GGUF.
         EmbeddingError::BackendUnavailable { .. } => (K::BackendNotInBuild, None),
         EmbeddingError::OnnxRuntimeUnavailable { .. } => (
             runtime_kind(
