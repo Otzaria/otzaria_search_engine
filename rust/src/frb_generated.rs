@@ -41,7 +41,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1075702083;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 462886284;
 
 // Section: executor
 
@@ -4612,6 +4612,10 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
                 );
             let api_match_nikud = <bool>::sse_decode(&mut deserializer);
             let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+            let api_ranking =
+                <Option<crate::api::search_engine::SemanticRankingOptions>>::sse_decode(
+                    &mut deserializer,
+                );
             let api_cancellation = <RustOpaqueMoi<
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>,
             >>::sse_decode(&mut deserializer);
@@ -4655,6 +4659,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
                         api_grouping,
                         api_match_nikud,
                         api_match_taamim,
+                        api_ranking,
                         &*api_cancellation_guard,
                     )?;
                     std::result::Result::Ok(output_ok)
@@ -5938,6 +5943,36 @@ fn wire__crate__api__search_engine__sanitize_query_impl(
         },
     )
 }
+fn wire__crate__api__search_engine__semantic_ranking_options_defaults_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "semantic_ranking_options_defaults",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok =
+                    Ok::<_, ()>(crate::api::search_engine::SemanticRankingOptions::defaults())?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__search_engine__split_query_words_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -6777,6 +6812,17 @@ impl SseDecode for Option<f32> {
     }
 }
 
+impl SseDecode for Option<f64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<f64>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::search_engine::HighlightConfig> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6848,6 +6894,19 @@ impl SseDecode for Option<crate::api::search_engine::SemanticGroupingMode> {
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::search_engine::SemanticGroupingMode>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::search_engine::SemanticRankingOptions> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::search_engine::SemanticRankingOptions>::sse_decode(deserializer),
             );
         } else {
             return None;
@@ -7245,6 +7304,19 @@ impl SseDecode for crate::api::search_engine::SemanticExecutedMode {
     }
 }
 
+impl SseDecode for crate::api::search_engine::SemanticFusionStrategy {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::search_engine::SemanticFusionStrategy::Weighted,
+            1 => crate::api::search_engine::SemanticFusionStrategy::Rrf,
+            2 => crate::api::search_engine::SemanticFusionStrategy::Adaptive,
+            _ => unreachable!("Invalid variant for SemanticFusionStrategy: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::search_engine::SemanticGroupingMode {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -7307,6 +7379,62 @@ impl SseDecode for crate::api::search_engine::SemanticLexicalMode {
             0 => crate::api::search_engine::SemanticLexicalMode::Exact,
             1 => crate::api::search_engine::SemanticLexicalMode::Fuzzy,
             _ => unreachable!("Invalid variant for SemanticLexicalMode: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::SemanticQueryTypeAlphas {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_quotedPhrase = <f64>::sse_decode(deserializer);
+        let mut var_exactReference = <f64>::sse_decode(deserializer);
+        let mut var_short = <f64>::sse_decode(deserializer);
+        let mut var_mixed = <f64>::sse_decode(deserializer);
+        let mut var_conceptual = <f64>::sse_decode(deserializer);
+        let mut var_unknown = <f64>::sse_decode(deserializer);
+        return crate::api::search_engine::SemanticQueryTypeAlphas {
+            quoted_phrase: var_quotedPhrase,
+            exact_reference: var_exactReference,
+            short: var_short,
+            mixed: var_mixed,
+            conceptual: var_conceptual,
+            unknown: var_unknown,
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_fusionStrategy =
+            <crate::api::search_engine::SemanticFusionStrategy>::sse_decode(deserializer);
+        let mut var_rrfK = <u32>::sse_decode(deserializer);
+        let mut var_alphaOverride = <Option<f64>>::sse_decode(deserializer);
+        let mut var_alphaByQueryType =
+            <crate::api::search_engine::SemanticQueryTypeAlphas>::sse_decode(deserializer);
+        let mut var_bm25SaturationK = <f64>::sse_decode(deserializer);
+        let mut var_semanticThreshold = <f64>::sse_decode(deserializer);
+        let mut var_agreementBonus = <f64>::sse_decode(deserializer);
+        let mut var_phraseMatchBonus = <f64>::sse_decode(deserializer);
+        let mut var_rareTermBonus = <f64>::sse_decode(deserializer);
+        let mut var_sectionCoverageBonus = <f64>::sse_decode(deserializer);
+        let mut var_duplicatePenalty = <f64>::sse_decode(deserializer);
+        let mut var_metadataRankingEnabled = <bool>::sse_decode(deserializer);
+        let mut var_candidateWindowMultiplier = <f64>::sse_decode(deserializer);
+        return crate::api::search_engine::SemanticRankingOptions {
+            fusion_strategy: var_fusionStrategy,
+            rrf_k: var_rrfK,
+            alpha_override: var_alphaOverride,
+            alpha_by_query_type: var_alphaByQueryType,
+            bm25_saturation_k: var_bm25SaturationK,
+            semantic_threshold: var_semanticThreshold,
+            agreement_bonus: var_agreementBonus,
+            phrase_match_bonus: var_phraseMatchBonus,
+            rare_term_bonus: var_rareTermBonus,
+            section_coverage_bonus: var_sectionCoverageBonus,
+            duplicate_penalty: var_duplicatePenalty,
+            metadata_ranking_enabled: var_metadataRankingEnabled,
+            candidate_window_multiplier: var_candidateWindowMultiplier,
         };
     }
 }
@@ -7765,7 +7893,12 @@ fn pde_ffi_dispatcher_sync_impl(
         ),
         103 => wire__crate__api__search_engine__query_word_spans_impl(ptr, rust_vec_len, data_len),
         106 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
-        107 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
+        107 => wire__crate__api__search_engine__semantic_ranking_options_defaults_impl(
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        108 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -8541,6 +8674,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticExecut
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticFusionStrategy {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Weighted => 0.into_dart(),
+            Self::Rrf => 1.into_dart(),
+            Self::Adaptive => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticFusionStrategy
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticFusionStrategy>
+    for crate::api::search_engine::SemanticFusionStrategy
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticFusionStrategy {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticGroupingMode {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -8630,6 +8785,65 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticLexica
     for crate::api::search_engine::SemanticLexicalMode
 {
     fn into_into_dart(self) -> crate::api::search_engine::SemanticLexicalMode {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticQueryTypeAlphas {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.quoted_phrase.into_into_dart().into_dart(),
+            self.exact_reference.into_into_dart().into_dart(),
+            self.short.into_into_dart().into_dart(),
+            self.mixed.into_into_dart().into_dart(),
+            self.conceptual.into_into_dart().into_dart(),
+            self.unknown.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticQueryTypeAlphas
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticQueryTypeAlphas>
+    for crate::api::search_engine::SemanticQueryTypeAlphas
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticQueryTypeAlphas {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticRankingOptions {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.fusion_strategy.into_into_dart().into_dart(),
+            self.rrf_k.into_into_dart().into_dart(),
+            self.alpha_override.into_into_dart().into_dart(),
+            self.alpha_by_query_type.into_into_dart().into_dart(),
+            self.bm25_saturation_k.into_into_dart().into_dart(),
+            self.semantic_threshold.into_into_dart().into_dart(),
+            self.agreement_bonus.into_into_dart().into_dart(),
+            self.phrase_match_bonus.into_into_dart().into_dart(),
+            self.rare_term_bonus.into_into_dart().into_dart(),
+            self.section_coverage_bonus.into_into_dart().into_dart(),
+            self.duplicate_penalty.into_into_dart().into_dart(),
+            self.metadata_ranking_enabled.into_into_dart().into_dart(),
+            self.candidate_window_multiplier
+                .into_into_dart()
+                .into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticRankingOptions
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticRankingOptions>
+    for crate::api::search_engine::SemanticRankingOptions
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticRankingOptions {
         self
     }
 }
@@ -9507,6 +9721,16 @@ impl SseEncode for Option<f32> {
     }
 }
 
+impl SseEncode for Option<f64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <f64>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::search_engine::HighlightConfig> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9563,6 +9787,16 @@ impl SseEncode for Option<crate::api::search_engine::SemanticGroupingMode> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::search_engine::SemanticGroupingMode>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::search_engine::SemanticRankingOptions> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::search_engine::SemanticRankingOptions>::sse_encode(value, serializer);
         }
     }
 }
@@ -9882,6 +10116,23 @@ impl SseEncode for crate::api::search_engine::SemanticExecutedMode {
     }
 }
 
+impl SseEncode for crate::api::search_engine::SemanticFusionStrategy {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::search_engine::SemanticFusionStrategy::Weighted => 0,
+                crate::api::search_engine::SemanticFusionStrategy::Rrf => 1,
+                crate::api::search_engine::SemanticFusionStrategy::Adaptive => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::search_engine::SemanticGroupingMode {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9936,6 +10187,43 @@ impl SseEncode for crate::api::search_engine::SemanticLexicalMode {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticQueryTypeAlphas {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <f64>::sse_encode(self.quoted_phrase, serializer);
+        <f64>::sse_encode(self.exact_reference, serializer);
+        <f64>::sse_encode(self.short, serializer);
+        <f64>::sse_encode(self.mixed, serializer);
+        <f64>::sse_encode(self.conceptual, serializer);
+        <f64>::sse_encode(self.unknown, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticRankingOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::search_engine::SemanticFusionStrategy>::sse_encode(
+            self.fusion_strategy,
+            serializer,
+        );
+        <u32>::sse_encode(self.rrf_k, serializer);
+        <Option<f64>>::sse_encode(self.alpha_override, serializer);
+        <crate::api::search_engine::SemanticQueryTypeAlphas>::sse_encode(
+            self.alpha_by_query_type,
+            serializer,
+        );
+        <f64>::sse_encode(self.bm25_saturation_k, serializer);
+        <f64>::sse_encode(self.semantic_threshold, serializer);
+        <f64>::sse_encode(self.agreement_bonus, serializer);
+        <f64>::sse_encode(self.phrase_match_bonus, serializer);
+        <f64>::sse_encode(self.rare_term_bonus, serializer);
+        <f64>::sse_encode(self.section_coverage_bonus, serializer);
+        <f64>::sse_encode(self.duplicate_penalty, serializer);
+        <bool>::sse_encode(self.metadata_ranking_enabled, serializer);
+        <f64>::sse_encode(self.candidate_window_multiplier, serializer);
     }
 }
 

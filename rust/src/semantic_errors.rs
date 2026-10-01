@@ -140,6 +140,28 @@ pub(crate) fn search_error(error: &SemanticSearchError, call: SidecarCall<'_>) -
     }
 }
 
+/// A ranking `RankingProfile::validate` refused, before the search it came with ran. Checking
+/// a ranking loads nothing and opens nothing, as configuring does not, so it is classified as
+/// a configuration is; the variant is the same whichever call it came from.
+pub(crate) fn ranking_error(error: &SemanticSearchError) -> SemanticError {
+    sidecar_error(
+        error,
+        SidecarCall::Configure,
+        format!("the ranking passed with this search is refused: {error}"),
+    )
+}
+
+/// The name `SemanticRankingOptions` gives a ranking parameter that the sidecar names by its
+/// path in `RankingProfile`. They are the same, field for field, but for RRF's `k`, which the
+/// options carry as `rrf_k` beside the strategy, since a Dart enum carries no value.
+fn ranking_field(parameter: &str) -> String {
+    match parameter {
+        "fusion_strategy.k" => "rrf_k",
+        other => other,
+    }
+    .to_string()
+}
+
 /// A corpus stamp that cannot vouch for the open index, as a [`SemanticError`].
 ///
 /// A stamp this build cannot read is no stamp to it, so it is `IndexNotStamped` as a
@@ -251,11 +273,9 @@ fn classify(
         // looks at it. Not a failure, which `search_error` does not say it is.
         SemanticSearchError::Cancelled => (K::Cancelled, None),
         // A ranking passed with one search, refused before the search ran: the caller's
-        // value, which the sidecar names by its path in the profile
-        // (`alpha_by_query_type.short`, `fusion_strategy.k`). No search here passes a
-        // ranking, so none is refused.
+        // value, named as `SemanticRankingOptions` names it.
         SemanticSearchError::InvalidRankingParameter { parameter, .. } => {
-            (K::InvalidInput, Some((*parameter).to_string()))
+            (K::InvalidInput, Some(ranking_field(parameter)))
         }
         SemanticSearchError::Manifest(_)
         | SemanticSearchError::Chunking(_)
@@ -1063,21 +1083,23 @@ mod tests {
             ),
             K::ReadOnlySession
         );
-        // A ranking parameter is the caller's value, and is named as the sidecar names it.
-        assert_eq!(
-            classify(
-                &SemanticSearchError::InvalidRankingParameter {
-                    parameter: "alpha_by_query_type.short",
-                    value: "-0.2".into(),
-                    requirement: "a number from 0 to 1",
-                },
-                session()
-            ),
-            (
-                K::InvalidInput,
-                Some("alpha_by_query_type.short".to_string())
-            )
-        );
+        // A ranking parameter is the caller's value, and is named as the options name it:
+        // as the sidecar does, but for RRF's `k`.
+        for (parameter, field) in [
+            ("alpha_by_query_type.short", "alpha_by_query_type.short"),
+            ("fusion_strategy.k", "rrf_k"),
+        ] {
+            let refused = SemanticSearchError::InvalidRankingParameter {
+                parameter,
+                value: "-0.2".into(),
+                requirement: "a number from 0 to 1",
+            };
+            assert_eq!(
+                classify(&refused, session()),
+                (K::InvalidInput, Some(field.to_string()))
+            );
+            assert_eq!(ranking_error(&refused).field.as_deref(), Some(field));
+        }
         assert_eq!(
             kind(SemanticSearchError::Cancelled, session()),
             K::Cancelled

@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_index_metadata`, `current_schema`, `default`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `none`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `tantivy_schema_matches_current_version`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_current_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -1138,6 +1138,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// to branch on, `fallback_kind`. What fails the call is the lexical half
   /// failing, which is an `Internal` [`SemanticError`].
   ///
+  /// `ranking` replaces, for this search, every parameter hybrid ranking runs on (see
+  /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by the preset
+  /// every search has used, exactly as before, and so does
+  /// [`SemanticRankingOptions::defaults`]. An option outside its range is refused before the
+  /// search runs, as `InvalidInput` naming it, whether or not a session is open to rank by
+  /// it: a build without semantic support ignores the options.
+  ///
   /// `cancellation` abandons the search: once it is cancelled, the next look at it
   /// ends the search with a `Cancelled` [`SemanticError`], never with lexical results
   /// in its place. The search looks before its lexical phase, hands the token to the
@@ -1158,6 +1165,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     SemanticGroupingMode? grouping,
     required bool matchNikud,
     required bool matchTaamim,
+    SemanticRankingOptions? ranking,
     required SemanticCancellationToken cancellation,
   });
 
@@ -2323,7 +2331,7 @@ class SemanticConfigInput {
 /// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
 /// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
-/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path` |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
 class SemanticError implements FrbException {
@@ -2395,7 +2403,7 @@ class SemanticError implements FrbException {
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
 /// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters | `search_semantic` |
-/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 enum SemanticErrorKind {
   /// No semantic session is open.
@@ -2469,6 +2477,21 @@ enum SemanticErrorKind {
 }
 
 enum SemanticExecutedMode { disabled, hybrid, semanticOnly, lexicalOnly }
+
+/// How [`SemanticRankingOptions::fusion_strategy`] combines the two sides' scores.
+enum SemanticFusionStrategy {
+  /// By weight: `alpha` of the normalized BM25 score and `1 - alpha` of the semantic one,
+  /// with the agreement bonus and the other bonuses on top.
+  weighted,
+
+  /// Reciprocal rank fusion, `1 / (rrf_k + rank)` from each side. It needs no calibration of
+  /// either side's scores; the semantic threshold only decides which semantic candidates
+  /// take part, and no bonus or penalty applies.
+  rrf,
+
+  /// By weight, with BM25 min-max normalized when its scores run high.
+  adaptive,
+}
 
 enum SemanticGroupingMode { sameSection, identicalText }
 
@@ -2555,6 +2578,202 @@ class SemanticIndexingSummary {
 }
 
 enum SemanticLexicalMode { exact, fuzzy }
+
+/// The lexical weight `alpha` for each kind of query the sidecar tells apart, by the words
+/// in it; `1 - alpha` goes to the semantic side. Each a number from 0 to 1. The defaults are
+/// the weights the ranking has always used, and are unmeasured (see
+/// [`SemanticRankingOptions`]).
+class SemanticQueryTypeAlphas {
+  /// A query with a quoted phrase: a verbatim lookup, where the lexical engine is
+  /// authoritative. At 1 a hybrid search does not ask the semantic path at all.
+  final double quotedPhrase;
+
+  /// One or two words, one of them with a digit: a reference, such as a page or a verse.
+  final double exactReference;
+
+  /// One or two words without a digit.
+  final double short;
+
+  /// Three or four words.
+  final double mixed;
+
+  /// Five words or more: a question or a description more than a lookup.
+  final double conceptual;
+
+  /// No words at all. Nothing can be embedded, so a hybrid search serves its lexical
+  /// results whatever this is; at 1 the semantic path is not even tried.
+  final double unknown;
+
+  const SemanticQueryTypeAlphas({
+    this.quotedPhrase = 1.0,
+    this.exactReference = 0.85,
+    this.short = 0.7,
+    this.mixed = 0.5,
+    this.conceptual = 0.3,
+    this.unknown = 0.5,
+  });
+
+  @override
+  int get hashCode =>
+      quotedPhrase.hashCode ^
+      exactReference.hashCode ^
+      short.hashCode ^
+      mixed.hashCode ^
+      conceptual.hashCode ^
+      unknown.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticQueryTypeAlphas &&
+          runtimeType == other.runtimeType &&
+          quotedPhrase == other.quotedPhrase &&
+          exactReference == other.exactReference &&
+          short == other.short &&
+          mixed == other.mixed &&
+          conceptual == other.conceptual &&
+          unknown == other.unknown;
+}
+
+/// Every parameter a hybrid search ranks by, passed with one [`SearchEngine::search_semantic`]
+/// in place of the ranking the engine uses when it is passed none. What lets the application
+/// calibrate and tune the ranking without a release of the engine.
+///
+/// **The defaults are unmeasured placeholders.** They are the ranking the engine has always
+/// produced, the sidecar's `Balanced` preset value for value, and none has been checked
+/// against what a reader of this library finds relevant: each was reasoned from a scale (BM25's
+/// typical range, a cosine of about 0.1 meaning unrelated) or carried over from the
+/// literature, as RRF's `k` of 60 is. Calibrating them needs a labelled relevance set, Hebrew
+/// queries of every type each with the lines judged relevant to it; a metric over the page a
+/// user sees, nDCG@10 or recall at the page size; and runs over that set that vary one family
+/// of parameters at a time, the fusion strategy and RRF's `k` first, since RRF needs no score
+/// calibration, then alpha per query type, BM25's `k`, the semantic threshold and the bonuses.
+///
+/// The Dart constructor's defaults are these values, so a caller names only the options it
+/// changes; [`Self::defaults`] reads them from the engine. Passed as they are, they rank
+/// exactly as passing no options does.
+///
+/// | option | default | allowed |
+/// | --- | --- | --- |
+/// | `fusion_strategy` | `Weighted` | |
+/// | `rrf_k` | 60 | at least 1, when `fusion_strategy` is `Rrf`; read by nothing else |
+/// | `alpha_override` | none | 0 to 1 |
+/// | `alpha_by_query_type` | 1, 0.85, 0.7, 0.5, 0.3, 0.5 | each 0 to 1 |
+/// | `bm25_saturation_k` | 10 | above 0 |
+/// | `semantic_threshold` | 0 | 0 to 1 |
+/// | `agreement_bonus` | 0.1 | 0 to 1 |
+/// | `phrase_match_bonus`, `rare_term_bonus`, `section_coverage_bonus` | 0 | 0 to 1 |
+/// | `duplicate_penalty` | 0 | 0 to 1 |
+/// | `metadata_ranking_enabled` | false | |
+/// | `candidate_window_multiplier` | 2 | 1 to 10 |
+///
+/// A value outside its range, or one that is not a number, is refused before the search runs,
+/// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
+/// (`alpha_by_query_type.short`, `rrf_k`), rather than clamped into a value nobody chose: a
+/// calibration run is exactly where a substituted value would go unnoticed. The rules are the
+/// sidecar's own (`RankingProfile::validate`), applied to each value at the 32-bit precision the
+/// ranking computes in. A build without semantic support has no ranking to apply, and ignores
+/// the options as it ignores every semantic input.
+class SemanticRankingOptions {
+  /// How the two sides' scores are combined.
+  final SemanticFusionStrategy fusionStrategy;
+
+  /// RRF's `k`, for [`SemanticFusionStrategy::Rrf`]: the larger it is, the less the first
+  /// ranks of either side count over the ones after them.
+  final int rrfK;
+
+  /// One alpha for every query, in place of [`Self::alpha_by_query_type`].
+  final double? alphaOverride;
+
+  /// The lexical weight for each kind of query, when [`Self::alpha_override`] is `None`.
+  final SemanticQueryTypeAlphas alphaByQueryType;
+
+  /// `k` in BM25's normalization `score / (k + score)`: where the curve bends, so that a
+  /// score well above it is hardly told apart from the scores above it.
+  final double bm25SaturationK;
+
+  /// Below this normalized similarity a semantic candidate contributes nothing. A cosine is
+  /// mapped to `(cosine + 1) / 2`, so an unrelated line, cosine 0, is 0.5.
+  final double semanticThreshold;
+
+  /// Added to a line both sides found, in a hybrid search fused by weight.
+  final double agreementBonus;
+
+  /// Scaled by the share of the query's quoted phrases a line contains, and added.
+  final double phraseMatchBonus;
+
+  /// Scaled by the share of the query's rare words a line contains, and added.
+  final double rareTermBonus;
+
+  /// Added to a line whose section holds another result.
+  final double sectionCoverageBonus;
+
+  /// Taken from every line after the first with the same text.
+  final double duplicatePenalty;
+
+  /// Whether a semantic candidate gains a signal from its metadata, when fused by weight:
+  /// a primary source, by its book, and an era or a category the search's facets match.
+  final bool metadataRankingEnabled;
+
+  /// How many semantic candidates are fetched for each place in the candidate window.
+  final double candidateWindowMultiplier;
+
+  const SemanticRankingOptions({
+    this.fusionStrategy = SemanticFusionStrategy.weighted,
+    this.rrfK = 60,
+    this.alphaOverride,
+    this.alphaByQueryType = const SemanticQueryTypeAlphas(),
+    this.bm25SaturationK = 10.0,
+    this.semanticThreshold = 0.0,
+    this.agreementBonus = 0.1,
+    this.phraseMatchBonus = 0.0,
+    this.rareTermBonus = 0.0,
+    this.sectionCoverageBonus = 0.0,
+    this.duplicatePenalty = 0.0,
+    this.metadataRankingEnabled = false,
+    this.candidateWindowMultiplier = 2.0,
+  });
+
+  /// The ranking a search runs on when it is passed none, read from the engine: the defaults
+  /// of the Dart constructor, and unmeasured.
+  static SemanticRankingOptions defaults() =>
+      RustLib.instance.api.crateApiSearchEngineSemanticRankingOptionsDefaults();
+
+  @override
+  int get hashCode =>
+      fusionStrategy.hashCode ^
+      rrfK.hashCode ^
+      alphaOverride.hashCode ^
+      alphaByQueryType.hashCode ^
+      bm25SaturationK.hashCode ^
+      semanticThreshold.hashCode ^
+      agreementBonus.hashCode ^
+      phraseMatchBonus.hashCode ^
+      rareTermBonus.hashCode ^
+      sectionCoverageBonus.hashCode ^
+      duplicatePenalty.hashCode ^
+      metadataRankingEnabled.hashCode ^
+      candidateWindowMultiplier.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticRankingOptions &&
+          runtimeType == other.runtimeType &&
+          fusionStrategy == other.fusionStrategy &&
+          rrfK == other.rrfK &&
+          alphaOverride == other.alphaOverride &&
+          alphaByQueryType == other.alphaByQueryType &&
+          bm25SaturationK == other.bm25SaturationK &&
+          semanticThreshold == other.semanticThreshold &&
+          agreementBonus == other.agreementBonus &&
+          phraseMatchBonus == other.phraseMatchBonus &&
+          rareTermBonus == other.rareTermBonus &&
+          sectionCoverageBonus == other.sectionCoverageBonus &&
+          duplicatePenalty == other.duplicatePenalty &&
+          metadataRankingEnabled == other.metadataRankingEnabled &&
+          candidateWindowMultiplier == other.candidateWindowMultiplier;
+}
 
 class SemanticRemoveResult {
   final bool enabled;
