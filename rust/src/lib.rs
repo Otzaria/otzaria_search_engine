@@ -30,3 +30,7 @@ pub mod semantic_corpus;
 // `crate::api`, where Dart gets them.
 #[cfg(feature = "semantic-integration")]
 mod semantic_errors;
+// What a semantic search's cancellation token holds, and where a search looks at it. At the
+// crate root for the same reason: Dart gets the token, in `crate::api`, and nothing here. In
+// every build, since the token is part of the API whether or not the sidecar is.
+mod search_cancellation;

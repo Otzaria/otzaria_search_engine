@@ -3,9 +3,10 @@
 ## Unreleased
 
 > Breaking for Dart code that constructs `SemanticConfigInput` or
-> `SemanticStatus`, or that catches the semantic calls' `AnyhowException`, and
-> for an application that configures a GGUF model, so this must not ship as a
-> 0.8.x patch: `^0.8.7` would take it on its own (see 0.8.0).
+> `SemanticStatus`, that calls `searchSemantic`, or that catches the semantic
+> calls' `AnyhowException`, and for an application that configures a GGUF
+> model, so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its
+> own (see 0.8.0).
 
 **The application never builds the library's vectors.** The build machine
 embeds the whole library into a semantic artifact; the application opens it
@@ -79,6 +80,13 @@ are now documented as development and testing scaffolding, not for the library.
   calls already produced, except that a context chain now reads on one line
   (`reading …: …`), where the exception's debug rendering put each cause on a
   `Caused by:` line of its own. No other API changes its error type.
+- **`searchSemantic` takes a required `cancellation`**, a
+  `SemanticCancellationToken` (next section). Required rather than optional
+  because flutter_rust_bridge 2.13 cannot pass an optional borrowed opaque
+  object: an `Option<&T>` argument generates Rust that does not compile, and
+  passing the token by value would move it, and dispose it on the Dart side. A
+  call with nothing to cancel passes `SemanticCancellationToken()`, which
+  changes nothing.
 - **`SemanticStatus` gains a required `state`**, and `errorKind` beside
   `lastError`; **`SemanticSearchResponse` gains `fallbackKind`** beside
   `fallbackReason`. Dart code that constructs a `SemanticStatus`, such as a test
@@ -96,7 +104,7 @@ are now documented as development and testing scaffolding, not for the library.
   identity describes, or its tokenizer missing; ONNX Runtime missing or
   unusable; no backend for the model's format in this build; another session
   open, a read-only session, a re-index needed, one query's semantic half
-  failed; an invalid input; or an internal fault. `SemanticState` says what a
+  failed, a search cancelled; an invalid input; or an internal fault. `SemanticState` says what a
   session can do: `notInBuild`, `notConfigured`, `ready` and `stale` on the
   application's path, and `empty`, `needsReindex` and `failed` for a session
   built on the device. The doc comment of `SemanticErrorKind`, the README and
@@ -132,6 +140,29 @@ are now documented as development and testing scaffolding, not for the library.
   `semantic-onnx` job; and a build without semantic support, in the unit tests.
   The FFI suite matches its refusals by kind across the bridge.
 
+- **A semantic search can be cancelled.** The application searches as the user
+  types, so every query but the last is obsolete before it finishes, and a
+  semantic query embeds the text and then scans every vector, about a second
+  over the library. `SemanticCancellationToken` is an opaque object with a
+  factory constructor and a synchronous `cancel()` and `isCancelled`; Rust holds
+  the sidecar's own `CancellationToken` in it (at the pinned 62f0c44), and
+  `searchSemantic` borrows it, so the application keeps the object and cancels
+  it from the isolate that started the search while the search runs: both take
+  it by shared reference, and neither waits for the other. The search looks
+  before its lexical phase, hands the token to the sidecar's
+  `search_cancellable`, which looks before and after it embeds the query, every
+  1,024 records of the scan and around fusion, and looks again before it
+  hydrates and before it paints; a lexical fallback is looked at before it runs
+  and once its page is ready. The first look after a cancel throws
+  `SemanticError` with the new kind `cancelled`: not a failure, never answered
+  with lexical results instead, and, when the sidecar stops it, leaving its
+  caches untouched. Tested: in the unit tests, with a probe that cancels at a
+  chosen look, a search with a session stops at exactly that look in every mode,
+  the sidecar's own included (which fails if the token is not handed over), and
+  serves the same page afterwards; a pre-cancelled search does nothing in any
+  build; through the public API and across the bridge, a cancelled search throws
+  `cancelled` in every mode, the token outlives the search that borrowed it, and
+  `cancel()` returns while a search holds it.
 - **`openSemanticArtifact`: the application's semantic path.** It opens a
   prebuilt artifact read-only, verifies every field of its identity against
   this installation, and serves `searchSemantic` from it with each result

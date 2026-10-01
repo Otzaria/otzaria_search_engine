@@ -40,6 +40,7 @@ use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
+use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 
 #[cfg(feature = "semantic-integration")]
@@ -540,6 +541,7 @@ pub struct SemanticArtifactInput {
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
+/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters | `search_semantic` |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -584,6 +586,8 @@ pub enum SemanticErrorKind {
     ReindexRequired,
     /// The semantic half of one search failed; lexical results were served.
     QueryFailed,
+    /// The search was cancelled through its token before it finished.
+    Cancelled,
     /// An input the call cannot take.
     InvalidInput,
     /// Anything else; the message says what.
@@ -637,6 +641,15 @@ impl SemanticError {
             field: Some(field.into()),
             ..self
         }
+    }
+
+    /// What a search whose token was cancelled throws, wherever the cancel was noticed: by
+    /// this crate's own look at the token or by the sidecar's.
+    pub(crate) fn cancelled() -> Self {
+        Self::new(
+            SemanticErrorKind::Cancelled,
+            "the search was cancelled before it finished; nothing failed",
+        )
     }
 }
 
@@ -830,6 +843,65 @@ pub struct SemanticSearchResponse {
     /// separate from `truncated`, which belongs to lexical term expansion.
     pub candidate_window_truncated: bool,
     pub truncated: bool,
+}
+
+/// How the application abandons a [`SearchEngine::search_semantic`] that nobody is waiting
+/// for any more: one token per search, created where the search starts and cancelled when a
+/// newer query supersedes it.
+///
+/// The application searches as the user types, so every query but the last is obsolete
+/// before it finishes, and a semantic query embeds the text and then scans every stored
+/// vector, which over the library is on the order of a second; left to run, the abandoned
+/// queries queue up in front of the one that matters. A search whose token is cancelled
+/// stops at its next look at it and throws a [`SemanticError`] of kind `Cancelled`, and the
+/// search looks often: before its lexical phase, throughout the sidecar's semantic half,
+/// and before it hydrates and paints the page. The one stretch a cancel cannot cut short is
+/// the embedding of the query, a single inference. A cancelled search is not a failure: it
+/// is not answered with lexical results instead, since nobody is waiting for those either,
+/// and one the sidecar stops leaves nothing in its caches.
+///
+/// Opaque, and borrowed by the search rather than moved into it, so Dart keeps the object,
+/// and its [`Self::cancel`] reaches the search while it runs. Both take the token by shared
+/// reference, so neither waits for the other: `cancel` returns at once on the isolate that
+/// started the search. A token cannot be reset; a new search takes a new one. A search that
+/// passed its last look before the cancel returns its results all the same, so the
+/// application still tells which query a page answers.
+#[frb(opaque)]
+pub struct SemanticCancellationToken {
+    flag: SearchCancellation,
+}
+
+impl SemanticCancellationToken {
+    /// A token that is not cancelled.
+    #[frb(sync)]
+    pub fn new() -> Self {
+        Self {
+            flag: SearchCancellation::default(),
+        }
+    }
+
+    /// Ask the search holding this token to stop. Returns at once, whether the search has
+    /// not started, is running or has finished: it notices at its next look, not here.
+    /// Cancelling again changes nothing.
+    #[frb(sync)]
+    pub fn cancel(&self) {
+        self.flag.cancel();
+    }
+
+    /// Whether [`Self::cancel`] has been called.
+    #[frb(sync, getter)]
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.is_cancelled()
+    }
+}
+
+/// For Rust callers. Kept out of the bindings, where flutter_rust_bridge would export it as a
+/// second, asynchronous constructor beside [`SemanticCancellationToken::new`].
+impl Default for SemanticCancellationToken {
+    #[frb(ignore)]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Every input that decides which vectors a sidecar session holds: the whole
@@ -3456,6 +3528,16 @@ impl SearchEngine {
     /// back to lexical results and says why, in `fallback_reason` and, as a value
     /// to branch on, `fallback_kind`. What fails the call is the lexical half
     /// failing, which is an `Internal` [`SemanticError`].
+    ///
+    /// `cancellation` abandons the search: once it is cancelled, the next look at it
+    /// ends the search with a `Cancelled` [`SemanticError`], never with lexical results
+    /// in its place. The search looks before its lexical phase, hands the token to the
+    /// sidecar, which looks throughout the semantic half (before and after it embeds the
+    /// query, every 1,024 records of the vector scan, before and after fusion), and looks
+    /// again before it hydrates the sidecar's results and before it paints the page; a
+    /// lexical fallback is looked at before it runs and once its page is ready. Required,
+    /// since flutter_rust_bridge 2.13 cannot pass an optional borrowed opaque type: an
+    /// application with nothing to cancel passes a fresh token, which changes nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn search_semantic(
         &self,
@@ -3469,8 +3551,13 @@ impl SearchEngine {
         grouping: Option<SemanticGroupingMode>,
         match_nikud: bool,
         match_taamim: bool,
+        cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticSearchResponse, SemanticError> {
         let started = Instant::now();
+        let cancel = &cancellation.flag;
+        // Before anything, the sidecar's own first look included: a search cancelled before
+        // it starts costs nothing.
+        search_cancellation::look(cancel, SearchCheckpoint::Start)?;
         #[cfg(feature = "semantic-integration")]
         {
             let Some(session) = self.semantic_engine() else {
@@ -3490,6 +3577,7 @@ impl SearchEngine {
                         "semantic sidecar has not been configured",
                     ),
                     started.elapsed().as_millis() as u64,
+                    cancel,
                 );
             };
             // Before the sidecar is asked, not after: its candidates would be hydrated from
@@ -3508,6 +3596,7 @@ impl SearchEngine {
                     match_taamim,
                     SemanticError::new(SemanticErrorKind::ArtifactStale, stale),
                     started.elapsed().as_millis() as u64,
+                    cancel,
                 );
             }
             // Ask the coordinator for a prefix wider than the requested page,
@@ -3566,9 +3655,12 @@ impl SearchEngine {
                     )?,
                 }
             };
+            // The sidecar's first act is to look at the token, so this crate does not look
+            // here itself; a test is told how far the search got.
+            search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
             let result = session
                 .coordinator
-                .search(
+                .search_cancellable(
                     &query,
                     lexical_candidates,
                     &HybridSearchParams {
@@ -3599,14 +3691,11 @@ impl SearchEngine {
                         feature_flags: None,
                         ranking: None,
                     },
+                    cancel,
                 )
-                .map_err(|err| {
-                    semantic_errors::sidecar_error(
-                        &err,
-                        session.call(),
-                        format!("semantic search failed: {err}"),
-                    )
-                })?;
+                .map_err(|err| semantic_errors::search_error(&err, session.call()))?;
+            // Hydration is a lookup per result, and nobody may be waiting for them.
+            search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;
             // A semantic half that failed is folded into the result as text, and only
             // then: a `LexicalOnly` request, or a quoted phrase the coordinator answers
             // lexically, carries no reason. The coordinator stringifies the failure, so
@@ -3653,6 +3742,7 @@ impl SearchEngine {
                 .skip(offset as usize)
                 .take(limit as usize)
                 .collect();
+            search_cancellation::look(cancel, SearchCheckpoint::Painting)?;
 
             let painter = match highlight {
                 Some(highlight) if !page.is_empty() => {
@@ -3821,6 +3911,7 @@ impl SearchEngine {
                     "semantic support is not compiled into this build",
                 ),
                 started.elapsed().as_millis() as u64,
+                cancel,
             )
         }
     }
@@ -3881,7 +3972,9 @@ impl SearchEngine {
     }
 
     /// The lexical results a search falls back to when the sidecar is not asked, with `why`
-    /// as the response's `fallback_reason` and `fallback_kind`.
+    /// as the response's `fallback_reason` and `fallback_kind`. The search's token is looked
+    /// at once the page is ready, so a search cancelled while its fallback ran is cancelled
+    /// rather than served.
     #[allow(clippy::too_many_arguments)]
     fn semantic_lexical_fallback_response(
         &self,
@@ -3897,6 +3990,7 @@ impl SearchEngine {
         match_taamim: bool,
         why: SemanticError,
         latency_ms: u64,
+        cancel: &SearchCancellation,
     ) -> Result<SemanticSearchResponse, SemanticError> {
         let fallback_reason = Some(why.message);
         let fallback_kind = Some(why.kind);
@@ -3916,6 +4010,7 @@ impl SearchEngine {
                     match_taamim,
                 )?,
             };
+            search_cancellation::look(cancel, SearchCheckpoint::Fallback)?;
             return Ok(SemanticSearchResponse {
                 results: Vec::new(),
                 total_count: 0,
@@ -4004,6 +4099,7 @@ impl SearchEngine {
                 }
             })
             .collect();
+        search_cancellation::look(cancel, SearchCheckpoint::Fallback)?;
         Ok(SemanticSearchResponse {
             total_count: page.total_count,
             lexical_total_count: page.total_count,
@@ -11404,6 +11500,7 @@ mod tests {
                     None,
                     false,
                     false,
+                    &SemanticCancellationToken::new(),
                 )
                 .unwrap();
             assert_eq!(
@@ -11428,6 +11525,73 @@ mod tests {
         assert_eq!(error.to_string(), error.message);
     }
 
+    /// A search whose token was cancelled before it started does nothing at all, in every
+    /// build and every mode, and says so by kind rather than with lexical results. One
+    /// cancelled while its lexical fallback ran is cancelled too, and an uncancelled token
+    /// changes nothing.
+    #[test]
+    fn a_cancelled_search_throws_cancelled_and_an_uncancelled_one_is_served() {
+        use search_cancellation::{cancelling_at, SearchCheckpoint as At};
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 41, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+        let search = |mode, token: &SemanticCancellationToken| {
+            engine.search_semantic(
+                "שלום".to_string(),
+                Vec::new(),
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                1,
+                mode,
+                None,
+                false,
+                false,
+                token,
+            )
+        };
+        let cancelled = |result: Result<SemanticSearchResponse, SemanticError>| match result {
+            Ok(response) => panic!(
+                "a cancelled search was served, with {:?}",
+                response.fallback_kind
+            ),
+            Err(error) => error,
+        };
+
+        let before = SemanticCancellationToken::new();
+        before.cancel();
+        assert!(before.is_cancelled());
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::SemanticOnly,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let (result, reached) = cancelling_at(None, || search(mode, &before));
+            assert_eq!(cancelled(result), SemanticError::cancelled(), "{mode:?}");
+            assert_eq!(
+                reached,
+                [At::Start],
+                "{mode:?}: nothing ran past the first look"
+            );
+
+            let during = SemanticCancellationToken::new();
+            let (result, reached) = cancelling_at(Some(At::Fallback), || search(mode, &during));
+            assert_eq!(
+                cancelled(result).kind,
+                SemanticErrorKind::Cancelled,
+                "{mode:?}"
+            );
+            assert_eq!(reached, [At::Start, At::Fallback], "{mode:?}");
+
+            let fresh = SemanticCancellationToken::new();
+            let (result, reached) = cancelling_at(None, || search(mode, &fresh));
+            let response = result.unwrap();
+            assert_eq!(response.fallback_kind, Some(CLOSED.1), "{mode:?}");
+            assert_eq!(reached, [At::Start, At::Fallback], "{mode:?}");
+            assert!(!fresh.is_cancelled());
+        }
+    }
+
     #[test]
     fn hybrid_request_falls_back_to_ranked_lexical_results_with_reason() {
         let (mut engine, _dir) = make_engine();
@@ -11446,6 +11610,7 @@ mod tests {
                 None,
                 false,
                 false,
+                &SemanticCancellationToken::new(),
             )
             .unwrap();
 
@@ -18728,6 +18893,162 @@ mod tests {
                     .configure_semantic(accepted)
                     .unwrap_or_else(|error| panic!("{model_path}: {error:#}"));
                 engine.disable_semantic();
+            }
+        }
+    }
+
+    /// Where a search with a session stops once its token is cancelled, at each look in
+    /// turn: the sidecar's own first look, which sees the token only if this crate handed it
+    /// over, and this crate's before hydration and before painting. The probe cancels at the
+    /// look a test names, so where the search stops is the test's choice, not a race.
+    ///
+    /// On the stand-in, which serves the stub GGUF only in a build without llama.cpp, as in
+    /// the integration suites.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+    mod semantic_cancellation {
+        use super::*;
+        use crate::search_cancellation::{cancelling_at, SearchCheckpoint as At};
+        use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
+
+        const BOOK: &str = "/books/genesis.txt";
+        const LINES: [(u64, &str); 3] = [
+            (1, "בראשית ברא אלהים את השמים ואת הארץ"),
+            (2, "והארץ היתה תהו ובהו וחשך על פני תהום"),
+            (3, "ויאמר אלהים יהי אור ויהי אור"),
+        ];
+        /// Every look a search that is served reaches, in order.
+        const SERVED: [At; 4] = [At::Start, At::Sidecar, At::Hydration, At::Painting];
+
+        /// An engine over [`LINES`] with a development session on the stand-in that has
+        /// embedded every one of them, and the directories that have to outlive it.
+        fn indexed() -> (SearchEngine, TempDir, TempDir) {
+            let (mut engine, index) = make_engine();
+            for (id, text) in LINES {
+                add(&mut engine, id, text, BOOK);
+            }
+            engine.commit().unwrap();
+            let semantic = TempDir::new().unwrap();
+            let model = semantic.path().join("mock.gguf");
+            write_stub_gguf(&model, 3).unwrap();
+            engine
+                .configure_semantic(SemanticConfigInput {
+                    root_dir: semantic
+                        .path()
+                        .join("semantic")
+                        .to_string_lossy()
+                        .into_owned(),
+                    model_path: model.to_string_lossy().into_owned(),
+                    model_id: "test-mock".to_string(),
+                    embedding_dim: 64,
+                    pooling: "last-token".to_string(),
+                    max_tokens: 512,
+                    model_quantization: "Q4_K_M".to_string(),
+                    embedding_text_version: 1,
+                    onnx_runtime_path: None,
+                })
+                .unwrap();
+            let indexed = engine
+                .semantic_index_books(vec![SemanticBookInput {
+                    source_book_key: BOOK.to_string(),
+                    title: "title".to_string(),
+                    content_fingerprint: 1,
+                    is_pdf: false,
+                    topics: "/root".to_string(),
+                    extra_facets: Vec::new(),
+                    lines: LINES
+                        .iter()
+                        .map(|&(id, text)| SemanticBookLineInput {
+                            line_id: id,
+                            section_id: id,
+                            text: text.to_string(),
+                            line_hash: id,
+                            reference: "ref".to_string(),
+                            segment: 0,
+                        })
+                        .collect(),
+                }])
+                .unwrap();
+            assert_eq!(indexed.chunks_written, LINES.len() as u32);
+            (engine, index, semantic)
+        }
+
+        /// What a page is, as bits: an uncancelled search after the cancelled ones must
+        /// answer exactly as one before them did.
+        fn page(response: &SemanticSearchResponse) -> Vec<(u64, u32, Option<u32>)> {
+            response
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.id,
+                        hit.fused_score.to_bits(),
+                        hit.semantic_score.map(f32::to_bits),
+                    )
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_search_stops_at_the_look_it_was_cancelled_at_and_the_session_serves_on() {
+            let (engine, _index, _semantic) = indexed();
+            let search = |mode, token: &SemanticCancellationToken| {
+                engine.search_semantic(
+                    LINES[2].1.to_string(),
+                    Vec::new(),
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    token,
+                )
+            };
+
+            for mode in [
+                SemanticRetrievalMode::Hybrid,
+                SemanticRetrievalMode::SemanticOnly,
+                SemanticRetrievalMode::LexicalOnly,
+            ] {
+                let (served, reached) =
+                    cancelling_at(None, || search(mode, &SemanticCancellationToken::new()));
+                let served = served.unwrap();
+                assert_eq!(reached, SERVED, "{mode:?}");
+                assert_eq!(served.fallback_kind, None, "{mode:?}");
+                assert!(!served.results.is_empty(), "{mode:?}");
+
+                // Cancelled as the token is handed over, the search stops at the sidecar's
+                // own look and never reaches hydration: had the token not been handed over,
+                // it would have run on to this crate's next look.
+                for (cancel_at, stops_after) in
+                    [(At::Sidecar, 2), (At::Hydration, 3), (At::Painting, 4)]
+                {
+                    let token = SemanticCancellationToken::new();
+                    let (result, reached) = cancelling_at(Some(cancel_at), || search(mode, &token));
+                    match result {
+                        Ok(_) => panic!("{mode:?}: cancelled at {cancel_at:?}, and served"),
+                        Err(error) => assert_eq!(
+                            error,
+                            SemanticError::cancelled(),
+                            "{mode:?} at {cancel_at:?}"
+                        ),
+                    }
+                    assert_eq!(
+                        reached,
+                        SERVED[..stops_after],
+                        "{mode:?}: cancelled at {cancel_at:?}"
+                    );
+                }
+
+                let (after, _) =
+                    cancelling_at(None, || search(mode, &SemanticCancellationToken::new()));
+                assert_eq!(
+                    page(&after.unwrap()),
+                    page(&served),
+                    "{mode:?}: the cancelled searches changed what the session serves"
+                );
             }
         }
     }

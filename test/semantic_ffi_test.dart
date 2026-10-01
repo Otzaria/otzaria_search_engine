@@ -12,10 +12,12 @@ import 'native_library.dart';
 ///
 /// The Rust suites cover the sidecar's behaviour; what only Dart can prove is
 /// that the bridge itself is wired: that the generated dispatcher ids reach the
-/// right functions, that `semanticStatus()` really is asynchronous now, and that
+/// right functions, that `semanticStatus()` really is asynchronous now, that
 /// `SemanticSearchResponse` — an envelope of nested structs, enums, options and
-/// a `BigInt` — decodes on this side of the wire. A regression in any of those
-/// is invisible to `cargo test`.
+/// a `BigInt` — decodes on this side of the wire, and that a search borrows its
+/// `SemanticCancellationToken`, an opaque object, rather than moving it, so this
+/// side can still cancel it. A regression in any of those is invisible to
+/// `cargo test`.
 ///
 /// The first group configures no sidecar, so its expectations hold whether the
 /// library was built with or without the semantic feature: the fallback
@@ -92,6 +94,7 @@ Future<void> main() async {
         retrievalMode: SemanticRetrievalMode.hybrid,
         matchNikud: false,
         matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
       );
 
       expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
@@ -136,6 +139,7 @@ Future<void> main() async {
         retrievalMode: SemanticRetrievalMode.semanticOnly,
         matchNikud: false,
         matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
       );
 
       expect(response.executedMode, SemanticExecutedMode.semanticOnly);
@@ -147,6 +151,45 @@ Future<void> main() async {
       expect(response.fallbackReason, isNotNull);
       expect(response.fallbackKind, isIn(closedKinds));
     });
+
+    test(
+      'a cancellation token is created, cancelled, and only borrowed',
+      () async {
+        Future<SemanticSearchResponse> search(
+          SemanticCancellationToken token,
+        ) => engine.searchSemantic(
+          query: 'בראשית ברא',
+          facets: const [],
+          limit: 10,
+          offset: 0,
+          lexicalMode: SemanticLexicalMode.exact,
+          fuzzyMaxDistance: 0,
+          retrievalMode: SemanticRetrievalMode.hybrid,
+          matchNikud: false,
+          matchTaamim: false,
+          cancellation: token,
+        );
+
+        final token = SemanticCancellationToken();
+        expect(token.isCancelled, isFalse);
+        // An uncancelled token changes nothing, and the search borrowed it
+        // rather than taking it: the object is still usable on this side.
+        expect((await search(token)).results, hasLength(1));
+        expect(token.isCancelled, isFalse);
+
+        token
+          ..cancel()
+          ..cancel();
+        expect(token.isCancelled, isTrue);
+        // Cancelled, the search throws by kind rather than falling back.
+        await expectLater(
+          search(token),
+          throwsA(isSemanticError(SemanticErrorKind.cancelled)),
+        );
+        expect(token.isCancelled, isTrue);
+        token.dispose();
+      },
+    );
 
     test('grouping and fuzzy options survive the round trip', () async {
       final response = await engine.searchSemantic(
@@ -160,6 +203,7 @@ Future<void> main() async {
         grouping: SemanticGroupingMode.sameSection,
         matchNikud: false,
         matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
       );
 
       expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
@@ -303,6 +347,7 @@ Future<void> main() async {
         retrievalMode: SemanticRetrievalMode.hybrid,
         matchNikud: false,
         matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
       );
 
       expect(response.executedMode, SemanticExecutedMode.hybrid);
@@ -334,6 +379,7 @@ Future<void> main() async {
         retrievalMode: SemanticRetrievalMode.semanticOnly,
         matchNikud: false,
         matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
       );
 
       expect(response.executedMode, SemanticExecutedMode.semanticOnly);
@@ -349,6 +395,53 @@ Future<void> main() async {
       // match the query never made.
       expect(hit.snippetHtml, text);
       expect(hit.isHighlighted, isFalse);
+    });
+
+    Future<SemanticSearchResponse> searchWith(
+      SemanticCancellationToken token, {
+      SemanticRetrievalMode mode = SemanticRetrievalMode.hybrid,
+    }) => engine.searchSemantic(
+      query: 'בראשית ברא',
+      facets: const [],
+      limit: 10,
+      offset: 0,
+      lexicalMode: SemanticLexicalMode.exact,
+      fuzzyMaxDistance: 0,
+      retrievalMode: mode,
+      matchNikud: false,
+      matchTaamim: false,
+      cancellation: token,
+    );
+
+    test('a cancelled search throws cancelled in every mode', () async {
+      final token = SemanticCancellationToken()..cancel();
+      for (final mode in SemanticRetrievalMode.values) {
+        await expectLater(
+          searchWith(token, mode: mode),
+          throwsA(isSemanticError(SemanticErrorKind.cancelled)),
+          reason: '$mode: a cancel is not answered with lexical results',
+        );
+      }
+      // The session serves the next search, whose token is not cancelled.
+      final served = await searchWith(SemanticCancellationToken());
+      expect(served.executedMode, SemanticExecutedMode.hybrid);
+      expect(served.fallbackKind, isNull);
+    });
+
+    test('cancelling while the search runs returns at once', () async {
+      final token = SemanticCancellationToken();
+      final search = searchWith(token);
+      // Synchronous, on the isolate that started the search, while the search
+      // holds the token: it neither waits for the search nor finds the token
+      // moved into it.
+      token.cancel();
+      expect(token.isCancelled, isTrue);
+      try {
+        // A search that passed its last look before the cancel is served.
+        expect((await search).semanticAvailable, isTrue);
+      } on SemanticError catch (error) {
+        expect(error.kind, SemanticErrorKind.cancelled);
+      }
     });
 
     test('every recipe field reaches the sidecar\'s manifest', () async {
@@ -621,6 +714,7 @@ Future<void> main() async {
         retrievalMode: SemanticRetrievalMode.semanticOnly,
         matchNikud: false,
         matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
       );
       expect(response.executedMode, SemanticExecutedMode.semanticOnly);
       expect(response.semanticAvailable, isTrue);
@@ -773,6 +867,7 @@ Future<void> main() async {
           retrievalMode: SemanticRetrievalMode.hybrid,
           matchNikud: false,
           matchTaamim: false,
+          cancellation: SemanticCancellationToken(),
         );
         expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
         expect(response.fallbackKind, SemanticErrorKind.artifactStale);

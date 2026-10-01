@@ -54,8 +54,8 @@
 
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticConfigInput, SemanticErrorKind, SemanticExecutedMode, SemanticLexicalMode,
-    SemanticRetrievalMode,
+    SemanticCancellationToken, SemanticConfigInput, SemanticErrorKind, SemanticExecutedMode,
+    SemanticLexicalMode, SemanticRetrievalMode,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -309,6 +309,7 @@ fn ranking(engine: &SearchEngine, query: &str) -> Vec<(u64, f32)> {
             None,
             false,
             false,
+            &SemanticCancellationToken::new(),
         )
         .unwrap();
     assert_eq!(response.executed_mode, SemanticExecutedMode::SemanticOnly);

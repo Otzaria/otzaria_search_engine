@@ -167,6 +167,7 @@ On the application's path:
 | `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after the artifact was opened |
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
+| `cancelled` | `searchSemantic` | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, drop it |
 | `invalidInput` | `openSemanticArtifact`, `configureSemantic` | a value the call cannot take: fix the call |
 | `internal` | any call | a fault, including the lexical index failing under `searchSemantic`: report `message` |
 
@@ -196,6 +197,55 @@ try {
   }
 }
 ```
+
+### Cancelling a search
+
+`searchSemantic` takes a `SemanticCancellationToken`. The application searches
+as the user types, so every query but the last is obsolete before it finishes,
+and a semantic query embeds the text and then scans every stored vector, about a
+second over the whole library; left to run, the abandoned queries would queue up
+in front of the one that matters. Create a token for each search, and cancel it
+when a newer query supersedes it:
+
+```dart
+SemanticCancellationToken? running;
+
+Future<SemanticSearchResponse?> search(String query) async {
+  running?.cancel();
+  final token = running = SemanticCancellationToken();
+  try {
+    return await engine.searchSemantic(
+      query: query,
+      // ... the other parameters ...
+      cancellation: token,
+    );
+  } on SemanticError catch (error) {
+    if (error.kind == SemanticErrorKind.cancelled) return null; // superseded
+    rethrow;
+  }
+}
+```
+
+The search borrows the token rather than taking it, so the object stays the
+application's: `cancel()` is synchronous and returns at once, on the isolate that
+started the search and while the search runs, and `isCancelled` reads it. The
+search looks at the token before its lexical phase; the sidecar looks at it
+throughout the semantic half, before and after it embeds the query, every 1,024
+records of the vector scan, and before and after fusion; and the search looks
+again before it hydrates the sidecar's results and before it paints the page.
+A lexical fallback is looked at before it runs and once its page is ready. The
+one stretch a cancel cannot cut short is embedding the query, a single
+inference.
+
+At the first look after the cancel the search throws a `SemanticError` of kind
+`cancelled`. That is not a failure: it is never answered with lexical results
+instead, since nobody is waiting for those either, and a search the sidecar
+stops leaves nothing in its caches. A search that passed its last look before
+the cancel returns its results, so the application still tells which query a
+page answers. A token cannot be reset: a new search takes a new one. The token
+is required, because flutter_rust_bridge 2.13 cannot pass an optional borrowed
+object; a search with nothing to cancel passes a fresh one, which changes
+nothing.
 
 ### The model
 
@@ -409,8 +459,9 @@ records whose vectors did not survive. `configureSemantic` therefore does not
 re-open a live session: calling it again with the same inputs is a no-op, and
 calling it with different inputs fails and names the input that changed.
 `disableSemantic` is the explicit way to switch model, recipe or library root,
-and it discards the session's vectors. Indexing progress and cooperative
-cancellation are not exposed.
+and it discards the session's vectors. Indexing progress, and cancelling an
+indexing run, are not exposed; a search can be cancelled (see "Cancelling a
+search").
 
 `openSemanticArtifact`, `semanticIndexBooks`, `removeSemanticBooks`,
 `resetSemanticIndex` and `semanticStatus` are all non-exclusive and

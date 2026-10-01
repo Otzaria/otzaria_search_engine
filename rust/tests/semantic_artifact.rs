@@ -21,9 +21,9 @@ use otzaria_semantic_search::semantic::versioning::ModelIdentity;
 use otzaria_semantic_search::semantic::zevc_store::VECTORS_FILENAME;
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticConfigInput, SemanticError, SemanticErrorKind, SemanticExecutedMode,
-    SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse,
-    SemanticState,
+    SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
+    SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
+    SemanticSearchResponse, SemanticState,
 };
 use search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME;
 use serde_json::Value as JsonValue;
@@ -256,6 +256,7 @@ fn search(
             None,
             false,
             false,
+            &SemanticCancellationToken::new(),
         )
         .unwrap()
 }
