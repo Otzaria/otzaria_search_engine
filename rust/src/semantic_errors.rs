@@ -43,7 +43,7 @@ use otzaria_semantic_search::errors::{
 };
 use otzaria_semantic_search::semantic::backend::{ensure_pooling_is_implemented, Pooling};
 use otzaria_semantic_search::semantic::embedding::EmbeddingConfig;
-use otzaria_semantic_search::semantic::model_package::onnx_package_root;
+use otzaria_semantic_search::semantic::model_package::{names_an_onnx_graph, onnx_package_root};
 use otzaria_semantic_search::semantic::official_index::LocalModel;
 use otzaria_semantic_search::semantic::recipe::{EmbeddingTextRecipe, TextNormalizationRecipe};
 use otzaria_semantic_search::semantic::versioning::IdentityField;
@@ -187,8 +187,9 @@ pub(crate) fn stamp_error(error: &CorpusStampError) -> SemanticError {
 /// these checks raise it, and the artifact's when its identity is verified; `LoadFailed` is
 /// a token cap or width no model could be loaded with when the runtime's configuration
 /// raises it, and a model that would not load when its backend does. Settled here, a
-/// refusal of the installation's values is `InvalidInput`, and whatever the sidecar
-/// refuses after them is the artifact's, the model's or the runtime's.
+/// refusal of the installation's values is `InvalidInput`, but for a model path that names
+/// no ONNX graph, such as a GGUF, which is a model to replace and so `ModelInvalid`; and
+/// whatever the sidecar refuses after them is the artifact's, the model's or the runtime's.
 ///
 /// The error is the one the sidecar would have returned, converted the way its `?` converts
 /// it, so `describe` writes the message the sidecar's refusal would have had.
@@ -196,18 +197,27 @@ pub(crate) fn check_local_model(
     model: &LocalModel,
     describe: impl FnOnce(&SemanticSearchError) -> String,
 ) -> Result<(), SemanticError> {
-    let refused = |error: SemanticSearchError, field: Option<&str>| {
-        let refusal = SemanticError::new(SemanticErrorKind::InvalidInput, describe(&error));
+    use SemanticErrorKind as K;
+    let refused = |kind: SemanticErrorKind, error: SemanticSearchError, field: Option<&str>| {
+        let refusal = SemanticError::new(kind, describe(&error));
         match field {
             Some(field) => refusal.with_field(field),
             None => refusal,
         }
     };
     if let Err(error) = EmbeddingTextRecipe::from_version(model.embedding_text_version) {
-        return Err(refused(error.into(), Some("embedding_text_version")));
+        return Err(refused(
+            K::InvalidInput,
+            error.into(),
+            Some("embedding_text_version"),
+        ));
     }
     if let Err(error) = TextNormalizationRecipe::from_version(model.normalization_version) {
-        return Err(refused(error.into(), Some("normalization_version")));
+        return Err(refused(
+            K::InvalidInput,
+            error.into(),
+            Some("normalization_version"),
+        ));
     }
     // As `LocalModel::pooling_strategy` refuses it: a spelling that does not parse, or a
     // pooling no backend performs, both as the caller's `Config`.
@@ -217,13 +227,15 @@ pub(crate) fn check_local_model(
         Ok(pooling) => pooling,
         Err(error) => {
             return Err(refused(
+                K::InvalidInput,
                 SemanticSearchError::Config(error.to_string()),
                 Some("pooling"),
             ))
         }
     };
     // The runtime the sidecar builds, with the one batch size it embeds queries at. Its
-    // refusals here are of the width or the token cap, and say which in their text only.
+    // refusals here are of the width or the token cap, which say which in their text only,
+    // and of a model path that names no ONNX graph.
     let config = EmbeddingConfig {
         model_path: model.model_path.clone(),
         embedding_dim: model.embedding_dim,
@@ -233,7 +245,14 @@ pub(crate) fn check_local_model(
     };
     match config.validate() {
         Ok(()) => Ok(()),
-        Err(error) => Err(refused(error.into(), None)),
+        // The one refusal of the model file rather than of a value: a path that names no
+        // ONNX graph, a GGUF among them, which the sidecar refuses by its name before it
+        // opens anything. It is a model to replace, as when the model loads and its backend
+        // refuses it, so it is `ModelInvalid`, about `model_path`.
+        Err(error @ EmbeddingError::InvalidModelFile { .. }) => {
+            Err(refused(K::ModelInvalid, error.into(), Some("model_path")))
+        }
+        Err(error) => Err(refused(K::InvalidInput, error.into(), None)),
     }
 }
 
@@ -322,12 +341,19 @@ fn embedding_kind(
         EmbeddingError::TokenizerNotFound { .. } => (K::TokenizerMissing, None),
         // A file that is not a model of its format, and a model its backend could not load
         // (ONNX Runtime refusing the graph, a session that will not allocate): to the
-        // application both are a model to download again.
-        EmbeddingError::InvalidModelFile { .. } | EmbeddingError::LoadFailed { .. } => {
-            (K::ModelInvalid, None)
+        // application both are a model to download again. A path that names no ONNX graph,
+        // a GGUF among them, is refused by its name alone, which the path itself says, so
+        // that refusal is about `model_path`.
+        EmbeddingError::InvalidModelFile { path, .. } => {
+            if names_an_onnx_graph(Path::new(path)) {
+                (K::ModelInvalid, None)
+            } else {
+                (K::ModelInvalid, field("model_path"))
+            }
         }
-        // Nothing in the build serves the model: an ONNX graph where the ONNX backend is not
-        // built, or a model of a format no build serves, such as a GGUF.
+        EmbeddingError::LoadFailed { .. } => (K::ModelInvalid, None),
+        // Nothing in the build serves an ONNX graph: the ONNX backend is not built for this
+        // target, or not into this build.
         EmbeddingError::BackendUnavailable { .. } => (K::BackendNotInBuild, None),
         EmbeddingError::OnnxRuntimeUnavailable { .. } => (
             runtime_kind(
@@ -510,6 +536,15 @@ mod tests {
                 },
                 K::ModelInvalid,
                 None,
+            ),
+            // Refused by its name: a path that names no ONNX graph is the field at fault.
+            (
+                EmbeddingError::InvalidModelFile {
+                    path: "/models/model.gguf".into(),
+                    reason: reason(),
+                },
+                K::ModelInvalid,
+                Some("model_path"),
             ),
             (
                 EmbeddingError::LoadFailed { reason: reason() },
@@ -1164,6 +1199,23 @@ mod tests {
                 error.message
             );
         }
+
+        // The model file is the one value refused as something to replace rather than to
+        // correct: a path that names no ONNX graph, such as a GGUF.
+        let gguf = LocalModel {
+            model_path: PathBuf::from("/models/model.gguf"),
+            ..valid
+        };
+        let error =
+            check_local_model(&gguf, |error| format!("refused: {error}")).expect_err("a GGUF");
+        assert_eq!(error.kind, SemanticErrorKind::ModelInvalid);
+        assert_eq!(error.field.as_deref(), Some("model_path"));
+        assert!(
+            error.message.starts_with("refused: ")
+                && error.message.contains("GGUF support was removed"),
+            "{}",
+            error.message
+        );
     }
 
     /// The stamp's own failures, by variant, with their messages unchanged.

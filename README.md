@@ -47,9 +47,10 @@ into the same Flutter Rust Bridge library as Tantivy:
   backend (`semantic-onnx`), for the Meivin model the application uses. ONNX
   is the only model format there is a backend for.
 - GGUF models and `llama.cpp` are not supported. No feature compiles
-  `llama.cpp` or ggml, and a model that is not an `.onnx` graph, a GGUF
-  included, is refused rather than served: loading it fails with
-  `backendNotInBuild`; see "Builds without a backend".
+  `llama.cpp` or ggml, and a model path that does not end in `.onnx`, a GGUF
+  included, is refused by its name rather than served: opening an artifact
+  with it, or loading it on the development path, fails with `modelInvalid`,
+  whose `field` is `model_path`.
 - The sidecar builds the ONNX backend for desktop targets only (Windows, Linux
   and macOS) and compiles it out elsewhere. The feature stays on and the build
   succeeds, so Android and iOS have no backend behind it, and there the
@@ -147,10 +148,10 @@ On the application's path:
 | `artifactNotPublished` | `openSemanticArtifact` | not the artifact whose digest was published: download the official one |
 | `artifactIncompatible` | `openSemanticArtifact` | built for something else; `field` names the first field that disagreed: `corpus.*` for another release of the library, `model.*` for another model, `store.*` or `metadata_version` for another release of the application. Install the artifact built for this one |
 | `indexNotStamped`, `indexStampMismatch` | `openSemanticArtifact` | the index has no corpus stamp this build reads, or changed after it was stamped: install the release's index with its artifact |
-| `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package |
+| `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package. `modelInvalid` with `field` `model_path` is a path that names no ONNX graph, such as a GGUF: point `modelPath` at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
-| `backendNotInBuild` | `openSemanticArtifact` | this build cannot run the model: an ONNX graph on Android or iOS, or a model that is not an ONNX graph, such as a GGUF, which no build runs |
+| `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
 | `readOnlySession` | the calls that build vectors | refused on an opened artifact; nothing to fix |
 | `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after the artifact was opened |
@@ -370,10 +371,9 @@ signed with the application's identity, and passing its path as
 ### Builds without a backend
 
 A build can hold the integration with no backend for the model: an ONNX model
-on Android or iOS, or on a build without `semantic-onnx`; and a model that is
-not an ONNX graph, such as a GGUF, on every build, since there is a backend for
-no other format. An ONNX model whose runtime cannot be loaded behaves the same
-way; only the message differs (see above).
+on Android or iOS, or on a build without `semantic-onnx`. An ONNX model whose
+runtime cannot be loaded behaves the same way; only the message differs (see
+above).
 
 On such a build `openSemanticArtifact` throws, since the model it has to embed
 queries with cannot load, and nothing is left open: `searchSemantic` then falls

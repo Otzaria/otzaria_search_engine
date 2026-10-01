@@ -208,7 +208,8 @@ fn runtime_lookup_is_ours() -> bool {
 
 /// No build serves a GGUF model any more: the sidecar refuses a model path that names no ONNX
 /// graph by its name, before anything is opened and whatever the file holds, so indexing
-/// fails with a model to replace, not a runtime to install or a build to change.
+/// fails with a model to replace, about `model_path`, and not a runtime to install or a
+/// build to change.
 #[test]
 fn a_gguf_model_is_refused_as_model_invalid() {
     let root = TempDir::new().unwrap();
@@ -237,6 +238,7 @@ fn a_gguf_model_is_refused_as_model_invalid() {
         "{}",
         error.message
     );
+    assert_eq!(error.field.as_deref(), Some("model_path"));
     assert!(
         error.message.contains("GGUF support was removed"),
         "{}",

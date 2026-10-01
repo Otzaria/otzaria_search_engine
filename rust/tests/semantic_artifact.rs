@@ -881,6 +881,36 @@ fn a_missing_or_unusable_model_is_named_by_kind() {
     }
 }
 
+/// A model path that names no ONNX graph, a GGUF among them, is refused by its name before
+/// anything is opened: a model to replace, about `model_path`, with the sidecar's message.
+#[test]
+fn a_model_that_is_not_an_onnx_graph_is_invalid_and_named() {
+    let library = build_library(true);
+    let engine = library.engine();
+    let work = TempDir::new().unwrap();
+    let gguf = work.path().join("model.gguf");
+    std::fs::write(&gguf, b"GGUF").unwrap();
+
+    let error = open_refusal(
+        &engine,
+        SemanticArtifactInput {
+            model_path: gguf.to_string_lossy().into_owned(),
+            ..library.input()
+        },
+    );
+    assert!(
+        error.message.contains("GGUF support was removed"),
+        "{}",
+        error.message
+    );
+    assert_refused(
+        &engine,
+        &error,
+        SemanticErrorKind::ModelInvalid,
+        Some("model_path"),
+    );
+}
+
 /// Values in the installation's own identity that no build could serve are the caller's
 /// input to fix, and the message is the one the sidecar's own refusal of them has.
 #[test]
