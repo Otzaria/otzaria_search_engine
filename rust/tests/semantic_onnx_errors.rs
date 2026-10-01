@@ -5,7 +5,7 @@
 //! Neither needs the real model, nor any ONNX Runtime at all, so these run in every
 //! `semantic-onnx` job rather than behind `--ignored` with `tests/semantic_onnx_model.rs`.
 //! The stand-in must be out of the build, because it serves both formats and would load
-//! either model; so must llama.cpp, which would serve the GGUF.
+//! either model.
 //!
 //! The ONNX model is a stub package: a graph that passes the sidecar's structural checks and
 //! that no runtime could run, and a tokenizer that loads. Loading stops at the runtime, which
@@ -15,11 +15,7 @@
 //! a passed path is the only place looked. The others place a file beside the graph, and with
 //! the variable set they cannot tell which runtime they are testing, so they skip, loudly.
 
-#![cfg(all(
-    feature = "semantic-onnx",
-    not(feature = "semantic-mock"),
-    not(feature = "semantic-llama")
-))]
+#![cfg(all(feature = "semantic-onnx", not(feature = "semantic-mock")))]
 
 use search_engine::api::search_engine::{
     SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticConfigInput, SemanticError,

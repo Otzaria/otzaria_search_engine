@@ -8,36 +8,25 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = []
-# The production feature, and the one cargokit.yaml builds the application with.
-# It is the ONNX backend alone, because the application's model is the Meivin
-# ONNX graph: llama.cpp and ggml, which compile through cmake, stay behind the
-# opt-in `semantic-llama`, and no application build compiles them. The sidecar
-# picks a backend per model by the model file's format, an `*.onnx` graph for
-# ONNX Runtime and every other path a GGUF for llama.cpp, and deliberately has
-# no default backend: a GGUF model on this build is refused with
-# `BackendUnavailable` rather than served, and the reason names the sidecar's
-# `llama-backend`, which `semantic-llama` turns on. On Android and iOS, where
-# the sidecar builds no ONNX backend, this build serves no model at all.
+# The production feature, and the one cargokit.yaml builds the application with:
+# the ONNX backend, for the Meivin ONNX graph the application uses. It is the
+# only embedding backend there is. GGUF models and llama.cpp are not supported:
+# no feature compiles llama.cpp or ggml, and a model that is not an `*.onnx`
+# graph is refused rather than served. On Android and iOS, where the sidecar
+# builds no ONNX backend, this build serves no model at all.
 semantic = ["semantic-onnx"]
 # Internal gate for code that talks to the sidecar. Every backend feature below
 # turns it on; on its own it compiles the integration with no backend behind it.
 semantic-integration = ["dep:otzaria-semantic-search"]
-# GGUF weights on llama.cpp (the Qwen3 model). Compiles llama.cpp and ggml
-# through cmake, which is why `semantic` leaves it out; enable it beside
-# `semantic` for a build that serves both formats.
-semantic-llama = ["semantic-integration", "otzaria-semantic-search/llama-backend"]
-# Backwards-compatible alias. It predates the ONNX backend and never meant more
-# than llama.cpp, so it does not grow to include it; production uses `semantic`.
-semantic-real = ["semantic-llama"]
 # ONNX graphs on ONNX Runtime (the Meivin model). Nothing is linked: the sidecar
 # loads the ONNX Runtime shared library when a model loads, so the build needs no
 # download and the binary no new dependency. The sidecar builds the backend for
-# desktop targets only; elsewhere it compiles out, as llama.cpp does on 32-bit
-# ARM, and an ONNX model is `BackendUnavailable` there.
+# desktop targets only; elsewhere it compiles out, and an ONNX model is
+# `BackendUnavailable` there.
 semantic-onnx = ["semantic-integration", "otzaria-semantic-search/onnx-backend"]
 # CI and adapter integration tests use the sidecar's deterministic test backend,
-# with neither llama.cpp nor ONNX Runtime. Production builds must use
-# `semantic`; neither default nor mock builds can silently select it.
+# with no ONNX Runtime behind it. Production builds must use `semantic`; neither
+# default nor mock builds can silently select it.
 semantic-mock = ["semantic-integration", "otzaria-semantic-search/mock-embedding"]
 
 [lints.rust]
@@ -99,7 +88,7 @@ rayon = "1.10"
 sha2 = "0.10"
 
 # The semantic sidecar's persisted-vector format and its inference bindings
-# (llama.cpp, ONNX Runtime) are part of the index identity.  A branch dependency
+# (ONNX Runtime) are part of the index identity.  A branch dependency
 # can silently change any of them; pin the exact reviewed revision and retain it
 # in Cargo.lock for reproducible builds.
 otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "62f0c44e4931bb7d91d33891dda5a618567c70b3", optional = true }

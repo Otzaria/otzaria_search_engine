@@ -8,12 +8,11 @@
 //! wrote into the index directory.
 //!
 //! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the model is a stub
-//! GGUF, which only the deterministic stand-in serves, and `semantic-llama` would take it
-//! ahead of the stand-in and fail to load it. The stand-in embeds a text as a hash of it, so a
-//! query that is a line's exact text scores that line 1.0 and nothing else as high, which is
-//! what lets these tests know which line must come back.
+//! GGUF, which only the deterministic stand-in serves. The stand-in embeds a text as a hash of
+//! it, so a query that is a line's exact text scores that line 1.0 and nothing else as high,
+//! which is what lets these tests know which line must come back.
 
-#![cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+#![cfg(feature = "semantic-mock")]
 
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};

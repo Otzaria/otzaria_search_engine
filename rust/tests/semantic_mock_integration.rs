@@ -9,11 +9,10 @@
 //! untested.
 //!
 //! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the
-//! sidecar is opened on a stub GGUF, which only the stand-in serves, and
-//! `semantic-llama` would take it ahead of the stand-in and fail to load it.
+//! sidecar is opened on a stub GGUF, which only the stand-in serves.
 //! `semantic-onnx` serves only `.onnx` graphs, so it leaves the stub alone.
 
-#![cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+#![cfg(feature = "semantic-mock")]
 
 use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
 use search_engine::api::search_engine::{

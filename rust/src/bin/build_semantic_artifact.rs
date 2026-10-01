@@ -12,17 +12,16 @@
 //! ```text
 //! build_semantic_artifact \
 //!   --index ./tantivy-index --library-version otzaria-library-2026-08 \
-//!   --model model.json --model-file model.gguf --chunking chunking.json \
+//!   --model model.json --model-file seforim-embed-round2-int8.onnx --chunking chunking.json \
 //!   --out ./artifact
 //! ```
 //!
-//! `--model-file` is handed to the sidecar as it is, and the sidecar picks the backend by
-//! its format: a path ending in `.onnx` is an ONNX graph, whose package is the graph plus
-//! the `tokenizer.json` beside it, and every other path is a GGUF.
+//! `--model-file` is the ONNX graph the vectors are produced with, handed to the sidecar as
+//! it is; its package is the graph plus the `tokenizer.json` beside it. GGUF weights are not
+//! supported.
 //!
-//! Requires an inference backend for that format, because a build *is* inference: compile
-//! with `--features semantic-onnx` for an ONNX graph (`semantic`, the production feature,
-//! is that backend alone), `--features semantic-llama` for GGUF weights, or
+//! Requires an inference backend, because a build *is* inference: compile with
+//! `--features semantic-onnx` (`semantic`, the production feature, is that backend), or
 //! `--features semantic-mock` for the deterministic stand-in, which then also needs
 //! `--allow-non-semantic` because its vectors carry no meaning.
 //!
@@ -39,9 +38,8 @@
 fn main() {
     eprintln!(
         "This binary was compiled without a semantic backend, and building an artifact is \
-         inference.\nRebuild with --features semantic-onnx (an ONNX graph), \
-         --features semantic-llama (GGUF weights) or --features semantic-mock \
-         (deterministic stand-in)."
+         inference.\nRebuild with --features semantic-onnx (an ONNX graph) or \
+         --features semantic-mock (deterministic stand-in)."
     );
     std::process::exit(1);
 }
@@ -172,8 +170,8 @@ Required:
   --index <dir>              The lexical index to read the corpus from, read-only
   --library-version <name>   Catalogue release the index was built from
   --model <path>             JSON ModelIdentity describing how the vectors are produced
-  --model-file <path>        The model the vectors are produced with: a GGUF, or an
-                             ONNX graph (*.onnx) with its tokenizer.json beside it
+  --model-file <path>        The model the vectors are produced with: an ONNX graph
+                             (*.onnx) with its tokenizer.json beside it
   --chunking <path>          JSON ChunkerConfig — the recipe itself
   --out <dir>                Output directory; must not exist, or be empty
 

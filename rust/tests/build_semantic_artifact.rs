@@ -7,11 +7,10 @@
 //! covered at all.
 //!
 //! Compiled only with the deterministic backend: a build is inference, and the real weights
-//! are a 396 MB gated download the sidecar's own golden job already fetches. Not beside
-//! `semantic-llama`, which would take the stub GGUF ahead of the stand-in and fail to load
-//! it; `semantic-onnx` serves only `.onnx` graphs, so it leaves the stub to the stand-in.
+//! are a 396 MB gated download the sidecar's own golden job already fetches. `semantic-onnx`
+//! serves only `.onnx` graphs, so it leaves the stub to the stand-in.
 
-#![cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+#![cfg(feature = "semantic-mock")]
 
 use otzaria_semantic_search::distribution::corpus::CorpusIndex;
 use otzaria_semantic_search::distribution::packer::validate_artifact;
