@@ -356,10 +356,11 @@ pub struct SemanticConfigInput {
     /// The model file: an ONNX graph, a path ending in `.onnx` (in any letter
     /// case), with its `tokenizer.json` in the same directory. ONNX Runtime is
     /// the only embedding backend there is. GGUF models, which llama.cpp served
-    /// until it was removed, are not supported, and nor is any other file: no
-    /// build serves one, and loading it, which indexing does, fails with
-    /// `BackendNotInBuild`, as an ONNX graph does on a build without the ONNX
-    /// backend.
+    /// until it was removed, are not supported, and nor is any other file: a
+    /// path that does not end in `.onnx` is refused by its name when the model
+    /// loads, which indexing does, as `ModelInvalid` with `field` `model_path`.
+    /// An ONNX graph on a build without the ONNX backend fails to load as
+    /// `BackendNotInBuild`.
     ///
     /// An ONNX graph also needs the ONNX Runtime shared library, which this
     /// library does not link but loads when the model loads, from the first of
@@ -534,11 +535,11 @@ pub struct SemanticArtifactInput {
 /// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
 /// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
-/// | `ModelInvalid` | the file at `model_path` is not a usable model of its format (a truncated download, a placeholder), or its backend could not load it | download the model again | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelInvalid` | the file at `model_path` is not a usable model (a truncated download, a placeholder), or its backend could not load it; or `model_path` names no ONNX graph, such as a GGUF, which no build serves since GGUF support was removed (`field` is `model_path` then) | download the model again; for a path that names no ONNX graph, install the ONNX model and point `model_path` at its graph | `open_semantic_artifact`, `semantic_index_books` |
 /// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
-/// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend; or a model that is not an ONNX graph, such as a GGUF, which no build serves | use the ONNX model, on a build that has its backend | `open_semantic_artifact`, `semantic_index_books` |
+/// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
@@ -570,7 +571,7 @@ pub enum SemanticErrorKind {
     ModelMissing,
     /// An ONNX graph without its `tokenizer.json`.
     TokenizerMissing,
-    /// The model file is not a usable model, or could not be loaded.
+    /// The model file is not a usable model, could not be loaded, or is no ONNX graph.
     ModelInvalid,
     /// The model identity in hand does not describe the model file.
     ModelIdentityMismatch,
@@ -578,7 +579,7 @@ pub enum SemanticErrorKind {
     OnnxRuntimeMissing,
     /// The ONNX Runtime library found cannot be used.
     OnnxRuntimeUnusable,
-    /// No embedding backend for the model's format in this build.
+    /// No embedding backend for the model in this build: no ONNX backend here.
     BackendNotInBuild,
     /// Another semantic session is open, or this one with different inputs.
     SessionConflict,
@@ -609,6 +610,7 @@ pub enum SemanticErrorKind {
 /// | --- | --- |
 /// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///

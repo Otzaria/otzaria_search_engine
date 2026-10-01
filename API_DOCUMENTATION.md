@@ -248,8 +248,9 @@ Future<SemanticResetResult> resetSemanticIndex()
 These reach the semantic sidecar only in a library built with a semantic
 feature; any other build reports an explicit `notInBuild` state and serves
 lexical results. Cargokit builds the library with `semantic`, the ONNX backend,
-and ONNX is the only model format: GGUF models are not supported, and loading
-one fails on every build with a `SemanticError` of kind `backendNotInBuild`. The
+and ONNX is the only model format: GGUF models are not supported, and a model
+path that does not end in `.onnx` is refused by its name on every build, as a
+`SemanticError` of kind `modelInvalid` whose `field` is `model_path`. The
 README's "Semantic search integration" section covers the features, the release
 contract, the session lifecycle and the fallback contract. Every one of them but
 `semanticStatus` and `disableSemantic` throws a `SemanticError` when it fails
@@ -413,11 +414,11 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `indexStampMismatch` | `openSemanticArtifact` | the index changed after it was stamped | install the release's index |
 | `modelMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no file at `modelPath` | download the model |
 | `tokenizerMissing` | `openSemanticArtifact`, `semanticIndexBooks` | an ONNX graph without `tokenizer.json` beside it | install the whole package |
-| `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model of its format, or its backend could not load it | download the model again |
+| `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model, or its backend could not load it; or, with `field` `model_path`, a path that names no ONNX graph, such as a GGUF | download the model again; for a path, point it at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact`, `semanticIndexBooks` | the identity does not describe the model; `field`: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` | ship the matching identity file or model |
 | `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for: at `onnxRuntimePath` when it is passed | provide ONNX Runtime there |
 | `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
-| `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no backend in this build for the model: an ONNX graph on Android or iOS, or a model that is not an ONNX graph, such as a GGUF, which no build serves | the ONNX model, on a desktop build |
+| `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no ONNX backend in this build, as on Android and iOS | a desktop build |
 | `sessionConflict` | `configureSemantic`, `openSemanticArtifact` | another session, or other inputs, is open | `disableSemantic` first |
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened artifact | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |

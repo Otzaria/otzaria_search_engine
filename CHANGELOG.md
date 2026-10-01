@@ -57,13 +57,16 @@ are now documented as development and testing scaffolding, not for the library.
   for the Qwen3 GGUF model. It is now the ONNX backend, for the Meivin model the
   application uses, and ONNX is the only format any build serves: the
   `semantic-llama` feature and its `semantic-real` alias are removed, so no
-  build compiles llama.cpp or ggml, through cmake or otherwise. A GGUF model, or
-  any model that is not an `.onnx` graph, is refused rather than served:
-  loading it throws a `SemanticError` of kind `backendNotInBuild`, and the
-  library behaves as the README's "Builds without a backend" describes.
-  `cargokit.yaml` still builds `--features semantic`. On Android and iOS, which
-  have no ONNX backend, the production build serves no model at all. The last
-  commit of this plugin with GGUF support is eb42ebd.
+  build compiles llama.cpp or ggml, through cmake or otherwise. The sidecar is
+  pinned at dc11d59, the merge that removed GGUF from it too. A GGUF model, or
+  any model path that does not end in `.onnx`, is refused by its name rather
+  than served: opening an artifact with it, or indexing with it on the
+  development path, throws a `SemanticError` of kind `modelInvalid` whose
+  `field` is `model_path`, with the sidecar's message ("… GGUF support was
+  removed …"). `backendNotInBuild` keeps its meaning: an ONNX graph on a build
+  without the ONNX backend. `cargokit.yaml` still builds `--features semantic`.
+  On Android and iOS, which have no ONNX backend, the production build serves
+  no model at all. The last commit of this plugin with GGUF support is eb42ebd.
 
   The build settings only llama.cpp needed went with it. The podspecs no longer
   link `c++` or the Accelerate, Metal, MetalKit and Foundation frameworks. The
@@ -153,7 +156,7 @@ are now documented as development and testing scaffolding, not for the library.
   semantic query embeds the text and then scans every vector, about a second
   over the library. `SemanticCancellationToken` is an opaque object with a
   factory constructor and a synchronous `cancel()` and `isCancelled`; Rust holds
-  the sidecar's own `CancellationToken` in it (at the pinned 62f0c44), and
+  the sidecar's own `CancellationToken` in it (the sidecar's since 62f0c44), and
   `searchSemantic` borrows it, so the application keeps the object and cancels
   it from the isolate that started the search while the search runs: both take
   it by shared reference, and neither waits for the other. The search looks
@@ -179,10 +182,10 @@ are now documented as development and testing scaffolding, not for the library.
   rare-word and section bonuses and the duplicate penalty, metadata ranking and
   the semantic candidate window's multiplier, mirroring the sidecar's
   `RankingProfile` field for field and handed to it as `HybridSearchParams::ranking`
-  (pinned 62f0c44). Without it, or with the defaults, which the Dart constructor
-  carries and `SemanticRankingOptions.defaults()` reads from the engine, a
-  search ranks exactly as before: the defaults are the sidecar's `Balanced`
-  preset, value for value. **They are unmeasured placeholders**; calibrating
+  (since the sidecar's 62f0c44). Without it, or with the defaults, which the
+  Dart constructor carries and `SemanticRankingOptions.defaults()` reads from
+  the engine, a search ranks exactly as before: the defaults are the sidecar's
+  `Balanced` preset, value for value. **They are unmeasured placeholders**; calibrating
   them needs a labelled relevance set, and this lets that happen from the
   application without a release of the engine. An option out of its range, or
   not a number, is refused before the search runs, with or without a session,
@@ -239,8 +242,8 @@ are now documented as development and testing scaffolding, not for the library.
 - **`onnxRuntimePath`: the ONNX Runtime the application ships.**
   `SemanticArtifactInput` and `SemanticConfigInput` gain an optional
   `onnxRuntimePath`, the shared library an ONNX model runs on, which the plugin
-  hands to the sidecar as its `EmbeddingDeployment` (the sidecar is pinned at
-  62f0c44, which added it). It is the first place looked and, once passed, the
+  hands to the sidecar as its `EmbeddingDeployment` (which the sidecar added in
+  62f0c44). It is the first place looked and, once passed, the
   only one: a path that names no file is `onnxRuntimeMissing` and one that does
   not load `onnxRuntimeUnusable`, never a fall-back to `OTZARIA_ONNX_RUNTIME` or
   to the file beside the graph, which stay the second and third places; an empty
