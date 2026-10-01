@@ -25,8 +25,8 @@ function(apply_cargokit target manifest_dir lib_name any_symbol_name)
         set(CARGOKIT_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
         set(OUTPUT_LIB "${CMAKE_CURRENT_BINARY_DIR}/${CARGOKIT_LIB_FULL_NAME}")
     endif()
-    # ברירת המחדל עמוקה וחוצה MAX_PATH בקומפילציית crates גדולים (llama-cpp-sys-2);
-    # CARGOKIT_TEMP_DIR בסביבה מאפשר scratch קצר (למשל C:\ck) בבנייה מקומית.
+    # ברירת המחדל עמוקה בתוך עץ ה-build, ונתיבים ארוכים בה עלולים לחצות את MAX_PATH
+    # של Windows; CARGOKIT_TEMP_DIR בסביבה מאפשר scratch קצר (למשל C:\ck) בבנייה מקומית.
     if (DEFINED ENV{CARGOKIT_TEMP_DIR} AND NOT "$ENV{CARGOKIT_TEMP_DIR}" STREQUAL "")
         set(CARGOKIT_TEMP_DIR "$ENV{CARGOKIT_TEMP_DIR}/${lib_name}")
     else()
