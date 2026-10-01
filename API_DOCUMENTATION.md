@@ -235,7 +235,7 @@ Returns the distinct `filePath` values present in the index — i.e. which books
 Future<SemanticStatus> openSemanticArtifact({required SemanticArtifactInput config})
 Future<void> disableSemantic()
 Future<SemanticStatus> semanticStatus()
-Future<SemanticSearchResponse> searchSemantic({...})
+Future<SemanticSearchResponse> searchSemantic({..., required SemanticCancellationToken cancellation})
 
 // Development and testing: vectors built on this device.
 Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})
@@ -332,6 +332,23 @@ ship the runtime inside the signed application bundle and pass its path as
 `onnxRuntimePath`. The ONNX backend is built for desktop targets (Windows, Linux
 and macOS) only.
 
+**Cancelling a search.** `searchSemantic` takes a `SemanticCancellationToken`,
+an opaque object with a factory constructor `SemanticCancellationToken()`, a
+synchronous `cancel()` and a synchronous `isCancelled`. Create one per search
+and cancel it when a newer query supersedes the search. The search borrows the
+token rather than moving it, so `cancel()` returns at once on the isolate that
+started the search, while the search runs. The search looks at the token before
+its lexical phase; the sidecar throughout the semantic half (before and after it
+embeds the query, every 1,024 records of the vector scan, before and after
+fusion); and the search again before it hydrates the sidecar's results and before
+it paints the page, or, for a lexical fallback, once the fallback's page is
+ready. At the first look after the cancel it throws `SemanticError` with kind
+`cancelled`: not a failure, never answered with lexical results instead, and,
+when the sidecar stops it, leaving its caches as they were. A search past its
+last look returns its results. A token cannot be reset. It is required, since
+flutter_rust_bridge 2.13 cannot pass an optional borrowed object: a fresh token
+changes nothing.
+
 **Failures and states.** A failed semantic call throws `SemanticError`, an
 `FrbException` with three fields: `kind`, a `SemanticErrorKind` to branch on;
 `message`, the detailed text the call has always produced; and `field`, the
@@ -376,6 +393,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened artifact | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
 | `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
+| `cancelled` | `searchSemantic` | its `SemanticCancellationToken` was cancelled before it finished | drop it: nothing failed |
 | `invalidInput` | `configureSemantic`, `openSemanticArtifact` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`) | fix the call |
 | `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
 

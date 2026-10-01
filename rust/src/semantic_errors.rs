@@ -126,6 +126,20 @@ pub(crate) fn sidecar_error(
     }
 }
 
+/// `error`, from a search, as a [`SemanticError`]. Its message says the search failed, unless
+/// the search was cancelled, which is not a failure: that reads as any cancelled search does,
+/// whichever look noticed it.
+pub(crate) fn search_error(error: &SemanticSearchError, call: SidecarCall<'_>) -> SemanticError {
+    match classify(error, call) {
+        (SemanticErrorKind::Cancelled, _) => SemanticError::cancelled(),
+        (kind, field) => SemanticError {
+            kind,
+            message: format!("semantic search failed: {error}"),
+            field,
+        },
+    }
+}
+
 /// A corpus stamp that cannot vouch for the open index, as a [`SemanticError`].
 ///
 /// A stamp this build cannot read is no stamp to it, so it is `IndexNotStamped` as a
@@ -233,10 +247,9 @@ fn classify(
         },
         SemanticSearchError::IncompatibleIndex { .. } => (K::ReindexRequired, None),
         SemanticSearchError::ReadOnlyIndex { .. } => (K::ReadOnlySession, None),
-        // A search abandoned through its token. Not met here: every search this crate makes
-        // goes through the coordinator's `search`, which hands the sidecar a token nobody
-        // cancels, so a search that reported itself cancelled would be a fault.
-        SemanticSearchError::Cancelled => (K::Internal, None),
+        // A search the caller abandoned through its token, stopped at one of the sidecar's
+        // looks at it. Not a failure, which `search_error` does not say it is.
+        SemanticSearchError::Cancelled => (K::Cancelled, None),
         // A ranking passed with one search, refused before the search ran: the caller's
         // value, which the sidecar names by its path in the profile
         // (`alpha_by_query_type.short`, `fusion_strategy.k`). No search here passes a
@@ -1065,9 +1078,11 @@ mod tests {
                 Some("alpha_by_query_type.short".to_string())
             )
         );
+        assert_eq!(
+            kind(SemanticSearchError::Cancelled, session()),
+            K::Cancelled
+        );
         for internal in [
-            // No search here hands the sidecar a token that can be cancelled.
-            SemanticSearchError::Cancelled,
             SemanticSearchError::Manifest(ManifestError::WriteFailed { reason: "r".into() }),
             SemanticSearchError::Fusion("f".into()),
             SemanticSearchError::Io(std::io::Error::other("e")),
@@ -1076,6 +1091,25 @@ mod tests {
             let described = format!("{internal:?}");
             assert_eq!(kind(internal, session()), K::Internal, "{described}");
         }
+    }
+
+    /// A search's own failure says it failed; a cancelled one does not, and reads as a
+    /// cancel this crate noticed itself does, however the sidecar delivered it.
+    #[test]
+    fn a_cancelled_search_is_not_reported_as_a_failed_one() {
+        use SemanticErrorKind as K;
+        for cancelled in [
+            SemanticSearchError::Cancelled,
+            SemanticSearchError::VectorStore(VectorStoreError::Cancelled),
+        ] {
+            assert_eq!(
+                search_error(&cancelled, session()),
+                SemanticError::cancelled()
+            );
+        }
+        let failed = search_error(&SemanticSearchError::Fusion("f".into()), session());
+        assert_eq!(failed.kind, K::Internal);
+        assert_eq!(failed.message, "semantic search failed: Fusion error: f");
     }
 
     /// The installation's own values are refused as `InvalidInput`, with the message the

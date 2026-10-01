@@ -17,10 +17,10 @@
 
 use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
 use search_engine::api::search_engine::{
-    ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticConfigInput,
-    SemanticError, SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode,
-    SemanticIndexingSummary, SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
-    SemanticSearchResponse, SemanticState,
+    ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput,
+    SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
+    SemanticExecutedMode, SemanticGroupingMode, SemanticIndexingSummary, SemanticLexicalMode,
+    SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
 };
 use tempfile::TempDir;
 
@@ -180,6 +180,7 @@ fn search(
             grouping,
             false,
             false,
+            &SemanticCancellationToken::new(),
         )
         .unwrap()
 }
@@ -636,6 +637,50 @@ fn disabling_falls_back_to_ranked_lexical_results_with_a_reason() {
         response.fallback_kind,
         Some(SemanticErrorKind::NotConfigured)
     );
+}
+
+// ── Cancellation ─────────────────────────────────────────────────────────────
+
+/// Through the public API, with a session open: a search whose token is already cancelled
+/// throws `Cancelled` in every mode, never its lexical results in its place, and the session
+/// serves the next search, whose fresh token changes nothing. Where each look stops a search
+/// is the unit tests' (`semantic_cancellation`), which can cancel at a chosen one.
+#[test]
+fn a_cancelled_search_is_cancelled_in_every_mode_and_the_next_one_is_served() {
+    let lines = one_line_corpus();
+    let (engine, _root) = fixture(&lines);
+    let cancelled = SemanticCancellationToken::new();
+    cancelled.cancel();
+
+    for mode in [
+        SemanticRetrievalMode::Hybrid,
+        SemanticRetrievalMode::SemanticOnly,
+        SemanticRetrievalMode::LexicalOnly,
+    ] {
+        let error = refusal(
+            engine.search_semantic(
+                "בראשית ברא".to_owned(),
+                Vec::new(),
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                mode,
+                None,
+                false,
+                false,
+                &cancelled,
+            ),
+            "a search whose token is cancelled must not be served",
+        );
+        assert_eq!(error.kind, SemanticErrorKind::Cancelled, "{mode:?}");
+        assert_eq!(error.field, None, "{mode:?}");
+
+        let served = exact(&engine, "בראשית ברא", mode);
+        assert_eq!(served.results.len(), 1, "{mode:?}");
+        assert_eq!(served.fallback_kind, None, "{mode:?}");
+    }
+    assert!(engine.semantic_status().available);
 }
 
 // ── Reconfiguration ──────────────────────────────────────────────────────────
