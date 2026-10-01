@@ -585,16 +585,36 @@ impl TantivyCorpus {
     }
 }
 
-impl CorpusStamp {
-    /// Read the stamp an index directory carries.
-    ///
-    /// Every failure names the file and the fix, because the fix is never on the device:
-    /// an index without a stamp, or with a foreign one, needs the release's own index.
-    pub fn read(index_path: &Path) -> Result<Self> {
-        let path = index_path.join(CORPUS_STAMP_FILE_NAME);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
+/// Why an index's corpus stamp cannot vouch for it.
+///
+/// Typed, where the rest of this module is `anyhow`, because the device has to tell the
+/// user which it is, and that is decided from the variant, never from the message: an index
+/// that was never stamped and one changed since it was are both answered by installing the
+/// release's index with its artifact, but they are different things to have happened, and
+/// an I/O failure is neither. The message is the same text either way, and names the file
+/// and the fix, because the fix is never on the device.
+#[derive(Debug)]
+pub enum CorpusStampError {
+    /// The index directory holds no stamp.
+    Missing { index_path: PathBuf },
+    /// The file is there, and is not a stamp this build reads: not JSON, not a stamp, or
+    /// another format or version of one.
+    Unrecognized(anyhow::Error),
+    /// The file could not be read for a reason other than its absence.
+    Unreadable(anyhow::Error),
+    /// A stamp this build reads, written for a segment set the index no longer has.
+    Outdated {
+        index_path: PathBuf,
+        stamped: String,
+        current: String,
+    },
+}
+
+impl std::fmt::Display for CorpusStampError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing { index_path } => write!(
+                f,
                 "the lexical index at {} carries no corpus stamp ({CORPUS_STAMP_FILE_NAME}), \
                  so nothing says which corpus it holds. A semantic artifact opens only against \
                  the index it was built from, stamped on the build machine with \
@@ -602,20 +622,59 @@ impl CorpusStamp {
                  --stamp-index`; install that index with the artifact",
                 index_path.display()
             ),
+            // The whole chain, on one line: the context names the file, the cause what was
+            // wrong with it.
+            Self::Unrecognized(error) | Self::Unreadable(error) => write!(f, "{error:#}"),
+            Self::Outdated {
+                index_path,
+                stamped,
+                current,
+            } => write!(
+                f,
+                "the lexical index at {} has changed since its corpus stamp was written (its \
+                 segments were {stamped}, and are {current}), so the stamp no longer says which \
+                 corpus it holds, and an artifact built for it may name lines that moved. \
+                 Install the release's index and artifact together, or re-stamp the index on \
+                 the build machine and rebuild the artifact from it",
+                index_path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CorpusStampError {}
+
+impl CorpusStamp {
+    /// Read the stamp an index directory carries.
+    ///
+    /// Every failure names the file and the fix, because the fix is never on the device:
+    /// an index without a stamp, or with a foreign one, needs the release's own index.
+    pub fn read(index_path: &Path) -> Result<Self, CorpusStampError> {
+        let path = index_path.join(CORPUS_STAMP_FILE_NAME);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CorpusStampError::Missing {
+                    index_path: index_path.to_path_buf(),
+                });
+            }
             Err(error) => {
-                return Err(error).with_context(|| format!("reading {}", path.display()));
+                return Err(CorpusStampError::Unreadable(
+                    anyhow::Error::new(error).context(format!("reading {}", path.display())),
+                ));
             }
         };
         let stamp: Self = serde_json::from_str(&text)
-            .with_context(|| format!("{} is not a corpus stamp", path.display()))?;
+            .with_context(|| format!("{} is not a corpus stamp", path.display()))
+            .map_err(CorpusStampError::Unrecognized)?;
         if stamp.format != CORPUS_STAMP_FORMAT || stamp.format_version != CORPUS_STAMP_VERSION {
-            anyhow::bail!(
+            return Err(CorpusStampError::Unrecognized(anyhow::anyhow!(
                 "{} is a {:?} stamp, version {}; this build reads {CORPUS_STAMP_FORMAT:?} \
                  version {CORPUS_STAMP_VERSION}",
                 path.display(),
                 stamp.format,
                 stamp.format_version
-            );
+            )));
         }
         Ok(stamp)
     }
@@ -625,18 +684,18 @@ impl CorpusStamp {
     /// A mismatch means the index was added to, deleted from or merged since it was
     /// stamped — or is another copy of it altogether — so `corpus_id` no longer vouches for
     /// what it holds, and an artifact's ids may name lines that moved.
-    pub fn ensure_describes(&self, searcher: &Searcher, index_path: &Path) -> Result<()> {
+    pub fn ensure_describes(
+        &self,
+        searcher: &Searcher,
+        index_path: &Path,
+    ) -> Result<(), CorpusStampError> {
         let current = segments_digest(searcher);
         if current != self.segments_sha256 {
-            anyhow::bail!(
-                "the lexical index at {} has changed since its corpus stamp was written (its \
-                 segments were {}, and are {current}), so the stamp no longer says which \
-                 corpus it holds, and an artifact built for it may name lines that moved. \
-                 Install the release's index and artifact together, or re-stamp the index on \
-                 the build machine and rebuild the artifact from it",
-                index_path.display(),
-                self.segments_sha256
-            );
+            return Err(CorpusStampError::Outdated {
+                index_path: index_path.to_path_buf(),
+                stamped: self.segments_sha256.clone(),
+                current,
+            });
         }
         Ok(())
     }
