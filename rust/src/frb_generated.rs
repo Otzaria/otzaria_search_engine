@@ -6661,6 +6661,19 @@ impl SseDecode for Option<crate::api::search_engine::SearchResult> {
     }
 }
 
+impl SseDecode for Option<crate::api::search_engine::SemanticErrorKind> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::search_engine::SemanticErrorKind>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::search_engine::SemanticGroupingMode> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -7018,24 +7031,28 @@ impl SseDecode for crate::api::search_engine::SemanticErrorKind {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
-            0 => crate::api::search_engine::SemanticErrorKind::ArtifactMissing,
-            1 => crate::api::search_engine::SemanticErrorKind::ArtifactCorrupt,
-            2 => crate::api::search_engine::SemanticErrorKind::ArtifactIncompatible,
-            3 => crate::api::search_engine::SemanticErrorKind::ArtifactNotPublished,
-            4 => crate::api::search_engine::SemanticErrorKind::IndexNotStamped,
-            5 => crate::api::search_engine::SemanticErrorKind::IndexStampMismatch,
-            6 => crate::api::search_engine::SemanticErrorKind::ModelMissing,
-            7 => crate::api::search_engine::SemanticErrorKind::TokenizerMissing,
-            8 => crate::api::search_engine::SemanticErrorKind::ModelInvalid,
-            9 => crate::api::search_engine::SemanticErrorKind::ModelIdentityMismatch,
-            10 => crate::api::search_engine::SemanticErrorKind::OnnxRuntimeMissing,
-            11 => crate::api::search_engine::SemanticErrorKind::OnnxRuntimeUnusable,
-            12 => crate::api::search_engine::SemanticErrorKind::BackendNotInBuild,
-            13 => crate::api::search_engine::SemanticErrorKind::SessionConflict,
-            14 => crate::api::search_engine::SemanticErrorKind::ReadOnlySession,
-            15 => crate::api::search_engine::SemanticErrorKind::ReindexRequired,
-            16 => crate::api::search_engine::SemanticErrorKind::InvalidInput,
-            17 => crate::api::search_engine::SemanticErrorKind::Internal,
+            0 => crate::api::search_engine::SemanticErrorKind::NotConfigured,
+            1 => crate::api::search_engine::SemanticErrorKind::FeatureNotInBuild,
+            2 => crate::api::search_engine::SemanticErrorKind::ArtifactMissing,
+            3 => crate::api::search_engine::SemanticErrorKind::ArtifactCorrupt,
+            4 => crate::api::search_engine::SemanticErrorKind::ArtifactIncompatible,
+            5 => crate::api::search_engine::SemanticErrorKind::ArtifactNotPublished,
+            6 => crate::api::search_engine::SemanticErrorKind::ArtifactStale,
+            7 => crate::api::search_engine::SemanticErrorKind::IndexNotStamped,
+            8 => crate::api::search_engine::SemanticErrorKind::IndexStampMismatch,
+            9 => crate::api::search_engine::SemanticErrorKind::ModelMissing,
+            10 => crate::api::search_engine::SemanticErrorKind::TokenizerMissing,
+            11 => crate::api::search_engine::SemanticErrorKind::ModelInvalid,
+            12 => crate::api::search_engine::SemanticErrorKind::ModelIdentityMismatch,
+            13 => crate::api::search_engine::SemanticErrorKind::OnnxRuntimeMissing,
+            14 => crate::api::search_engine::SemanticErrorKind::OnnxRuntimeUnusable,
+            15 => crate::api::search_engine::SemanticErrorKind::BackendNotInBuild,
+            16 => crate::api::search_engine::SemanticErrorKind::SessionConflict,
+            17 => crate::api::search_engine::SemanticErrorKind::ReadOnlySession,
+            18 => crate::api::search_engine::SemanticErrorKind::ReindexRequired,
+            19 => crate::api::search_engine::SemanticErrorKind::QueryFailed,
+            20 => crate::api::search_engine::SemanticErrorKind::InvalidInput,
+            21 => crate::api::search_engine::SemanticErrorKind::Internal,
             _ => unreachable!("Invalid variant for SemanticErrorKind: {}", inner),
         };
     }
@@ -7186,6 +7203,8 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
             <crate::api::search_engine::SemanticExecutedMode>::sse_decode(deserializer);
         let mut var_semanticAvailable = <bool>::sse_decode(deserializer);
         let mut var_fallbackReason = <Option<String>>::sse_decode(deserializer);
+        let mut var_fallbackKind =
+            <Option<crate::api::search_engine::SemanticErrorKind>>::sse_decode(deserializer);
         let mut var_latencyMs = <u64>::sse_decode(deserializer);
         let mut var_candidateWindowTruncated = <bool>::sse_decode(deserializer);
         let mut var_truncated = <bool>::sse_decode(deserializer);
@@ -7199,6 +7218,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
             executed_mode: var_executedMode,
             semantic_available: var_semanticAvailable,
             fallback_reason: var_fallbackReason,
+            fallback_kind: var_fallbackKind,
             latency_ms: var_latencyMs,
             candidate_window_truncated: var_candidateWindowTruncated,
             truncated: var_truncated,
@@ -7246,9 +7266,27 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResult {
     }
 }
 
+impl SseDecode for crate::api::search_engine::SemanticState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::search_engine::SemanticState::NotInBuild,
+            1 => crate::api::search_engine::SemanticState::NotConfigured,
+            2 => crate::api::search_engine::SemanticState::Ready,
+            3 => crate::api::search_engine::SemanticState::Empty,
+            4 => crate::api::search_engine::SemanticState::Stale,
+            5 => crate::api::search_engine::SemanticState::NeedsReindex,
+            6 => crate::api::search_engine::SemanticState::Failed,
+            _ => unreachable!("Invalid variant for SemanticState: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::search_engine::SemanticStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_state = <crate::api::search_engine::SemanticState>::sse_decode(deserializer);
         let mut var_enabled = <bool>::sse_decode(deserializer);
         let mut var_available = <bool>::sse_decode(deserializer);
         let mut var_modelLoaded = <bool>::sse_decode(deserializer);
@@ -7261,7 +7299,10 @@ impl SseDecode for crate::api::search_engine::SemanticStatus {
         let mut var_vectorsPersisted = <bool>::sse_decode(deserializer);
         let mut var_needsFullReindex = <Option<String>>::sse_decode(deserializer);
         let mut var_lastError = <Option<String>>::sse_decode(deserializer);
+        let mut var_errorKind =
+            <Option<crate::api::search_engine::SemanticErrorKind>>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticStatus {
+            state: var_state,
             enabled: var_enabled,
             available: var_available,
             model_loaded: var_modelLoaded,
@@ -7274,6 +7315,7 @@ impl SseDecode for crate::api::search_engine::SemanticStatus {
             vectors_persisted: var_vectorsPersisted,
             needs_full_reindex: var_needsFullReindex,
             last_error: var_lastError,
+            error_kind: var_errorKind,
         };
     }
 }
@@ -8227,24 +8269,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticError>
 impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticErrorKind {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
-            Self::ArtifactMissing => 0.into_dart(),
-            Self::ArtifactCorrupt => 1.into_dart(),
-            Self::ArtifactIncompatible => 2.into_dart(),
-            Self::ArtifactNotPublished => 3.into_dart(),
-            Self::IndexNotStamped => 4.into_dart(),
-            Self::IndexStampMismatch => 5.into_dart(),
-            Self::ModelMissing => 6.into_dart(),
-            Self::TokenizerMissing => 7.into_dart(),
-            Self::ModelInvalid => 8.into_dart(),
-            Self::ModelIdentityMismatch => 9.into_dart(),
-            Self::OnnxRuntimeMissing => 10.into_dart(),
-            Self::OnnxRuntimeUnusable => 11.into_dart(),
-            Self::BackendNotInBuild => 12.into_dart(),
-            Self::SessionConflict => 13.into_dart(),
-            Self::ReadOnlySession => 14.into_dart(),
-            Self::ReindexRequired => 15.into_dart(),
-            Self::InvalidInput => 16.into_dart(),
-            Self::Internal => 17.into_dart(),
+            Self::NotConfigured => 0.into_dart(),
+            Self::FeatureNotInBuild => 1.into_dart(),
+            Self::ArtifactMissing => 2.into_dart(),
+            Self::ArtifactCorrupt => 3.into_dart(),
+            Self::ArtifactIncompatible => 4.into_dart(),
+            Self::ArtifactNotPublished => 5.into_dart(),
+            Self::ArtifactStale => 6.into_dart(),
+            Self::IndexNotStamped => 7.into_dart(),
+            Self::IndexStampMismatch => 8.into_dart(),
+            Self::ModelMissing => 9.into_dart(),
+            Self::TokenizerMissing => 10.into_dart(),
+            Self::ModelInvalid => 11.into_dart(),
+            Self::ModelIdentityMismatch => 12.into_dart(),
+            Self::OnnxRuntimeMissing => 13.into_dart(),
+            Self::OnnxRuntimeUnusable => 14.into_dart(),
+            Self::BackendNotInBuild => 15.into_dart(),
+            Self::SessionConflict => 16.into_dart(),
+            Self::ReadOnlySession => 17.into_dart(),
+            Self::ReindexRequired => 18.into_dart(),
+            Self::QueryFailed => 19.into_dart(),
+            Self::InvalidInput => 20.into_dart(),
+            Self::Internal => 21.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -8475,6 +8521,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticSearch
             self.executed_mode.into_into_dart().into_dart(),
             self.semantic_available.into_into_dart().into_dart(),
             self.fallback_reason.into_into_dart().into_dart(),
+            self.fallback_kind.into_into_dart().into_dart(),
             self.latency_ms.into_into_dart().into_dart(),
             self.candidate_window_truncated.into_into_dart().into_dart(),
             self.truncated.into_into_dart().into_dart(),
@@ -8528,9 +8575,36 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticSearch
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::NotInBuild => 0.into_dart(),
+            Self::NotConfigured => 1.into_dart(),
+            Self::Ready => 2.into_dart(),
+            Self::Empty => 3.into_dart(),
+            Self::Stale => 4.into_dart(),
+            Self::NeedsReindex => 5.into_dart(),
+            Self::Failed => 6.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticState>
+    for crate::api::search_engine::SemanticState
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticStatus {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.state.into_into_dart().into_dart(),
             self.enabled.into_into_dart().into_dart(),
             self.available.into_into_dart().into_dart(),
             self.model_loaded.into_into_dart().into_dart(),
@@ -8543,6 +8617,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticStatus
             self.vectors_persisted.into_into_dart().into_dart(),
             self.needs_full_reindex.into_into_dart().into_dart(),
             self.last_error.into_into_dart().into_dart(),
+            self.error_kind.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -9236,6 +9311,16 @@ impl SseEncode for Option<crate::api::search_engine::SearchResult> {
     }
 }
 
+impl SseEncode for Option<crate::api::search_engine::SemanticErrorKind> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::search_engine::SemanticErrorKind>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::search_engine::SemanticGroupingMode> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9509,24 +9594,28 @@ impl SseEncode for crate::api::search_engine::SemanticErrorKind {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(
             match self {
-                crate::api::search_engine::SemanticErrorKind::ArtifactMissing => 0,
-                crate::api::search_engine::SemanticErrorKind::ArtifactCorrupt => 1,
-                crate::api::search_engine::SemanticErrorKind::ArtifactIncompatible => 2,
-                crate::api::search_engine::SemanticErrorKind::ArtifactNotPublished => 3,
-                crate::api::search_engine::SemanticErrorKind::IndexNotStamped => 4,
-                crate::api::search_engine::SemanticErrorKind::IndexStampMismatch => 5,
-                crate::api::search_engine::SemanticErrorKind::ModelMissing => 6,
-                crate::api::search_engine::SemanticErrorKind::TokenizerMissing => 7,
-                crate::api::search_engine::SemanticErrorKind::ModelInvalid => 8,
-                crate::api::search_engine::SemanticErrorKind::ModelIdentityMismatch => 9,
-                crate::api::search_engine::SemanticErrorKind::OnnxRuntimeMissing => 10,
-                crate::api::search_engine::SemanticErrorKind::OnnxRuntimeUnusable => 11,
-                crate::api::search_engine::SemanticErrorKind::BackendNotInBuild => 12,
-                crate::api::search_engine::SemanticErrorKind::SessionConflict => 13,
-                crate::api::search_engine::SemanticErrorKind::ReadOnlySession => 14,
-                crate::api::search_engine::SemanticErrorKind::ReindexRequired => 15,
-                crate::api::search_engine::SemanticErrorKind::InvalidInput => 16,
-                crate::api::search_engine::SemanticErrorKind::Internal => 17,
+                crate::api::search_engine::SemanticErrorKind::NotConfigured => 0,
+                crate::api::search_engine::SemanticErrorKind::FeatureNotInBuild => 1,
+                crate::api::search_engine::SemanticErrorKind::ArtifactMissing => 2,
+                crate::api::search_engine::SemanticErrorKind::ArtifactCorrupt => 3,
+                crate::api::search_engine::SemanticErrorKind::ArtifactIncompatible => 4,
+                crate::api::search_engine::SemanticErrorKind::ArtifactNotPublished => 5,
+                crate::api::search_engine::SemanticErrorKind::ArtifactStale => 6,
+                crate::api::search_engine::SemanticErrorKind::IndexNotStamped => 7,
+                crate::api::search_engine::SemanticErrorKind::IndexStampMismatch => 8,
+                crate::api::search_engine::SemanticErrorKind::ModelMissing => 9,
+                crate::api::search_engine::SemanticErrorKind::TokenizerMissing => 10,
+                crate::api::search_engine::SemanticErrorKind::ModelInvalid => 11,
+                crate::api::search_engine::SemanticErrorKind::ModelIdentityMismatch => 12,
+                crate::api::search_engine::SemanticErrorKind::OnnxRuntimeMissing => 13,
+                crate::api::search_engine::SemanticErrorKind::OnnxRuntimeUnusable => 14,
+                crate::api::search_engine::SemanticErrorKind::BackendNotInBuild => 15,
+                crate::api::search_engine::SemanticErrorKind::SessionConflict => 16,
+                crate::api::search_engine::SemanticErrorKind::ReadOnlySession => 17,
+                crate::api::search_engine::SemanticErrorKind::ReindexRequired => 18,
+                crate::api::search_engine::SemanticErrorKind::QueryFailed => 19,
+                crate::api::search_engine::SemanticErrorKind::InvalidInput => 20,
+                crate::api::search_engine::SemanticErrorKind::Internal => 21,
                 _ => {
                     unimplemented!("");
                 }
@@ -9682,6 +9771,10 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResponse {
         );
         <bool>::sse_encode(self.semantic_available, serializer);
         <Option<String>>::sse_encode(self.fallback_reason, serializer);
+        <Option<crate::api::search_engine::SemanticErrorKind>>::sse_encode(
+            self.fallback_kind,
+            serializer,
+        );
         <u64>::sse_encode(self.latency_ms, serializer);
         <bool>::sse_encode(self.candidate_window_truncated, serializer);
         <bool>::sse_encode(self.truncated, serializer);
@@ -9709,9 +9802,31 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResult {
     }
 }
 
+impl SseEncode for crate::api::search_engine::SemanticState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::search_engine::SemanticState::NotInBuild => 0,
+                crate::api::search_engine::SemanticState::NotConfigured => 1,
+                crate::api::search_engine::SemanticState::Ready => 2,
+                crate::api::search_engine::SemanticState::Empty => 3,
+                crate::api::search_engine::SemanticState::Stale => 4,
+                crate::api::search_engine::SemanticState::NeedsReindex => 5,
+                crate::api::search_engine::SemanticState::Failed => 6,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::search_engine::SemanticStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::search_engine::SemanticState>::sse_encode(self.state, serializer);
         <bool>::sse_encode(self.enabled, serializer);
         <bool>::sse_encode(self.available, serializer);
         <bool>::sse_encode(self.model_loaded, serializer);
@@ -9724,6 +9839,10 @@ impl SseEncode for crate::api::search_engine::SemanticStatus {
         <bool>::sse_encode(self.vectors_persisted, serializer);
         <Option<String>>::sse_encode(self.needs_full_reindex, serializer);
         <Option<String>>::sse_encode(self.last_error, serializer);
+        <Option<crate::api::search_engine::SemanticErrorKind>>::sse_encode(
+            self.error_kind,
+            serializer,
+        );
     }
 }
 

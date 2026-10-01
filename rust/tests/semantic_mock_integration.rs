@@ -20,7 +20,7 @@ use search_engine::api::search_engine::{
     ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticConfigInput,
     SemanticError, SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode,
     SemanticIndexingSummary, SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
-    SemanticSearchResponse,
+    SemanticSearchResponse, SemanticState,
 };
 use tempfile::TempDir;
 
@@ -215,6 +215,8 @@ fn hybrid_fuses_real_bm25_candidates_with_semantic_ones() {
 
     assert_eq!(response.executed_mode, SemanticExecutedMode::Hybrid);
     assert!(response.semantic_available);
+    assert_eq!(response.fallback_kind, None);
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
     assert_eq!(response.results.len(), 1);
     let hit = &response.results[0];
     assert_eq!(hit.id, 9_001);
@@ -246,6 +248,7 @@ fn lexical_only_through_the_sidecar_is_a_choice_not_a_degradation() {
     // reason.
     assert!(!response.semantic_available);
     assert!(response.fallback_reason.is_none());
+    assert_eq!(response.fallback_kind, None);
     assert_eq!(response.results.len(), 1);
     assert!(response.results[0].lexical_score.is_some());
     assert_eq!(response.results[0].source, SemanticResultSource::Lexical);
@@ -312,6 +315,9 @@ fn an_oversized_page_reports_the_candidate_window_cap() {
         .fallback_reason
         .as_deref()
         .is_some_and(|reason| reason.contains("candidate window capped")));
+    // A note about a search that did run, not a fallback: it has no kind.
+    assert!(capped.semantic_available);
+    assert_eq!(capped.fallback_kind, None);
 }
 
 // ── The display contract ─────────────────────────────────────────────────────
@@ -481,6 +487,7 @@ fn stale_primaries_and_grouped_siblings_are_dropped_and_reported_apart() {
         .fallback_reason
         .as_deref()
         .is_some_and(|reason| reason.contains("stale semantic result")));
+    assert_eq!(first_page.fallback_kind, None);
 
     let grouped = search(
         &engine,
@@ -616,12 +623,18 @@ fn disabling_falls_back_to_ranked_lexical_results_with_a_reason() {
     assert!(!status.enabled);
     assert!(!status.available);
     assert!(status.last_error.is_some());
+    assert_eq!(status.state, SemanticState::NotConfigured);
+    assert_eq!(status.error_kind, Some(SemanticErrorKind::NotConfigured));
 
     let response = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
     assert_eq!(response.executed_mode, SemanticExecutedMode::LexicalOnly);
     assert_eq!(response.results.len(), 1);
     assert_eq!(response.results[0].source, SemanticResultSource::Lexical);
     assert!(response.fallback_reason.is_some());
+    assert_eq!(
+        response.fallback_kind,
+        Some(SemanticErrorKind::NotConfigured)
+    );
 }
 
 // ── Reconfiguration ──────────────────────────────────────────────────────────
@@ -757,8 +770,36 @@ fn lexical_search_and_status_stay_available_while_indexing_runs() {
 
 // ── Typed states and failures ────────────────────────────────────────────────
 
+/// Configuring loads no model, so a session is open with nothing to serve until indexing
+/// loads one: `Empty`, and each search's semantic half fails on its own, as `QueryFailed`,
+/// with the lexical half served.
+#[test]
+fn a_session_with_nothing_indexed_is_empty_and_its_searches_fall_back() {
+    let lines = one_line_corpus();
+    let (mut engine, root) = lexical_engine(&lines);
+    configure(&mut engine, &root);
+
+    let status = engine.semantic_status();
+    assert!(status.enabled && !status.available);
+    assert_eq!(status.state, SemanticState::Empty);
+    assert_eq!((status.last_error, status.error_kind), (None, None));
+
+    let response = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
+    assert_eq!(response.executed_mode, SemanticExecutedMode::LexicalOnly);
+    assert!(
+        response.fallback_reason.is_some(),
+        "the coordinator says why the semantic half did not run"
+    );
+    assert_eq!(response.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+    assert_eq!(response.results.len(), 1);
+
+    index_books(&engine, &lines);
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
+}
+
 /// The model loads at the first indexing, so that is where a missing or unusable one is
-/// refused, each by its own kind.
+/// refused, each by its own kind; the status then reports the session as failed, with the
+/// sidecar's text, which carries no type of its own.
 #[test]
 fn indexing_names_a_missing_or_unusable_model_by_kind() {
     let lines = one_line_corpus();
@@ -799,11 +840,20 @@ fn indexing_names_a_missing_or_unusable_model_by_kind() {
             "{}",
             error.message
         );
+
+        let status = engine.semantic_status();
+        assert_eq!(status.state, SemanticState::Failed, "{kind:?}");
+        assert!(status.last_error.is_some(), "{kind:?}");
+        assert_eq!(
+            status.error_kind,
+            Some(SemanticErrorKind::Internal),
+            "{kind:?}"
+        );
     }
 }
 
 /// Configuring over a root built under another model: the sidecar keeps the old manifest
-/// and refuses its vectors until a reset, which indexing says by type.
+/// and refuses its vectors until a reset, which both the status and indexing say by type.
 #[test]
 fn a_root_built_under_another_configuration_needs_a_reindex() {
     let lines = one_line_corpus();
@@ -813,7 +863,9 @@ fn a_root_built_under_another_configuration_needs_a_reindex() {
         .configure_semantic(mock_config(&root, "a-different-model"))
         .expect("an explicit disable clears the way for a new configuration");
 
-    assert!(engine.semantic_status().needs_full_reindex.is_some());
+    let status = engine.semantic_status();
+    assert_eq!(status.state, SemanticState::NeedsReindex);
+    assert!(status.needs_full_reindex.is_some());
 
     let error = refusal(
         try_index_books(&engine, &lines),
@@ -828,7 +880,7 @@ fn a_root_built_under_another_configuration_needs_a_reindex() {
 
     engine.reset_semantic_index().unwrap();
     index_books(&engine, &lines);
-    assert!(engine.semantic_status().available);
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
 }
 
 /// A configuration the sidecar cannot serve is the caller's input to fix, refused before

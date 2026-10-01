@@ -7053,6 +7053,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticErrorKind dco_decode_box_autoadd_semantic_error_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_semantic_error_kind(raw);
+  }
+
+  @protected
   SemanticGroupingMode dco_decode_box_autoadd_semantic_grouping_mode(
     dynamic raw,
   ) {
@@ -7465,6 +7471,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticErrorKind? dco_decode_opt_box_autoadd_semantic_error_kind(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_semantic_error_kind(raw);
+  }
+
+  @protected
   SemanticGroupingMode? dco_decode_opt_box_autoadd_semantic_grouping_mode(
     dynamic raw,
   ) {
@@ -7839,8 +7853,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticSearchResponse dco_decode_semantic_search_response(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return SemanticSearchResponse(
       results: dco_decode_list_semantic_search_result(arr[0]),
       totalCount: dco_decode_u_32(arr[1]),
@@ -7851,9 +7865,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       executedMode: dco_decode_semantic_executed_mode(arr[6]),
       semanticAvailable: dco_decode_bool(arr[7]),
       fallbackReason: dco_decode_opt_String(arr[8]),
-      latencyMs: dco_decode_u_64(arr[9]),
-      candidateWindowTruncated: dco_decode_bool(arr[10]),
-      truncated: dco_decode_bool(arr[11]),
+      fallbackKind: dco_decode_opt_box_autoadd_semantic_error_kind(arr[9]),
+      latencyMs: dco_decode_u_64(arr[10]),
+      candidateWindowTruncated: dco_decode_bool(arr[11]),
+      truncated: dco_decode_bool(arr[12]),
     );
   }
 
@@ -7883,24 +7898,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticState dco_decode_semantic_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SemanticState.values[raw as int];
+  }
+
+  @protected
   SemanticStatus dco_decode_semantic_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return SemanticStatus(
-      enabled: dco_decode_bool(arr[0]),
-      available: dco_decode_bool(arr[1]),
-      modelLoaded: dco_decode_bool(arr[2]),
-      indexedBookCount: dco_decode_u_32(arr[3]),
-      vectorCount: dco_decode_u_32(arr[4]),
-      modelId: dco_decode_String(arr[5]),
-      embeddingDim: dco_decode_u_32(arr[6]),
-      embeddingBackend: dco_decode_opt_String(arr[7]),
-      vectorBackend: dco_decode_String(arr[8]),
-      vectorsPersisted: dco_decode_bool(arr[9]),
-      needsFullReindex: dco_decode_opt_String(arr[10]),
-      lastError: dco_decode_opt_String(arr[11]),
+      state: dco_decode_semantic_state(arr[0]),
+      enabled: dco_decode_bool(arr[1]),
+      available: dco_decode_bool(arr[2]),
+      modelLoaded: dco_decode_bool(arr[3]),
+      indexedBookCount: dco_decode_u_32(arr[4]),
+      vectorCount: dco_decode_u_32(arr[5]),
+      modelId: dco_decode_String(arr[6]),
+      embeddingDim: dco_decode_u_32(arr[7]),
+      embeddingBackend: dco_decode_opt_String(arr[8]),
+      vectorBackend: dco_decode_String(arr[9]),
+      vectorsPersisted: dco_decode_bool(arr[10]),
+      needsFullReindex: dco_decode_opt_String(arr[11]),
+      lastError: dco_decode_opt_String(arr[12]),
+      errorKind: dco_decode_opt_box_autoadd_semantic_error_kind(arr[13]),
     );
   }
 
@@ -8291,6 +8314,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_semantic_config_input(deserializer));
+  }
+
+  @protected
+  SemanticErrorKind sse_decode_box_autoadd_semantic_error_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_semantic_error_kind(deserializer));
   }
 
   @protected
@@ -8926,6 +8957,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticErrorKind? sse_decode_opt_box_autoadd_semantic_error_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_semantic_error_kind(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   SemanticGroupingMode? sse_decode_opt_box_autoadd_semantic_grouping_mode(
     SseDeserializer deserializer,
   ) {
@@ -9385,6 +9429,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_executedMode = sse_decode_semantic_executed_mode(deserializer);
     var var_semanticAvailable = sse_decode_bool(deserializer);
     var var_fallbackReason = sse_decode_opt_String(deserializer);
+    var var_fallbackKind = sse_decode_opt_box_autoadd_semantic_error_kind(
+      deserializer,
+    );
     var var_latencyMs = sse_decode_u_64(deserializer);
     var var_candidateWindowTruncated = sse_decode_bool(deserializer);
     var var_truncated = sse_decode_bool(deserializer);
@@ -9398,6 +9445,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       executedMode: var_executedMode,
       semanticAvailable: var_semanticAvailable,
       fallbackReason: var_fallbackReason,
+      fallbackKind: var_fallbackKind,
       latencyMs: var_latencyMs,
       candidateWindowTruncated: var_candidateWindowTruncated,
       truncated: var_truncated,
@@ -9444,8 +9492,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticState sse_decode_semantic_state(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SemanticState.values[inner];
+  }
+
+  @protected
   SemanticStatus sse_decode_semantic_status(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_state = sse_decode_semantic_state(deserializer);
     var var_enabled = sse_decode_bool(deserializer);
     var var_available = sse_decode_bool(deserializer);
     var var_modelLoaded = sse_decode_bool(deserializer);
@@ -9458,7 +9514,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_vectorsPersisted = sse_decode_bool(deserializer);
     var var_needsFullReindex = sse_decode_opt_String(deserializer);
     var var_lastError = sse_decode_opt_String(deserializer);
+    var var_errorKind = sse_decode_opt_box_autoadd_semantic_error_kind(
+      deserializer,
+    );
     return SemanticStatus(
+      state: var_state,
       enabled: var_enabled,
       available: var_available,
       modelLoaded: var_modelLoaded,
@@ -9471,6 +9531,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       vectorsPersisted: var_vectorsPersisted,
       needsFullReindex: var_needsFullReindex,
       lastError: var_lastError,
+      errorKind: var_errorKind,
     );
   }
 
@@ -9904,6 +9965,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_semantic_config_input(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_semantic_error_kind(
+    SemanticErrorKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_error_kind(self, serializer);
   }
 
   @protected
@@ -10466,6 +10536,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_semantic_error_kind(
+    SemanticErrorKind? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_semantic_error_kind(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_semantic_grouping_mode(
     SemanticGroupingMode? self,
     SseSerializer serializer,
@@ -10853,6 +10936,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_semantic_executed_mode(self.executedMode, serializer);
     sse_encode_bool(self.semanticAvailable, serializer);
     sse_encode_opt_String(self.fallbackReason, serializer);
+    sse_encode_opt_box_autoadd_semantic_error_kind(
+      self.fallbackKind,
+      serializer,
+    );
     sse_encode_u_64(self.latencyMs, serializer);
     sse_encode_bool(self.candidateWindowTruncated, serializer);
     sse_encode_bool(self.truncated, serializer);
@@ -10882,11 +10969,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_semantic_state(SemanticState self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_semantic_status(
     SemanticStatus self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_state(self.state, serializer);
     sse_encode_bool(self.enabled, serializer);
     sse_encode_bool(self.available, serializer);
     sse_encode_bool(self.modelLoaded, serializer);
@@ -10899,6 +10993,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.vectorsPersisted, serializer);
     sse_encode_opt_String(self.needsFullReindex, serializer);
     sse_encode_opt_String(self.lastError, serializer);
+    sse_encode_opt_box_autoadd_semantic_error_kind(self.errorKind, serializer);
   }
 
   @protected
@@ -11202,7 +11297,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Open a semantic session whose vectors are built on this device, and wire
   /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
   /// Tantivy stays owned here. When this crate was built without the optional
-  /// semantic feature this is a no-op that returns an explicit Disabled status.
+  /// semantic feature this is a no-op that returns an explicit `NotInBuild`
+  /// status.
   ///
   /// **Development and testing scaffolding.** The application never builds
   /// the library's vectors; it opens the artifact the build machine made with
@@ -11979,7 +12075,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// semantic path**: the library's vectors are built on the build machine,
   /// and the device embeds only the query. When this crate was built without
   /// the optional semantic feature this is a no-op that returns an explicit
-  /// Disabled status.
+  /// `NotInBuild` status.
   ///
   /// Opening verifies the artifact against this installation, all of it and
   /// before reading a vector:
@@ -12554,8 +12650,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// to since it was opened) is not asked, and the lexical fallback says why.
   ///
   /// A semantic path that cannot serve is not an error here: the response falls
-  /// back to lexical results and says why, in `fallback_reason`. What fails the
-  /// call is the lexical half failing, which is an `Internal` [`SemanticError`].
+  /// back to lexical results and says why, in `fallback_reason` and, as a value
+  /// to branch on, `fallback_kind`. What fails the call is the lexical half
+  /// failing, which is an `Internal` [`SemanticError`].
   Future<SemanticSearchResponse> searchSemantic({
     required String query,
     required List<String> facets,

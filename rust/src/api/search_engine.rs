@@ -445,7 +445,9 @@ pub struct SemanticArtifactInput {
 }
 
 /// What stopped the semantic path, as a value an application can switch on to choose a
-/// message and an action. A [`SemanticError`] carries one when a semantic call fails.
+/// message and an action. A [`SemanticError`] carries one when a semantic call fails,
+/// [`SemanticStatus::error_kind`] when a session cannot serve, and
+/// [`SemanticSearchResponse::fallback_kind`] when a search fell back to lexical results.
 ///
 /// The message beside it is unchanged, and is still the one for a developer to read: it
 /// names every path, value and field involved. The kind is what to branch on, never the
@@ -461,10 +463,13 @@ pub struct SemanticArtifactInput {
 ///
 /// | kind | means | the application should | reported by |
 /// | --- | --- | --- | --- |
+/// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the artifact; lexical search is unaffected | status, search fallback |
+/// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no artifact at `artifact_dir`: no directory, or no `manifest.json` in it | download and install the artifact | `open_semantic_artifact` |
 /// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
 /// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
 /// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
+/// | `ArtifactStale` | the lexical index was committed to after the artifact was opened, so its line ids may name lines that moved | `disable_semantic`, then open the artifact built for this index | status, search fallback |
 /// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |
 /// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
@@ -477,10 +482,15 @@ pub struct SemanticArtifactInput {
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
+/// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
-/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call |
+/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SemanticErrorKind {
+    /// No semantic session is open.
+    NotConfigured,
+    /// This library was built without semantic support.
+    FeatureNotInBuild,
     /// No artifact at the artifact directory.
     ArtifactMissing,
     /// The artifact is damaged.
@@ -489,6 +499,8 @@ pub enum SemanticErrorKind {
     ArtifactIncompatible,
     /// The artifact is not the one whose digest was published.
     ArtifactNotPublished,
+    /// The lexical index changed after the artifact was opened.
+    ArtifactStale,
     /// The lexical index carries no corpus stamp this build reads.
     IndexNotStamped,
     /// The lexical index changed after its corpus stamp was written.
@@ -513,6 +525,8 @@ pub enum SemanticErrorKind {
     ReadOnlySession,
     /// A session built on this device holds vectors from another configuration.
     ReindexRequired,
+    /// The semantic half of one search failed; lexical results were served.
+    QueryFailed,
     /// An input the call cannot take.
     InvalidInput,
     /// Anything else; the message says what.
@@ -589,10 +603,44 @@ impl From<anyhow::Error> for SemanticError {
     }
 }
 
+/// What the semantic session can do right now, the value a status view switches on.
+/// [`SemanticStatus::available`] says only whether semantic search is served; this says
+/// why it is not, and so what to offer.
+///
+/// Only `NotInBuild`, `NotConfigured`, `Ready` and `Stale` occur on the application's path.
+/// An artifact either opens and serves, or is refused by
+/// [`SearchEngine::open_semantic_artifact`] with a [`SemanticError`] and leaves no session
+/// behind; the other states belong to a session whose vectors are built on this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticState {
+    /// Semantic support is not compiled into this library: an explicit state rather than a
+    /// silent fallback. `error_kind` is `FeatureNotInBuild`.
+    NotInBuild,
+    /// No session is open: none was opened, or `disable_semantic` closed it. `error_kind` is
+    /// `NotConfigured`.
+    NotConfigured,
+    /// A session is open and serves semantic and hybrid search.
+    Ready,
+    /// A session built on this device is open and has nothing to serve yet: its model is not
+    /// loaded or it holds no vectors. Indexing is what loads the model.
+    Empty,
+    /// The opened artifact no longer describes the index, which was committed to after it
+    /// was opened. `error_kind` is `ArtifactStale`, and `last_error` says what changed.
+    Stale,
+    /// A session built on this device holds vectors built under another configuration, and
+    /// `needs_full_reindex` says which: reset it and index again.
+    NeedsReindex,
+    /// A session built on this device is open and cannot serve, for the reason in
+    /// `last_error`.
+    Failed,
+}
+
 /// A serializable, feature-independent projection of sidecar status. It is
 /// intentionally available without the `semantic` Cargo feature so Dart can
-/// render an explicit Disabled state rather than silently falling back.
+/// render an explicit `NotInBuild` state rather than silently falling back.
 pub struct SemanticStatus {
+    /// What the session can do, and the field to switch on.
+    pub state: SemanticState,
     pub enabled: bool,
     pub available: bool,
     pub model_loaded: bool,
@@ -605,6 +653,10 @@ pub struct SemanticStatus {
     pub vectors_persisted: bool,
     pub needs_full_reindex: Option<String>,
     pub last_error: Option<String>,
+    /// The kind of `last_error`, and `Some` exactly when it is. A session built on this
+    /// device reports its own failures as text only, so they are `Internal` here; the call
+    /// that failed, usually `semantic_index_books`, threw the precise kind.
+    pub error_kind: Option<SemanticErrorKind>,
 }
 
 pub struct SemanticBookLineInput {
@@ -709,6 +761,13 @@ pub struct SemanticSearchResponse {
     pub executed_mode: SemanticExecutedMode,
     pub semantic_available: bool,
     pub fallback_reason: Option<String>,
+    /// Why the semantic path did not serve this search, when it was asked to and did not:
+    /// `NotConfigured`, `FeatureNotInBuild`, `ArtifactStale` or `QueryFailed`. `None` when
+    /// it served the search, and when it was not asked (`LexicalOnly`, or a quoted phrase
+    /// the sidecar answers lexically). `fallback_reason` can still carry a note then, about
+    /// stale records dropped or the candidate window capped, which has no kind:
+    /// `candidate_window_truncated` is the cap's typed flag.
+    pub fallback_kind: Option<SemanticErrorKind>,
     pub latency_ms: u64,
     /// The sidecar input window hit its hard memory-safety ceiling. This is
     /// separate from `truncated`, which belongs to lexical term expansion.
@@ -2504,7 +2563,8 @@ impl SearchEngine {
     /// Open a semantic session whose vectors are built on this device, and wire
     /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
     /// Tantivy stays owned here. When this crate was built without the optional
-    /// semantic feature this is a no-op that returns an explicit Disabled status.
+    /// semantic feature this is a no-op that returns an explicit `NotInBuild`
+    /// status.
     ///
     /// **Development and testing scaffolding.** The application never builds
     /// the library's vectors; it opens the artifact the build machine made with
@@ -2649,7 +2709,7 @@ impl SearchEngine {
     /// semantic path**: the library's vectors are built on the build machine,
     /// and the device embeds only the query. When this crate was built without
     /// the optional semantic feature this is a no-op that returns an explicit
-    /// Disabled status.
+    /// `NotInBuild` status.
     ///
     /// Opening verifies the artifact against this installation, all of it and
     /// before reading a vector:
@@ -2954,9 +3014,41 @@ impl SearchEngine {
                 // A stale artifact is not served, and the status says so rather than
                 // reporting vectors a search will not use.
                 let stale = self.stale_artifact_reason();
+                let available = status.available && stale.is_none();
+                // In this order: a stale artifact is never served whatever the sidecar
+                // reports, and a session that needs a full re-index is not served either.
+                // `Failed` and `Empty` are left for a session built on this device; an
+                // artifact that opened serves until it is stale.
+                let state = if stale.is_some() {
+                    SemanticState::Stale
+                } else if status.needs_full_reindex.is_some() {
+                    SemanticState::NeedsReindex
+                } else if available {
+                    SemanticState::Ready
+                } else if status.last_error.is_some() {
+                    SemanticState::Failed
+                } else {
+                    SemanticState::Empty
+                };
+                let (last_error, error_kind) = match stale {
+                    Some(reason) => (Some(reason), Some(SemanticErrorKind::ArtifactStale)),
+                    // The sidecar keeps a session's failures as text, and an artifact
+                    // reports none, so this is the text of a session built on this device:
+                    // a failed model load or vector insert, or the note that an unusable
+                    // manifest was moved aside. Its typed error went to the call that
+                    // failed; the text alone is `Internal`.
+                    None => {
+                        let kind = status
+                            .last_error
+                            .as_ref()
+                            .map(|_| SemanticErrorKind::Internal);
+                        (status.last_error, kind)
+                    }
+                };
                 return SemanticStatus {
+                    state,
                     enabled: true,
-                    available: status.available && stale.is_none(),
+                    available,
                     model_loaded: status.model_loaded,
                     indexed_book_count: status.indexed_book_count,
                     vector_count: status.vector_count,
@@ -2966,7 +3058,8 @@ impl SearchEngine {
                     vector_backend: status.vector_backend,
                     vectors_persisted: status.vectors_persisted,
                     needs_full_reindex: status.needs_full_reindex,
-                    last_error: stale.or(status.last_error),
+                    last_error,
+                    error_kind,
                 };
             }
             Self::semantic_not_configured_status()
@@ -3221,8 +3314,9 @@ impl SearchEngine {
     /// to since it was opened) is not asked, and the lexical fallback says why.
     ///
     /// A semantic path that cannot serve is not an error here: the response falls
-    /// back to lexical results and says why, in `fallback_reason`. What fails the
-    /// call is the lexical half failing, which is an `Internal` [`SemanticError`].
+    /// back to lexical results and says why, in `fallback_reason` and, as a value
+    /// to branch on, `fallback_kind`. What fails the call is the lexical half
+    /// failing, which is an `Internal` [`SemanticError`].
     #[allow(clippy::too_many_arguments)]
     pub fn search_semantic(
         &self,
@@ -3252,7 +3346,10 @@ impl SearchEngine {
                     grouping,
                     match_nikud,
                     match_taamim,
-                    Some("semantic sidecar has not been configured".to_string()),
+                    SemanticError::new(
+                        SemanticErrorKind::NotConfigured,
+                        "semantic sidecar has not been configured",
+                    ),
                     started.elapsed().as_millis() as u64,
                 );
             };
@@ -3270,7 +3367,7 @@ impl SearchEngine {
                     grouping,
                     match_nikud,
                     match_taamim,
-                    Some(stale),
+                    SemanticError::new(SemanticErrorKind::ArtifactStale, stale),
                     started.elapsed().as_millis() as u64,
                 );
             }
@@ -3368,6 +3465,16 @@ impl SearchEngine {
                         format!("semantic search failed: {err}"),
                     )
                 })?;
+            // A semantic half that failed is folded into the result as text, and only
+            // then: a `LexicalOnly` request, or a quoted phrase the coordinator answers
+            // lexically, carries no reason. The coordinator stringifies the failure, so
+            // its type does not reach here, and `QueryFailed` is the kind that is true of
+            // all of them; the notes appended below are about a search that did run, and
+            // have none.
+            let fallback_kind = result
+                .fallback_reason
+                .as_ref()
+                .map(|_| SemanticErrorKind::QueryFailed);
 
             // Phase 1 — drop stale primaries across the whole window, keeping
             // the hydrated document so the surviving page needs no second
@@ -3547,6 +3654,7 @@ impl SearchEngine {
                 },
                 semantic_available: result.semantic_available,
                 fallback_reason,
+                fallback_kind,
                 latency_ms: started.elapsed().as_millis() as u64,
                 candidate_window_truncated: candidate_window_capped,
                 truncated,
@@ -3566,7 +3674,10 @@ impl SearchEngine {
                 grouping,
                 match_nikud,
                 match_taamim,
-                Some("semantic support is not compiled into this build".to_string()),
+                SemanticError::new(
+                    SemanticErrorKind::FeatureNotInBuild,
+                    "semantic support is not compiled into this build",
+                ),
                 started.elapsed().as_millis() as u64,
             )
         }
@@ -3574,25 +3685,30 @@ impl SearchEngine {
 
     #[cfg(not(feature = "semantic-integration"))]
     fn semantic_disabled_status() -> SemanticStatus {
-        SemanticStatus {
-            enabled: false,
-            available: false,
-            model_loaded: false,
-            indexed_book_count: 0,
-            vector_count: 0,
-            model_id: String::new(),
-            embedding_dim: 0,
-            embedding_backend: None,
-            vector_backend: String::new(),
-            vectors_persisted: false,
-            needs_full_reindex: None,
-            last_error: Some("semantic support is not compiled into this build".to_string()),
-        }
+        Self::semantic_closed_status(
+            SemanticState::NotInBuild,
+            SemanticError::new(
+                SemanticErrorKind::FeatureNotInBuild,
+                "semantic support is not compiled into this build",
+            ),
+        )
     }
 
     #[cfg(feature = "semantic-integration")]
     fn semantic_not_configured_status() -> SemanticStatus {
+        Self::semantic_closed_status(
+            SemanticState::NotConfigured,
+            SemanticError::new(
+                SemanticErrorKind::NotConfigured,
+                "semantic sidecar has not been configured",
+            ),
+        )
+    }
+
+    /// The status when no session is open, in `state`, for the reason `why` gives.
+    fn semantic_closed_status(state: SemanticState, why: SemanticError) -> SemanticStatus {
         SemanticStatus {
+            state,
             enabled: false,
             available: false,
             model_loaded: false,
@@ -3604,7 +3720,8 @@ impl SearchEngine {
             vector_backend: String::new(),
             vectors_persisted: false,
             needs_full_reindex: None,
-            last_error: Some("semantic sidecar has not been configured".to_string()),
+            last_error: Some(why.message),
+            error_kind: Some(why.kind),
         }
     }
 
@@ -3621,6 +3738,8 @@ impl SearchEngine {
         }
     }
 
+    /// The lexical results a search falls back to when the sidecar is not asked, with `why`
+    /// as the response's `fallback_reason` and `fallback_kind`.
     #[allow(clippy::too_many_arguments)]
     fn semantic_lexical_fallback_response(
         &self,
@@ -3634,9 +3753,11 @@ impl SearchEngine {
         grouping: Option<SemanticGroupingMode>,
         match_nikud: bool,
         match_taamim: bool,
-        fallback_reason: Option<String>,
+        why: SemanticError,
         latency_ms: u64,
     ) -> Result<SemanticSearchResponse, SemanticError> {
+        let fallback_reason = Some(why.message);
+        let fallback_kind = Some(why.kind);
         if matches!(requested_mode, SemanticRetrievalMode::SemanticOnly) {
             let count = match lexical_mode {
                 SemanticLexicalMode::Exact => self.count_exact_with_status(
@@ -3663,6 +3784,7 @@ impl SearchEngine {
                 executed_mode: SemanticExecutedMode::SemanticOnly,
                 semantic_available: false,
                 fallback_reason,
+                fallback_kind,
                 latency_ms,
                 candidate_window_truncated: false,
                 truncated: count.truncated,
@@ -3750,6 +3872,7 @@ impl SearchEngine {
             executed_mode: SemanticExecutedMode::LexicalOnly,
             semantic_available: false,
             fallback_reason,
+            fallback_kind,
             latency_ms,
             candidate_window_truncated: false,
             truncated: page.truncated,
@@ -11050,6 +11173,19 @@ mod tests {
             .unwrap();
     }
 
+    /// What a build reports when no session is open: no session, or no semantic support at
+    /// all, each as a state and as the kind of `last_error`.
+    #[cfg(feature = "semantic-integration")]
+    const CLOSED: (SemanticState, SemanticErrorKind) = (
+        SemanticState::NotConfigured,
+        SemanticErrorKind::NotConfigured,
+    );
+    #[cfg(not(feature = "semantic-integration"))]
+    const CLOSED: (SemanticState, SemanticErrorKind) = (
+        SemanticState::NotInBuild,
+        SemanticErrorKind::FeatureNotInBuild,
+    );
+
     #[test]
     fn semantic_status_is_explicit_before_configuration() {
         let (engine, _dir) = make_engine();
@@ -11057,6 +11193,82 @@ mod tests {
         assert!(!status.enabled);
         assert!(!status.available);
         assert!(status.last_error.is_some());
+        assert_eq!(
+            (status.state, status.error_kind),
+            (CLOSED.0, Some(CLOSED.1))
+        );
+    }
+
+    /// Without the integration every semantic call is answered, and none fails: the opening
+    /// calls return the `NotInBuild` status, the build-side calls report themselves
+    /// disabled, and a search serves lexical results whose fallback kind says why.
+    #[cfg(not(feature = "semantic-integration"))]
+    #[test]
+    fn a_build_without_semantic_support_says_so_in_every_semantic_call() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 41, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let configured = engine
+            .configure_semantic(SemanticConfigInput {
+                root_dir: "/nowhere".to_string(),
+                model_path: "/nowhere/model.onnx".to_string(),
+                model_id: "m".to_string(),
+                embedding_dim: 256,
+                pooling: "in-graph".to_string(),
+                max_tokens: 256,
+                model_quantization: "int8".to_string(),
+                embedding_text_version: 2,
+            })
+            .unwrap();
+        let opened = engine
+            .open_semantic_artifact(SemanticArtifactInput {
+                artifact_dir: "/nowhere/artifact".to_string(),
+                model_path: "/nowhere/model.onnx".to_string(),
+                model_identity_json: "not even JSON".to_string(),
+                published_digest: None,
+            })
+            .unwrap();
+        for status in [configured, opened, engine.semantic_status()] {
+            assert_eq!(status.state, SemanticState::NotInBuild);
+            assert_eq!(
+                status.error_kind,
+                Some(SemanticErrorKind::FeatureNotInBuild)
+            );
+            assert!(!status.enabled && !status.available);
+        }
+
+        assert!(!engine.semantic_index_books(Vec::new()).unwrap().enabled);
+        assert!(!engine.semantic_index_diff().unwrap().enabled);
+        assert!(!engine.remove_semantic_books(Vec::new()).unwrap().enabled);
+        assert!(!engine.reset_semantic_index().unwrap().enabled);
+
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::SemanticOnly,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let response = engine
+                .search_semantic(
+                    "שלום".to_string(),
+                    Vec::new(),
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    1,
+                    mode,
+                    None,
+                    false,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(
+                response.fallback_kind,
+                Some(SemanticErrorKind::FeatureNotInBuild),
+                "{mode:?}"
+            );
+            assert!(!response.semantic_available, "{mode:?}");
+        }
     }
 
     /// A lexical failure under a semantic call is what `?` turns into a `SemanticError`, and
@@ -11099,6 +11311,7 @@ mod tests {
         assert_eq!(response.results[0].id, 41);
         assert_eq!(response.results[0].source, SemanticResultSource::Lexical);
         assert!(response.fallback_reason.is_some());
+        assert_eq!(response.fallback_kind, Some(CLOSED.1));
     }
 
     fn disable_auto_merge(engine: &SearchEngine) {
