@@ -9,13 +9,12 @@
 //! untested.
 //!
 //! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the
-//! sidecar is opened on a stub GGUF, which only the stand-in serves, and
-//! `semantic-llama` would take it ahead of the stand-in and fail to load it.
-//! `semantic-onnx` serves only `.onnx` graphs, so it leaves the stub alone.
+//! sidecar is opened on the stub ONNX package, which only the stand-in serves,
+//! and `semantic-onnx` would take it ahead of the stand-in and fail to load it.
 
-#![cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+#![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
-use otzaria_semantic_search::semantic::embedding::mock::write_stub_gguf;
+use otzaria_semantic_search::semantic::embedding::mock::write_stub_onnx_package;
 use search_engine::api::search_engine::{
     ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
@@ -78,18 +77,32 @@ fn lexical_engine(lines: &[Line]) -> (SearchEngine, TempDir) {
     (engine, root)
 }
 
-/// What every test opens the sidecar with: the stub GGUF under `root`, and the
-/// recipe of the production GGUF model, whose pooling the stand-in claims for
-/// that format.
+/// The folder [`write_stub_model`] writes the stub ONNX package into.
+fn model_dir(root: &TempDir) -> std::path::PathBuf {
+    root.path().join("model")
+}
+
+/// The stub ONNX package under `root`: a graph that passes the sidecar's structural
+/// checks, and its `tokenizer.json`. Its path is the one [`mock_config`] names.
+fn write_stub_model(root: &TempDir) {
+    write_stub_onnx_package(&model_dir(root));
+}
+
+/// What every test opens the sidecar with: the stub ONNX graph under `root`, and
+/// the pooling the stand-in claims for that format. Text recipe 1, so that a
+/// query that is a line's exact text embeds exactly as the line does.
 fn mock_config(root: &TempDir, model_id: &str) -> SemanticConfigInput {
     SemanticConfigInput {
         root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
-        model_path: root.path().join("mock.gguf").to_string_lossy().into_owned(),
+        model_path: model_dir(root)
+            .join("model.onnx")
+            .to_string_lossy()
+            .into_owned(),
         model_id: model_id.to_owned(),
         embedding_dim: 64,
-        pooling: "last-token".to_owned(),
+        pooling: "in-graph".to_owned(),
         max_tokens: 512,
-        model_quantization: "Q4_K_M".to_owned(),
+        model_quantization: "int8".to_owned(),
         embedding_text_version: 1,
         onnx_runtime_path: None,
     }
@@ -100,7 +113,7 @@ type FieldEdit = (&'static str, fn(&mut SemanticConfigInput));
 
 /// Open the sidecar against `root`, writing the stub model it needs.
 fn configure(engine: &mut SearchEngine, root: &TempDir) {
-    write_stub_gguf(&root.path().join("mock.gguf"), 3).unwrap();
+    write_stub_model(root);
     let status = engine
         .configure_semantic(mock_config(root, "test-mock"))
         .unwrap();
@@ -880,7 +893,7 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
     // A different recipe under the same model file asks for different vectors
     // just the same, and is refused the same way.
     let recipe_changes: [FieldEdit; 4] = [
-        ("pooling", |config| config.pooling = "in-graph".to_owned()),
+        ("pooling", |config| config.pooling = "mean".to_owned()),
         ("max_tokens", |config| config.max_tokens = 256),
         ("model_quantization", |config| {
             config.model_quantization = "fp32".to_owned()
@@ -925,7 +938,7 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
 fn a_runtime_path_is_an_input_of_the_session_and_not_its_identity() {
     let lines = one_line_corpus();
     let (mut engine, root) = lexical_engine(&lines);
-    write_stub_gguf(&root.path().join("mock.gguf"), 3).unwrap();
+    write_stub_model(&root);
     let bundled = root
         .path()
         .join("Frameworks")
@@ -1087,23 +1100,19 @@ fn indexing_names_a_missing_or_unusable_model_by_kind() {
         (SemanticErrorKind::ModelMissing, |root| {
             mock_config(root, "test-mock")
         }),
+        // A package whose graph is not a graph. Its tokenizer is there, since that is
+        // checked first.
         (SemanticErrorKind::ModelInvalid, |root| {
-            std::fs::write(root.path().join("mock.gguf"), b"not a model").unwrap();
+            write_stub_model(root);
+            std::fs::write(model_dir(root).join("model.onnx"), b"not a model").unwrap();
             mock_config(root, "test-mock")
         }),
         // An ONNX graph without the tokenizer its package needs beside it. The stand-in
-        // serves either format, so nothing but the package is at fault.
+        // serves the graph, so nothing but the package is at fault.
         (SemanticErrorKind::TokenizerMissing, |root| {
-            let graph = root.path().join("model.onnx");
-            std::fs::write(&graph, b"not inspected: the tokenizer is checked first").unwrap();
-            SemanticConfigInput {
-                model_path: graph.to_string_lossy().into_owned(),
-                pooling: "in-graph".to_owned(),
-                max_tokens: 256,
-                model_quantization: "int8".to_owned(),
-                embedding_text_version: 2,
-                ..mock_config(root, "test-mock")
-            }
+            write_stub_model(root);
+            std::fs::remove_file(model_dir(root).join("tokenizer.json")).unwrap();
+            mock_config(root, "test-mock")
         }),
     ];
     for (kind, plant) in models {

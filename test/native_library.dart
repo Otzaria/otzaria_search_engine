@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 
@@ -42,44 +43,131 @@ Future<String?> initNativeEngine() async {
   return message;
 }
 
-/// The smallest file the sidecar accepts as a model: a GGUF v3 header with one
-/// empty F32 tensor. Mirrors `write_stub_gguf` in the sidecar's mock backend.
-void writeStubGguf(File file) {
-  Uint8List le32(int value) =>
-      (ByteData(4)..setUint32(0, value, Endian.little)).buffer.asUint8List();
-  Uint8List le64(int value) =>
-      (ByteData(8)..setUint64(0, value, Endian.little)).buffer.asUint8List();
+/// Just enough of the protobuf wire format to write the stub graph: varints,
+/// and length-delimited fields.
+final class _Protobuf {
+  final _out = BytesBuilder();
 
-  final out = BytesBuilder();
-  out.add(const AsciiEncoder().convert('GGUF'));
-  out.add(le32(3)); // version
-  out.add(le64(1)); // tensor_count
-  out.add(le64(0)); // metadata_kv_count
-  out.add(le64(1)); // tensor name length
-  out.addByte(0x78); // 'x'
-  out.add(le32(1)); // dimension count
-  out.add(le64(1)); // one element
-  out.add(le32(0)); // F32
-  out.add(le64(0)); // data offset
-  while (out.length % 32 != 0) {
-    out.addByte(0); // GGUF default alignment
+  void _varint(int value) {
+    while (value >= 0x80) {
+      _out.addByte((value & 0x7f) | 0x80);
+      value >>= 7;
+    }
+    _out.addByte(value);
   }
-  out.add(Uint8List(4)); // the single 0.0f element
 
-  file.writeAsBytesSync(out.takeBytes());
+  void uint(int field, int value) {
+    _varint(field << 3);
+    _varint(value);
+  }
+
+  void bytes(int field, List<int> payload) {
+    _varint((field << 3) | 2);
+    _varint(payload.length);
+    _out.add(payload);
+  }
+
+  void string(int field, String value) => bytes(field, utf8.encode(value));
+
+  Uint8List take() => _out.takeBytes();
 }
 
-/// The configuration the FFI suites open the sidecar with: the stub GGUF at
-/// [modelPath], under the recipe of the production GGUF model, whose pooling
-/// the stand-in claims for that format. A suite that must see a value arrive,
-/// or be refused, passes it instead of the default.
-SemanticConfigInput stubGgufConfig({
+/// An ONNX `ValueInfoProto` naming a tensor of [elemType] whose [dims] are each
+/// a size (`int`) or a symbolic name (`String`).
+Uint8List _valueInfo(String name, int elemType, List<Object> dims) {
+  final shape = _Protobuf();
+  for (final dim in dims) {
+    final dimension = _Protobuf();
+    switch (dim) {
+      case int size:
+        dimension.uint(1, size);
+      case String param:
+        dimension.string(2, param);
+    }
+    shape.bytes(1, dimension.take());
+  }
+  final tensorType = _Protobuf()
+    ..uint(1, elemType)
+    ..bytes(2, shape.take());
+  final type = _Protobuf()..bytes(1, tensorType.take());
+  final valueInfo = _Protobuf()
+    ..string(1, name)
+    ..bytes(2, type.take());
+  return valueInfo.take();
+}
+
+/// The `tokenizer.json` of the stub package: the sidecar's `STUB_TOKENIZER_JSON`.
+const _stubTokenizerJson =
+    '{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],'
+    '"normalizer":null,"pre_tokenizer":{"type":"Whitespace"},'
+    '"post_processor":null,"decoder":null,"model":{"type":"WordLevel",'
+    '"vocab":{"[UNK]":0,"[CLS]":1,"[SEP]":2,"[QUERY]":3,"[PASSAGE]":4},'
+    '"unk_token":"[UNK]"}}';
+
+/// The smallest model the sidecar accepts: an ONNX package in [dir], the graph
+/// `model.onnx` and its `tokenizer.json`, whose graph is returned. Mirrors
+/// `write_stub_onnx_package` in the sidecar's mock backend: IR 8, opset 17, the
+/// inputs `input_ids` and `attention_mask` (`int64[1, sequence_length]`) and
+/// the output `sentence_embedding` (`float[1, 8]`). It has no nodes, so no
+/// runtime could run it; only the stand-in serves it.
+File writeStubOnnxPackage(Directory dir) {
+  const int64 = 7;
+  const float = 1;
+  final inputs = [
+    for (final name in const ['input_ids', 'attention_mask'])
+      _valueInfo(name, int64, const [1, 'sequence_length']),
+  ];
+  final output = _valueInfo('sentence_embedding', float, const [1, 8]);
+  final graph = _Protobuf()..string(2, 'otzaria-stub-encoder');
+  for (final input in inputs) {
+    graph.bytes(11, input);
+  }
+  graph.bytes(12, output);
+  final opset = _Protobuf()
+    ..string(1, '')
+    ..uint(2, 17);
+  final model = _Protobuf()
+    ..uint(1, 8)
+    ..string(2, 'otzaria-stub')
+    ..bytes(7, graph.take())
+    ..bytes(8, opset.take());
+
+  dir.createSync(recursive: true);
+  final file = File('${dir.path}/model.onnx')..writeAsBytesSync(model.take());
+  File('${dir.path}/tokenizer.json').writeAsStringSync(_stubTokenizerJson);
+  return file;
+}
+
+/// The sidecar's `model_checksum` for the ONNX package whose graph is [graph]:
+/// the SHA-256 of its manifest, `otzaria-onnx-package-v1` and then a line of
+/// name, size and SHA-256 for each file, in name order. A package without
+/// external data, as the stub is, holds the graph and `tokenizer.json`.
+String onnxPackageChecksum(File graph) {
+  final files = [graph, File('${graph.parent.path}/tokenizer.json')];
+  final named = {
+    for (final file in files)
+      file.uri.pathSegments.last: file.readAsBytesSync(),
+  };
+  final manifest = StringBuffer('otzaria-onnx-package-v1\n');
+  for (final name in named.keys.toList()..sort()) {
+    final bytes = named[name]!;
+    manifest.write('$name\t${bytes.length}\t${sha256.convert(bytes)}\n');
+  }
+  return sha256.convert(utf8.encode(manifest.toString())).toString();
+}
+
+/// The configuration the FFI suites open the sidecar with: the stub graph at
+/// [modelPath], under the pooling the stand-in claims for an ONNX graph, and
+/// text recipe 1, so that a query that is a line's exact text embeds as the
+/// line does. A suite that must see a value arrive, or be refused, passes it
+/// instead of the default.
+SemanticConfigInput stubOnnxConfig({
   required String rootDir,
   required String modelPath,
   required String modelId,
-  String pooling = 'last-token',
+  String pooling = 'in-graph',
   int maxTokens = 512,
-  String modelQuantization = 'Q4_K_M',
+  String modelQuantization = 'int8',
   int embeddingTextVersion = 1,
   String? onnxRuntimePath,
 }) => SemanticConfigInput(
@@ -99,10 +187,10 @@ SemanticConfigInput stubGgufConfig({
 /// status back.
 ///
 /// Nothing cheaper distinguishes the builds. `configureSemantic` succeeds on a
-/// library with no embedding backend compiled in — the state 32-bit ARM ships —
-/// and `enabled` is `true` there too. `available` is the flag that separates
-/// them, but the model loads lazily, so immediately after configuring it is
-/// `false` on a *working* build as well:
+/// library with no embedding backend compiled in — the state Android and iOS
+/// ship — and `enabled` is `true` there too. `available` is the flag that
+/// separates them, but the model loads lazily, so immediately after
+/// configuring it is `false` on a *working* build as well:
 ///
 /// | after | mock build | backend-less build |
 /// | --- | --- | --- |
@@ -113,7 +201,7 @@ SemanticConfigInput stubGgufConfig({
 /// a build that can run it perfectly well.
 ///
 /// The backend must be the mock: these tests assert the deterministic vectors
-/// it produces, and the stub GGUF is not a model a real backend could load.
+/// it produces, and the stub graph is not a model a real backend could load.
 ///
 /// Same rule as [initNativeEngine]: skipping is a local convenience, never a
 /// CI one.
@@ -123,13 +211,12 @@ Future<String?> semanticSidecarSkipReason() async {
     final engine = await SearchEngine.newInstance(
       path: (Directory('${probe.path}/tantivy')..createSync()).path,
     );
-    final model = File('${probe.path}/mock.gguf');
-    writeStubGguf(model);
+    final model = writeStubOnnxPackage(Directory('${probe.path}/model'));
 
     String? failure;
     try {
       await engine.configureSemantic(
-        config: stubGgufConfig(
+        config: stubOnnxConfig(
           rootDir: '${probe.path}/semantic',
           modelPath: model.path,
           modelId: 'probe',

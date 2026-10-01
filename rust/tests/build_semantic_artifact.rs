@@ -8,15 +8,16 @@
 //!
 //! Compiled only with the deterministic backend: a build is inference, and the real weights
 //! are a 396 MB gated download the sidecar's own golden job already fetches. Not beside
-//! `semantic-llama`, which would take the stub GGUF ahead of the stand-in and fail to load
-//! it; `semantic-onnx` serves only `.onnx` graphs, so it leaves the stub to the stand-in.
+//! `semantic-onnx`, which would take the stub ONNX package ahead of the stand-in and fail to
+//! load it.
 
-#![cfg(all(feature = "semantic-mock", not(feature = "semantic-llama")))]
+#![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
 use otzaria_semantic_search::distribution::corpus::CorpusIndex;
 use otzaria_semantic_search::distribution::packer::validate_artifact;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
-use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};
+use otzaria_semantic_search::semantic::embedding::mock;
+use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 use otzaria_semantic_search::semantic::versioning::ModelIdentity;
 use search_engine::api::search_engine::SearchEngine;
 use search_engine::semantic_corpus::TantivyCorpus;
@@ -70,17 +71,27 @@ fn write_index(dir: &Path) {
 
 fn model_identity(checksum: &str, chunking: &ChunkerConfig) -> ModelIdentity {
     ModelIdentity {
-        model_id: "EMD123/Otzaria-Embedding-V1-Flash-0.6B".to_string(),
+        model_id: "test-mock".to_string(),
         model_checksum: checksum.to_string(),
-        model_quantization: "Q4_K_M".to_string(),
+        model_quantization: "int8".to_string(),
         embedding_backend: "mock-hash-v1".to_string(),
         embedding_dim: 64,
-        pooling: "last-token".to_string(),
+        pooling: "in-graph".to_string(),
         max_tokens: 512,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
         chunking_identity: chunking.identity(),
     }
+}
+
+/// The folder the stub ONNX package is written into, under `work`.
+fn model_dir(work: &Path) -> std::path::PathBuf {
+    work.join("model")
+}
+
+/// The graph of the stub ONNX package under `work`: what `--model-file` names.
+fn model_file(work: &Path) -> std::path::PathBuf {
+    model_dir(work).join("model.onnx")
 }
 
 /// Index, model and recipe on disk; every path the binary needs.
@@ -97,9 +108,9 @@ fn fixture() -> Fixture {
 
     let work = TempDir::new().unwrap();
     let chunking = ChunkerConfig::default();
-    let model_file = work.path().join("model.gguf");
-    mock::write_stub_gguf(&model_file, 3).unwrap();
-    let model = model_identity(&validate_and_checksum_gguf(&model_file).unwrap(), &chunking);
+    let graph = mock::write_stub_onnx_package(&model_dir(work.path()));
+    let package = validate_onnx_package(&graph).unwrap();
+    let model = model_identity(package.checksum(), &chunking);
 
     std::fs::write(
         work.path().join("chunking.json"),
@@ -131,7 +142,7 @@ fn run(fixture: &Fixture, out: &Path, extra: &[&str]) -> std::process::Output {
         "--model",
         work.join("model.json").to_str().unwrap(),
         "--model-file",
-        work.join("model.gguf").to_str().unwrap(),
+        model_file(work).to_str().unwrap(),
         "--chunking",
         work.join("chunking.json").to_str().unwrap(),
         "--out",
@@ -283,7 +294,7 @@ fn a_path_that_holds_no_index_is_reported_rather_than_populated() {
             "--model",
             work.join("model.json").to_str().unwrap(),
             "--model-file",
-            work.join("model.gguf").to_str().unwrap(),
+            model_file(work).to_str().unwrap(),
             "--chunking",
             work.join("chunking.json").to_str().unwrap(),
             "--out",

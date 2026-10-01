@@ -2004,10 +2004,9 @@ class SemanticArtifactInput {
   /// the payload files.
   final String artifactDir;
 
-  /// The model queries are embedded with. An `.onnx` graph, with its
-  /// `tokenizer.json` beside it, or a GGUF; the extension selects the backend,
-  /// as for [`SemanticConfigInput::model_path`], and an ONNX graph needs the
-  /// ONNX Runtime library described there.
+  /// The model queries are embedded with: an `.onnx` graph, with its
+  /// `tokenizer.json` beside it, as for [`SemanticConfigInput::model_path`],
+  /// and needing the ONNX Runtime library described there.
   final String modelPath;
 
   /// The text of the model's identity file: the JSON `ModelIdentity` the
@@ -2169,26 +2168,30 @@ class SemanticBookLineInput {
 /// built under one value is reported as needing a full re-index under another,
 /// rather than having vectors that cannot be compared mixed into it.
 /// Nothing here is read from the model file, so the values must be the ones the
-/// model was built for. The two models the application knows (the Meivin
-/// default is its INT8 graph; the full-precision `seforim-embed-round2-fp32.onnx`
-/// published beside it differs only in `model_path` and `"fp32"`):
+/// model was built for. The model the application knows is the Meivin ONNX
+/// model: its INT8 graph by default, or the full-precision
+/// `seforim-embed-round2-fp32.onnx` published beside it, which differs only in
+/// `model_path` and `"fp32"`:
 ///
-/// | field | Qwen3 GGUF | Meivin ONNX |
-/// | --- | --- | --- |
-/// | `model_path` | the `.gguf` file | `seforim-embed-round2-int8.onnx` |
-/// | `embedding_dim` | 1024 | 256 |
-/// | `pooling` | `"last-token"` | `"in-graph"` |
-/// | `max_tokens` | 512 | 256 |
-/// | `model_quantization` | `"Q4_K_M"` | `"int8"` |
-/// | `embedding_text_version` | 1 | 2 |
+/// | field | Meivin ONNX |
+/// | --- | --- |
+/// | `model_path` | `seforim-embed-round2-int8.onnx` |
+/// | `embedding_dim` | 256 |
+/// | `pooling` | `"in-graph"` |
+/// | `max_tokens` | 256 |
+/// | `model_quantization` | `"int8"` |
+/// | `embedding_text_version` | 2 |
 class SemanticConfigInput {
   final String rootDir;
 
-  /// The model file, whose extension selects the backend. A path ending in
-  /// `.onnx` (in any letter case) is an ONNX graph for ONNX Runtime, with its
-  /// `tokenizer.json` in the same directory; every other path is a GGUF for
-  /// llama.cpp. A build without that format's backend cannot serve the model:
-  /// loading it, which indexing does, fails with `BackendUnavailable`.
+  /// The model file: an ONNX graph, a path ending in `.onnx` (in any letter
+  /// case), with its `tokenizer.json` in the same directory. ONNX Runtime is
+  /// the only embedding backend there is. GGUF models, which llama.cpp served
+  /// until it was removed, are not supported, and nor is any other file: a
+  /// path that does not end in `.onnx` is refused by its name when the model
+  /// loads, which indexing does, as `ModelInvalid` with `field` `model_path`.
+  /// An ONNX graph on a build without the ONNX backend fails to load as
+  /// `BackendNotInBuild`.
   ///
   /// An ONNX graph also needs the ONNX Runtime shared library, which this
   /// library does not link but loads when the model loads, from the first of
@@ -2203,37 +2206,34 @@ class SemanticConfigInput {
   final String modelId;
   final int embeddingDim;
 
-  /// How the model's output becomes one vector per text. `"last-token"` takes
-  /// the hidden state of the final token, which is what the Qwen3 GGUF was
-  /// trained for. `"in-graph"` means the graph itself emits the finished
-  /// sentence vector (the Meivin graph pools, projects and normalizes inside),
-  /// so nothing is pooled outside it. Spellings are matched exactly, and
-  /// `"mean"`, which parses but which no backend performs, is refused like an
-  /// unknown one.
+  /// How the model's output becomes one vector per text. `"in-graph"`, the
+  /// pooling the ONNX backend performs, means the graph itself emits the
+  /// finished sentence vector (the Meivin graph pools, projects and normalizes
+  /// inside), so nothing is pooled outside it. Spellings are matched exactly,
+  /// and a pooling the backend does not perform, such as `"mean"`, is refused
+  /// like an unknown one.
   ///
   /// Identity because the same weights pooled two ways produce two unrelated
   /// vector spaces.
   final String pooling;
 
   /// The token cap per embedded text, counted the way the model's backend
-  /// counts it. 512 for the Qwen3 GGUF, including the EOS the backend appends.
-  /// 256 for the Meivin graph, where it is the whole sequence: `[CLS]`,
+  /// counts it: the whole sequence. 256 for the Meivin graph, where `[CLS]`,
   /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
-  /// and a cap that leaves no room for content is refused. So is an ONNX cap
-  /// above 65,536, past the context of any ONNX sentence encoder, when
-  /// configuring: a negative Dart value arrives here as a cap in the billions,
-  /// and the load-time probe of that many tokens could not even be allocated.
-  /// A GGUF cap has no such bound; llama.cpp clamps it to the model's context.
+  /// and a cap that leaves no room for content is refused. So is a cap above
+  /// 65,536, past the context of any ONNX sentence encoder, when configuring:
+  /// a negative Dart value arrives here as a cap in the billions, and the
+  /// load-time probe of that many tokens could not even be allocated.
   ///
   /// Identity because a different cap cuts every long text somewhere else, and
   /// so changes its vector. The manifest records the value requested here, not
   /// one a backend may clamp it to.
   final int maxTokens;
 
-  /// The precision of the model's weights: `"Q4_K_M"` for the Qwen3 GGUF,
-  /// `"int8"` for the Meivin INT8 graph the application uses, and `"fp32"` for
-  /// the full-precision graph published beside it, which is a different
-  /// identity. Not the precision the vectors are stored at. Must not be empty.
+  /// The precision of the model's weights: `"int8"` for the Meivin INT8 graph
+  /// the application uses, and `"fp32"` for the full-precision graph published
+  /// beside it, which is a different identity. Not the precision the vectors
+  /// are stored at. Must not be empty.
   ///
   /// Identity because two quantizations of one model produce different
   /// vectors. The model file's checksum catches such a swap as well, but only
@@ -2242,11 +2242,10 @@ class SemanticConfigInput {
   final String modelQuantization;
 
   /// Which text each chunk, and each query, carries to the model. Version 1
-  /// embeds the line itself, or a short line together with its neighbours,
-  /// which is what the Qwen3 GGUF expects. Version 2 prefixes `"[PASSAGE] "`
-  /// to that same text and `"[QUERY] "` to the query: the Meivin model's
-  /// learned role tokens, which it was trained to see. A version the sidecar
-  /// does not implement is refused.
+  /// embeds the line itself, or a short line together with its neighbours.
+  /// Version 2 prefixes `"[PASSAGE] "` to that same text and `"[QUERY] "` to
+  /// the query: the Meivin model's learned role tokens, which it was trained to
+  /// see. A version the sidecar does not implement is refused.
   ///
   /// Identity because it changes the string that is embedded. It is folded
   /// into the chunking identity that the manifest and every book record carry.
@@ -2256,7 +2255,7 @@ class SemanticConfigInput {
   /// application that ships the runtime itself: on macOS inside its signed
   /// bundle, which is where a Hardened Runtime application can load it from.
   /// An absolute path; a relative one is resolved against the process's
-  /// current directory. Ignored for a GGUF, whose backend is linked in.
+  /// current directory.
   ///
   /// Passed, it is the first place the runtime is looked for and the only
   /// one: a path that names no file is `OnnxRuntimeMissing` and one that does
@@ -2330,6 +2329,7 @@ class SemanticConfigInput {
 /// | --- | --- |
 /// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///
@@ -2393,11 +2393,11 @@ class SemanticError implements FrbException {
 /// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
 /// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
-/// | `ModelInvalid` | the file at `model_path` is not a usable model of its format (a truncated download, a placeholder), or its backend could not load it | download the model again | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelInvalid` | the file at `model_path` is not a usable model (a truncated download, a placeholder), or its backend could not load it; or `model_path` names no ONNX graph, such as a GGUF, which no build serves since GGUF support was removed (`field` is `model_path` then) | download the model again; for a path that names no ONNX graph, install the ONNX model and point `model_path` at its graph | `open_semantic_artifact`, `semantic_index_books` |
 /// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
-/// | `BackendNotInBuild` | this build has no embedding backend for the model's format: an ONNX graph on Android or iOS, a GGUF on 32-bit ARM, or a build without that format's feature | use a model of a format this build serves; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
+/// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
@@ -2439,7 +2439,7 @@ enum SemanticErrorKind {
   /// An ONNX graph without its `tokenizer.json`.
   tokenizerMissing,
 
-  /// The model file is not a usable model, or could not be loaded.
+  /// The model file is not a usable model, could not be loaded, or is no ONNX graph.
   modelInvalid,
 
   /// The model identity in hand does not describe the model file.
@@ -2451,7 +2451,7 @@ enum SemanticErrorKind {
   /// The ONNX Runtime library found cannot be used.
   onnxRuntimeUnusable,
 
-  /// No embedding backend for the model's format in this build.
+  /// No embedding backend for the model in this build: no ONNX backend here.
   backendNotInBuild,
 
   /// Another semantic session is open, or this one with different inputs.

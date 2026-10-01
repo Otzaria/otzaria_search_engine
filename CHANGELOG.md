@@ -19,17 +19,17 @@ are now documented as development and testing scaffolding, not for the library.
 
 - **`SemanticConfigInput` states the whole recipe: four new required fields.**
   `pooling`, `maxTokens`, `modelQuantization` and `embeddingTextVersion` were
-  taken silently from the sidecar's defaults, which fit one model only, and
-  recorded `model_quantization` as `"Q4"` where that model's identity says
-  `"Q4_K_M"`. Each is part of the index's identity, and the ONNX model differs
-  in all four, so they are now the caller's to state:
+  taken silently from the sidecar's defaults, which fit only the Qwen3 GGUF
+  model 0.8.7 served, and recorded `model_quantization` as `"Q4"` where that
+  model's identity says `"Q4_K_M"`. Each is part of the index's identity, and
+  the ONNX model differs in all four, so they are now the caller's to state:
 
-  | field | Qwen3 GGUF | Meivin ONNX |
-  | --- | --- | --- |
-  | `pooling` | `'last-token'` | `'in-graph'` |
-  | `maxTokens` | 512 | 256 |
-  | `modelQuantization` | `'Q4_K_M'` | `'int8'` |
-  | `embeddingTextVersion` | 1 | 2 |
+  | field | Meivin ONNX |
+  | --- | --- |
+  | `pooling` | `'in-graph'` |
+  | `maxTokens` | 256 |
+  | `modelQuantization` | `'int8'` |
+  | `embeddingTextVersion` | 2 |
 
   The Meivin column is its INT8 graph, `seforim-embed-round2-int8.onnx`, the
   model the application uses: negligibly less accurate than the full-precision
@@ -39,36 +39,47 @@ are now documented as development and testing scaffolding, not for the library.
   They map onto the sidecar's `pooling`, `embedding_max_tokens`,
   `model_quantization` and `chunking.embedding_text_version`, and the sidecar
   validates them when `configureSemantic` opens it. It refuses an unknown
-  pooling, a text recipe it has no code for, a cap below 2 and, for an ONNX
-  model, a cap above 65,536, which is also where a negative `maxTokens` lands:
-  it arrives as a cap in the billions. An empty `modelQuantization` is refused
-  before that. `configureSemantic` now compares all eight fields, so a
-  different recipe under the same model file is refused by name, like a
-  different model, instead of being accepted as a repeat.
+  pooling, a text recipe it has no code for, a cap below 2 and a cap above
+  65,536, which is also where a negative `maxTokens` lands: it arrives as a cap
+  in the billions. An empty `modelQuantization` is refused before that.
+  `configureSemantic` now compares all eight fields, so a different recipe
+  under the same model file is refused by name, like a different model,
+  instead of being accepted as a repeat.
 
   **What changes for consumers.** Every construction has to pass the four
   fields. The Otzaria app constructs `SemanticConfigInput` only in
   `test/search/semantic_search_gateway_test.dart`. A sidecar root written by
-  0.8.7 or earlier recorded `"Q4"`, so opening it with `"Q4_K_M"` reports
-  `needsFullReindex` once; `resetSemanticIndex` clears it, and the in-memory
-  store needed a full re-index after every restart anyway.
-- **`semantic`, the production feature, is the ONNX backend alone.** It was
-  llama.cpp in 0.8.7. The library Cargokit builds, precompiled binaries
-  included, therefore no longer serves a GGUF model such as the Qwen3 one:
-  loading it fails with "No embedding backend is available in this build",
-  whose reason names the sidecar's `llama-backend`, and the library behaves as
-  the README's "Builds without a backend" describes. The application's model
-  is the Meivin ONNX graph, and with llama.cpp left out no application build
-  compiles it, or ggml, through cmake any more. GGUF is the opt-in
-  `semantic-llama`, which `semantic-real` remains an alias of; beside
-  `semantic` it gives a build that serves both formats, the sidecar picking the
-  backend per model by the model file's format, `.onnx` or anything else.
-  `cargokit.yaml` still builds `--features semantic`. On Android and iOS, which
-  have no ONNX backend, the production build now serves no model at all.
+  0.8.7 or earlier holds vectors of the Qwen3 GGUF model, which no build serves
+  any more (next entry); the in-memory store needed a full re-index after every
+  restart anyway.
+- **GGUF models and llama.cpp are no longer supported: `semantic`, the
+  production feature, is the ONNX backend.** In 0.8.7 `semantic` was llama.cpp,
+  for the Qwen3 GGUF model. It is now the ONNX backend, for the Meivin model the
+  application uses, and ONNX is the only format any build serves: the
+  `semantic-llama` feature and its `semantic-real` alias are removed, so no
+  build compiles llama.cpp or ggml, through cmake or otherwise. The sidecar is
+  pinned at dc11d59, the merge that removed GGUF from it too. A GGUF model, or
+  any model path that does not end in `.onnx`, is refused by its name rather
+  than served: opening an artifact with it, or indexing with it on the
+  development path, throws a `SemanticError` of kind `modelInvalid` whose
+  `field` is `model_path`, with the sidecar's message ("… GGUF support was
+  removed …"). `backendNotInBuild` keeps its meaning: an ONNX graph on a build
+  without the ONNX backend. `cargokit.yaml` still builds `--features semantic`.
+  On Android and iOS, which have no ONNX backend, the production build serves
+  no model at all. The last commit of this plugin with GGUF support is eb42ebd.
+
+  The build settings only llama.cpp needed went with it. The podspecs no longer
+  link `c++` or the Accelerate, Metal, MetalKit and Foundation frameworks. The
+  plugin's Android `minSdkVersion`, and the Android platform the precompiled
+  binaries are built for, are back from 23 to 21, which only llama.cpp's
+  `posix_madvise` had raised. The Linux release container no longer installs
+  cmake or libclang-dev, and the Windows ARM release build sets only
+  `CC=clang-cl`, without Ninja or llama.cpp's C++ flags. Cargo.lock loses
+  llama-cpp-2, llama-cpp-sys-2, bindgen, cmake, clang-sys and the 14 other
+  crates only they pulled in.
 
   **What changes for consumers.** An application that configures a GGUF model
-  needs a library built with `semantic-llama` added to the flags in
-  `rust/cargokit.yaml`; the precompiled binaries are ONNX only.
+  has to move to the ONNX model: no build of this release serves the GGUF one.
 
 - **The semantic calls throw `SemanticError`, not `AnyhowException`.**
   `configureSemantic`, `openSemanticArtifact`, `searchSemantic`,
@@ -134,8 +145,8 @@ are now documented as development and testing scaffolding, not for the library.
   identity value, a wrong digest, the read-only refusals, a query with nothing to
   embed and the stale state; in `rust/tests/semantic_mock_integration.rs`, the
   development session's states and refusals; in the new
-  `rust/tests/semantic_onnx_errors.rs`, a GGUF on a build with only the ONNX
-  backend, and an ONNX model with no runtime or one that does not load, which
+  `rust/tests/semantic_onnx_errors.rs`, a GGUF model, which no build serves,
+  and an ONNX model with no runtime or one that does not load, which
   needs neither the real model nor a runtime and so runs in every
   `semantic-onnx` job; and a build without semantic support, in the unit tests.
   The FFI suite matches its refusals by kind across the bridge.
@@ -145,7 +156,7 @@ are now documented as development and testing scaffolding, not for the library.
   semantic query embeds the text and then scans every vector, about a second
   over the library. `SemanticCancellationToken` is an opaque object with a
   factory constructor and a synchronous `cancel()` and `isCancelled`; Rust holds
-  the sidecar's own `CancellationToken` in it (at the pinned 62f0c44), and
+  the sidecar's own `CancellationToken` in it (the sidecar's since 62f0c44), and
   `searchSemantic` borrows it, so the application keeps the object and cancels
   it from the isolate that started the search while the search runs: both take
   it by shared reference, and neither waits for the other. The search looks
@@ -171,10 +182,10 @@ are now documented as development and testing scaffolding, not for the library.
   rare-word and section bonuses and the duplicate penalty, metadata ranking and
   the semantic candidate window's multiplier, mirroring the sidecar's
   `RankingProfile` field for field and handed to it as `HybridSearchParams::ranking`
-  (pinned 62f0c44). Without it, or with the defaults, which the Dart constructor
-  carries and `SemanticRankingOptions.defaults()` reads from the engine, a
-  search ranks exactly as before: the defaults are the sidecar's `Balanced`
-  preset, value for value. **They are unmeasured placeholders**; calibrating
+  (since the sidecar's 62f0c44). Without it, or with the defaults, which the
+  Dart constructor carries and `SemanticRankingOptions.defaults()` reads from
+  the engine, a search ranks exactly as before: the defaults are the sidecar's
+  `Balanced` preset, value for value. **They are unmeasured placeholders**; calibrating
   them needs a labelled relevance set, and this lets that happen from the
   application without a release of the engine. An option out of its range, or
   not a number, is refused before the search runs, with or without a session,
@@ -231,8 +242,8 @@ are now documented as development and testing scaffolding, not for the library.
 - **`onnxRuntimePath`: the ONNX Runtime the application ships.**
   `SemanticArtifactInput` and `SemanticConfigInput` gain an optional
   `onnxRuntimePath`, the shared library an ONNX model runs on, which the plugin
-  hands to the sidecar as its `EmbeddingDeployment` (the sidecar is pinned at
-  62f0c44, which added it). It is the first place looked and, once passed, the
+  hands to the sidecar as its `EmbeddingDeployment` (which the sidecar added in
+  62f0c44). It is the first place looked and, once passed, the
   only one: a path that names no file is `onnxRuntimeMissing` and one that does
   not load `onnxRuntimeUnusable`, never a fall-back to `OTZARIA_ONNX_RUNTIME` or
   to the file beside the graph, which stay the second and third places; an empty
@@ -299,21 +310,21 @@ are now documented as development and testing scaffolding, not for the library.
   flutter_rust_bridge's codegen does not carry the attribute to Dart, so the
   application would see nothing, while every Rust call site would warn, the
   generated wrappers included.
-- **`build_semantic_artifact` documents an ONNX graph as `--model-file`**, next
-  to a GGUF, and its no-backend message names `semantic-onnx`, `semantic-llama`
-  and `semantic-mock`. The bins that need no model no longer say "GGUF".
-- **The Rust tests that drive the stand-in with a stub GGUF run only with
-  `semantic-mock` and without `semantic-llama`.** The binary's test was gated
-  off `semantic-real`, which `semantic-llama` does not turn on, so llama.cpp
-  could have claimed the stub; the corpus adapter's test had no gate at all and
-  did not compile in a build without the stand-in, such as `semantic-onnx`; and
-  `tests/semantic_mock_integration.rs`, gated on `semantic-mock` alone, failed
-  every test in a build with llama.cpp, which claimed its stub.
+- **`build_semantic_artifact` documents an ONNX graph as `--model-file`**, and
+  its no-backend message names `semantic-onnx` and `semantic-mock`. The bins
+  that need no model no longer say "GGUF".
+- **The tests that drive the stand-in open it on a stub ONNX package**, where
+  they used a stub GGUF: the sidecar's `write_stub_onnx_package` in Rust, and a
+  Dart copy of it in the FFI suites, which compute its package checksum as the
+  sidecar defines it. The Rust ones run with `semantic-mock` and without
+  `semantic-onnx`, which would take the stub ahead of the stand-in and fail to
+  load it. Before, the binary's test was gated off `semantic-real` and the
+  corpus adapter's test had no gate at all, so llama.cpp could have claimed
+  their stub GGUF.
 - **CI checks, lints and runs the tests with `--features semantic-onnx`**, the
   one job that runs the integration's tests without the stand-in, and exactly
   what `semantic` turns on. The real-backend job compiles `semantic` on Linux,
-  macOS and Windows, and llama.cpp beside it (`semantic,semantic-llama`), the
-  one place CI still compiles llama.cpp.
+  macOS and Windows; nothing in CI compiles llama.cpp any more.
 - **CI runs the real-model tests on Linux, macOS and Windows.** The new "Real
   ONNX model" job fetches the INT8 graph and its `tokenizer.json` from the
   project's private Hugging Face mirror with the `OTZARIA_HF_TOKEN` secret and

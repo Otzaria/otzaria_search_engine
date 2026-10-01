@@ -247,9 +247,10 @@ Future<SemanticResetResult> resetSemanticIndex()
 
 These reach the semantic sidecar only in a library built with a semantic
 feature; any other build reports an explicit `notInBuild` state and serves
-lexical results. Cargokit builds the library with `semantic`, the ONNX backend
-alone: a GGUF model needs a build with `semantic-llama`, and on any other build
-loading one fails with a `SemanticError` of kind `backendNotInBuild`. The
+lexical results. Cargokit builds the library with `semantic`, the ONNX backend,
+and ONNX is the only model format: GGUF models are not supported, and a model
+path that does not end in `.onnx` is refused by its name on every build, as a
+`SemanticError` of kind `modelInvalid` whose `field` is `model_path`. The
 README's "Semantic search integration" section covers the features, the release
 contract, the session lifecycle and the fallback contract. Every one of them but
 `semanticStatus` and `disableSemantic` throws a `SemanticError` when it fails
@@ -269,7 +270,7 @@ its input is a value to type in:
 | field | meaning |
 | --- | --- |
 | `artifactDir` | the artifact directory the build binary wrote |
-| `modelPath` | the model queries are embedded with: `.onnx` selects ONNX Runtime, any other path llama.cpp (only in a build with `semantic-llama`); for the Meivin model, `seforim-embed-round2-int8.onnx` with `tokenizer.json` beside it |
+| `modelPath` | the model queries are embedded with, an ONNX graph with `tokenizer.json` beside it: for the Meivin model, `seforim-embed-round2-int8.onnx` |
 | `modelIdentityJson` | the text of the model's identity file, the one the artifact was built with: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph |
 | `publishedDigest` | optional: the artifact's digest as published outside it |
 | `onnxRuntimePath` | optional: the ONNX Runtime library the application ships, the first place the runtime is looked for and, once passed, the only one; not part of any identity, and compared on a repeat call, since a process keeps the first runtime it loads |
@@ -297,17 +298,17 @@ Every field but `rootDir` and `onnxRuntimePath` is part of the index's identity
 (the model file by its checksum, once it has loaded), so an index built under
 one value reports `needsFullReindex` under another.
 
-| field | meaning | Qwen3 GGUF | Meivin ONNX |
-| --- | --- | --- | --- |
-| `rootDir` | the sidecar's own directory | | |
-| `modelPath` | the model file: `.onnx` selects ONNX Runtime, any other path llama.cpp (only in a build with `semantic-llama`) | the `.gguf` file | `seforim-embed-round2-int8.onnx`, with `tokenizer.json` beside it |
-| `modelId` | the model's name | `EMD123/Otzaria-Embedding-V1-Flash-0.6B` | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
-| `embeddingDim` | the width of every vector | 1024 | 256 |
-| `pooling` | how one vector is made from each text | `last-token` | `in-graph` |
-| `maxTokens` | the token cap per text, as the model's backend counts it; at least 2, and for an ONNX model at most 65,536 | 512 | 256 |
-| `modelQuantization` | the precision of the weights; must not be empty | `Q4_K_M` | `int8` (`fp32` for the full-precision graph) |
-| `embeddingTextVersion` | the text recipe; 2 prefixes `[PASSAGE] ` to texts and `[QUERY] ` to queries | 1 | 2 |
-| `onnxRuntimePath` | optional: the ONNX Runtime library to load, as on `SemanticArtifactInput`; not identity | | |
+| field | meaning | Meivin ONNX |
+| --- | --- | --- |
+| `rootDir` | the sidecar's own directory | |
+| `modelPath` | the model file, an ONNX graph with `tokenizer.json` beside it | `seforim-embed-round2-int8.onnx` |
+| `modelId` | the model's name | `ArieLLL123/judaic-semantic-round2-onnx-zayit` |
+| `embeddingDim` | the width of every vector | 256 |
+| `pooling` | how one vector is made from each text | `in-graph` |
+| `maxTokens` | the token cap per text, as the model's backend counts it; at least 2 and at most 65,536 | 256 |
+| `modelQuantization` | the precision of the weights; must not be empty | `int8` (`fp32` for the full-precision graph) |
+| `embeddingTextVersion` | the text recipe; 2 prefixes `[PASSAGE] ` to texts and `[QUERY] ` to queries | 2 |
+| `onnxRuntimePath` | optional: the ONNX Runtime library to load, as on `SemanticArtifactInput`; not identity | |
 
 **An ONNX model needs the ONNX Runtime shared library at run time.** The
 library is loaded, not linked, from the first of three places that is set, and
@@ -413,11 +414,11 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `indexStampMismatch` | `openSemanticArtifact` | the index changed after it was stamped | install the release's index |
 | `modelMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no file at `modelPath` | download the model |
 | `tokenizerMissing` | `openSemanticArtifact`, `semanticIndexBooks` | an ONNX graph without `tokenizer.json` beside it | install the whole package |
-| `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model of its format, or its backend could not load it | download the model again |
+| `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model, or its backend could not load it; or, with `field` `model_path`, a path that names no ONNX graph, such as a GGUF | download the model again; for a path, point it at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact`, `semanticIndexBooks` | the identity does not describe the model; `field`: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` | ship the matching identity file or model |
 | `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for: at `onnxRuntimePath` when it is passed | provide ONNX Runtime there |
 | `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
-| `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no backend for the model's format in this build | a model this build serves |
+| `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no ONNX backend in this build, as on Android and iOS | a desktop build |
 | `sessionConflict` | `configureSemantic`, `openSemanticArtifact` | another session, or other inputs, is open | `disableSemantic` first |
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened artifact | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |

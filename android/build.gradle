@@ -45,10 +45,10 @@ android {
     }
 
     defaultConfig {
-        // Matches ANDROID_PLATFORM in the prebuilt workflow. 23 because
-        // llama.cpp, which a build with `semantic-llama` compiles, calls
-        // `posix_madvise`, which bionic only exposes from API 23.
-        minSdkVersion 23
+        // Matches ANDROID_PLATFORM in the prebuilt workflow, which compiles
+        // the native library for API 21; advertising support below that level
+        // would let API 19/20 applications install an incompatible artifact.
+        minSdkVersion 21
     }
 }
 
