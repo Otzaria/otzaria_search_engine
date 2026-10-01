@@ -24,3 +24,9 @@ mod lexicons;
 // flutter_rust_bridge must not generate bindings for it — Dart never supplies a corpus.
 #[cfg(feature = "semantic-integration")]
 pub mod semantic_corpus;
+// Which `SemanticErrorKind` each sidecar failure is. At the crate root for the reason
+// `semantic_corpus` is: it matches the sidecar's error types, which Dart never sees, and
+// flutter_rust_bridge must not generate bindings for it. The kinds themselves are in
+// `crate::api`, where Dart gets them.
+#[cfg(feature = "semantic-integration")]
+mod semantic_errors;

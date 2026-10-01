@@ -770,30 +770,28 @@ fn wire__crate__api__search_engine__SearchEngine_configure_semantic_impl(
                 <crate::api::search_engine::SemanticConfigInput>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, true,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, true,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                            _ => unreachable!(),
                         }
-                        let mut api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::configure_semantic(
-                                &mut *api_that_guard,
-                                api_config,
-                            )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let mut api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::search_engine::SearchEngine::configure_semantic(
+                        &mut *api_that_guard,
+                        api_config,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -3165,30 +3163,29 @@ fn wire__crate__api__search_engine__SearchEngine_open_semantic_artifact_impl(
                 <crate::api::search_engine::SemanticArtifactInput>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
                         }
-                        let api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::open_semantic_artifact(
-                                &*api_that_guard,
-                                api_config,
-                            )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::search_engine::SearchEngine::open_semantic_artifact(
+                            &*api_that_guard,
+                            api_config,
+                        )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -3330,30 +3327,28 @@ fn wire__crate__api__search_engine__SearchEngine_remove_semantic_books_impl(
             let api_source_book_keys = <Vec<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
                         }
-                        let api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::remove_semantic_books(
-                                &*api_that_guard,
-                                api_source_book_keys,
-                            )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::search_engine::SearchEngine::remove_semantic_books(
+                        &*api_that_guard,
+                        api_source_book_keys,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -3385,29 +3380,27 @@ fn wire__crate__api__search_engine__SearchEngine_reset_semantic_index_impl(
             >>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
                         }
-                        let api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::reset_semantic_index(
-                                &*api_that_guard,
-                            )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::search_engine::SearchEngine::reset_semantic_index(
+                        &*api_that_guard,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -4621,38 +4614,37 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
             let api_match_taamim = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
                         }
-                        let api_that_guard = api_that_guard.unwrap();
-                        let output_ok = crate::api::search_engine::SearchEngine::search_semantic(
-                            &*api_that_guard,
-                            api_query,
-                            api_facets,
-                            api_limit,
-                            api_offset,
-                            api_lexical_mode,
-                            api_fuzzy_max_distance,
-                            api_retrieval_mode,
-                            api_grouping,
-                            api_match_nikud,
-                            api_match_taamim,
-                        )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::search_engine::SearchEngine::search_semantic(
+                        &*api_that_guard,
+                        api_query,
+                        api_facets,
+                        api_limit,
+                        api_offset,
+                        api_lexical_mode,
+                        api_fuzzy_max_distance,
+                        api_retrieval_mode,
+                        api_grouping,
+                        api_match_nikud,
+                        api_match_taamim,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -4764,30 +4756,28 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(
                 <Vec<crate::api::search_engine::SemanticBookInput>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
                         }
-                        let api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::semantic_index_books(
-                                &*api_that_guard,
-                                api_books,
-                            )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::search_engine::SearchEngine::semantic_index_books(
+                        &*api_that_guard,
+                        api_books,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -4819,29 +4809,27 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(
             >>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
-                    (move || {
-                        let mut api_that_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_that, 0, false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                                _ => unreachable!(),
-                            }
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
                         }
-                        let api_that_guard = api_that_guard.unwrap();
-                        let output_ok =
-                            crate::api::search_engine::SearchEngine::semantic_index_diff(
-                                &*api_that_guard,
-                            )?;
-                        std::result::Result::Ok(output_ok)
-                    })(),
-                )
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::search_engine::SearchEngine::semantic_index_diff(
+                        &*api_that_guard,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
             }
         },
     )
@@ -7011,6 +6999,48 @@ impl SseDecode for crate::api::search_engine::SemanticConfigInput {
     }
 }
 
+impl SseDecode for crate::api::search_engine::SemanticError {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_kind = <crate::api::search_engine::SemanticErrorKind>::sse_decode(deserializer);
+        let mut var_message = <String>::sse_decode(deserializer);
+        let mut var_field = <Option<String>>::sse_decode(deserializer);
+        return crate::api::search_engine::SemanticError {
+            kind: var_kind,
+            message: var_message,
+            field: var_field,
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::SemanticErrorKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::search_engine::SemanticErrorKind::ArtifactMissing,
+            1 => crate::api::search_engine::SemanticErrorKind::ArtifactCorrupt,
+            2 => crate::api::search_engine::SemanticErrorKind::ArtifactIncompatible,
+            3 => crate::api::search_engine::SemanticErrorKind::ArtifactNotPublished,
+            4 => crate::api::search_engine::SemanticErrorKind::IndexNotStamped,
+            5 => crate::api::search_engine::SemanticErrorKind::IndexStampMismatch,
+            6 => crate::api::search_engine::SemanticErrorKind::ModelMissing,
+            7 => crate::api::search_engine::SemanticErrorKind::TokenizerMissing,
+            8 => crate::api::search_engine::SemanticErrorKind::ModelInvalid,
+            9 => crate::api::search_engine::SemanticErrorKind::ModelIdentityMismatch,
+            10 => crate::api::search_engine::SemanticErrorKind::OnnxRuntimeMissing,
+            11 => crate::api::search_engine::SemanticErrorKind::OnnxRuntimeUnusable,
+            12 => crate::api::search_engine::SemanticErrorKind::BackendNotInBuild,
+            13 => crate::api::search_engine::SemanticErrorKind::SessionConflict,
+            14 => crate::api::search_engine::SemanticErrorKind::ReadOnlySession,
+            15 => crate::api::search_engine::SemanticErrorKind::ReindexRequired,
+            16 => crate::api::search_engine::SemanticErrorKind::InvalidInput,
+            17 => crate::api::search_engine::SemanticErrorKind::Internal,
+            _ => unreachable!("Invalid variant for SemanticErrorKind: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::search_engine::SemanticExecutedMode {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -8168,6 +8198,65 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticConfig
     for crate::api::search_engine::SemanticConfigInput
 {
     fn into_into_dart(self) -> crate::api::search_engine::SemanticConfigInput {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticError {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.kind.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+            self.field.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticError
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticError>
+    for crate::api::search_engine::SemanticError
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticError {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticErrorKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::ArtifactMissing => 0.into_dart(),
+            Self::ArtifactCorrupt => 1.into_dart(),
+            Self::ArtifactIncompatible => 2.into_dart(),
+            Self::ArtifactNotPublished => 3.into_dart(),
+            Self::IndexNotStamped => 4.into_dart(),
+            Self::IndexStampMismatch => 5.into_dart(),
+            Self::ModelMissing => 6.into_dart(),
+            Self::TokenizerMissing => 7.into_dart(),
+            Self::ModelInvalid => 8.into_dart(),
+            Self::ModelIdentityMismatch => 9.into_dart(),
+            Self::OnnxRuntimeMissing => 10.into_dart(),
+            Self::OnnxRuntimeUnusable => 11.into_dart(),
+            Self::BackendNotInBuild => 12.into_dart(),
+            Self::SessionConflict => 13.into_dart(),
+            Self::ReadOnlySession => 14.into_dart(),
+            Self::ReindexRequired => 15.into_dart(),
+            Self::InvalidInput => 16.into_dart(),
+            Self::Internal => 17.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticErrorKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticErrorKind>
+    for crate::api::search_engine::SemanticErrorKind
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticErrorKind {
         self
     }
 }
@@ -9403,6 +9492,47 @@ impl SseEncode for crate::api::search_engine::SemanticConfigInput {
         <u32>::sse_encode(self.max_tokens, serializer);
         <String>::sse_encode(self.model_quantization, serializer);
         <u32>::sse_encode(self.embedding_text_version, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticError {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::search_engine::SemanticErrorKind>::sse_encode(self.kind, serializer);
+        <String>::sse_encode(self.message, serializer);
+        <Option<String>>::sse_encode(self.field, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticErrorKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::search_engine::SemanticErrorKind::ArtifactMissing => 0,
+                crate::api::search_engine::SemanticErrorKind::ArtifactCorrupt => 1,
+                crate::api::search_engine::SemanticErrorKind::ArtifactIncompatible => 2,
+                crate::api::search_engine::SemanticErrorKind::ArtifactNotPublished => 3,
+                crate::api::search_engine::SemanticErrorKind::IndexNotStamped => 4,
+                crate::api::search_engine::SemanticErrorKind::IndexStampMismatch => 5,
+                crate::api::search_engine::SemanticErrorKind::ModelMissing => 6,
+                crate::api::search_engine::SemanticErrorKind::TokenizerMissing => 7,
+                crate::api::search_engine::SemanticErrorKind::ModelInvalid => 8,
+                crate::api::search_engine::SemanticErrorKind::ModelIdentityMismatch => 9,
+                crate::api::search_engine::SemanticErrorKind::OnnxRuntimeMissing => 10,
+                crate::api::search_engine::SemanticErrorKind::OnnxRuntimeUnusable => 11,
+                crate::api::search_engine::SemanticErrorKind::BackendNotInBuild => 12,
+                crate::api::search_engine::SemanticErrorKind::SessionConflict => 13,
+                crate::api::search_engine::SemanticErrorKind::ReadOnlySession => 14,
+                crate::api::search_engine::SemanticErrorKind::ReindexRequired => 15,
+                crate::api::search_engine::SemanticErrorKind::InvalidInput => 16,
+                crate::api::search_engine::SemanticErrorKind::Internal => 17,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

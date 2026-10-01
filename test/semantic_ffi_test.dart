@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 
@@ -24,6 +23,10 @@ import 'native_library.dart';
 /// is the only way to prove that `SemanticConfigInput` and `SemanticBookInput`
 /// cross *into* Rust correctly and that semantic scores come back. The third
 /// opens a prebuilt artifact, which is the application's own semantic path.
+///
+/// A refused call throws a `SemanticError`, whose `kind` is the value an
+/// application branches on; every refusal here is matched by its kind, and by
+/// its message only where the message is what is being shown to cross.
 Future<void> main() async {
   final skipReason = await initNativeEngine();
   final sidecarSkipReason = skipReason ?? await semanticSidecarSkipReason();
@@ -384,11 +387,9 @@ Future<void> main() async {
           await expectLater(
             engine.configureSemantic(config: config),
             throwsA(
-              isA<AnyhowException>().having(
-                (error) => error.message,
-                'message',
-                contains(named),
-              ),
+              isSemanticError(
+                SemanticErrorKind.invalidInput,
+              ).having((error) => error.message, 'message', contains(named)),
             ),
           );
         }
@@ -418,7 +419,7 @@ Future<void> main() async {
             ),
           ),
           throwsA(
-            isA<AnyhowException>().having(
+            isSemanticError(SemanticErrorKind.invalidInput).having(
               (error) => error.message,
               'message',
               allOf(
@@ -598,11 +599,9 @@ Future<void> main() async {
           ],
         ),
         throwsA(
-          isA<AnyhowException>().having(
-            (error) => error.message,
-            'message',
-            contains('read-only'),
-          ),
+          isSemanticError(
+            SemanticErrorKind.readOnlySession,
+          ).having((error) => error.message, 'message', contains('read-only')),
         ),
       );
     });
@@ -615,7 +614,10 @@ Future<void> main() async {
             config: input({...identity, 'model_id': 'another-model'}),
           ),
           throwsA(
-            isA<AnyhowException>().having(
+            isSemanticError(
+              SemanticErrorKind.artifactIncompatible,
+              field: 'model.model_id',
+            ).having(
               (error) => error.message,
               'message',
               contains('model.model_id'),
@@ -625,5 +627,45 @@ Future<void> main() async {
         expect((await engine.semanticStatus()).enabled, isFalse);
       },
     );
+
+    test('a missing artifact is refused as missing, by kind', () async {
+      Object? thrown;
+      try {
+        await engine.openSemanticArtifact(
+          config: SemanticArtifactInput(
+            artifactDir: '${root.path}/not-installed',
+            modelPath: '${root.path}/model.gguf',
+            modelIdentityJson: jsonEncode(identity),
+          ),
+        );
+      } on SemanticError catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown, isSemanticError(SemanticErrorKind.artifactMissing));
+      // Readable where it is logged: the kind and the message together.
+      expect(
+        thrown.toString(),
+        allOf(
+          startsWith('SemanticError(artifactMissing)'),
+          contains('manifest.json'),
+        ),
+      );
+    });
   }, skip: artifactSkipReason ?? false);
+}
+
+/// A `SemanticError` of [kind], naming [field] when it is given.
+TypeMatcher<SemanticError> isSemanticError(
+  SemanticErrorKind kind, {
+  String? field,
+}) {
+  final matcher = isA<SemanticError>().having(
+    (error) => error.kind,
+    'kind',
+    kind,
+  );
+  return field == null
+      ? matcher
+      : matcher.having((error) => error.field, 'field', field);
 }
