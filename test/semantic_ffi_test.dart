@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:otzaria_search_engine/otzaria_search_engine.dart';
 
@@ -284,10 +283,9 @@ Future<void> main() async {
       );
       await engine.commit();
 
-      final model = File('${root.path}/mock.gguf');
-      writeStubGguf(model);
+      final model = writeStubOnnxPackage(Directory('${root.path}/model'));
       final status = await engine.configureSemantic(
-        config: stubGgufConfig(
+        config: stubOnnxConfig(
           rootDir: '${root.path}/semantic',
           modelPath: model.path,
           modelId: 'test-mock',
@@ -527,27 +525,27 @@ Future<void> main() async {
 
       expect(manifest['embedding_model_id'], 'test-mock');
       expect(manifest['embedding_dim'], 64);
-      expect(manifest['pooling'], 'last-token');
+      expect(manifest['pooling'], 'in-graph');
       expect(manifest['embedding_max_tokens'], maxTokens);
-      expect(manifest['model_quantization'], 'Q4_K_M');
+      expect(manifest['model_quantization'], 'int8');
     });
 
     test(
       'a recipe value the sidecar cannot serve is refused by name',
       () async {
-        // The stub GGUF is served only under the pooling and text recipe the
-        // defaults already name, so a value the sidecar refuses is what shows
-        // that these two fields reach Rust.
+        // The defaults name the one pooling the stand-in claims for a graph
+        // and a text recipe the sidecar implements, so a value the sidecar
+        // refuses is what shows that these two fields reach Rust.
         await engine.disableSemantic();
-        final model = '${root.path}/mock.gguf';
+        final model = '${root.path}/model/model.onnx';
         final refused = {
-          'last_token': stubGgufConfig(
+          'last_token': stubOnnxConfig(
             rootDir: '${root.path}/semantic',
             modelPath: model,
             modelId: 'test-mock',
             pooling: 'last_token',
           ),
-          'embedding_text_version': stubGgufConfig(
+          'embedding_text_version': stubOnnxConfig(
             rootDir: '${root.path}/semantic',
             modelPath: model,
             modelId: 'test-mock',
@@ -611,9 +609,9 @@ Future<void> main() async {
         // change, by name; an empty one is refused as an input.
         await expectLater(
           engine.configureSemantic(
-            config: stubGgufConfig(
+            config: stubOnnxConfig(
               rootDir: '${root.path}/semantic',
-              modelPath: '${root.path}/mock.gguf',
+              modelPath: '${root.path}/model/model.onnx',
               modelId: 'test-mock',
               maxTokens: maxTokens,
               onnxRuntimePath: '${root.path}/Frameworks/libonnxruntime.dylib',
@@ -630,9 +628,9 @@ Future<void> main() async {
         await engine.disableSemantic();
         await expectLater(
           engine.configureSemantic(
-            config: stubGgufConfig(
+            config: stubOnnxConfig(
               rootDir: '${root.path}/semantic',
-              modelPath: '${root.path}/mock.gguf',
+              modelPath: '${root.path}/model/model.onnx',
               modelId: 'test-mock',
               onnxRuntimePath: '',
             ),
@@ -683,7 +681,7 @@ Future<void> main() async {
       String? onnxRuntimePath,
     }) => SemanticArtifactInput(
       artifactDir: '${root.path}/artifact',
-      modelPath: '${root.path}/model.gguf',
+      modelPath: '${root.path}/model/model.onnx',
       modelIdentityJson: jsonEncode(modelIdentity),
       onnxRuntimePath: onnxRuntimePath,
     );
@@ -704,15 +702,14 @@ Future<void> main() async {
 
       // The build machine's half: the model's identity, the recipe, and the
       // artifact built from this index, which the build stamps as it goes.
-      final model = File('${root.path}/model.gguf');
-      writeStubGguf(model);
+      final model = writeStubOnnxPackage(Directory('${root.path}/model'));
       identity = {
         'model_id': 'test-mock',
-        'model_checksum': sha256.convert(model.readAsBytesSync()).toString(),
-        'model_quantization': 'Q4_K_M',
+        'model_checksum': onnxPackageChecksum(model),
+        'model_quantization': 'int8',
         'embedding_backend': MockBackend.id,
         'embedding_dim': 64,
-        'pooling': 'last-token',
+        'pooling': 'in-graph',
         'max_tokens': 512,
         'embedding_text_version': 1,
         'normalization_version': 1,
@@ -886,7 +883,7 @@ Future<void> main() async {
         await engine.openSemanticArtifact(
           config: SemanticArtifactInput(
             artifactDir: '${root.path}/not-installed',
-            modelPath: '${root.path}/model.gguf',
+            modelPath: '${root.path}/model/model.onnx',
             modelIdentityJson: jsonEncode(identity),
           ),
         );
