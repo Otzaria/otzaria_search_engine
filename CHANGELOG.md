@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-> Breaking for Dart code that constructs `SemanticConfigInput`, and for an
-> application that configures a GGUF model, so this must not ship as a 0.8.x
-> patch: `^0.8.7` would take it on its own (see 0.8.0).
+> Breaking for Dart code that constructs `SemanticConfigInput` or
+> `SemanticStatus`, or that catches the semantic calls' `AnyhowException`, and
+> for an application that configures a GGUF model, so this must not ship as a
+> 0.8.x patch: `^0.8.7` would take it on its own (see 0.8.0).
 
 **The application never builds the library's vectors.** The build machine
 embeds the whole library into a semantic artifact; the application opens it
@@ -68,7 +69,68 @@ are now documented as development and testing scaffolding, not for the library.
   needs a library built with `semantic-llama` added to the flags in
   `rust/cargokit.yaml`; the precompiled binaries are ONNX only.
 
+- **The semantic calls throw `SemanticError`, not `AnyhowException`.**
+  `configureSemantic`, `openSemanticArtifact`, `searchSemantic`,
+  `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks` and
+  `resetSemanticIndex` return `Result<_, SemanticError>` in Rust, which
+  flutter_rust_bridge throws as an exception class of its own, an
+  `FrbException` with `kind`, `message` and `field` (next entry); an
+  `on AnyhowException` clause no longer catches them. `message` is the text the
+  calls already produced, except that a context chain now reads on one line
+  (`reading …: …`), where the exception's debug rendering put each cause on a
+  `Caused by:` line of its own. No other API changes its error type.
+- **`SemanticStatus` gains a required `state`**, and `errorKind` beside
+  `lastError`; **`SemanticSearchResponse` gains `fallbackKind`** beside
+  `fallbackReason`. Dart code that constructs a `SemanticStatus`, such as a test
+  fake, has to pass `state`.
+
 ### Added
+
+- **Typed semantic failures and states, for an application to switch on.** The
+  sidecar types its errors and leaves turning them into user-facing states to
+  the host; now the plugin does. `SemanticErrorKind` names what stopped the
+  semantic path: no session open, or no semantic support in the build; the
+  artifact missing, corrupt, incompatible (with the first field that
+  disagreed), not the published one or stale; the index unstamped or
+  changed since it was stamped; the model missing, invalid or not the one its
+  identity describes, or its tokenizer missing; ONNX Runtime missing or
+  unusable; no backend for the model's format in this build; another session
+  open, a read-only session, a re-index needed, one query's semantic half
+  failed; an invalid input; or an internal fault. `SemanticState` says what a
+  session can do: `notInBuild`, `notConfigured`, `ready` and `stale` on the
+  application's path, and `empty`, `needsReindex` and `failed` for a session
+  built on the device. The doc comment of `SemanticErrorKind`, the README and
+  API_DOCUMENTATION have the table of each kind, what it means, and what the
+  application should do.
+
+  A kind is decided from the type of the failure, the sidecar's typed errors and
+  the plugin's own (the corpus stamp, the model identity, sessions), and never by
+  reading a message. Where the sidecar uses one type for two states, a fact
+  decides: a missing `manifest.json` makes unusable metadata a missing artifact
+  rather than a damaged one, and a file where ONNX Runtime is looked for makes a
+  runtime that did not load unusable rather than missing. The installation's own
+  identity values are checked first, by the sidecar's own functions, so a value
+  no build serves is `invalidInput` and what opening refuses after it is the
+  artifact's, the model's or the runtime's. The matches name every sidecar
+  variant with no wildcard, so a repin that adds one does not compile until it
+  is classified. Where nothing can place a failure precisely it gets the broad
+  kind that is true of it: a semantic half that failed during a search is
+  `queryFailed`, since the sidecar reports it as text only, and a development
+  session's `lastError` is `internal`, while the call that failed threw the
+  precise kind.
+
+  Tests produce each kind from the real failure: in
+  `rust/tests/semantic_artifact.rs`, a missing artifact, a garbled manifest, a
+  missing or flipped payload, a damaged, missing or outdated stamp, every kind of
+  wrong model identity, a missing, invalid or tokenizer-less model, an invalid
+  identity value, a wrong digest, the read-only refusals, a query with nothing to
+  embed and the stale state; in `rust/tests/semantic_mock_integration.rs`, the
+  development session's states and refusals; in the new
+  `rust/tests/semantic_onnx_errors.rs`, a GGUF on a build with only the ONNX
+  backend, and an ONNX model with no runtime or one that does not load, which
+  needs neither the real model nor a runtime and so runs in every
+  `semantic-onnx` job; and a build without semantic support, in the unit tests.
+  The FFI suite matches its refusals by kind across the bridge.
 
 - **`openSemanticArtifact`: the application's semantic path.** It opens a
   prebuilt artifact read-only, verifies every field of its identity against
@@ -138,6 +200,11 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Changed
 
+- **The plugin calls the sidecar's `HybridCoordinator` itself**, not the
+  `OtzariaHybridEngine` wrapper, which turned every error into a string, so the
+  typed error reaches the classification; nothing else the wrapper did is lost.
+  In Rust, `semantic_corpus::CorpusStamp::read` and `ensure_describes` refuse
+  with a typed `CorpusStampError` instead of `anyhow`, with the same messages.
 - **The calls that build vectors on the device are documented as development
   and testing scaffolding**: `configureSemantic`, `semanticIndexBooks`,
   `semanticIndexDiff`, `removeSemanticBooks` and `resetSemanticIndex`, in their
