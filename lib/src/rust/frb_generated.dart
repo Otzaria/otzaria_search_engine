@@ -12478,7 +12478,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   );
 
   /// Search through the sidecar exactly once. Tantivy supplies scored lexical
-  /// candidates; `OtzariaHybridEngine` alone performs hybrid fusion/grouping.
+  /// candidates; the sidecar's coordinator alone performs hybrid fusion/grouping.
   /// Semantic-only items are hydrated from Tantivy before crossing FFI. The
   /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
   /// development session, except that a stale artifact (the index committed
