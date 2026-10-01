@@ -117,28 +117,6 @@ fn stub_graph() -> Vec<u8> {
 /// truncation, which happens before the runtime is looked for.
 const STUB_TOKENIZER_JSON: &str = r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"Whitespace"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"[CLS]":1,"[SEP]":2,"[QUERY]":3,"[PASSAGE]":4},"unk_token":"[UNK]"}}"#;
 
-/// The smallest file the sidecar validates as a GGUF container: a v3 header with one empty
-/// F32 tensor. It passes the container check, so what refuses it is that nothing serves the
-/// format.
-fn write_stub_gguf(path: &Path) {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"GGUF");
-    bytes.extend_from_slice(&3u32.to_le_bytes()); // version
-    bytes.extend_from_slice(&1u64.to_le_bytes()); // tensor_count
-    bytes.extend_from_slice(&0u64.to_le_bytes()); // metadata_kv_count
-    bytes.extend_from_slice(&1u64.to_le_bytes()); // tensor name length
-    bytes.push(b'x');
-    bytes.extend_from_slice(&1u32.to_le_bytes()); // one dimension
-    bytes.extend_from_slice(&1u64.to_le_bytes()); // one element
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // F32
-    bytes.extend_from_slice(&0u64.to_le_bytes()); // data offset
-    while bytes.len() % 32 != 0 {
-        bytes.push(0); // GGUF's default alignment
-    }
-    bytes.extend_from_slice(&0f32.to_le_bytes());
-    std::fs::write(path, bytes).unwrap();
-}
-
 /// A lexical index with one line, and a development session configured over `config`.
 /// Configuring loads no model, so it succeeds whatever the model is.
 fn configured(root: &TempDir, config: SemanticConfigInput) -> SearchEngine {
@@ -228,13 +206,15 @@ fn runtime_lookup_is_ours() -> bool {
     true
 }
 
-/// No build serves a GGUF model any more, this one included: indexing refuses it by kind, as
-/// `BackendNotInBuild`, and not as a model to download again or a runtime to install.
+/// No build serves a GGUF model any more: the sidecar refuses a model path that names no ONNX
+/// graph by its name, before anything is opened and whatever the file holds, so indexing
+/// fails with a model to replace, not a runtime to install or a build to change.
 #[test]
-fn a_gguf_model_is_refused_as_backend_not_in_build() {
+fn a_gguf_model_is_refused_as_model_invalid() {
     let root = TempDir::new().unwrap();
     let model = root.path().join("model.gguf");
-    write_stub_gguf(&model);
+    // A GGUF header: the name alone is refused, so what follows it never matters.
+    std::fs::write(&model, b"GGUF\x03\x00\x00\x00").unwrap();
     let engine = configured(
         &root,
         SemanticConfigInput {
@@ -242,9 +222,9 @@ fn a_gguf_model_is_refused_as_backend_not_in_build() {
             model_path: model.to_string_lossy().into_owned(),
             model_id: "gguf-stub".to_string(),
             embedding_dim: 64,
-            pooling: "last-token".to_string(),
+            pooling: "in-graph".to_string(),
             max_tokens: 512,
-            model_quantization: "Q4_K_M".to_string(),
+            model_quantization: "int8".to_string(),
             embedding_text_version: 1,
             onnx_runtime_path: None,
         },
@@ -253,14 +233,12 @@ fn a_gguf_model_is_refused_as_backend_not_in_build() {
     let error = index_failure(&engine);
     assert_eq!(
         error.kind,
-        SemanticErrorKind::BackendNotInBuild,
+        SemanticErrorKind::ModelInvalid,
         "{}",
         error.message
     );
     assert!(
-        error
-            .message
-            .contains("No embedding backend is available in this build"),
+        error.message.contains("GGUF support was removed"),
         "{}",
         error.message
     );
