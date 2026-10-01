@@ -41,9 +41,9 @@ use otzaria_semantic_search::distribution::package::MANIFEST_FILENAME;
 use otzaria_semantic_search::errors::{
     ArtifactError, EmbeddingError, SemanticSearchError, VectorStoreError,
 };
-use otzaria_semantic_search::semantic::backend::{ensure_pooling_is_implemented_for, Pooling};
+use otzaria_semantic_search::semantic::backend::{ensure_pooling_is_implemented, Pooling};
 use otzaria_semantic_search::semantic::embedding::EmbeddingConfig;
-use otzaria_semantic_search::semantic::model_package::{onnx_package_root, ModelFormat};
+use otzaria_semantic_search::semantic::model_package::onnx_package_root;
 use otzaria_semantic_search::semantic::official_index::LocalModel;
 use otzaria_semantic_search::semantic::recipe::{EmbeddingTextRecipe, TextNormalizationRecipe};
 use otzaria_semantic_search::semantic::versioning::IdentityField;
@@ -210,11 +210,10 @@ pub(crate) fn check_local_model(
         return Err(refused(error.into(), Some("normalization_version")));
     }
     // As `LocalModel::pooling_strategy` refuses it: a spelling that does not parse, or a
-    // pooling no backend for the model's format performs, both as the caller's `Config`.
-    let pooling = match Pooling::parse(&model.pooling).and_then(|pooling| {
-        ensure_pooling_is_implemented_for(pooling, ModelFormat::of(&model.model_path))
-            .map(|()| pooling)
-    }) {
+    // pooling no backend performs, both as the caller's `Config`.
+    let pooling = match Pooling::parse(&model.pooling)
+        .and_then(|pooling| ensure_pooling_is_implemented(pooling).map(|()| pooling))
+    {
         Ok(pooling) => pooling,
         Err(error) => {
             return Err(refused(
@@ -339,9 +338,9 @@ fn embedding_kind(
             None,
         ),
         // A configuration's pooling, refused by the sidecar's model-side checks.
-        EmbeddingError::UnknownPooling { .. }
-        | EmbeddingError::PoolingNotImplemented { .. }
-        | EmbeddingError::PoolingNotForFormat { .. } => (K::InvalidInput, field("pooling")),
+        EmbeddingError::UnknownPooling { .. } | EmbeddingError::PoolingNotImplemented { .. } => {
+            (K::InvalidInput, field("pooling"))
+        }
         // The model the backend loaded is not the one the identity or the configuration
         // describes: it pools, or measures, otherwise.
         EmbeddingError::PoolingMismatch { .. } => (K::ModelIdentityMismatch, field("pooling")),
@@ -539,19 +538,9 @@ mod tests {
                 Some("pooling"),
             ),
             (
-                EmbeddingError::PoolingNotForFormat {
-                    pooling: "in-graph".into(),
-                    format: "GGUF".into(),
-                    implemented: reason(),
-                    implemented_elsewhere: reason(),
-                },
-                K::InvalidInput,
-                Some("pooling"),
-            ),
-            (
                 EmbeddingError::PoolingMismatch {
                     backend: "b".into(),
-                    configured: "last-token".into(),
+                    configured: "mean".into(),
                     actual: "in-graph".into(),
                 },
                 K::ModelIdentityMismatch,
@@ -635,17 +624,6 @@ mod tests {
             } => EmbeddingError::PoolingNotImplemented {
                 pooling: pooling.clone(),
                 implemented: implemented.clone(),
-            },
-            EmbeddingError::PoolingNotForFormat {
-                pooling,
-                format,
-                implemented,
-                implemented_elsewhere,
-            } => EmbeddingError::PoolingNotForFormat {
-                pooling: pooling.clone(),
-                format: format.clone(),
-                implemented: implemented.clone(),
-                implemented_elsewhere: implemented_elsewhere.clone(),
             },
             EmbeddingError::PoolingMismatch {
                 backend,
@@ -1168,10 +1146,8 @@ mod tests {
             (Some("pooling"), "last_token", |m| {
                 m.pooling = "last_token".into()
             }),
-            // A pooling this format's backend does not perform.
-            (Some("pooling"), "last-token", |m| {
-                m.pooling = "last-token".into()
-            }),
+            // A pooling that parses and that no backend performs.
+            (Some("pooling"), "mean", |m| m.pooling = "mean".into()),
             (None, "max_tokens is 1", |m| m.max_tokens = 1),
             (None, "embedding_dim is 0", |m| m.embedding_dim = 0),
         ];
