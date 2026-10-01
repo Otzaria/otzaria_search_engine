@@ -272,6 +272,15 @@ its input is a value to type in:
 | `modelPath` | the model queries are embedded with: `.onnx` selects ONNX Runtime, any other path llama.cpp (only in a build with `semantic-llama`); for the Meivin model, `seforim-embed-round2-int8.onnx` with `tokenizer.json` beside it |
 | `modelIdentityJson` | the text of the model's identity file, the one the artifact was built with: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph |
 | `publishedDigest` | optional: the artifact's digest as published outside it |
+| `onnxRuntimePath` | optional: the ONNX Runtime library the application ships, the first place the runtime is looked for and, once passed, the only one; not part of any identity, and compared on a repeat call, since a process keeps the first runtime it loads |
+
+The application's installation puts the data folder at `<root>/otzaria/`, with
+`seforim.db` and the model package in a folder of its own inside it (the graph,
+`tokenizer.json`, and the identity file `model.json`), the lexical index at
+`<root>/index/`, and the vectors artifact in a folder of its own beside
+`index/`. ONNX Runtime ships with the application (`onnxRuntimePath`; on macOS
+inside the signed bundle) or sits in the model's folder beside the graph, as the
+build for that machine's operating system and architecture.
 
 The corpus half of the identity is not an input: it is the corpus stamp the
 build machine writes into the lexical index (`--stamp-index`), checked against
@@ -284,9 +293,9 @@ meet at about cosine 0.999, the same order as INT8 against fp32.
 
 `configureSemantic` opens a development session. `SemanticConfigInput` states
 how the vectors are produced, and nothing in it is read from the model file.
-Every field but `rootDir` is part of the index's identity (the model file by its
-checksum, once it has loaded), so an index built under one value reports
-`needsFullReindex` under another.
+Every field but `rootDir` and `onnxRuntimePath` is part of the index's identity
+(the model file by its checksum, once it has loaded), so an index built under
+one value reports `needsFullReindex` under another.
 
 | field | meaning | Qwen3 GGUF | Meivin ONNX |
 | --- | --- | --- | --- |
@@ -298,22 +307,30 @@ checksum, once it has loaded), so an index built under one value reports
 | `maxTokens` | the token cap per text, as the model's backend counts it; at least 2, and for an ONNX model at most 65,536 | 512 | 256 |
 | `modelQuantization` | the precision of the weights; must not be empty | `Q4_K_M` | `int8` (`fp32` for the full-precision graph) |
 | `embeddingTextVersion` | the text recipe; 2 prefixes `[PASSAGE] ` to texts and `[QUERY] ` to queries | 1 | 2 |
+| `onnxRuntimePath` | optional: the ONNX Runtime library to load, as on `SemanticArtifactInput`; not identity | | |
 
 **An ONNX model needs the ONNX Runtime shared library at run time.** The
-library is loaded, not linked, from the first of these that exists: the file
-named by the `OTZARIA_ONNX_RUNTIME` environment variable, or the platform's
-default file name (`onnxruntime.dll`, `libonnxruntime.so` or
-`libonnxruntime.dylib`) beside the `.onnx` graph. The reference is Microsoft's
-official ONNX Runtime 1.28.0 release, and the oldest runtime API accepted is
-ONNX Runtime 1.17's. Without one that loads, opening an artifact (or indexing,
-on the development path) throws an error that says "ONNX Runtime could not be
-loaded: …" and names both places; semantic search reports itself unavailable,
-and lexical search is unaffected. That is not the "No embedding backend is
-available in this build" of a build without the backend: the fix is the
-library, not a rebuild. On macOS, a Hardened Runtime application loads only
-libraries signed by Apple or with its own Team ID, so ship the runtime inside
-the signed application bundle and name it with `OTZARIA_ONNX_RUNTIME`. The
-ONNX backend is built for desktop targets (Windows, Linux and macOS) only.
+library is loaded, not linked, from the first of three places that is set, and
+only from it: `onnxRuntimePath`; else the file named by the
+`OTZARIA_ONNX_RUNTIME` environment variable; else the platform's default file
+name (`onnxruntime.dll`, `libonnxruntime.so` or `libonnxruntime.dylib`) beside
+the `.onnx` graph. A path or a variable that names nothing is refused, never
+skipped for the next place, and an empty `onnxRuntimePath` is `invalidInput`.
+A process holds one runtime: once one has loaded, a session that names another
+is refused as `onnxRuntimeUnusable` until the process restarts. The reference
+is Microsoft's official ONNX Runtime 1.28.0 release, and the oldest runtime API
+accepted is ONNX Runtime 1.17's; Microsoft's macOS build is arm64 only and needs
+macOS 14 (its `LC_BUILD_VERSION` minimum is 14.0), so on macOS 12 and 13, which
+this plugin supports, it is `onnxRuntimeUnusable`. Without one that loads,
+opening an artifact (or indexing, on the development path) throws an error that
+says "ONNX Runtime could not be loaded: …" and what each place held; semantic
+search reports itself unavailable, and lexical search is unaffected. That is
+not the "No embedding backend is available in this build" of a build without
+the backend: the fix is the library, not a rebuild. On macOS, a Hardened Runtime
+application loads only libraries signed by Apple or with its own Team ID, so
+ship the runtime inside the signed application bundle and pass its path as
+`onnxRuntimePath`. The ONNX backend is built for desktop targets (Windows, Linux
+and macOS) only.
 
 **Failures and states.** A failed semantic call throws `SemanticError`, an
 `FrbException` with three fields: `kind`, a `SemanticErrorKind` to branch on;
@@ -352,14 +369,14 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `tokenizerMissing` | `openSemanticArtifact`, `semanticIndexBooks` | an ONNX graph without `tokenizer.json` beside it | install the whole package |
 | `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model of its format, or its backend could not load it | download the model again |
 | `modelIdentityMismatch` | `openSemanticArtifact`, `semanticIndexBooks` | the identity does not describe the model; `field`: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` | ship the matching identity file or model |
-| `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for | provide ONNX Runtime |
+| `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for: at `onnxRuntimePath` when it is passed | provide ONNX Runtime there |
 | `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
 | `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no backend for the model's format in this build | a model this build serves |
 | `sessionConflict` | `configureSemantic`, `openSemanticArtifact` | another session, or other inputs, is open | `disableSemantic` first |
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened artifact | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
 | `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
-| `invalidInput` | `configureSemantic`, `openSemanticArtifact` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`) | fix the call |
+| `invalidInput` | `configureSemantic`, `openSemanticArtifact` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`) | fix the call |
 | `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
 
 ---

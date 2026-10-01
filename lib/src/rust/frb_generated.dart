@@ -7682,13 +7682,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticArtifactInput dco_decode_semantic_artifact_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return SemanticArtifactInput(
       artifactDir: dco_decode_String(arr[0]),
       modelPath: dco_decode_String(arr[1]),
       modelIdentityJson: dco_decode_String(arr[2]),
       publishedDigest: dco_decode_opt_String(arr[3]),
+      onnxRuntimePath: dco_decode_opt_String(arr[4]),
     );
   }
 
@@ -7729,8 +7730,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticConfigInput dco_decode_semantic_config_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return SemanticConfigInput(
       rootDir: dco_decode_String(arr[0]),
       modelPath: dco_decode_String(arr[1]),
@@ -7740,6 +7741,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       maxTokens: dco_decode_u_32(arr[5]),
       modelQuantization: dco_decode_String(arr[6]),
       embeddingTextVersion: dco_decode_u_32(arr[7]),
+      onnxRuntimePath: dco_decode_opt_String(arr[8]),
     );
   }
 
@@ -9201,11 +9203,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_modelPath = sse_decode_String(deserializer);
     var var_modelIdentityJson = sse_decode_String(deserializer);
     var var_publishedDigest = sse_decode_opt_String(deserializer);
+    var var_onnxRuntimePath = sse_decode_opt_String(deserializer);
     return SemanticArtifactInput(
       artifactDir: var_artifactDir,
       modelPath: var_modelPath,
       modelIdentityJson: var_modelIdentityJson,
       publishedDigest: var_publishedDigest,
+      onnxRuntimePath: var_onnxRuntimePath,
     );
   }
 
@@ -9266,6 +9270,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_maxTokens = sse_decode_u_32(deserializer);
     var var_modelQuantization = sse_decode_String(deserializer);
     var var_embeddingTextVersion = sse_decode_u_32(deserializer);
+    var var_onnxRuntimePath = sse_decode_opt_String(deserializer);
     return SemanticConfigInput(
       rootDir: var_rootDir,
       modelPath: var_modelPath,
@@ -9275,6 +9280,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       maxTokens: var_maxTokens,
       modelQuantization: var_modelQuantization,
       embeddingTextVersion: var_embeddingTextVersion,
+      onnxRuntimePath: var_onnxRuntimePath,
     );
   }
 
@@ -10763,6 +10769,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.modelPath, serializer);
     sse_encode_String(self.modelIdentityJson, serializer);
     sse_encode_opt_String(self.publishedDigest, serializer);
+    sse_encode_opt_String(self.onnxRuntimePath, serializer);
   }
 
   @protected
@@ -10808,6 +10815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.maxTokens, serializer);
     sse_encode_String(self.modelQuantization, serializer);
     sse_encode_u_32(self.embeddingTextVersion, serializer);
+    sse_encode_opt_String(self.onnxRuntimePath, serializer);
   }
 
   @protected
@@ -11322,8 +11330,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// A refusal is a [`SemanticError`]: `SessionConflict` while another session,
   /// or this one with other inputs, is open, and `InvalidInput` for a value the
-  /// sidecar cannot serve. The model loads lazily, so a missing or unusable model
-  /// is not refused here but by the first [`Self::semantic_index_books`].
+  /// sidecar cannot serve. The model loads lazily, so a missing or unusable model,
+  /// or ONNX Runtime, is not refused here but by the first
+  /// [`Self::semantic_index_books`].
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineConfigureSemantic(

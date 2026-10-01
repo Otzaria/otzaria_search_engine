@@ -90,6 +90,7 @@ fn mock_config(root: &TempDir, model_id: &str) -> SemanticConfigInput {
         max_tokens: 512,
         model_quantization: "Q4_K_M".to_owned(),
         embedding_text_version: 1,
+        onnx_runtime_path: None,
     }
 }
 
@@ -713,6 +714,84 @@ fn reconfiguring_with_different_inputs_is_refused_rather_than_destructive() {
     engine
         .configure_semantic(mock_config(&root, "a-different-model"))
         .expect("an explicit disable clears the way for a new configuration");
+}
+
+/// Where ONNX Runtime lives is not the index's identity: the stand-in loads nothing, so a
+/// path that names no file serves, and the manifest never records it. It is an input of the
+/// session all the same, since the process keeps the first runtime it loads: the same path
+/// again is a repeat, and none, or another, is refused by name. An empty one is refused
+/// before anything is opened.
+#[test]
+fn a_runtime_path_is_an_input_of_the_session_and_not_its_identity() {
+    let lines = one_line_corpus();
+    let (mut engine, root) = lexical_engine(&lines);
+    write_stub_gguf(&root.path().join("mock.gguf"), 3).unwrap();
+    let bundled = root
+        .path()
+        .join("Frameworks")
+        .join("libonnxruntime.dylib")
+        .to_string_lossy()
+        .into_owned();
+    let with_runtime = |path: Option<&str>| SemanticConfigInput {
+        onnx_runtime_path: path.map(str::to_owned),
+        ..mock_config(&root, "test-mock")
+    };
+
+    engine
+        .configure_semantic(with_runtime(Some(&bundled)))
+        .expect("configuring loads nothing");
+    let indexed = index_books(&engine, &lines);
+    assert_eq!(indexed.books_indexed, 1);
+    assert!(engine.semantic_status().available);
+    let manifest =
+        std::fs::read_to_string(root.path().join("semantic").join("semantic_manifest.json"))
+            .unwrap();
+    assert!(
+        !manifest.contains("Frameworks") && !manifest.contains("onnxruntime"),
+        "the manifest records no deployment: {manifest}"
+    );
+
+    let before = engine.semantic_status();
+    engine
+        .configure_semantic(with_runtime(Some(&bundled)))
+        .expect("the same runtime path is a repeat");
+    assert_eq!(engine.semantic_status().vector_count, before.vector_count);
+
+    let elsewhere = root
+        .path()
+        .join("libonnxruntime.dylib")
+        .to_string_lossy()
+        .into_owned();
+    for changed in [None, Some(elsewhere.as_str())] {
+        let error = refusal(
+            engine.configure_semantic(with_runtime(changed)),
+            "another runtime path while a session is open must be refused",
+        );
+        assert_eq!(
+            error.kind,
+            SemanticErrorKind::SessionConflict,
+            "{changed:?}"
+        );
+        assert!(
+            error.message.contains("and onnx_runtime_path changed"),
+            "{}",
+            error.message
+        );
+    }
+    assert_eq!(engine.semantic_status().vector_count, before.vector_count);
+
+    engine.disable_semantic();
+    let error = refusal(
+        engine.configure_semantic(with_runtime(Some(""))),
+        "an empty runtime path must be refused",
+    );
+    assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("onnx_runtime_path"));
+    assert_eq!(
+        engine.semantic_status().state,
+        SemanticState::NotConfigured,
+        "a refused configuration leaves no session"
+    );
 }
 
 // ── Concurrency ──────────────────────────────────────────────────────────────

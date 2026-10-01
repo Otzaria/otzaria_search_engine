@@ -81,6 +81,7 @@ SemanticConfigInput stubGgufConfig({
   int maxTokens = 512,
   String modelQuantization = 'Q4_K_M',
   int embeddingTextVersion = 1,
+  String? onnxRuntimePath,
 }) => SemanticConfigInput(
   rootDir: rootDir,
   modelPath: modelPath,
@@ -90,6 +91,7 @@ SemanticConfigInput stubGgufConfig({
   maxTokens: maxTokens,
   modelQuantization: modelQuantization,
   embeddingTextVersion: embeddingTextVersion,
+  onnxRuntimePath: onnxRuntimePath,
 );
 
 /// Returns why the sidecar round-trip cannot run (`null` when it can), by

@@ -331,8 +331,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   ///
   /// A refusal is a [`SemanticError`]: `SessionConflict` while another session,
   /// or this one with other inputs, is open, and `InvalidInput` for a value the
-  /// sidecar cannot serve. The model loads lazily, so a missing or unusable model
-  /// is not refused here but by the first [`Self::semantic_index_books`].
+  /// sidecar cannot serve. The model loads lazily, so a missing or unusable model,
+  /// or ONNX Runtime, is not refused here but by the first
+  /// [`Self::semantic_index_books`].
   Future<SemanticStatus> configureSemantic({
     required SemanticConfigInput config,
   });
@@ -1940,6 +1941,28 @@ class SearchStreamUpdate {
 /// is a value to type in: the corpus half is read from the corpus stamp inside
 /// the open lexical index, and the model half is the model's published identity
 /// file, the same one the artifact was built with.
+///
+/// The application's installation, and where each input points:
+///
+/// ```text
+/// <root>/
+/// ├── otzaria/                  the data folder
+/// │   ├── seforim.db
+/// │   └── <model>/              the model package
+/// │       ├── seforim-embed-round2-int8.onnx      model_path
+/// │       ├── tokenizer.json
+/// │       └── model.json        the identity file: model_identity_json
+/// ├── index/                    the lexical index, with its corpus stamp
+/// └── <artifact>/               the vectors artifact: artifact_dir
+/// ```
+///
+/// The artifact is a folder of its own beside `index/`, never inside it. ONNX
+/// Runtime either ships with the application, which passes its path as
+/// `onnx_runtime_path` (on macOS from inside the signed bundle), or sits in
+/// `<model>/` beside the graph under the platform's file name, where it is found
+/// without one; it is then the build for that machine's operating system and
+/// architecture. Neither the identity file nor a runtime in that folder is part
+/// of the model package's checksum.
 class SemanticArtifactInput {
   /// The artifact directory, as `build_semantic_artifact` or
   /// `pack_semantic_artifact` wrote it: `manifest.json`, `payloads.json` and
@@ -1969,11 +1992,21 @@ class SemanticArtifactInput {
   /// not one deliberately rebuilt to match.
   final String? publishedDigest;
 
+  /// The ONNX Runtime library the application ships, as for
+  /// [`SemanticConfigInput::onnx_runtime_path`]: the first place looked and,
+  /// once passed, the only one; `None` for `OTZARIA_ONNX_RUNTIME` and then the
+  /// file beside the graph. Opening loads the model, so a runtime that is
+  /// missing or does not load is refused here, by kind. No identity field reads
+  /// it, so it makes no artifact the wrong one; it is part of what a repeat call
+  /// is compared on, since the process keeps the first runtime it loads.
+  final String? onnxRuntimePath;
+
   const SemanticArtifactInput({
     required this.artifactDir,
     required this.modelPath,
     required this.modelIdentityJson,
     this.publishedDigest,
+    this.onnxRuntimePath,
   });
 
   @override
@@ -1981,7 +2014,8 @@ class SemanticArtifactInput {
       artifactDir.hashCode ^
       modelPath.hashCode ^
       modelIdentityJson.hashCode ^
-      publishedDigest.hashCode;
+      publishedDigest.hashCode ^
+      onnxRuntimePath.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1991,7 +2025,8 @@ class SemanticArtifactInput {
           artifactDir == other.artifactDir &&
           modelPath == other.modelPath &&
           modelIdentityJson == other.modelIdentityJson &&
-          publishedDigest == other.publishedDigest;
+          publishedDigest == other.publishedDigest &&
+          onnxRuntimePath == other.onnxRuntimePath;
 }
 
 class SemanticBookInput {
@@ -2093,11 +2128,11 @@ class SemanticBookLineInput {
 /// cheap; searches report a degraded state until indexing has loaded the model
 /// and produced vectors, instead of making the lexical engine unusable.
 ///
-/// Every field but `root_dir` describes how the vectors are produced, and the
-/// sidecar records each one in its manifest as part of the index's identity (the
-/// model file by its checksum, once it has loaded). An index built under one
-/// value is reported as needing a full re-index under another, rather than
-/// having vectors that cannot be compared mixed into it.
+/// Every field but `root_dir` and `onnx_runtime_path` describes how the vectors
+/// are produced, and the sidecar records each one in its manifest as part of the
+/// index's identity (the model file by its checksum, once it has loaded). An index
+/// built under one value is reported as needing a full re-index under another,
+/// rather than having vectors that cannot be compared mixed into it.
 /// Nothing here is read from the model file, so the values must be the ones the
 /// model was built for. The two models the application knows (the Meivin
 /// default is its INT8 graph; the full-precision `seforim-embed-round2-fp32.onnx`
@@ -2121,12 +2156,13 @@ class SemanticConfigInput {
   /// loading it, which indexing does, fails with `BackendUnavailable`.
   ///
   /// An ONNX graph also needs the ONNX Runtime shared library, which this
-  /// library does not link but loads when the model loads: the file named by
-  /// the `OTZARIA_ONNX_RUNTIME` environment variable, or else the platform's
+  /// library does not link but loads when the model loads, from the first of
+  /// three places that is set: [`Self::onnx_runtime_path`]; else the file named
+  /// by the `OTZARIA_ONNX_RUNTIME` environment variable; else the platform's
   /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
   /// the graph. Without one that loads, loading the model fails with "ONNX
-  /// Runtime could not be loaded", which names both places. That is not
-  /// `BackendUnavailable`: the backend is in the build, and the fix is the
+  /// Runtime could not be loaded", which says what each place held. That is
+  /// not `BackendUnavailable`: the backend is in the build, and the fix is the
   /// library, not a rebuild. Lexical search is unaffected either way.
   final String modelPath;
   final String modelId;
@@ -2181,6 +2217,31 @@ class SemanticConfigInput {
   /// into the chunking identity that the manifest and every book record carry.
   final int embeddingTextVersion;
 
+  /// The ONNX Runtime shared library to load an ONNX model on, for an
+  /// application that ships the runtime itself: on macOS inside its signed
+  /// bundle, which is where a Hardened Runtime application can load it from.
+  /// An absolute path; a relative one is resolved against the process's
+  /// current directory. Ignored for a GGUF, whose backend is linked in.
+  ///
+  /// Passed, it is the first place the runtime is looked for and the only
+  /// one: a path that names no file is `OnnxRuntimeMissing` and one that does
+  /// not load `OnnxRuntimeUnusable`, never a fall-back to
+  /// `OTZARIA_ONNX_RUNTIME` or to the file beside the graph, which would run a
+  /// runtime the application did not choose. `None` looks at those two, in
+  /// that order (see [`Self::model_path`]). An empty path names nothing and is
+  /// refused as `InvalidInput`.
+  ///
+  /// Not identity: where the runtime lives decides no vector, the manifest does
+  /// not record it, and moving it invalidates nothing. It is an input of the
+  /// session all the same, compared as the others are, because ONNX Runtime is
+  /// loaded once per process and cannot be replaced: a repeat call naming
+  /// another runtime is a `SessionConflict`, where a no-op would leave the
+  /// caller believing the runtime it named is the one in use. After
+  /// [`SearchEngine::disable_semantic`], a session that names a runtime other
+  /// than the one this process already loaded is refused when its model loads,
+  /// as `OnnxRuntimeUnusable`, until the process restarts.
+  final String? onnxRuntimePath;
+
   const SemanticConfigInput({
     required this.rootDir,
     required this.modelPath,
@@ -2190,6 +2251,7 @@ class SemanticConfigInput {
     required this.maxTokens,
     required this.modelQuantization,
     required this.embeddingTextVersion,
+    this.onnxRuntimePath,
   });
 
   @override
@@ -2201,7 +2263,8 @@ class SemanticConfigInput {
       pooling.hashCode ^
       maxTokens.hashCode ^
       modelQuantization.hashCode ^
-      embeddingTextVersion.hashCode;
+      embeddingTextVersion.hashCode ^
+      onnxRuntimePath.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2215,7 +2278,8 @@ class SemanticConfigInput {
           pooling == other.pooling &&
           maxTokens == other.maxTokens &&
           modelQuantization == other.modelQuantization &&
-          embeddingTextVersion == other.embeddingTextVersion;
+          embeddingTextVersion == other.embeddingTextVersion &&
+          onnxRuntimePath == other.onnxRuntimePath;
 }
 
 /// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
@@ -2232,7 +2296,7 @@ class SemanticConfigInput {
 /// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
 /// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
-/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir` |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path` |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
 class SemanticError implements FrbException {
@@ -2296,14 +2360,14 @@ class SemanticError implements FrbException {
 /// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
 /// | `ModelInvalid` | the file at `model_path` is not a usable model of its format (a truncated download, a placeholder), or its backend could not load it | download the model again | `open_semantic_artifact`, `semantic_index_books` |
 /// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
-/// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: `OTZARIA_ONNX_RUNTIME` unset or naming no file, and none beside the graph | install ONNX Runtime beside the model, or name it with `OTZARIA_ONNX_RUNTIME` | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
 /// | `BackendNotInBuild` | this build has no embedding backend for the model's format: an ONNX graph on Android or iOS, a GGUF on 32-bit ARM, or a build without that format's feature | use a model of a format this build serves; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
-/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 enum SemanticErrorKind {
   /// No semantic session is open.

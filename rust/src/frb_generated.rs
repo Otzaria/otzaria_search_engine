@@ -6936,11 +6936,13 @@ impl SseDecode for crate::api::search_engine::SemanticArtifactInput {
         let mut var_modelPath = <String>::sse_decode(deserializer);
         let mut var_modelIdentityJson = <String>::sse_decode(deserializer);
         let mut var_publishedDigest = <Option<String>>::sse_decode(deserializer);
+        let mut var_onnxRuntimePath = <Option<String>>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticArtifactInput {
             artifact_dir: var_artifactDir,
             model_path: var_modelPath,
             model_identity_json: var_modelIdentityJson,
             published_digest: var_publishedDigest,
+            onnx_runtime_path: var_onnxRuntimePath,
         };
     }
 }
@@ -6999,6 +7001,7 @@ impl SseDecode for crate::api::search_engine::SemanticConfigInput {
         let mut var_maxTokens = <u32>::sse_decode(deserializer);
         let mut var_modelQuantization = <String>::sse_decode(deserializer);
         let mut var_embeddingTextVersion = <u32>::sse_decode(deserializer);
+        let mut var_onnxRuntimePath = <Option<String>>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticConfigInput {
             root_dir: var_rootDir,
             model_path: var_modelPath,
@@ -7008,6 +7011,7 @@ impl SseDecode for crate::api::search_engine::SemanticConfigInput {
             max_tokens: var_maxTokens,
             model_quantization: var_modelQuantization,
             embedding_text_version: var_embeddingTextVersion,
+            onnx_runtime_path: var_onnxRuntimePath,
         };
     }
 }
@@ -8150,6 +8154,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticArtifa
             self.model_path.into_into_dart().into_dart(),
             self.model_identity_json.into_into_dart().into_dart(),
             self.published_digest.into_into_dart().into_dart(),
+            self.onnx_runtime_path.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -8228,6 +8233,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticConfig
             self.max_tokens.into_into_dart().into_dart(),
             self.model_quantization.into_into_dart().into_dart(),
             self.embedding_text_version.into_into_dart().into_dart(),
+            self.onnx_runtime_path.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -9538,6 +9544,7 @@ impl SseEncode for crate::api::search_engine::SemanticArtifactInput {
         <String>::sse_encode(self.model_path, serializer);
         <String>::sse_encode(self.model_identity_json, serializer);
         <Option<String>>::sse_encode(self.published_digest, serializer);
+        <Option<String>>::sse_encode(self.onnx_runtime_path, serializer);
     }
 }
 
@@ -9577,6 +9584,7 @@ impl SseEncode for crate::api::search_engine::SemanticConfigInput {
         <u32>::sse_encode(self.max_tokens, serializer);
         <String>::sse_encode(self.model_quantization, serializer);
         <u32>::sse_encode(self.embedding_text_version, serializer);
+        <Option<String>>::sse_encode(self.onnx_runtime_path, serializer);
     }
 }
 

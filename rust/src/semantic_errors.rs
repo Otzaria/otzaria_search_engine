@@ -79,17 +79,33 @@ pub(crate) enum SidecarCall<'a> {
     OpenArtifact {
         artifact_dir: &'a Path,
         model_path: &'a Path,
+        /// The ONNX Runtime the application passed, the first place the sidecar looks.
+        onnx_runtime: Option<&'a Path>,
     },
     /// An operation on an open session: indexing, the index diff, removal, reset or search.
-    Session { model_path: &'a Path },
+    Session {
+        model_path: &'a Path,
+        onnx_runtime: Option<&'a Path>,
+    },
 }
 
 impl SidecarCall<'_> {
     fn model_path(&self) -> Option<&Path> {
         match self {
             Self::Configure => None,
-            Self::OpenArtifact { model_path, .. } | Self::Session { model_path } => {
+            Self::OpenArtifact { model_path, .. } | Self::Session { model_path, .. } => {
                 Some(model_path)
+            }
+        }
+    }
+
+    /// The runtime the call's session was handed, if it was handed one. Configuring loads
+    /// nothing, so it has none to look for.
+    fn onnx_runtime(&self) -> Option<&Path> {
+        match self {
+            Self::Configure => None,
+            Self::OpenArtifact { onnx_runtime, .. } | Self::Session { onnx_runtime, .. } => {
+                *onnx_runtime
             }
         }
     }
@@ -193,7 +209,7 @@ fn classify(
 ) -> (SemanticErrorKind, Option<String>) {
     use SemanticErrorKind as K;
     match error {
-        SemanticSearchError::EmbeddingRuntime(error) => embedding_kind(error, call.model_path()),
+        SemanticSearchError::EmbeddingRuntime(error) => embedding_kind(error, call),
         SemanticSearchError::Artifact(error) => match call {
             SidecarCall::OpenArtifact { artifact_dir, .. } => artifact_kind(error, artifact_dir),
             // Opening a session built on this device reads no artifact. The one artifact
@@ -265,7 +281,7 @@ fn store_kind(error: &VectorStoreError, call: SidecarCall<'_>) -> SemanticErrorK
 /// does not depend on the call, except for where it looks for ONNX Runtime.
 fn embedding_kind(
     error: &EmbeddingError,
-    model_path: Option<&Path>,
+    call: SidecarCall<'_>,
 ) -> (SemanticErrorKind, Option<String>) {
     use SemanticErrorKind as K;
     let field = |name: &str| Some(name.to_string());
@@ -279,10 +295,12 @@ fn embedding_kind(
             (K::ModelInvalid, None)
         }
         EmbeddingError::BackendUnavailable { .. } => (K::BackendNotInBuild, None),
-        // Nothing here passes the sidecar a runtime of its own (its deployment is the
-        // default), so the first place it looks is always empty.
         EmbeddingError::OnnxRuntimeUnavailable { .. } => (
-            runtime_kind(None, std::env::var_os(ONNX_RUNTIME_ENV), model_path),
+            runtime_kind(
+                call.onnx_runtime(),
+                std::env::var_os(ONNX_RUNTIME_ENV),
+                call.model_path(),
+            ),
             None,
         ),
         // A configuration's pooling, refused by the sidecar's model-side checks.
@@ -427,6 +445,7 @@ mod tests {
     fn session() -> SidecarCall<'static> {
         SidecarCall::Session {
             model_path: Path::new(MODEL),
+            onnx_runtime: None,
         }
     }
 
@@ -533,6 +552,7 @@ mod tests {
                 SidecarCall::OpenArtifact {
                     artifact_dir: Path::new("/artifact"),
                     model_path: Path::new(MODEL),
+                    onnx_runtime: None,
                 },
             ] {
                 let (kind, named) =
@@ -690,6 +710,41 @@ mod tests {
                 runtime_kind(Some(Path::new("")), None, Some(&graph)),
                 K::OnnxRuntimeMissing
             );
+        }
+    }
+
+    /// The runtime a session was handed is the first place a failure to load one is judged
+    /// by, whichever call loaded the model, and the variable and the folder beside the
+    /// graph are not looked at once it is there.
+    #[test]
+    fn the_runtime_a_session_was_handed_decides_whether_it_is_missing() {
+        use SemanticErrorKind as K;
+        let dir = TempDir::new().unwrap();
+        let passed = dir.path().join("bundled-runtime");
+        std::fs::write(&passed, b"not a library").unwrap();
+        let absent = dir.path().join("absent");
+        let unavailable = || {
+            SemanticSearchError::EmbeddingRuntime(EmbeddingError::OnnxRuntimeUnavailable {
+                reason: "r".into(),
+            })
+        };
+        for (runtime, expected) in [
+            (passed.as_path(), K::OnnxRuntimeUnusable),
+            (absent.as_path(), K::OnnxRuntimeMissing),
+        ] {
+            for call in [
+                SidecarCall::Session {
+                    model_path: Path::new(MODEL),
+                    onnx_runtime: Some(runtime),
+                },
+                SidecarCall::OpenArtifact {
+                    artifact_dir: Path::new("/artifact"),
+                    model_path: Path::new(MODEL),
+                    onnx_runtime: Some(runtime),
+                },
+            ] {
+                assert_eq!(kind(unavailable(), call), expected, "{call:?}");
+            }
         }
     }
 
@@ -874,6 +929,7 @@ mod tests {
                 SidecarCall::OpenArtifact {
                     artifact_dir,
                     model_path: Path::new(MODEL),
+                    onnx_runtime: None,
                 },
             );
             assert_eq!(kind, expected, "{described}");
@@ -889,6 +945,7 @@ mod tests {
         let open = SidecarCall::OpenArtifact {
             artifact_dir: &artifact_dir,
             model_path: Path::new(MODEL),
+            onnx_runtime: None,
         };
         let config =
             || SemanticSearchError::Config("embedding_dim must be greater than zero".into());
@@ -937,6 +994,7 @@ mod tests {
         let open = SidecarCall::OpenArtifact {
             artifact_dir: Path::new("/artifact"),
             model_path: Path::new(MODEL),
+            onnx_runtime: None,
         };
         let store = SemanticSearchError::VectorStore;
         let reason = || "r".to_string();
