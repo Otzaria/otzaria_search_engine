@@ -1385,6 +1385,119 @@ fn a_book_moved_to_another_category_is_filtered_by_its_new_one() {
     );
 }
 
+/// A text that left its book for one in another category is found under the filter of the
+/// book it moved into, although its vector's records name only the book it left: the scan
+/// is widened by that book, and only lines of the admitted book come back. Under the filter
+/// of the book it left, it is gone. Paged one at a time, the widened search pages as any.
+#[test]
+fn a_text_moved_into_another_category_is_found_under_its_filter() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    // Genesis loses the probe line, and a book in a category of its own gains it.
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            "בראשית ברא אלהים את השמים ואת הארץ".to_owned(),
+        ),
+    );
+    let new_book = "/books/new.txt";
+    add_books(
+        &mut engine,
+        &[(
+            "חדש",
+            "/חדש",
+            new_book,
+            2,
+            format!("שורה פותחת בספר החדש ארוכה דיה לעמוד\n{PROBE_LINE}"),
+        )],
+    );
+
+    let unfiltered = semantic_lines(&engine, PROBE_LINE, &[]);
+    assert_eq!(
+        unfiltered.first(),
+        Some(&(new_book.to_string(), PROBE_LINE.to_string(), 1)),
+        "{unfiltered:?}"
+    );
+    let filtered = semantic_lines(&engine, PROBE_LINE, &["/חדש"]);
+    assert_eq!(
+        filtered.first(),
+        Some(&(new_book.to_string(), PROBE_LINE.to_string(), 1)),
+        "a live admitted book holds the text: {filtered:?}"
+    );
+    assert!(
+        filtered.iter().all(|(book, _, _)| book == new_book),
+        "a widened scan returns lines of admitted books only: {filtered:?}"
+    );
+    assert!(
+        !semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+            .iter()
+            .any(|(_, text, _)| text == PROBE_LINE),
+        "the book it left holds it no more"
+    );
+
+    let filtered_page = |limit, offset| {
+        engine
+            .search_semantic(
+                PROBE_LINE.to_string(),
+                vec!["/חדש".to_string()],
+                limit,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap()
+    };
+    let all: Vec<u64> = filtered_page(10, 0)
+        .results
+        .iter()
+        .map(|hit| hit.id)
+        .collect();
+    let paged: Vec<u64> = (0..all.len() as u32)
+        .flat_map(|offset| filtered_page(1, offset).results)
+        .map(|hit| hit.id)
+        .collect();
+    assert_eq!(paged, all);
+}
+
+/// A text copied into a book of another category, and still in its own, is found under
+/// either filter, each in its own book. An unfiltered search finds it where the set records
+/// it until the vectors are updated.
+#[test]
+fn a_text_copied_into_another_category_is_found_under_each_filter() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copy = "/books/copy.txt";
+    add_books(
+        &mut engine,
+        &[("עותק", "/עותקים", copy, 2, BERACHOT_TEXT.to_string())],
+    );
+
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &["/עותקים"]).first(),
+        Some(&(copy.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &["/משנה/זרעים"]).first(),
+        Some(&(BERACHOT.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &[]).first(),
+        Some(&(BERACHOT.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+}
+
 /// A query with nothing to embed fails the semantic half of that one search: the lexical
 /// half is served and the session goes on serving.
 #[test]

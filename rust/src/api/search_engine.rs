@@ -1910,6 +1910,8 @@ struct OpenSession {
     coordinator: Arc<HybridCoordinator>,
     model_path: PathBuf,
     onnx_runtime: Option<PathBuf>,
+    /// The vector set an opened artifact serves; `None` for a session built on this device.
+    vectors_dir: Option<PathBuf>,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -3490,6 +3492,11 @@ const VOC_VARIANTS_PER_TOKEN: usize = 128;
 #[cfg(feature = "semantic-integration")]
 const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
+/// The widest candidate window a ranking may ask for, per result on the page: the top of
+/// the range `RankingProfile::validate` accepts for `candidate_window_multiplier`.
+#[cfg(feature = "semantic-integration")]
+const MAX_CANDIDATE_WINDOW_MULTIPLIER: f64 = 10.0;
+
 pub struct SearchEngine {
     /// The schema of the index this engine opened, which is the one it was built with: a
     /// version 4 index has no `chunkKey` field, and is not given one.
@@ -3537,6 +3544,11 @@ pub struct SearchEngine {
     /// the next, for one generation of it: see [`crate::semantic_resolver`].
     #[cfg(feature = "semantic-integration")]
     semantic_resolver: Mutex<crate::semantic_resolver::ResolverCache>,
+    /// The open vector set's generation as a filtered search plans its scan against it: see
+    /// [`crate::semantic_moves`]. Opened on the first filtered search of a generation, and
+    /// let go when the session moves to another or closes.
+    #[cfg(feature = "semantic-integration")]
+    semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -3668,6 +3680,8 @@ impl SearchEngine {
             semantic_runtime: (),
             #[cfg(feature = "semantic-integration")]
             semantic_resolver: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_set_view: Mutex::default(),
         }
     }
 
@@ -4140,6 +4154,7 @@ impl SearchEngine {
                 .semantic_runtime
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner) = None;
+            self.forget_set_view();
         }
     }
 
@@ -4156,6 +4171,10 @@ impl SearchEngine {
                 coordinator: Arc::clone(&active.coordinator),
                 model_path: active.model_path().to_path_buf(),
                 onnx_runtime: active.onnx_runtime().map(Path::to_path_buf),
+                vectors_dir: match &active.source {
+                    SemanticSource::Artifact(opened) => Some(opened.key.vectors_dir.clone()),
+                    SemanticSource::SelfBuilt(_) => None,
+                },
             })
     }
 
@@ -4611,6 +4630,9 @@ impl SearchEngine {
                 _ => return Ok(()),
             }
         };
+        // The view of the generation the session leaves, which on Windows would keep its
+        // segments from being removed.
+        self.forget_set_view();
         coordinator
             .reload_semantic_vectors()
             .map(drop)
@@ -4626,6 +4648,49 @@ impl SearchEngine {
                     "reloading the vectors",
                 )
             })
+    }
+
+    /// The view a filtered search plans its scan by, of the set at `vectors_dir` as its
+    /// generation `generation` is: the one kept, or one opened now. `None` when the set has
+    /// moved on from that generation — the session follows it, and a later search plans
+    /// against it — or its segments do not open, which the session's own open would have
+    /// refused; the search then scans the admitted books alone.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_set_view(
+        &self,
+        vectors_dir: &Path,
+        generation: u64,
+    ) -> Option<Arc<crate::semantic_moves::SetView>> {
+        let mut kept = self
+            .semantic_set_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(view) = kept.as_ref() {
+            if view.generation() == generation && same_directory(view.dir(), vectors_dir) {
+                return Some(Arc::clone(view));
+            }
+        }
+        *kept = match crate::semantic_moves::SetView::open(vectors_dir, generation) {
+            Ok(view) => view.map(Arc::new),
+            Err(err) => {
+                warn!(
+                    "the vector set at {} could not be read to plan filtered searches, which \
+                     scan the books they admit alone: {err}",
+                    vectors_dir.display()
+                );
+                None
+            }
+        };
+        kept.clone()
+    }
+
+    /// Let go of the kept view: the session moved to another generation, or closed.
+    #[cfg(feature = "semantic-integration")]
+    fn forget_set_view(&self) {
+        *self
+            .semantic_set_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     #[cfg(not(feature = "semantic-integration"))]
@@ -5004,17 +5069,55 @@ impl SearchEngine {
             };
             // The live index a vector set's hits are resolved against, at the generation this
             // search reads. A session built on this device never asks it.
-            let resolver = crate::semantic_resolver::LiveResolver::new(
-                self.index_reader.searcher(),
-                self.chunk_key_field,
-                &self.semantic_resolver,
-            )
-            .map_err(|err| {
+            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
+                if err == otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled {
+                    return SemanticError::cancelled();
+                }
                 SemanticError::new(
                     SemanticErrorKind::Internal,
                     format!("the index could not be read to resolve semantic results: {err}"),
                 )
-            })?;
+            };
+            let mut resolver = crate::semantic_resolver::LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .map_err(unreadable)?;
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: (!facets.is_empty()).then_some(facets),
+                include_pdf: None,
+            };
+            // A filtered search of an opened vector set is planned against the generation the
+            // session serves: texts that moved into an admitted book since the set was built
+            // are looked for there, and widen the scan when no admitted book's records reach
+            // their vectors. The widened scan fetches more vectors, by how many more it reads.
+            let plan = match (&session.vectors_dir, retrieval_mode) {
+                (_, SemanticRetrievalMode::LexicalOnly) | (None, _) => None,
+                (Some(vectors_dir), _) if filters.compile().is_some() => {
+                    match session
+                        .coordinator
+                        .vector_set_info()
+                        .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
+                    {
+                        Some(view) => resolver.plan(&filters, &view, cancel).map_err(unreadable)?,
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            let ranking = match plan.as_ref().map(|plan| plan.over_fetch()) {
+                Some(over_fetch) if over_fetch > 1.0 => {
+                    let mut ranking = ranking
+                        .unwrap_or_else(|| RankingProfile::from_profile(SearchProfile::Balanced));
+                    ranking.candidate_window_multiplier =
+                        (f64::from(ranking.candidate_window_multiplier) * over_fetch)
+                            .min(MAX_CANDIDATE_WINDOW_MULTIPLIER) as f32;
+                    Some(ranking)
+                }
+                _ => ranking,
+            };
             // The sidecar's first act is to look at the token, so this crate does not look
             // here itself; a test is told how far the search got.
             search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
@@ -5032,11 +5135,7 @@ impl SearchEngine {
                                 SidecarGroupingMode::IdenticalText
                             }
                         }),
-                        filters: Some(SidecarSearchFilters {
-                            book_paths: None,
-                            facets: (!facets.is_empty()).then_some(facets),
-                            include_pdf: None,
-                        }),
+                        filters: Some(filters),
                         force_mode: Some(match retrieval_mode {
                             SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
                             SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
@@ -5045,7 +5144,8 @@ impl SearchEngine {
                         // `ranking` is the caller's, and replaces the preset `profile` names
                         // when it is passed; `None` ranks by that preset exactly as before.
                         // The preset and the feature flags, which clamp where `ranking` is
-                        // refused, stay the sidecar's defaults.
+                        // refused, stay the sidecar's defaults. A widened scan's plan raises
+                        // its candidate window, and nothing else.
                         profile: None,
                         feature_flags: None,
                         ranking,

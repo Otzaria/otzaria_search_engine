@@ -39,6 +39,10 @@ mod semantic_errors;
 // it implements the sidecar's port, which Dart never sees.
 #[cfg(feature = "semantic-integration")]
 mod semantic_resolver;
+// What a filtered search scans beyond the books it admits: the texts a live book holds that
+// the vector set records elsewhere. At the crate root for the reason `semantic_resolver` is.
+#[cfg(feature = "semantic-integration")]
+mod semantic_moves;
 // What a semantic search's cancellation token holds, and where a search looks at it. At the
 // crate root for the same reason: Dart gets the token, in `crate::api`, and nothing here. In
 // every build, since the token is part of the API whether or not the sidecar is.
