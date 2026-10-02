@@ -17,7 +17,9 @@ default = []
 semantic = ["semantic-onnx"]
 # Internal gate for code that talks to the sidecar. Every backend feature below
 # turns it on; on its own it compiles the integration with no backend behind it.
-semantic-integration = ["dep:otzaria-semantic-search"]
+# It gates code, not the dependency: the sidecar is compiled into every build (see
+# its declaration below).
+semantic-integration = []
 # ONNX graphs on ONNX Runtime (the Meivin model). Nothing is linked: the sidecar
 # loads the ONNX Runtime shared library when a model loads, so the build needs no
 # download and the binary no new dependency. The sidecar builds the backend for
@@ -91,7 +93,16 @@ sha2 = "0.10"
 # (ONNX Runtime) are part of the index identity.  A branch dependency
 # can silently change any of them; pin the exact reviewed revision and retain it
 # in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "dc11d59ddbd70831cf78d76e69f0ee53232fb6a3", optional = true }
+#
+# Not optional, and with no feature of its own: the chunk key the index stores
+# for a line is computed with the sidecar's chunker, and it has to be the same
+# function of the line's text in every build — the release index is built once
+# and ships to every platform, whatever features the build that opens it has.
+# With `default-features = false` that brings the recipe and the formats alone:
+# the inference crates come only with `onnx-backend`, which `semantic-onnx` turns
+# on and the sidecar declares for desktop targets only. The `semantic*` features
+# gate the code that talks to it.
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "dc11d59ddbd70831cf78d76e69f0ee53232fb6a3", default-features = false }
 
 [dev-dependencies]
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),
