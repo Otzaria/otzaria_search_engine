@@ -1907,6 +1907,7 @@ name = "search_engine"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "crc32fast",
  "env_logger",
  "fancy-regex 0.14.0",
  "flutter_rust_bridge",

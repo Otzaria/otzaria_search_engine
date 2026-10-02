@@ -427,10 +427,11 @@ fn fixture() -> Fixture {
     let external_path = dir.path().join("external");
     std::fs::create_dir_all(&stored_path).unwrap();
     std::fs::create_dir_all(&external_path).unwrap();
+    // Indexing checks every LibraryDb book against the configured source.
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
     // Index mode reads the same rows the app would, decoded.
     let stored = index_books(&stored_path, &books, TextStorage::InIndex);
     let external = index_books(&external_path, &books, TextStorage::LibraryDb);
-    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
     Fixture {
         _dir: dir,
         db,
@@ -454,7 +455,6 @@ type Probe = Box<dyn Fn(&SearchEngine) -> Vec<SearchResult>>;
 type Run<'a> = dyn Fn(&SearchEngine) -> Vec<SearchResult> + 'a;
 
 type OrderOf = fn() -> ResultsOrder;
-type Run<'a> = dyn Fn(&SearchEngine) -> Vec<SearchResult> + 'a;
 
 fn orders() -> Vec<(&'static str, OrderOf)> {
     vec![
@@ -911,6 +911,35 @@ pub(crate) fn library_text_answers_every_query_like_stored_text() {
     assert!(!a.results.is_empty());
 }
 
+/// `(filePath, has textStored, lineCheck)` of every live document.
+fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
+    use tantivy::schema::Value;
+    let searcher = engine.corpus_searcher();
+    let schema = searcher.schema().clone();
+    let stored_f = schema.get_field("textStored").unwrap();
+    let path_f = schema.get_field("filePath").unwrap();
+    let mut out = Vec::new();
+    for (ord, reader) in searcher.segment_readers().iter().enumerate() {
+        let checks = reader.fast_fields().u64("lineCheck").unwrap();
+        for doc_id in reader.doc_ids_alive() {
+            let doc: tantivy::TantivyDocument = searcher
+                .doc(tantivy::DocAddress::new(ord as u32, doc_id))
+                .unwrap();
+            let path = doc
+                .get_first(path_f)
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string();
+            out.push((
+                path,
+                doc.get_first(stored_f).is_some(),
+                checks.first(doc_id),
+            ));
+        }
+    }
+    out
+}
+
 #[test]
 fn library_documents_keep_no_text_in_the_doc_store() {
     let _guard = guard();
@@ -924,28 +953,17 @@ fn library_documents_keep_no_text_in_the_doc_store() {
             .sum()
     };
     assert!(size(&f.external_path) < size(&f.stored_path));
-    let searcher = f.external.corpus_searcher();
-    let schema = searcher.schema().clone();
-    let stored_f = schema.get_field("textStored").unwrap();
-    let path_f = schema.get_field("filePath").unwrap();
     let mut library_docs = 0;
-    for (ord, reader) in searcher.segment_readers().iter().enumerate() {
-        for doc_id in reader.doc_ids_alive() {
-            let doc: tantivy::TantivyDocument = searcher
-                .doc(tantivy::DocAddress::new(ord as u32, doc_id))
-                .unwrap();
-            use tantivy::schema::Value;
-            let path = doc
-                .get_first(path_f)
-                .and_then(|v| v.as_str())
-                .unwrap()
-                .to_string();
-            let has_text = doc.get_first(stored_f).is_some();
-            assert_eq!(has_text, !path.starts_with("id:"), "{path}");
-            library_docs += usize::from(!has_text);
-        }
+    for (path, has_text, check) in doc_store_view(&f.external) {
+        assert_eq!(has_text, !path.starts_with("id:"), "{path}");
+        // Only library lines carry a check, and every one of them does.
+        assert_eq!(check.is_some(), !has_text, "{path}");
+        library_docs += usize::from(!has_text);
     }
     assert!(library_docs > 100);
+    assert!(doc_store_view(&f.stored)
+        .iter()
+        .all(|(_, has_text, check)| *has_text && check.is_none()));
 }
 
 fn exact(e: &SearchEngine, word: &str) -> Vec<SearchResult> {
@@ -1097,7 +1115,7 @@ fn library_lines_are_keyed_like_stored_ones() {
 }
 
 #[test]
-fn an_unsigned_line_is_verified_by_its_book_row_count() {
+fn appending_rows_leaves_existing_lines_ok() {
     let _guard = guard();
     let f = fixture();
     let short = |e: &SearchEngine| -> Vec<SearchResult> {
@@ -1106,12 +1124,10 @@ fn an_unsigned_line_is_verified_by_its_book_row_count() {
             .filter(|r| r.file_path == "id:4")
             .collect()
     };
-    let before = short(&f.external);
-    assert_eq!(before.len(), 1);
-    assert_eq!(before[0].text_status, TextStatus::Ok);
+    assert_eq!(short(&f.external)[0].text_status, TextStatus::Ok);
 
-    // A row added to book 4 while the source is suspended (as an update would) shifts
-    // nothing the hash could see, but the row count no longer matches the index.
+    // A row appended to book 4 while the source is suspended (as an update would): the
+    // indexed rows are where they were, unchanged.
     suspend_line_source().unwrap();
     {
         let conn = Connection::open(&f.db).unwrap();
@@ -1133,8 +1149,327 @@ fn an_unsigned_line_is_verified_by_its_book_row_count() {
         "resume discards caches"
     );
     let after = short(&f.external);
+    assert_eq!(after[0].text_status, TextStatus::Ok);
+    assert!(after[0].text.contains("אור"));
+}
+
+/// A library of one book, `rows` at lineIndex 0.., and the book.
+fn one_book_library(dir: &Path, rows: &[&str]) -> (PathBuf, Book) {
+    let db = dir.join("lib.db");
+    let book = Book {
+        id: 1,
+        title: "ספר",
+        topics: "/t",
+        catalogue_order: 0,
+        generation_order: 0,
+        line_indexes: (0..rows.len() as i64).collect(),
+        rows: rows.iter().map(|r| r.as_bytes().to_vec()).collect(),
+        compressed: false,
+    };
+    write_library(&db, std::slice::from_ref(&book), false);
+    (db, book)
+}
+
+/// `book` indexed the way the app does, into `dir/idx`; returns the documents added.
+fn index_one(dir: &Path, book: &Book, storage: TextStorage) -> (SearchEngine, u32) {
+    let idx = dir.join("idx");
+    std::fs::create_dir_all(&idx).unwrap();
+    let mut engine = SearchEngine::new(idx.to_str().unwrap());
+    let path = format!("id:{}", book.id);
+    let added = match app_indexing_input(book) {
+        BookInput::Bytes(bytes) => engine.add_text_book_bytes(
+            book.title.to_string(),
+            book.topics.to_string(),
+            path,
+            0,
+            0,
+            bytes,
+            None,
+            storage,
+        ),
+        BookInput::Text(text) => engine.add_text_book(
+            book.title.to_string(),
+            book.topics.to_string(),
+            path,
+            0,
+            0,
+            text,
+            None,
+            storage,
+        ),
+    }
+    .unwrap();
+    engine.commit().unwrap();
+    (engine, added)
+}
+
+const LONG1: &str = "שורה ארוכה ראשונה ובה הרבה מילים בראשית ברא אלהים";
+const LONG2: &str = "שורה ארוכה שנייה ובה הרבה מילים ויאמר משה אל העם";
+
+/// Edits `db` with the source suspended, as a library update does.
+fn edit_suspended(db: &Path, sql: &str) {
+    suspend_line_source().unwrap();
+    Connection::open(db).unwrap().execute_batch(sql).unwrap();
+    resume_line_source().unwrap();
+}
+
+#[test]
+fn a_short_line_whose_row_shifted_is_stale() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, "אור", LONG2, "מים"]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (engine, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    assert_eq!(exact(&engine, "אור")[0].text_status, TextStatus::Ok);
+
+    // One row deleted and one appended: the book keeps its row count, and ordinal 2 (the
+    // indexed "אור") now holds LONG2.
+    edit_suspended(
+        &db,
+        "DELETE FROM line_content WHERE id = (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1);
+         DELETE FROM line WHERE bookId = 1 AND lineIndex = 1;
+         INSERT INTO line (id, bookId, lineIndex) VALUES (9000, 1, 5);
+         INSERT INTO line_content (id, content) VALUES (9000, 'חדש');",
+    );
+    let after = exact(&engine, "אור");
+    assert_eq!(after.len(), 1);
     assert_eq!(after[0].text_status, TextStatus::Stale);
-    assert_eq!(after[0].text, "אור");
+    assert_eq!(after[0].text, LONG2);
+}
+
+#[test]
+fn a_short_line_edited_in_place_is_stale() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, "אור", LONG2]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (engine, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    edit_suspended(
+        &db,
+        "UPDATE line_content SET content = 'חושך' WHERE id = \
+         (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 2)",
+    );
+    let after = exact(&engine, "אור");
+    assert_eq!(after[0].text_status, TextStatus::Stale);
+    assert_eq!(after[0].text, "חושך");
+}
+
+#[test]
+fn spacing_punctuation_and_nikud_changes_are_stale() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, LONG2]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (engine, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    assert!(exact(&engine, "שורה")
+        .iter()
+        .all(|r| r.text_status == TextStatus::Ok));
+    // The letters (all `lineHash` signs) stay; only spacing, a mark and nikud change.
+    edit_suspended(
+        &db,
+        &format!(
+            "UPDATE line_content SET content = '{}' WHERE id = \
+             (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1);
+             UPDATE line_content SET content = '{}' WHERE id = \
+             (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 2);",
+            LONG1.replace(' ', "  ").replace("אלהים", "אלהים."),
+            LONG2.replace("משה", "מֹשֶׁה"),
+        ),
+    );
+    let after = exact(&engine, "שורה");
+    assert_eq!(after.len(), 2);
+    assert!(after.iter().all(|r| r.text_status == TextStatus::Stale));
+}
+
+#[test]
+fn a_row_containing_a_newline_keeps_its_book_in_the_index() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let rows = [
+        "<h1>ספר</h1>",
+        "שורה ראשונה\nעם שבירה פנימית בראשית ברא אלהים",
+        LONG2,
+        "אור",
+    ];
+    let (db, book) = one_book_library(dir.path(), &rows);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (engine, added) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    // Five lines out of four rows: every ordinal after the break would point one row back.
+    assert_eq!(added, 5);
+    assert!(doc_store_view(&engine)
+        .iter()
+        .all(|(_, has_text, check)| *has_text && check.is_none()));
+    for (word, text) in [("משה", LONG2), ("אור", "אור")] {
+        let results = exact(&engine, word);
+        assert_eq!(results[0].text_status, TextStatus::Ok);
+        assert!(
+            results[0]
+                .text
+                .replace("<font color=red>", "")
+                .replace("</font>", "")
+                == text,
+            "{word}"
+        );
+    }
+}
+
+#[test]
+fn a_book_indexed_without_a_readable_source_keeps_its_text() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, "אור"]);
+    // Unconfigured, then suspended: nothing can vouch for the rows.
+    let (engine, _) = index_one(&dir.path().join("a"), &book, TextStorage::LibraryDb);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    suspend_line_source().unwrap();
+    let (suspended, _) = index_one(&dir.path().join("b"), &book, TextStorage::LibraryDb);
+    resume_line_source().unwrap();
+    let (library, _) = index_one(&dir.path().join("c"), &book, TextStorage::LibraryDb);
+    for e in [&engine, &suspended] {
+        assert!(doc_store_view(e).iter().all(|(_, has_text, _)| *has_text));
+    }
+    assert!(doc_store_view(&library)
+        .iter()
+        .all(|(_, has_text, _)| !has_text));
+}
+
+#[test]
+fn a_write_without_suspend_is_seen_by_the_next_window() {
+    let _guard = guard();
+    let f = fixture();
+    let first = |word: &str| {
+        exact(&f.external, word)
+            .into_iter()
+            .find(|r| r.file_path == "id:3")
+            .unwrap()
+    };
+    assert_eq!(first("מאימתי").text_status, TextStatus::Ok);
+    assert_eq!(first("השמים").text_status, TextStatus::Ok);
+    // Rows 1 and 2 of book 3 trade places, and its last rows go: with the ordinal map
+    // cached from the window above, ordinal 1 would still read the old row.
+    {
+        let conn = Connection::open(&f.db).unwrap();
+        conn.execute_batch(
+            "UPDATE line SET lineIndex = 3 - lineIndex WHERE bookId = 3 AND lineIndex IN (1, 2);
+             DELETE FROM line WHERE bookId = 3 AND lineIndex >= 9;",
+        )
+        .unwrap();
+    }
+    let moved = first("מאימתי");
+    assert_eq!(moved.text_status, TextStatus::Stale);
+    assert_eq!(moved.text, "משעה שהכהנים נכנסים לאכול בתרומתן");
+    let gone = first("השמים");
+    assert_eq!(
+        (gone.text_status, gone.text.as_str()),
+        (TextStatus::Stale, "")
+    );
+}
+
+#[test]
+fn a_unc_path_is_opened_as_a_plain_path() {
+    let _guard = guard();
+    // No such host: the open fails as a missing file, not as a URI SQLite refuses.
+    let err = line_source::LineStore::open(Path::new(r"\\nas\books\seforim.db"))
+        .err()
+        .expect("there is no such share");
+    let message = format!("{err:#}");
+    assert!(
+        !message.contains("authority") && !message.contains("URI"),
+        "{message}"
+    );
+
+    // The same database through the administrative share, where the machine has one.
+    let dir = TempDir::new().unwrap();
+    let (db, _) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1]);
+    let absolute = std::fs::canonicalize(&db).unwrap();
+    let local = absolute
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string();
+    let Some((drive, rest)) = local.split_once(':') else {
+        return;
+    };
+    let unc = PathBuf::from(format!(r"\\localhost\{drive}${rest}"));
+    if std::fs::metadata(&unc).is_err() {
+        return;
+    }
+    for path in [unc, PathBuf::from(format!(r"\\?\{local}"))] {
+        let mut store = line_source::LineStore::open(&path)
+            .unwrap_or_else(|err| panic!("{}: {err:#}", path.display()));
+        let rows = store
+            .fetch_window(&[line_source::LineKey {
+                book_id: 1,
+                ordinal: 1,
+            }])
+            .unwrap();
+        assert!(matches!(&rows[0], line_source::RowText::Found(text) if text == LONG1));
+        store.close();
+    }
+}
+
+#[test]
+fn a_busy_database_is_skipped_without_waiting_each_window() {
+    let _guard = guard();
+    let f = fixture();
+    let library_statuses = |results: Vec<SearchResult>| {
+        results
+            .into_iter()
+            .filter(|r| r.file_path.starts_with("id:"))
+            .map(|r| format!("{:?}", r.text_status))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(
+        library_statuses(exact(&f.external, "בראשית")),
+        ["Ok".to_string()].into()
+    );
+    let writer = Connection::open(&f.db).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let started = std::time::Instant::now();
+    let first = library_statuses(exact(&f.external, "בראשית"));
+    let first_ms = started.elapsed().as_millis();
+    let started = std::time::Instant::now();
+    let second = library_statuses(exact(&f.external, "בראשית"));
+    let second_ms = started.elapsed().as_millis();
+    assert_eq!(first, ["Unavailable".to_string()].into());
+    assert_eq!(second, ["Unavailable".to_string()].into());
+    // One busy timeout, then nothing until the backoff ends.
+    assert!(first_ms < 600, "first window {first_ms} ms");
+    assert!(second_ms < 60, "second window {second_ms} ms");
+    assert!(line_source_status().open, "a busy database is not reopened");
+    writer.execute_batch("COMMIT").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(
+        library_statuses(exact(&f.external, "בראשית")),
+        ["Ok".to_string()].into()
+    );
+}
+
+#[test]
+fn a_whole_book_reads_like_its_windows() {
+    let _guard = guard();
+    let f = fixture();
+    let mut store = line_source::LineStore::open(&f.db).unwrap();
+    for book in books() {
+        let keys: Vec<line_source::LineKey> = (0..book.rows.len() as u64)
+            .map(|ordinal| line_source::LineKey {
+                book_id: book.id,
+                ordinal,
+            })
+            .collect();
+        let windows = store.fetch_window(&keys).unwrap();
+        let whole = store.fetch_book(book.id).unwrap().unwrap();
+        assert_eq!(
+            format!("{whole:?}"),
+            format!("{windows:?}"),
+            "book {}",
+            book.id
+        );
+        assert!(whole
+            .iter()
+            .all(|row| matches!(row, line_source::RowText::Found(_))));
+    }
+    assert!(store.fetch_book(999).unwrap().is_none());
+    store.close();
 }
 
 #[test]
@@ -1317,6 +1652,9 @@ fn compressed_rows_that_cannot_be_decoded_are_unavailable() {
 fn a_missing_host_api_is_a_defined_error_not_a_panic() {
     let _guard = guard();
     let f = fixture();
+    // Indexing opened the source; the next window must open it again.
+    suspend_line_source().unwrap();
+    resume_line_source().unwrap();
     crate::sqlite_host::SIMULATE_UNINITIALIZED.store(true, std::sync::atomic::Ordering::Release);
     let restore = scopeguard(|| {
         crate::sqlite_host::SIMULATE_UNINITIALIZED
@@ -1386,9 +1724,13 @@ fn library_storage_needs_an_official_book_key() {
         extra_facets: None,
         text_storage: Some(TextStorage::LibraryDb),
     };
-    assert!(engine
-        .add_documents_batch(vec![doc("id:1"), doc("/x.txt")])
-        .is_err());
+    // A ready-made document cannot be tied to its library row: refused, even for an
+    // official book.
+    for batch in [vec![doc("id:1")], vec![doc("id:1"), doc("/x.txt")]] {
+        let err = engine.add_documents_batch(batch).unwrap_err();
+        assert!(err.to_string().contains("add_text_book"), "{err:#}");
+    }
+    assert!(engine.upsert_documents_batch(vec![doc("id:1")]).is_err());
     engine.commit().unwrap();
     assert_eq!(
         engine.get_document_count(),
@@ -1460,6 +1802,7 @@ fn real_library_smoke() {
         chosen.push(7410);
     }
     let mut rows_total = 0usize;
+    configure_line_source(db.clone()).unwrap();
     let mut stored = SearchEngine::new(stored_dir.to_str().unwrap());
     let mut external = SearchEngine::new(external_dir.to_str().unwrap());
     for (order, book_id) in chosen.iter().enumerate() {
@@ -1517,7 +1860,10 @@ fn real_library_smoke() {
     }
     stored.commit().unwrap();
     external.commit().unwrap();
-    configure_line_source(db.clone()).unwrap();
+    let in_index = doc_store_view(&external)
+        .iter()
+        .filter(|(_, has_text, _)| *has_text)
+        .count();
 
     let queries = [
         "אמר",
@@ -1629,7 +1975,7 @@ fn real_library_smoke() {
             .sum()
     };
     println!(
-        "smoke: books={} rows={} probes={probes} results={results} differing_probes={mismatches} same_id_text_diffs={text_diffs} tie_only_probes={tie_only} not_ok={not_ok} stored_index_bytes={} external_index_bytes={} search_time_ms={}",
+        "smoke: books={} rows={} probes={probes} results={results} differing_probes={mismatches} same_id_text_diffs={text_diffs} tie_only_probes={tie_only} not_ok={not_ok} library_lines_stored_in_index={in_index} stored_index_bytes={} external_index_bytes={} search_time_ms={}",
         chosen.len(),
         rows_total,
         dir_size(&stored_dir),
@@ -1639,4 +1985,389 @@ fn real_library_smoke() {
     assert_eq!(text_diffs, 0);
     assert_eq!(mismatches, tie_only);
     assert_eq!(not_ok, 0);
+}
+
+/// Read-only check against a real library: for every book with a BOM, `data:` or `\r` in
+/// its rows, books with `lineIndex` gaps, and every 50th book, each row the line source
+/// reads back must be exactly the line the app's indexing input splits into — the text
+/// `lineCheck` is taken over. Prints counts only.
+#[test]
+#[ignore = "needs OTZARIA_SEFORIM_DB pointing at a real seforim.db"]
+fn real_library_rows_match_the_indexing_input() {
+    let _guard = guard();
+    let Ok(db) = std::env::var("OTZARIA_SEFORIM_DB") else {
+        return;
+    };
+    let conn = Connection::open_with_flags(
+        &db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA query_only=1").unwrap();
+    let mut ids: std::collections::BTreeSet<i64> = conn
+        .prepare(
+            "SELECT DISTINCT l.bookId FROM line l JOIN line_content lc ON lc.id = l.id \
+             WHERE substr(lc.content, 1, 1) = char(65279) OR instr(lc.content, 'data:') > 0 \
+             OR instr(lc.content, char(13)) > 0 OR instr(lc.content, char(10)) > 0",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let special = ids.len();
+    ids.extend(
+        conn.prepare(
+            "SELECT bookId FROM line GROUP BY bookId HAVING count(*) <> max(lineIndex) + 1 \
+             OR min(lineIndex) <> 0 OR bookId % 50 = 0",
+        )
+        .unwrap()
+        .query_map([], |r| r.get::<_, i64>(0))
+        .unwrap()
+        .map(Result::unwrap),
+    );
+    let mut store = line_source::LineStore::open(Path::new(&db)).unwrap();
+    let (mut rows_checked, mut diffs, mut split_books) = (0u64, 0u64, 0u64);
+    for &book_id in &ids {
+        let rows: Vec<Vec<u8>> = conn
+            .prepare_cached(
+                "SELECT CAST(lc.content AS BLOB) FROM line l LEFT JOIN line_content lc \
+                 ON lc.id = l.id WHERE l.bookId = ?1 ORDER BY l.lineIndex, l.id",
+            )
+            .unwrap()
+            .query_map([book_id], |r| r.get::<_, Option<Vec<u8>>>(0))
+            .unwrap()
+            .map(|r| r.unwrap().unwrap_or_default())
+            .collect();
+        let book = Book {
+            id: book_id,
+            title: "t",
+            topics: "/t",
+            catalogue_order: 0,
+            generation_order: 0,
+            line_indexes: Vec::new(),
+            rows,
+            compressed: false,
+        };
+        let input = match app_indexing_input(&book) {
+            BookInput::Bytes(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            BookInput::Text(text) => text,
+        };
+        let app_lines: Vec<&str> = input.split('\n').collect();
+        let ours = store.fetch_book(book_id).unwrap().unwrap();
+        if ours.len() != app_lines.len() {
+            // Indexed with its text in the index (a row containing `\n`).
+            split_books += 1;
+            continue;
+        }
+        for (line, row) in app_lines.iter().zip(ours) {
+            rows_checked += 1;
+            match row {
+                line_source::RowText::Found(text) if text == *line => {}
+                _ => diffs += 1,
+            }
+        }
+    }
+    store.close();
+    println!(
+        "rows match: books={} special_books={special} rows={rows_checked} diffs={diffs} \
+         books_with_split_rows={split_books}",
+        ids.len()
+    );
+    assert_eq!(diffs, 0);
+}
+
+/// Working set and private bytes of this process (Windows; zeros elsewhere).
+fn process_memory() -> (u64, u64) {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        #[repr(C)]
+        #[derive(Default)]
+        struct Counters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+            private_usage: usize,
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut c_void;
+            fn K32GetProcessMemoryInfo(
+                process: *mut c_void,
+                counters: *mut Counters,
+                cb: u32,
+            ) -> i32;
+        }
+        let mut c = Counters {
+            cb: std::mem::size_of::<Counters>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: a correctly sized PROCESS_MEMORY_COUNTERS_EX for the current process.
+        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+        (c.working_set_size as u64, c.private_usage as u64)
+    }
+    #[cfg(not(windows))]
+    {
+        (0, 0)
+    }
+}
+
+/// Read-only timing against a real library, release build: every `OTZARIA_PERF_STEP`-th
+/// book (25) indexed both ways into a temp dir, then the same queries against both, 7
+/// repetitions each. Prints numbers only.
+#[test]
+#[ignore = "needs OTZARIA_SEFORIM_DB; run with --release"]
+fn real_library_perf() {
+    let _guard = guard();
+    let Ok(db) = std::env::var("OTZARIA_SEFORIM_DB") else {
+        return;
+    };
+    let step: usize = std::env::var("OTZARIA_PERF_STEP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(25);
+    let root = std::env::var("OTZARIA_PERF_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("otzaria_perf"));
+    let (stored_dir, external_dir) = (root.join("stored"), root.join("external"));
+    let compatible = |p: &Path| {
+        std::fs::read_dir(p).is_ok_and(|mut d| d.next().is_some())
+            && check_index_compatibility(p.to_string_lossy().into_owned()).compatible
+    };
+    let reuse = std::env::var("OTZARIA_PERF_REUSE").is_ok()
+        && compatible(&stored_dir)
+        && compatible(&external_dir);
+    let started = std::time::Instant::now();
+    let (stored, external, books, rows_total) = if reuse {
+        (
+            SearchEngine::new(stored_dir.to_str().unwrap()),
+            SearchEngine::new(external_dir.to_str().unwrap()),
+            0,
+            0,
+        )
+    } else {
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&stored_dir).unwrap();
+        std::fs::create_dir_all(&external_dir).unwrap();
+        // Indexing checks LibraryDb books against the configured source.
+        configure_line_source(db.clone()).unwrap();
+        let conn = Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA query_only=1").unwrap();
+        let all: Vec<i64> = conn
+            .prepare("SELECT DISTINCT bookId FROM line ORDER BY bookId")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let chosen: Vec<i64> = all.iter().step_by(step).copied().collect();
+        let mut stored = SearchEngine::new(stored_dir.to_str().unwrap());
+        let mut external = SearchEngine::new(external_dir.to_str().unwrap());
+        let mut rows_total = 0usize;
+        for (order, book_id) in chosen.iter().enumerate() {
+            let rows: Vec<Vec<u8>> = conn
+                .prepare_cached(
+                    "SELECT CAST(lc.content AS BLOB) FROM line l LEFT JOIN line_content lc \
+                     ON lc.id = l.id WHERE l.bookId = ?1 ORDER BY l.lineIndex, l.id",
+                )
+                .unwrap()
+                .query_map([book_id], |r| r.get::<_, Option<Vec<u8>>>(0))
+                .unwrap()
+                .map(|r| r.unwrap().unwrap_or_default())
+                .collect();
+            rows_total += rows.len();
+            let book = Book {
+                id: *book_id,
+                title: "ספר",
+                topics: "/perf",
+                catalogue_order: order as u32,
+                generation_order: 0,
+                line_indexes: Vec::new(),
+                rows,
+                compressed: false,
+            };
+            for (engine, storage) in [
+                (&mut stored, TextStorage::InIndex),
+                (&mut external, TextStorage::LibraryDb),
+            ] {
+                let path = format!("id:{book_id}");
+                match app_indexing_input(&book) {
+                    BookInput::Bytes(bytes) => engine.add_text_book_bytes(
+                        "ספר".into(),
+                        "/perf".into(),
+                        path,
+                        order as u32,
+                        0,
+                        bytes,
+                        None,
+                        storage,
+                    ),
+                    BookInput::Text(text) => engine.add_text_book(
+                        "ספר".into(),
+                        "/perf".into(),
+                        path,
+                        order as u32,
+                        0,
+                        text,
+                        None,
+                        storage,
+                    ),
+                }
+                .unwrap();
+            }
+        }
+        stored.commit().unwrap();
+        external.commit().unwrap();
+        stored.optimize().unwrap();
+        external.optimize().unwrap();
+        (stored, external, chosen.len(), rows_total)
+    };
+    let build_ms = started.elapsed().as_millis();
+    line_source::reset_for_tests();
+    let memory_before = process_memory();
+    configure_line_source(db.clone()).unwrap();
+
+    let queries = [
+        "אמר",
+        "רבי",
+        "שבת",
+        "ישראל",
+        "משה",
+        "תורה",
+        "כי",
+        "לא",
+        "אמר רבי",
+        "רבי יהודה",
+        "בית המקדש",
+        "קריאת שמע",
+        "הקדוש ברוך הוא",
+        "פסח",
+        "כהן",
+        "מצוה",
+        "ברכה",
+        "תפילה",
+        "ירושלים",
+        "אברהם",
+        "יעקב",
+        "דוד",
+        "שלמה",
+        "אלא",
+        "היינו",
+    ];
+    let run = |e: &SearchEngine, q: &str, relevance: bool| {
+        let order = if relevance {
+            ResultsOrder::Relevance
+        } else {
+            ResultsOrder::Catalogue
+        };
+        let t = std::time::Instant::now();
+        let r = e
+            .search_exact(q.to_string(), vec![], 100, 0, order, false, false, None)
+            .unwrap();
+        let not_ok = r.iter().filter(|x| x.text_status != TextStatus::Ok).count();
+        (t.elapsed(), r.len(), not_ok)
+    };
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+    let pct = |v: &mut Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        (v[v.len() / 2], v[v.len() * 9 / 10])
+    };
+    // Cold: the first window after a resume (every cache dropped), against a warm
+    // stored-text run of the same query.
+    let mut cold = Vec::new();
+    let mut cold_delta = Vec::new();
+    for q in queries {
+        let (s, n, _) = run(&stored, q, false);
+        suspend_line_source().unwrap();
+        resume_line_source().unwrap();
+        let (x, n2, _) = run(&external, q, false);
+        assert_eq!(n, n2);
+        if n > 0 {
+            cold.push(ms(x));
+            cold_delta.push((ms(x) - ms(s)) * 100.0 / n as f64);
+        }
+    }
+    for q in queries {
+        for relevance in [false, true] {
+            run(&stored, q, relevance);
+            run(&external, q, relevance);
+        }
+    }
+    let (mut deltas, mut s_times, mut e_times) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut total, mut not_ok_total) = (0usize, 0usize);
+    for relevance in [false, true] {
+        for q in queries {
+            let (mut s, mut x, mut n) = (Vec::new(), Vec::new(), 0);
+            for _ in 0..7 {
+                let (d, c, _) = run(&stored, q, relevance);
+                s.push(ms(d));
+                let (d, c2, bad) = run(&external, q, relevance);
+                x.push(ms(d));
+                assert_eq!(c, c2);
+                not_ok_total += bad;
+                n = c;
+            }
+            if n == 0 {
+                continue;
+            }
+            total += n;
+            let (s50, _) = pct(&mut s);
+            let (x50, _) = pct(&mut x);
+            let per100 = |v: f64| v * 100.0 / n as f64;
+            s_times.push(per100(s50));
+            e_times.push(per100(x50));
+            deltas.push(per100(x50) - per100(s50));
+        }
+    }
+    let memory_after = process_memory();
+    let (map_bytes, page_cache_bytes) = line_source::memory_for_tests().unwrap_or_default();
+    let (d50, d90) = pct(&mut deltas);
+    let (s50, _) = pct(&mut s_times);
+    let (e50, _) = pct(&mut e_times);
+    let (c50, c90) = pct(&mut cold);
+    let (cd50, cd90) = pct(&mut cold_delta);
+    let size = |p: &Path| -> u64 {
+        std::fs::read_dir(p)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.metadata().unwrap().len())
+            .sum()
+    };
+    let mb = |b: u64| b as f64 / 1_048_576.0;
+    println!(
+        "perf: reused={reuse} build_ms={build_ms} books={books} rows={rows_total} probes={} \
+         results={total} not_ok={not_ok_total} stored_p50_ms_per100={s50:.2} \
+         external_p50_ms_per100={e50:.2} delta_p50={d50:.2} delta_p90={d90:.2} \
+         cold_window_ms_p50={c50:.1} cold_window_ms_p90={c90:.1} \
+         cold_delta_per100_p50={cd50:.2} cold_delta_per100_p90={cd90:.2} \
+         ws_mb_before={:.1} ws_mb_after={:.1} private_mb_before={:.1} private_mb_after={:.1} \
+         row_map_kb={} page_cache_kb={} stored_bytes={} external_bytes={}",
+        deltas.len(),
+        mb(memory_before.0),
+        mb(memory_after.0),
+        mb(memory_before.1),
+        mb(memory_after.1),
+        map_bytes / 1024,
+        page_cache_bytes / 1024,
+        size(&stored_dir),
+        size(&external_dir)
+    );
+    drop(stored);
+    drop(external);
+    line_source::reset_for_tests();
+    if std::env::var("OTZARIA_PERF_KEEP").is_err() {
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

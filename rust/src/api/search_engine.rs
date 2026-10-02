@@ -135,10 +135,11 @@ pub enum ResultGrouping {
 ///   `Index`: Dart enums already have an `index` member.)
 /// - `LibraryDb` — only in the inverted index; the display text is read from the
 ///   library database configured with [`configure_line_source`] when a result is
-///   built. Only for an official book whose text came from that database's rows:
-///   `file_path` must be `id:<bookId>`, and a document's `segment` is the 0-based
-///   position of its row among the book's rows ordered by `lineIndex` (what
-///   [`SearchEngine::add_text_book`] assigns).
+///   built. Only for an official book whose text came from that database's rows,
+///   through [`SearchEngine::add_text_book`]: `file_path` must be `id:<bookId>`, and
+///   a document's `segment` is the 0-based position of its row among the book's
+///   rows ordered by `lineIndex`. Each line keeps a check of its exact text
+///   (`lineCheck`), which the row read back must match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStorage {
     LibraryDb,
@@ -148,11 +149,12 @@ pub enum TextStorage {
 /// Whether a result's text is the line its document was indexed from.
 ///
 /// - `Ok` — it is (always, for text stored in the index).
-/// - `Stale` — the library database no longer matches the index (the row changed,
-///   moved or disappeared). `text` is the database's current line, HTML-escaped
-///   and unhighlighted (empty when the row is gone). Reindexing the book fixes it.
-/// - `Unavailable` — the line source is unconfigured, suspended or unreadable.
-///   `text` is empty.
+/// - `Stale` — the library database no longer matches the index (the row changed
+///   in any way, moved or disappeared). `text` is the database's current line,
+///   HTML-escaped and unhighlighted (empty when the row is gone). Reindexing the
+///   book fixes it.
+/// - `Unavailable` — the line source is unconfigured, suspended, busy (another
+///   connection is writing the database) or unreadable. `text` is empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStatus {
     Ok,
@@ -218,9 +220,9 @@ pub struct DocumentInput {
     /// [`FACET_DIMENSION_ROOTS`] לסמנטיקת הסינון (OR בתוך ממד, AND בין
     /// ממדים). `None` = אין.
     pub extra_facets: Option<Vec<String>>,
-    /// Where the display text is kept; `None` = [`TextStorage::InIndex`]. With
-    /// `LibraryDb`, `file_path` must be `id:<bookId>` and `segment` the row's
-    /// ordinal in the book.
+    /// Where the display text is kept: `None` or [`TextStorage::InIndex`].
+    /// `LibraryDb` is refused here — only [`SearchEngine::add_text_book`] can tie a
+    /// line to its library row.
     pub text_storage: Option<TextStorage>,
 }
 
@@ -2621,10 +2623,10 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // v5: נוסף השדה `chunkKey` (FAST) — מפתח הטקסט שהשורה מוטמעת בו (ראו
 // semantic_keys). `text`/`textVocalized` are no longer stored: the display copies are
 // `textStored`/`textVocalizedStored`, written only for `TextStorage::InIndex` documents,
-// and official books read their text from the library database. An index of version 4,
-// or of a version 5 build without these fields, stores its text where this build does
-// not read it: the compatibility check compares the whole Tantivy schema, so it is
-// `rebuild_required`.
+// and official books read their text from the library database, verified against the
+// new `lineCheck` (FAST). An index of version 4, or of a version 5 build without these
+// fields, stores its text where this build does not read it: the compatibility check
+// compares the whole Tantivy schema, so it is `rebuild_required`.
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
@@ -2807,8 +2809,9 @@ pub fn check_index_compatibility(path: String) -> IndexCompatibility {
 
 /// Points the line source at the library database (`seforim.db`) that
 /// [`TextStorage::LibraryDb`] documents read their text from. Nothing is opened
-/// here — the first result window opens it, read-only. A different path discards
-/// the open connection and every cache.
+/// here — the first result window (or `LibraryDb` indexing) opens it, read-only,
+/// by its plain path (UNC paths work). A different path discards the open
+/// connection and every cache.
 pub fn configure_line_source(db_path: String) -> Result<()> {
     crate::line_source::configure(&db_path)
 }
@@ -3284,12 +3287,46 @@ pub(crate) fn library_book_id(file_path: &str) -> Option<i64> {
     (id >= 0 && format!("id:{id}") == file_path).then_some(id)
 }
 
+/// `DocumentInput` always stores its text: nothing ties a ready-made document's `segment`
+/// to a row of the library database, so a `LibraryDb` one is refused.
+fn refuse_library_storage(docs: &[DocumentInput]) -> Result<()> {
+    if let Some(doc) = docs
+        .iter()
+        .find(|doc| doc.text_storage == Some(TextStorage::LibraryDb))
+    {
+        anyhow::bail!(
+            "TextStorage::LibraryDb is only accepted by add_text_book/add_text_book_bytes \
+             (document {} of {:?})",
+            doc.id,
+            doc.file_path
+        );
+    }
+    Ok(())
+}
+
 fn require_library_book_id(file_path: &str) -> Result<i64> {
     library_book_id(file_path).with_context(|| {
         format!(
             "TextStorage::LibraryDb needs a file_path of the form id:<bookId>, got {file_path:?}"
         )
     })
+}
+
+/// `LibraryDb` when the configured line source holds exactly `lines` rows for the book;
+/// otherwise `InIndex`, since a document's `segment` would not be its row's ordinal (a row
+/// containing `\n` splits into two lines) or nothing can tell.
+fn library_storage_or_fallback(book_id: i64, lines: usize, title: &str) -> TextStorage {
+    let rows = crate::line_source::with_store(|store| store.book_row_count(book_id));
+    match rows {
+        Ok(rows) if rows == lines as u64 => TextStorage::LibraryDb,
+        rows => {
+            warn!(
+                "add_text_book '{title}' (id:{book_id}): {lines} lines against library rows \
+                 {rows:?}; storing its text in the index"
+            );
+            TextStorage::InIndex
+        }
+    }
 }
 
 /// Mirrors the Dart `IndexingDocumentBuilder._updateReferenceTrail`: a new
@@ -3743,6 +3780,10 @@ fn index_schema() -> Schema {
     // חתימת דה-דופליקציה של גוף השורה (ראו line_dedup_hash). FAST בלבד:
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
+    // CRC-32 of the exact line the indexing path normalized (`line_source::line_check`),
+    // written only for `TextStorage::LibraryDb` documents: the row read back from the
+    // library database must match it to be shown as the indexed line.
+    schema_builder.add_u64_field(LINE_CHECK_FIELD, FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
     // The key of the text the line is embedded as, `ChunkKey::column_value` (see
     // `semantic_keys`): 0 for a line the recipe does not embed, a PDF's, and any line
@@ -3759,6 +3800,7 @@ fn index_schema() -> Schema {
 }
 
 pub(crate) const TEXT_STORED_FIELD: &str = "textStored";
+pub(crate) const LINE_CHECK_FIELD: &str = "lineCheck";
 const TEXT_VOCALIZED_STORED_FIELD: &str = "textVocalizedStored";
 
 /// Cache key for materialized single-word term sets. The searcher
@@ -6136,14 +6178,9 @@ impl SearchEngine {
         let stored_fields = self.stored_text_fields()?;
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
-        for doc in &docs {
-            if doc.text_storage == Some(TextStorage::LibraryDb) {
-                require_library_book_id(&doc.file_path)?;
-            }
-        }
+        refuse_library_storage(&docs)?;
         let writer = self.writer_mut()?;
         for doc in docs {
-            let storage = doc.text_storage.unwrap_or(TextStorage::InIndex);
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
             let line_hash = line_dedup_hash(&normalized_text);
@@ -6176,14 +6213,12 @@ impl SearchEngine {
             if let Some(vocalized) = &vocalized {
                 document.add_text(text_vocalized_f, vocalized);
             }
-            if storage == TextStorage::InIndex {
-                add_stored_text(
-                    &mut document,
-                    stored_fields,
-                    &normalized_text,
-                    vocalized.as_deref(),
-                );
-            }
+            add_stored_text(
+                &mut document,
+                stored_fields,
+                &normalized_text,
+                vocalized.as_deref(),
+            );
             writer.add_document(document)?;
         }
         Ok(())
@@ -6206,7 +6241,11 @@ impl SearchEngine {
     /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
     /// newline-joined rows of an official book read from the library database
     /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
-    /// the index and results read them back from that database.
+    /// the index and results read them back from that database. The book is
+    /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
+    /// configured line source does not hold exactly as many rows for it as `text`
+    /// has lines — a row containing `\n`, a different database — or cannot be read
+    /// (unconfigured, suspended, busy).
     pub fn add_text_book(
         &mut self,
         title: String,
@@ -6278,13 +6317,19 @@ impl SearchEngine {
         extra_facets: Vec<String>,
         text_storage: TextStorage,
     ) -> Result<u32> {
-        if text_storage == TextStorage::LibraryDb {
-            require_library_book_id(&file_path)?;
-        }
+        let library_book = match text_storage {
+            TextStorage::LibraryDb => Some(require_library_book_id(&file_path)?),
+            TextStorage::InIndex => None,
+        };
         if text.is_empty() {
             return Ok(0);
         }
         let started = Instant::now();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let text_storage = match library_book {
+            Some(book_id) => library_storage_or_fallback(book_id, lines.len(), &title),
+            None => TextStorage::InIndex,
+        };
         let text_bytes = text.len();
         let (
             title_f,
@@ -6320,16 +6365,15 @@ impl SearchEngine {
         let text_hash = content_fingerprint(text);
         let id_base = catalogue_id_base(catalogue_order)?;
         let chunk_key_f = self.chunk_key_field;
-        let stored_fields = (text_storage == TextStorage::InIndex)
-            .then(|| self.stored_text_fields())
-            .transpose()?;
+        let library = text_storage == TextStorage::LibraryDb;
+        let stored_fields = (!library).then(|| self.stored_text_fields()).transpose()?;
+        let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
         // writer.add_document (queue push; grows only when tantivy's indexing
         // threads apply backpressure).
         let prepare_started = Instant::now();
-        let lines: Vec<&str> = text.split('\n').collect();
 
         // Sequential cheap pass: the reference trail is stateful across
         // lines, so resolve each line to its reference index first. The
@@ -6361,7 +6405,8 @@ impl SearchEngine {
         // also gets its vocalized rendering, for the `textVocalized` field
         // (the mark check is cheap and almost always short-circuits false).
         use rayon::prelude::*;
-        let normalized: Vec<(String, Option<String>, u64)> = lines
+        type Prepared = (String, Option<String>, u64, Option<u32>);
+        let normalized: Vec<Prepared> = lines
             .par_iter()
             .map(|raw_line| {
                 let plain = hebrew_query::normalize_text_for_indexing(raw_line);
@@ -6369,7 +6414,8 @@ impl SearchEngine {
                     .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
                     .filter(|v| !v.is_empty());
                 let line_hash = line_dedup_hash(&plain);
-                (plain, vocalized, line_hash)
+                let line_check = library.then(|| crate::line_source::line_check(raw_line));
+                (plain, vocalized, line_hash, line_check)
             })
             .collect();
         let prepare_time = prepare_started.elapsed();
@@ -6384,7 +6430,7 @@ impl SearchEngine {
                 let lines: Vec<LineRef<'_>> = normalized
                     .iter()
                     .zip(&reference_of_line)
-                    .map(|((plain, _, _), section)| LineRef {
+                    .map(|((plain, _, _, _), section)| LineRef {
                         text: plain,
                         section: u64::from(*section),
                     })
@@ -6397,7 +6443,7 @@ impl SearchEngine {
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        for (segment, (normalized_line, vocalized_line, line_hash)) in
+        for (segment, (normalized_line, vocalized_line, line_hash, line_check)) in
             normalized.into_iter().enumerate()
         {
             let reference = references[reference_of_line[segment] as usize].as_str();
@@ -6426,6 +6472,9 @@ impl SearchEngine {
             }
             if let Some(vocalized) = &vocalized_line {
                 document.add_text(text_vocalized_f, vocalized);
+            }
+            if let Some(check) = line_check {
+                document.add_u64(line_check_f, u64::from(check));
             }
             if let Some(fields) = stored_fields {
                 add_stored_text(
@@ -6631,14 +6680,9 @@ impl SearchEngine {
         let stored_fields = self.stored_text_fields()?;
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
-        for doc in &docs {
-            if doc.text_storage == Some(TextStorage::LibraryDb) {
-                require_library_book_id(&doc.file_path)?;
-            }
-        }
+        refuse_library_storage(&docs)?;
         let writer = self.writer_mut()?;
         for doc in docs {
-            let storage = doc.text_storage.unwrap_or(TextStorage::InIndex);
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
@@ -6672,14 +6716,12 @@ impl SearchEngine {
             if let Some(vocalized) = &vocalized {
                 document.add_text(text_vocalized_f, vocalized);
             }
-            if storage == TextStorage::InIndex {
-                add_stored_text(
-                    &mut document,
-                    stored_fields,
-                    &normalized_text,
-                    vocalized.as_deref(),
-                );
-            }
+            add_stored_text(
+                &mut document,
+                stored_fields,
+                &normalized_text,
+                vocalized.as_deref(),
+            );
             writer.add_document(document)?;
         }
         Ok(())
@@ -12153,15 +12195,14 @@ impl SearchEngine {
         let file_path_f = schema.get_field("filePath")?;
         let segment_f = schema.get_field("segment")?;
 
-        struct Pending<'a> {
+        struct Pending {
             slot: usize,
             key: crate::line_source::LineKey,
-            line_hash: u64,
-            file_path: &'a str,
+            line_check: Option<u32>,
         }
         let mut out = Vec::with_capacity(documents.len());
         let mut pending: Vec<Pending> = Vec::new();
-        let mut line_hash_columns = HashMap::new();
+        let mut line_check_columns = HashMap::new();
         for (slot, (address, document)) in documents.iter().enumerate() {
             if let Some(stored) = document.get_first(text_stored_f).and_then(|v| v.as_str()) {
                 out.push(HitText {
@@ -12187,21 +12228,21 @@ impl SearchEngine {
                 .get_first(segment_f)
                 .and_then(|v| v.as_u64())
                 .unwrap_or_default();
-            let column = match line_hash_columns.entry(address.segment_ord) {
+            let column = match line_check_columns.entry(address.segment_ord) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => e.insert(
                     searcher
                         .segment_reader(address.segment_ord)
                         .fast_fields()
-                        .u64("lineHash")?,
+                        .u64(LINE_CHECK_FIELD)?,
                 ),
             };
-            let line_hash = column.first(address.doc_id).unwrap_or_default();
             pending.push(Pending {
                 slot,
                 key: crate::line_source::LineKey { book_id, ordinal },
-                line_hash,
-                file_path,
+                line_check: column
+                    .first(address.doc_id)
+                    .and_then(|v| u32::try_from(v).ok()),
             });
         }
         if pending.is_empty() {
@@ -12209,8 +12250,8 @@ impl SearchEngine {
         }
 
         let keys: Vec<_> = pending.iter().map(|p| p.key).collect();
-        let window = match crate::line_source::with_store(|store| store.fetch_window(&keys)) {
-            Ok(window) => window,
+        let rows = match crate::line_source::with_store(|store| store.fetch_window(&keys)) {
+            Ok(rows) => rows,
             Err(reason) => {
                 debug!(
                     "library text unavailable for {} hit(s): {reason:?}",
@@ -12219,51 +12260,23 @@ impl SearchEngine {
                 return Ok(out);
             }
         };
-        let mut live_docs: HashMap<&str, u64> = HashMap::new();
-        for (p, row) in pending.iter().zip(window.rows) {
-            use crate::line_source::RowText;
-            out[p.slot] = match row {
-                RowText::Found(raw) => {
-                    let mut hit = HitText::from_library_row(&raw, vocalized);
-                    let verified = if p.line_hash != 0 {
-                        line_dedup_hash(&hit.plain) == p.line_hash
-                    } else {
-                        // Too short to sign: compare the book's row count with the
-                        // index's live documents of the book instead.
-                        let indexed = match live_docs.get(p.file_path) {
-                            Some(&n) => n,
-                            None => {
-                                let n = Self::live_doc_count(searcher, file_path_f, p.file_path)?;
-                                live_docs.insert(p.file_path, n);
-                                n
-                            }
-                        };
-                        window.book_rows.get(&p.key.book_id) == Some(&indexed)
-                    };
-                    if !verified {
-                        hit.status = TextStatus::Stale;
-                    }
-                    hit
-                }
-                RowText::Missing => HitText {
-                    plain: String::new(),
-                    vocalized: None,
-                    status: TextStatus::Stale,
-                },
-                RowText::Unreadable => HitText::unavailable(),
-            };
+        // Normalizing a window's rows is most of its cost; a lone row is not worth the hop.
+        use rayon::prelude::*;
+        let hits: Vec<HitText> = pending
+            .par_iter()
+            .zip(rows.into_par_iter())
+            .with_min_len(LIBRARY_ROWS_PER_TASK)
+            .map(|(p, row)| HitText::from_library_row(row, p.line_check, vocalized))
+            .collect();
+        for (p, hit) in pending.iter().zip(hits) {
+            out[p.slot] = hit;
         }
         Ok(out)
     }
-
-    fn live_doc_count(searcher: &Searcher, file_path_f: Field, file_path: &str) -> Result<u64> {
-        let query = TermQuery::new(
-            Term::from_field_text(file_path_f, file_path),
-            IndexRecordOption::Basic,
-        );
-        Ok(searcher.search(&query, &Count)? as u64)
-    }
 }
+
+/// Library rows normalized per parallel task in [`SearchEngine::resolve_hit_texts`].
+const LIBRARY_ROWS_PER_TASK: usize = 8;
 
 /// One hit's display text before snippeting — see [`SearchEngine::resolve_hit_texts`].
 struct HitText {
@@ -12282,14 +12295,42 @@ impl HitText {
         }
     }
 
-    /// The texts `add_text_book` indexed this row as.
-    fn from_library_row(raw: &str, vocalized: bool) -> Self {
+    /// The texts `add_text_book` indexed this row as, `Ok` when the row is the line the
+    /// document was indexed from (its `lineCheck`).
+    fn from_library_row(
+        row: crate::line_source::RowText,
+        line_check: Option<u32>,
+        vocalized: bool,
+    ) -> Self {
+        use crate::line_source::RowText;
+        let raw = match row {
+            RowText::Found(raw) => raw,
+            RowText::Missing => {
+                return HitText {
+                    plain: String::new(),
+                    vocalized: None,
+                    status: TextStatus::Stale,
+                }
+            }
+            RowText::Unreadable => return HitText::unavailable(),
+        };
+        let status = if line_check == Some(crate::line_source::line_check(&raw)) {
+            TextStatus::Ok
+        } else {
+            TextStatus::Stale
+        };
+        let vocalized = (vocalized && hebrew_query::contains_attached_marks(&raw))
+            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(&raw))
+            .filter(|v| !v.is_empty());
+        // `display` shows the vocalized rendering whenever there is one.
+        let plain = match vocalized {
+            Some(_) => String::new(),
+            None => hebrew_query::normalize_text_for_indexing(&raw),
+        };
         HitText {
-            plain: hebrew_query::normalize_text_for_indexing(raw),
-            vocalized: (vocalized && hebrew_query::contains_attached_marks(raw))
-                .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw))
-                .filter(|v| !v.is_empty()),
-            status: TextStatus::Ok,
+            plain,
+            vocalized,
+            status,
         }
     }
 
@@ -13717,7 +13758,11 @@ mod tests {
 
     /// The fields version 5 adds to the released version 4 schema, beside `chunkKey`: where
     /// the text of a document is kept when it is not read from the library database.
-    const VERSION_5_FIELDS: [&str; 2] = [TEXT_STORED_FIELD, TEXT_VOCALIZED_STORED_FIELD];
+    const VERSION_5_FIELDS: [&str; 3] = [
+        LINE_CHECK_FIELD,
+        TEXT_STORED_FIELD,
+        TEXT_VOCALIZED_STORED_FIELD,
+    ];
 
     /// Version 5 is the released version 4 schema with `text` and `textVocalized` out of the
     /// store, and the `chunkKey` column and [`VERSION_5_FIELDS`] beside it. No other

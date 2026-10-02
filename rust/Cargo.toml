@@ -99,6 +99,8 @@ unicode-segmentation = "1.13.3"
 # features. No other rusqlite features: the host's SQLite (Dart's build) omits
 # trace, progress handler, decltype and the authorizer.
 rusqlite = { version = "0.32", default-features = false }
+# CRC-32 of a line for `lineCheck` (hardware-accelerated; already built for tantivy).
+crc32fast = "1.5"
 lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.

@@ -5,25 +5,41 @@
 //! only. Its display text is the database row it was indexed from: book `id:<bookId>`
 //! (the `filePath`), row = the document's `segment`-th row of the book in `lineIndex`
 //! order. [`LineStore`] maps that key to a row, decodes it exactly as the indexing path
-//! prepared it ([`prepare_row`]) and leaves normalization and verification to the caller.
+//! prepared it ([`prepare_row`]) and leaves verification ([`line_check`]) and
+//! normalization to the caller.
 //!
 //! Lock order: a caller takes its Tantivy searcher first and the line-source mutex second;
 //! nothing here calls back into Dart or into the engine while holding it.
 
 use crate::sqlite_host;
 use anyhow::{Context, Result};
+use lru::LruCache;
+use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Same ceiling as the app's `LineContentCodec.maxLineBytes`.
 const MAX_LINE_BYTES: u64 = 16 * 1024 * 1024;
-/// A replaced or locked file must not stall a search; the database is never written here.
-const BUSY_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long a read waits for a writer before its window is served `Unavailable`.
+const BUSY_TIMEOUT: Duration = Duration::from_millis(100);
+/// After the database answered busy, windows skip it for this long.
+const BUSY_BACKOFF: Duration = Duration::from_secs(1);
+/// Upper bound on the cached ordinal-to-rowid maps: 4 bytes a row, ~4M rows.
+const ROW_MAP_BYTES: usize = 16 * 1024 * 1024;
 /// Same as the app's `stripDataUrisForIndex`: shorter payloads are kept.
 const MIN_DATA_URI_PAYLOAD: usize = 64;
+const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+/// The `lineCheck` of a line: CRC-32 of the exact text the indexing path normalized
+/// ([`prepare_row`]'s output), so a change to anything in it — spacing, punctuation,
+/// nikud, markup — is seen.
+pub(crate) fn line_check(prepared: &str) -> u32 {
+    crc32fast::hash(prepared.as_bytes())
+}
 
 /// Where one document's text lives in the library database.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -34,7 +50,7 @@ pub(crate) struct LineKey {
 }
 
 /// One looked-up row.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum RowText {
     /// The text the indexing path fed to `normalize_text_for_indexing` for this row.
     Found(String),
@@ -44,27 +60,42 @@ pub(crate) enum RowText {
     Unreadable,
 }
 
-/// Result of one window: rows in the order of the requested keys, plus each touched book's
-/// current row count (for books verified at book level).
-pub(crate) struct WindowRows {
-    pub rows: Vec<RowText>,
-    pub book_rows: HashMap<i64, u64>,
+/// A book's row ids in `lineIndex` order (ties by rowid, as the app reads them).
+enum RowIds {
+    Narrow(Vec<u32>),
+    Wide(Vec<i64>),
 }
 
-/// How a book's ordinals map to rows.
-enum BookRows {
-    /// `lineIndex` is exactly `0..rows`: ordinal == lineIndex.
-    Contiguous { rows: u64 },
-    /// Anything else: the row ids in `lineIndex` order.
-    Sparse { line_ids: Vec<i64> },
-}
-
-impl BookRows {
-    fn len(&self) -> u64 {
-        match self {
-            BookRows::Contiguous { rows } => *rows,
-            BookRows::Sparse { line_ids } => line_ids.len() as u64,
+impl RowIds {
+    fn new(ids: Vec<i64>) -> Self {
+        if ids.iter().all(|&id| u32::try_from(id).is_ok()) {
+            RowIds::Narrow(ids.into_iter().map(|id| id as u32).collect())
+        } else {
+            RowIds::Wide(ids)
         }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            RowIds::Narrow(ids) => ids.len(),
+            RowIds::Wide(ids) => ids.len(),
+        }
+    }
+
+    fn get(&self, ordinal: u64) -> Option<i64> {
+        let ordinal = usize::try_from(ordinal).ok()?;
+        match self {
+            RowIds::Narrow(ids) => ids.get(ordinal).map(|&id| i64::from(id)),
+            RowIds::Wide(ids) => ids.get(ordinal).copied(),
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<(i64, Self)>()
+            + match self {
+                RowIds::Narrow(ids) => ids.capacity() * 4,
+                RowIds::Wide(ids) => ids.capacity() * 8,
+            }
     }
 }
 
@@ -121,30 +152,35 @@ impl ZstdCodec {
     }
 }
 
-/// A read-only connection to one library database, with the per-book caches valid for it.
-pub(crate) struct LineStore {
-    conn: Connection,
+/// UTF-8 bytes of a stored value; `Err` with the reason when it cannot be decoded.
+fn row_bytes<'a>(
+    value: ValueRef<'a>,
+    codec: &mut Option<ZstdCodec>,
+) -> std::result::Result<Cow<'a, [u8]>, String> {
+    match value {
+        ValueRef::Text(bytes) => Ok(Cow::Borrowed(bytes)),
+        // NULL content reads as an empty line, like the app's reader.
+        ValueRef::Null => Ok(Cow::Borrowed(&[])),
+        ValueRef::Blob(frame) => match codec.as_mut() {
+            Some(codec) => codec
+                .decode(frame)
+                .map(Cow::Owned)
+                .map_err(|err| format!("{err:#}")),
+            None => Err("a BLOB row in a database without zstd_dict".to_string()),
+        },
+        _ => Err("a row that is neither TEXT nor BLOB".to_string()),
+    }
+}
+
+/// What the database holds; re-read when another connection commits.
+struct Layout {
     /// `line_content` exists (schema 6); otherwise the text is `line.content`.
     split: bool,
     codec: Option<ZstdCodec>,
-    books: HashMap<i64, Option<BookRows>>,
-    /// Whether the indexing path saw `data:` anywhere in the book; only asked about books
-    /// whose first row starts with a BOM.
-    data_uri_books: HashMap<i64, bool>,
 }
 
-impl LineStore {
-    pub fn open(path: &Path) -> Result<Self> {
-        sqlite_host::ensure_ready()?;
-        let conn = Connection::open_with_flags(
-            sqlite_uri(path),
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_URI
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .with_context(|| format!("opening the library database {}", path.display()))?;
-        conn.busy_timeout(BUSY_TIMEOUT)?;
-        conn.execute_batch("PRAGMA query_only=1")?;
+impl Layout {
+    fn read(conn: &Connection, path: &Path) -> Result<Self> {
         let has_table = |name: &str| -> Result<bool> {
             Ok(conn
                 .query_row(
@@ -160,15 +196,60 @@ impl LineStore {
         }
         let split = has_table("line_content")?;
         let codec = if has_table("zstd_dict")? {
-            Some(ZstdCodec::load(&conn)?)
+            Some(ZstdCodec::load(conn)?)
         } else {
             None
         };
+        Ok(Self { split, codec })
+    }
+
+    /// The content column of every row of one book, in `lineIndex` order.
+    fn book_sql(&self) -> &'static str {
+        if self.split {
+            "SELECT lc.content FROM line l LEFT JOIN line_content lc ON lc.id = l.id \
+             WHERE l.bookId = ?1 ORDER BY l.lineIndex, l.id"
+        } else {
+            "SELECT content FROM line WHERE bookId = ?1 ORDER BY lineIndex, id"
+        }
+    }
+}
+
+/// A read-only connection to one library database, with the per-book caches valid for it.
+pub(crate) struct LineStore {
+    conn: Connection,
+    path: PathBuf,
+    layout: Layout,
+    /// `PRAGMA data_version` the caches below were built under.
+    data_version: i64,
+    /// Ordinal-to-rowid maps, bounded by [`ROW_MAP_BYTES`], least recently used out first.
+    books: LruCache<i64, RowIds>,
+    book_bytes: usize,
+    /// Whether the indexing path saw `data:` anywhere in the book; only asked about books
+    /// whose first row starts with a BOM.
+    data_uri_books: HashMap<i64, bool>,
+}
+
+impl LineStore {
+    pub fn open(path: &Path) -> Result<Self> {
+        sqlite_host::ensure_ready()?;
+        // A plain path, not a `file:` URI: a UNC path (`\\server\share\...`) has no URI
+        // form SQLite accepts.
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("opening the library database {}", path.display()))?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        conn.execute_batch("PRAGMA query_only=1")?;
+        let data_version = data_version(&conn)?;
+        let layout = Layout::read(&conn, path)?;
         Ok(Self {
             conn,
-            split,
-            codec,
-            books: HashMap::new(),
+            path: path.to_path_buf(),
+            layout,
+            data_version,
+            books: LruCache::unbounded(),
+            book_bytes: 0,
             data_uri_books: HashMap::new(),
         })
     }
@@ -180,21 +261,11 @@ impl LineStore {
         }
     }
 
-    fn content_sql(&self, by: &str) -> String {
-        if self.split {
-            format!(
-                "SELECT lc.content FROM line l LEFT JOIN line_content lc ON lc.id = l.id \
-                 WHERE {by}"
-            )
-        } else {
-            format!("SELECT l.content FROM line l WHERE {by}")
-        }
-    }
-
-    /// Runs `f` inside one read transaction, so a window sees one snapshot.
+    /// Runs `f` inside one read transaction, so it sees one snapshot. Caches built before
+    /// another connection committed are dropped first.
     fn in_read_txn<R>(&mut self, f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> {
         self.conn.execute_batch("BEGIN")?;
-        let result = f(self);
+        let result = self.drop_caches_if_changed().and_then(|()| f(self));
         let end = self
             .conn
             .execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" });
@@ -203,135 +274,140 @@ impl LineStore {
         Ok(value)
     }
 
-    /// Fetches every key in one read transaction. Keys may repeat and come in any order.
-    pub fn fetch_window(&mut self, keys: &[LineKey]) -> Result<WindowRows> {
+    fn drop_caches_if_changed(&mut self) -> Result<()> {
+        let version = data_version(&self.conn)?;
+        if version != self.data_version {
+            self.books.clear();
+            self.book_bytes = 0;
+            self.data_uri_books.clear();
+            self.layout = Layout::read(&self.conn, &self.path)?;
+            self.data_version = version;
+        }
+        Ok(())
+    }
+
+    /// Fetches every key in one read transaction, in the order given. Keys may repeat.
+    pub fn fetch_window(&mut self, keys: &[LineKey]) -> Result<Vec<RowText>> {
         self.in_read_txn(|store| {
-            let mut order: Vec<usize> = (0..keys.len()).collect();
-            order.sort_by_key(|&i| keys[i]);
-            let mut rows: Vec<Option<RowText>> = (0..keys.len()).map(|_| None).collect();
-            let mut book_rows = HashMap::new();
-            for i in order {
-                let key = keys[i];
-                rows[i] = Some(store.fetch_row(key)?);
-                let count = store.book_row_count(key.book_id)?;
-                book_rows.insert(key.book_id, count);
+            let mut targets: Vec<(i64, usize)> = Vec::with_capacity(keys.len());
+            for (slot, key) in keys.iter().enumerate() {
+                if let Some(id) = store.row_ids(key.book_id)?.get(key.ordinal) {
+                    targets.push((id, slot));
+                }
             }
-            Ok(WindowRows {
-                rows: rows
-                    .into_iter()
-                    .map(|r| r.expect("every key fetched"))
-                    .collect(),
-                book_rows,
-            })
+            // Ascending rowids walk the content B-tree forward.
+            targets.sort_unstable();
+            let mut rows = vec![RowText::Missing; keys.len()];
+            let mut first_rows: Vec<(usize, Vec<u8>)> = Vec::new();
+            {
+                let Self { conn, layout, .. } = &mut *store;
+                let mut stmt = conn.prepare_cached(if layout.split {
+                    "SELECT content FROM line_content WHERE id = ?1"
+                } else {
+                    "SELECT content FROM line WHERE id = ?1"
+                })?;
+                for (i, &(id, slot)) in targets.iter().enumerate() {
+                    if i > 0 && targets[i - 1].0 == id {
+                        continue;
+                    }
+                    let key = keys[slot];
+                    let mut query = stmt.query([id])?;
+                    // A line without a content row reads as empty, like the app's LEFT JOIN.
+                    let value = match query.next()? {
+                        Some(row) => row.get_ref(0)?,
+                        None => ValueRef::Null,
+                    };
+                    rows[slot] = match row_bytes(value, &mut layout.codec) {
+                        Ok(bytes) if key.ordinal == 0 && bytes.starts_with(BOM) => {
+                            first_rows.push((slot, bytes.into_owned()));
+                            continue;
+                        }
+                        Ok(bytes) => RowText::Found(prepare_row(&bytes, false)),
+                        Err(reason) => {
+                            log::warn!("line {key:?} cannot be decoded: {reason}");
+                            RowText::Unreadable
+                        }
+                    };
+                }
+            }
+            for (slot, bytes) in first_rows {
+                let strip_bom = store.book_contains_data_uri(keys[slot].book_id)?;
+                rows[slot] = RowText::Found(prepare_row(&bytes, strip_bom));
+            }
+            for i in 1..targets.len() {
+                if targets[i - 1].0 == targets[i].0 {
+                    rows[targets[i].1] = rows[targets[i - 1].1].clone();
+                }
+            }
+            Ok(rows)
         })
     }
 
-    /// Every row of `book_id` in order (the build tools' whole-book path), in one
-    /// transaction. `None` when the book does not exist.
+    /// Every row of `book_id` in order (the build tools' whole-book path), streamed by one
+    /// query. `None` when the book does not exist.
     #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
     pub fn fetch_book(&mut self, book_id: i64) -> Result<Option<Vec<RowText>>> {
         self.in_read_txn(|store| {
-            let count = store.book_row_count(book_id)?;
-            if count == 0 {
+            let Self { conn, layout, .. } = &mut *store;
+            let mut stmt = conn.prepare_cached(layout.book_sql())?;
+            let mut query = stmt.query([book_id])?;
+            let mut rows = Vec::new();
+            let mut first_row: Option<Vec<u8>> = None;
+            let mut has_data_uri = false;
+            while let Some(row) = query.next()? {
+                let text = match row_bytes(row.get_ref(0)?, &mut layout.codec) {
+                    Ok(bytes) => {
+                        has_data_uri |= contains_data_scheme(&bytes);
+                        if rows.is_empty() && bytes.starts_with(BOM) {
+                            first_row = Some(bytes.into_owned());
+                            RowText::Missing
+                        } else {
+                            RowText::Found(prepare_row(&bytes, false))
+                        }
+                    }
+                    Err(reason) => {
+                        log::warn!(
+                            "book {book_id} row {} cannot be decoded: {reason}",
+                            rows.len()
+                        );
+                        RowText::Unreadable
+                    }
+                };
+                rows.push(text);
+            }
+            if rows.is_empty() {
                 return Ok(None);
             }
-            (0..count)
-                .map(|ordinal| store.fetch_row(LineKey { book_id, ordinal }))
-                .collect::<Result<Vec<_>>>()
-                .map(Some)
+            if let Some(bytes) = first_row {
+                rows[0] = RowText::Found(prepare_row(&bytes, has_data_uri));
+            }
+            Ok(Some(rows))
         })
     }
 
     /// The book's current row count (0 when it does not exist).
     pub fn book_row_count(&mut self, book_id: i64) -> Result<u64> {
-        Ok(self.book_rows(book_id)?.map_or(0, BookRows::len))
+        self.in_read_txn(|store| Ok(store.row_ids(book_id)?.len() as u64))
     }
 
-    fn book_rows(&mut self, book_id: i64) -> Result<Option<&BookRows>> {
-        if !self.books.contains_key(&book_id) {
-            let (count, distinct, min, max): (i64, i64, Option<i64>, Option<i64>) = self
+    fn row_ids(&mut self, book_id: i64) -> Result<&RowIds> {
+        if !self.books.contains(&book_id) {
+            // idx_line_book_index covers this: the table's pages are never read.
+            let ids = self
                 .conn
-                .prepare_cached(
-                    "SELECT count(*), count(DISTINCT lineIndex), min(lineIndex),                      max(lineIndex) FROM line WHERE bookId = ?1",
-                )?
-                .query_row([book_id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?;
-            let rows = if count == 0 {
-                None
-            } else if count == distinct && min == Some(0) && max == Some(count - 1) {
-                Some(BookRows::Contiguous { rows: count as u64 })
-            } else {
-                // Ties in lineIndex keep rowid order, as the index walk the app reads in does.
-                let mut stmt = self.conn.prepare_cached(
-                    "SELECT id FROM line WHERE bookId = ?1 ORDER BY lineIndex, id",
-                )?;
-                let line_ids = stmt
-                    .query_map([book_id], |r| r.get::<_, i64>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Some(BookRows::Sparse { line_ids })
-            };
-            self.books.insert(book_id, rows);
+                .prepare_cached("SELECT id FROM line WHERE bookId = ?1 ORDER BY lineIndex, id")?
+                .query_map([book_id], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let ids = RowIds::new(ids);
+            self.book_bytes += ids.bytes();
+            self.books.put(book_id, ids);
+            while self.book_bytes > ROW_MAP_BYTES && self.books.len() > 1 {
+                if let Some((_, evicted)) = self.books.pop_lru() {
+                    self.book_bytes -= evicted.bytes();
+                }
+            }
         }
-        Ok(self.books[&book_id].as_ref())
-    }
-
-    /// The stored value of one row; `None` when the book has no row at that ordinal.
-    fn read_value(&mut self, key: LineKey) -> Result<Option<RawValue>> {
-        let target = match self.book_rows(key.book_id)? {
-            None => return Ok(None),
-            Some(book) if key.ordinal >= book.len() => return Ok(None),
-            Some(BookRows::Contiguous { .. }) => None,
-            Some(BookRows::Sparse { line_ids }) => Some(line_ids[key.ordinal as usize]),
-        };
-        let value = match target {
-            None => {
-                let sql = self.content_sql("l.bookId = ?1 AND l.lineIndex = ?2");
-                let mut stmt = self.conn.prepare_cached(&sql)?;
-                stmt.query_row(rusqlite::params![key.book_id, key.ordinal as i64], |r| {
-                    Ok(raw_value(r.get_ref(0)?))
-                })
-                .optional()?
-            }
-            Some(id) => {
-                let sql = self.content_sql("l.id = ?1");
-                let mut stmt = self.conn.prepare_cached(&sql)?;
-                stmt.query_row([id], |r| Ok(raw_value(r.get_ref(0)?)))
-                    .optional()?
-            }
-        };
-        Ok(value)
-    }
-
-    /// UTF-8 bytes of a stored value; `Err` with the reason when it cannot be decoded.
-    fn decode_value(&mut self, value: RawValue) -> std::result::Result<Vec<u8>, String> {
-        match value {
-            RawValue::Text(bytes) => Ok(bytes),
-            // NULL content reads as an empty line, like the app's reader.
-            RawValue::Null => Ok(Vec::new()),
-            RawValue::Blob(frame) => match self.codec.as_mut() {
-                Some(codec) => codec.decode(&frame).map_err(|err| format!("{err:#}")),
-                None => Err("a BLOB row in a database without zstd_dict".to_string()),
-            },
-            RawValue::Other => Err("a row that is neither TEXT nor BLOB".to_string()),
-        }
-    }
-
-    fn fetch_row(&mut self, key: LineKey) -> Result<RowText> {
-        let Some(value) = self.read_value(key)? else {
-            return Ok(RowText::Missing);
-        };
-        let bytes = match self.decode_value(value) {
-            Ok(bytes) => bytes,
-            Err(reason) => {
-                log::warn!("line {key:?} cannot be decoded: {reason}");
-                return Ok(RowText::Unreadable);
-            }
-        };
-        let strip_bom = key.ordinal == 0
-            && bytes.starts_with(&[0xEF, 0xBB, 0xBF])
-            && self.book_contains_data_uri(key.book_id)?;
-        Ok(RowText::Found(prepare_row(&bytes, strip_bom)))
+        Ok(self.books.get(&book_id).expect("cached above"))
     }
 
     /// The app decodes a book that contains `data:` anywhere as one string, which drops the
@@ -340,66 +416,46 @@ impl LineStore {
         if let Some(&known) = self.data_uri_books.get(&book_id) {
             return Ok(known);
         }
-        let sql = self.content_sql("l.bookId = ?1");
-        // Streamed: an illustrated book can hold hundreds of MB of embedded images.
-        let mut codec = self.codec.take();
-        let scan = (|| -> Result<bool> {
-            use rusqlite::types::ValueRef;
-            let mut stmt = self.conn.prepare_cached(&sql)?;
+        let found = {
+            let Self { conn, layout, .. } = &mut *self;
+            // Streamed: an illustrated book can hold hundreds of MB of embedded images.
+            let mut stmt = conn.prepare_cached(layout.book_sql())?;
             let mut rows = stmt.query([book_id])?;
+            let mut found = false;
             while let Some(row) = rows.next()? {
-                let hit = match row.get_ref(0)? {
-                    ValueRef::Text(bytes) => contains_data_scheme(bytes),
-                    ValueRef::Blob(frame) => codec
-                        .as_mut()
-                        .and_then(|c| c.decode(frame).ok())
-                        .is_some_and(|bytes| contains_data_scheme(&bytes)),
-                    _ => false,
-                };
-                if hit {
-                    return Ok(true);
+                if row_bytes(row.get_ref(0)?, &mut layout.codec)
+                    .is_ok_and(|bytes| contains_data_scheme(&bytes))
+                {
+                    found = true;
+                    break;
                 }
             }
-            Ok(false)
-        })();
-        self.codec = codec;
-        let found = scan?;
+            found
+        };
         self.data_uri_books.insert(book_id, found);
         Ok(found)
     }
-}
 
-enum RawValue {
-    Null,
-    Text(Vec<u8>),
-    Blob(Vec<u8>),
-    Other,
-}
-
-fn raw_value(value: rusqlite::types::ValueRef<'_>) -> RawValue {
-    use rusqlite::types::ValueRef;
-    match value {
-        ValueRef::Null => RawValue::Null,
-        ValueRef::Text(bytes) => RawValue::Text(bytes.to_vec()),
-        ValueRef::Blob(bytes) => RawValue::Blob(bytes.to_vec()),
-        _ => RawValue::Other,
-    }
-}
-
-/// `file:` URI for a read-only open. `%`, `?` and `#` are the characters SQLite's URI
-/// parser would otherwise interpret.
-fn sqlite_uri(path: &Path) -> String {
-    let raw = path.to_string_lossy().replace('\\', "/");
-    let mut escaped = String::with_capacity(raw.len() + 16);
-    for c in raw.chars() {
-        match c {
-            '%' => escaped.push_str("%25"),
-            '?' => escaped.push_str("%3f"),
-            '#' => escaped.push_str("%23"),
-            c => escaped.push(c),
+    /// Bytes held by the row maps, and by the connection's page cache.
+    #[cfg(test)]
+    pub(crate) fn memory(&self) -> (usize, usize) {
+        let (mut current, mut high) = (0, 0);
+        // SAFETY: the handle is valid while the connection is.
+        unsafe {
+            rusqlite::ffi::sqlite3_db_status(
+                self.conn.handle(),
+                rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED,
+                &mut current,
+                &mut high,
+                0,
+            );
         }
+        (self.book_bytes, current as usize)
     }
-    format!("file:{escaped}?mode=ro")
+}
+
+fn data_version(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA data_version", [], |r| r.get(0))?)
 }
 
 /// The row exactly as the indexing path handed it to the line splitter: UTF-8 decoded
@@ -462,6 +518,8 @@ pub(crate) fn strip_data_uris_for_index(text: &str) -> String {
 pub(crate) enum SourceUnavailable {
     Unconfigured,
     Suspended,
+    /// A writer holds the database; retried after [`BUSY_BACKOFF`].
+    Busy,
     /// Opening or reading failed; the reason has been logged.
     Failed,
 }
@@ -471,6 +529,7 @@ struct Global {
     store: Option<LineStore>,
     generation: u64,
     suspend_depth: u32,
+    busy_until: Option<Instant>,
 }
 
 static GLOBAL: Mutex<Global> = Mutex::new(Global {
@@ -478,13 +537,18 @@ static GLOBAL: Mutex<Global> = Mutex::new(Global {
     store: None,
     generation: 0,
     suspend_depth: 0,
+    busy_until: None,
 });
 
 fn global() -> MutexGuard<'static, Global> {
-    // A panic inside a window leaves only caches behind; they are rebuilt on demand.
-    GLOBAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    GLOBAL.lock().unwrap_or_else(|poisoned| {
+        // A panic inside a window can leave its read transaction open, holding the file's
+        // shared lock: close the connection, and the caches with it.
+        let mut g = poisoned.into_inner();
+        g.drop_store();
+        GLOBAL.clear_poison();
+        g
+    })
 }
 
 impl Global {
@@ -513,6 +577,7 @@ pub(crate) fn configure(db_path: &str) -> Result<()> {
         g.drop_store();
         g.path = Some(path);
         g.generation += 1;
+        g.busy_until = None;
     }
     Ok(())
 }
@@ -533,6 +598,7 @@ pub(crate) fn resume() -> Result<()> {
         // The file may have been replaced while suspended: nothing cached survives.
         g.drop_store();
         g.generation += 1;
+        g.busy_until = None;
     }
     Ok(())
 }
@@ -547,6 +613,17 @@ pub(crate) fn status() -> Status {
     }
 }
 
+/// Whether `err` is SQLite reporting another connection's lock.
+fn is_busy(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    })
+}
+
 /// Runs `f` against the global store, opening it on first use. Holding the mutex for the
 /// window is what lets `suspend` wait for an in-flight window before closing the file.
 pub(crate) fn with_store<R>(
@@ -559,25 +636,27 @@ pub(crate) fn with_store<R>(
     let Some(path) = g.path.clone() else {
         return Err(SourceUnavailable::Unconfigured);
     };
-    if g.store.is_none() {
-        match LineStore::open(&path) {
-            Ok(store) => g.store = Some(store),
-            Err(err) => {
-                log::warn!("line source unavailable: {err:#}");
-                return Err(SourceUnavailable::Failed);
-            }
-        }
+    if g.busy_until.is_some_and(|until| Instant::now() < until) {
+        return Err(SourceUnavailable::Busy);
     }
-    let store = g.store.as_mut().expect("opened above");
-    match f(store) {
-        Ok(value) => Ok(value),
-        Err(err) => {
+    g.busy_until = None;
+    let result = match g.store.as_mut() {
+        Some(store) => f(store),
+        None => LineStore::open(&path).and_then(|store| f(g.store.insert(store))),
+    };
+    result.map_err(|err| {
+        if is_busy(&err) {
+            // The connection is fine; only the writer has to finish.
+            log::warn!("library database is busy; skipping it for {BUSY_BACKOFF:?}: {err:#}");
+            g.busy_until = Some(Instant::now() + BUSY_BACKOFF);
+            SourceUnavailable::Busy
+        } else {
             // A failed read may mean the file changed under us; reopen next time.
-            log::warn!("line source read failed: {err:#}");
+            log::warn!("line source unavailable: {err:#}");
             g.drop_store();
-            Err(SourceUnavailable::Failed)
+            SourceUnavailable::Failed
         }
-    }
+    })
 }
 
 /// Serializes tests that touch the process-global source.
@@ -592,6 +671,13 @@ pub(crate) fn reset_for_tests() {
     g.path = None;
     g.suspend_depth = 0;
     g.generation += 1;
+    g.busy_until = None;
+}
+
+/// `(row map bytes, page cache bytes)` of the open store.
+#[cfg(test)]
+pub(crate) fn memory_for_tests() -> Option<(usize, usize)> {
+    global().store.as_ref().map(LineStore::memory)
 }
 
 #[cfg(test)]
@@ -638,10 +724,45 @@ mod tests {
     }
 
     #[test]
-    fn uri_escapes_what_sqlite_would_parse() {
-        assert_eq!(
-            sqlite_uri(Path::new(r"C:\a b\x#1?%.db")),
-            "file:C:/a b/x%231%3f%25.db?mode=ro"
-        );
+    fn a_panic_inside_a_window_closes_its_connection() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join("lib.db");
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER,
+                                    content TEXT);
+                 INSERT INTO line VALUES (1, 1, 0, 'x');",
+            )
+            .unwrap();
+        configure(db.to_str().unwrap()).unwrap();
+        let panicked = std::panic::catch_unwind(|| {
+            with_store(|store| store.in_read_txn(|_| -> Result<()> { panic!("inside a window") }))
+        });
+        assert!(panicked.is_err());
+        // Its read transaction went with the connection: a writer gets the file at once.
+        assert!(!status().open);
+        let writer = Connection::open(&db).unwrap();
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE; COMMIT").unwrap();
+        assert_eq!(with_store(|store| store.book_row_count(1)).ok(), Some(1));
+        reset_for_tests();
+    }
+
+    #[test]
+    fn line_check_sees_spacing_punctuation_and_nikud() {
+        let base = line_check("בראשית ברא אלהים");
+        for changed in [
+            "בראשית  ברא אלהים",
+            "בראשית ברא אלהים.",
+            "בְּרֵאשִׁית ברא אלהים",
+            "<b>בראשית</b> ברא אלהים",
+            "",
+        ] {
+            assert_ne!(line_check(changed), base, "{changed}");
+        }
+        assert_eq!(line_check("בראשית ברא אלהים"), base);
     }
 }

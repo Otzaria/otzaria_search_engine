@@ -13065,7 +13065,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
   /// newline-joined rows of an official book read from the library database
   /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
-  /// the index and results read them back from that database.
+  /// the index and results read them back from that database. The book is
+  /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
+  /// configured line source does not hold exactly as many rows for it as `text`
+  /// has lines — a row containing `\n`, a different database — or cannot be read
+  /// (unconfigured, suspended, busy).
   Future<int> addTextBook({
     required String title,
     required String topics,

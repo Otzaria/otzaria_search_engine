@@ -39,9 +39,9 @@
 //!
 //! An official book indexed with `TextStorage::LibraryDb` keeps no text in the index. Its
 //! lines are read from the `seforim.db` the build is given, a whole book per read, and
-//! each is verified against the index (`lineHash`, or the book's line count for lines too
-//! short to sign) — so `CorpusLine::text` is byte-identical to a build over an index that
-//! stored the text. A line the database cannot vouch for stops the build.
+//! each is verified against the index's `lineCheck` of its exact text — so
+//! `CorpusLine::text` is byte-identical to a build over an index that stored the text. A
+//! line the database cannot vouch for stops the build.
 
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::builder::BuildPlan;
@@ -100,10 +100,14 @@ pub struct TantivyCorpus {
     library: Option<Mutex<LibraryText>>,
 }
 
+/// One library row as a build reads it: the indexed (normalized) text and the
+/// `lineCheck` of the row; `None` for a row that cannot be decoded.
+type LibraryRow = Option<(String, u32)>;
+
 /// Library-database text for a build: whole books, read once each, most recent last.
 struct LibraryText {
     store: crate::line_source::LineStore,
-    books: VecDeque<(i64, std::sync::Arc<Vec<Option<String>>>)>,
+    books: VecDeque<(i64, std::sync::Arc<Vec<LibraryRow>>)>,
 }
 
 /// Books kept decoded at once. A build walks books in id order, so one would do; a few
@@ -118,9 +122,8 @@ impl LibraryText {
         })
     }
 
-    /// The indexed (normalized) text of every row of `book_id`, `None` for a row that
-    /// cannot be decoded; `None` overall when the book is not in the database.
-    fn book(&mut self, book_id: i64) -> Result<Option<std::sync::Arc<Vec<Option<String>>>>> {
+    /// Every row of `book_id`; `None` when the book is not in the database.
+    fn book(&mut self, book_id: i64) -> Result<Option<std::sync::Arc<Vec<LibraryRow>>>> {
         if let Some(position) = self.books.iter().position(|(id, _)| *id == book_id) {
             let entry = self.books.remove(position).expect("position is in range");
             let lines = entry.1.clone();
@@ -130,11 +133,15 @@ impl LibraryText {
         let Some(rows) = self.store.fetch_book(book_id)? else {
             return Ok(None);
         };
-        let lines: Vec<Option<String>> = rows
+        let lines: Vec<LibraryRow> = rows
             .into_iter()
             .map(|row| match row {
                 crate::line_source::RowText::Found(raw) => {
-                    Some(crate::api::search_engine::normalize_text_for_indexing(raw))
+                    let check = crate::line_source::line_check(&raw);
+                    Some((
+                        crate::api::search_engine::normalize_text_for_indexing(raw),
+                        check,
+                    ))
                 }
                 _ => None,
             })
@@ -152,6 +159,8 @@ impl LibraryText {
 struct LibraryLine {
     book_id: i64,
     ordinal: u64,
+    /// The `lineCheck` the index recorded; `None` when it has none.
+    line_check: Option<u32>,
 }
 
 impl TantivyCorpus {
@@ -379,18 +388,13 @@ impl TantivyCorpus {
     fn read_full(&self, address: DocAddress, line_id: u64) -> Result<CorpusLine, String> {
         let (mut line, library) = self.read_at(address, line_id)?;
         if let Some(library) = library {
-            line.text = self.library_text(line_id, &line, &library)?;
+            line.text = self.library_text(line_id, &library)?;
         }
         Ok(line)
     }
 
     /// The text of a line the index holds no text for, verified against the index.
-    fn library_text(
-        &self,
-        line_id: u64,
-        line: &CorpusLine,
-        at: &LibraryLine,
-    ) -> Result<String, String> {
+    fn library_text(&self, line_id: u64, at: &LibraryLine) -> Result<String, String> {
         let library = self.library.as_ref().ok_or_else(|| {
             format!(
                 "line {line_id} keeps its text in the library database, and this build was \
@@ -411,7 +415,7 @@ impl TantivyCorpus {
                     at.book_id
                 )
             })?;
-        let text = lines
+        let (text, check) = lines
             .get(at.ordinal as usize)
             .ok_or_else(|| {
                 format!(
@@ -421,13 +425,7 @@ impl TantivyCorpus {
             })?
             .clone()
             .ok_or_else(|| format!("line {line_id}: its library row cannot be decoded"))?;
-        let verified = if line.line_hash != 0 {
-            crate::api::search_engine::line_dedup_hash(&text) == line.line_hash
-        } else {
-            let indexed = self.books.get(&line.source_book_key).map_or(0, Vec::len);
-            lines.len() == indexed
-        };
-        if !verified {
+        if at.line_check != Some(check) {
             return Err(format!(
                 "line {line_id}: the library database no longer holds the text this index was \
                  built from (book {}, row {}); build from the database the index was made with",
@@ -557,6 +555,12 @@ impl TantivyCorpus {
                 Some(LibraryLine {
                     book_id,
                     ordinal: segment,
+                    line_check: reader
+                        .fast_fields()
+                        .u64(crate::api::search_engine::LINE_CHECK_FIELD)
+                        .ok()
+                        .and_then(|column| column.first(doc))
+                        .and_then(|check| u32::try_from(check).ok()),
                 }),
             )
         };
@@ -1459,6 +1463,9 @@ mod tests {
         let db = dir.path().join("seforim.db");
         let books = fixture::books();
         fixture::write_library(&db, &books, true);
+        // Indexing checks LibraryDb books against the configured source.
+        crate::line_source::reset_for_tests();
+        crate::line_source::configure(db.to_str().unwrap()).unwrap();
         let (stored_dir, external_dir) = (dir.path().join("a"), dir.path().join("b"));
         std::fs::create_dir_all(&stored_dir).unwrap();
         std::fs::create_dir_all(&external_dir).unwrap();
@@ -1506,5 +1513,6 @@ mod tests {
         drop(conn);
         let err = open(&external, Some(&db)).err().unwrap();
         assert!(format!("{err:#}").contains("no longer holds"), "{err:#}");
+        crate::line_source::reset_for_tests();
     }
 }
