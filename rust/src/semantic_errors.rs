@@ -86,6 +86,9 @@ pub(crate) enum SidecarCall<'a> {
         /// The ONNX Runtime the application passed, the first place the sidecar looks.
         onnx_runtime: Option<&'a Path>,
     },
+    /// Installing, compacting, describing or verifying the vector set at `vectors_dir`:
+    /// what is refused is the set or a release of it; no model is loaded.
+    VectorSet { vectors_dir: &'a Path },
     /// An operation on an open session: indexing, the index diff, removal, reset or search.
     Session {
         model_path: &'a Path,
@@ -96,7 +99,7 @@ pub(crate) enum SidecarCall<'a> {
 impl SidecarCall<'_> {
     fn model_path(&self) -> Option<&Path> {
         match self {
-            Self::Configure => None,
+            Self::Configure | Self::VectorSet { .. } => None,
             Self::OpenArtifact { model_path, .. } | Self::Session { model_path, .. } => {
                 Some(model_path)
             }
@@ -107,7 +110,7 @@ impl SidecarCall<'_> {
     /// nothing, so it has none to look for.
     fn onnx_runtime(&self) -> Option<&Path> {
         match self {
-            Self::Configure => None,
+            Self::Configure | Self::VectorSet { .. } => None,
             Self::OpenArtifact { onnx_runtime, .. } | Self::Session { onnx_runtime, .. } => {
                 *onnx_runtime
             }
@@ -253,7 +256,8 @@ fn classify(
     match error {
         SemanticSearchError::EmbeddingRuntime(error) => embedding_kind(error, call),
         SemanticSearchError::Artifact(error) => match call {
-            SidecarCall::OpenArtifact { vectors_dir, .. } => artifact_kind(error, vectors_dir),
+            SidecarCall::OpenArtifact { vectors_dir, .. }
+            | SidecarCall::VectorSet { vectors_dir } => artifact_kind(error, vectors_dir),
             // Opening a session built on this device reads no artifact. The one artifact
             // error it raises is a recipe version the configuration names and this build has
             // no code for.
@@ -271,7 +275,9 @@ fn classify(
         // backend that returns too few vectors, a model not loaded yet.
         SemanticSearchError::Config(_) => match call {
             SidecarCall::Configure => (K::InvalidInput, None),
-            SidecarCall::OpenArtifact { .. } | SidecarCall::Session { .. } => (K::Internal, None),
+            SidecarCall::OpenArtifact { .. }
+            | SidecarCall::VectorSet { .. }
+            | SidecarCall::Session { .. } => (K::Internal, None),
         },
         SemanticSearchError::IncompatibleIndex { .. } => (K::ReindexRequired, None),
         SemanticSearchError::ReadOnlyIndex { .. } => (K::ReadOnlySession, None),
@@ -283,10 +289,15 @@ fn classify(
         SemanticSearchError::InvalidRankingParameter { parameter, .. } => {
             (K::InvalidInput, Some(ranking_field(parameter)))
         }
-        // The resolver a search hands the sidecar could not tie its vectors to live lines,
-        // and that search's lexical results were served instead. Nothing passes the sidecar
-        // a resolver yet, so nothing raises it; it is a search's failure when something does.
-        SemanticSearchError::Resolution { .. } => (K::QueryFailed, None),
+        // The live index could not be read under the sidecar: by the resolver a search hands
+        // it, which fails that search to its lexical results, or by the one a compaction
+        // re-anchors records with, which is a fault.
+        SemanticSearchError::Resolution { .. } => match call {
+            SidecarCall::Session { .. } => (K::QueryFailed, None),
+            SidecarCall::Configure
+            | SidecarCall::OpenArtifact { .. }
+            | SidecarCall::VectorSet { .. } => (K::Internal, None),
+        },
         SemanticSearchError::Manifest(_)
         | SemanticSearchError::Chunking(_)
         | SemanticSearchError::Fusion(_)
@@ -299,9 +310,14 @@ fn classify(
 fn store_kind(error: &VectorStoreError, call: SidecarCall<'_>) -> SemanticErrorKind {
     use SemanticErrorKind as K;
     match error {
-        // The read-only store loads an artifact's payload and checks every record as it
-        // does, so at open a corrupted store is a damaged artifact.
-        VectorStoreError::Corrupted { .. } if matches!(call, SidecarCall::OpenArtifact { .. }) => {
+        // Opening, installing into or verifying a set reads its segments and checks them as
+        // it does, so a corrupted store there is damaged vectors.
+        VectorStoreError::Corrupted { .. }
+            if matches!(
+                call,
+                SidecarCall::OpenArtifact { .. } | SidecarCall::VectorSet { .. }
+            ) =>
+        {
             K::ArtifactCorrupt
         }
         // A scan stopped by its token. The sidecar lifts it to `SemanticSearchError::
@@ -462,8 +478,7 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
             (K::InvalidInput, Some("vectors_dir".to_string()))
         }
         // A delta that is not the next step for the vectors installed: a sound package,
-        // built for another chain position or codec epoch. Only installing a vector set
-        // raises it, which nothing here does yet.
+        // built for another chain position or codec epoch. Only installing raises it.
         ArtifactError::DeltaDoesNotApply { field, .. } => {
             (K::ArtifactIncompatible, Some((*field).to_string()))
         }

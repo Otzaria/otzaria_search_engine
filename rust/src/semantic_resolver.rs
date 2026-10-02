@@ -35,7 +35,8 @@ use lru::LruCache;
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
 use otzaria_semantic_search::semantic::resolve::{
-    BookSet, CandidateResolver, ResolveError, ResolvedLine, VectorHit, MAX_RECORDS_PER_HIT,
+    BookSet, CandidateResolver, LiveKeySource, ResolveError, ResolvedLine, VectorHit,
+    MAX_RECORDS_PER_HIT,
 };
 use otzaria_semantic_search::semantic::types::SearchFilters;
 use std::collections::{HashMap, HashSet};
@@ -512,6 +513,148 @@ impl<'a> LiveResolver<'a> {
         let mut name = String::new();
         paths.ord_to_str(ord, &mut name).map_err(index_error)?;
         Ok(Some(name))
+    }
+}
+
+/// How much of the live index a vector set covers: see [`LiveResolver::coverage`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Coverage {
+    /// Live lines the recipe embeds: the lines a vector could exist for.
+    pub(crate) keyed_lines: u64,
+    /// Those whose key the set holds.
+    pub(crate) covered_lines: u64,
+    /// Books with a keyed line.
+    pub(crate) books_live: u32,
+    /// Books with a covered line.
+    pub(crate) books_covered: u32,
+}
+
+impl LiveResolver<'_> {
+    /// Whether this resolver reads keys from the `chunkKey` column.
+    pub(crate) fn has_column(&self) -> bool {
+        self.column
+    }
+
+    /// The live lines the recipe embeds, and how many of them `keys` holds: the column
+    /// values of every key of a vector set, sorted. From the column, one pass over it;
+    /// without one, every book's keys recomputed from its stored text, which reads the
+    /// whole store.
+    pub(crate) fn coverage(
+        &self,
+        keys: &[u64],
+        cancel: &CancellationToken,
+    ) -> Result<Coverage, ResolveError> {
+        // Per book: whether a line is keyed, and whether one is covered.
+        let mut books: HashMap<String, (bool, bool)> = HashMap::new();
+        let mut coverage = Coverage::default();
+        let mut count = |book: &mut (bool, bool), value: u64| {
+            coverage.keyed_lines += 1;
+            book.0 = true;
+            if keys.binary_search(&value).is_ok() {
+                coverage.covered_lines += 1;
+                book.1 = true;
+            }
+        };
+        if self.column {
+            for (segment_ord, reader) in self.searcher.segment_readers().iter().enumerate() {
+                let Some(column) = &self.columns[segment_ord].chunk_key else {
+                    continue;
+                };
+                let paths = reader
+                    .fast_fields()
+                    .str("filePath")
+                    .map_err(index_error)?
+                    .ok_or_else(|| index_error("the index has no filePath column"))?;
+                let mut by_ord = vec![(false, false); paths.num_terms()];
+                for (checked, doc) in reader.doc_ids_alive().enumerate() {
+                    if checked % 65_536 == 0 && cancel.is_cancelled() {
+                        return Err(ResolveError::Cancelled);
+                    }
+                    let (Some(value), Some(ord)) = (column.first(doc), paths.term_ords(doc).next())
+                    else {
+                        continue;
+                    };
+                    if value != 0 {
+                        count(&mut by_ord[ord as usize], value);
+                    }
+                }
+                let mut name = String::new();
+                for (ord, (keyed, covered)) in by_ord.into_iter().enumerate() {
+                    if keyed {
+                        name.clear();
+                        paths
+                            .ord_to_str(ord as u64, &mut name)
+                            .map_err(index_error)?;
+                        let book = books.entry(name.clone()).or_default();
+                        book.0 = true;
+                        book.1 |= covered;
+                    }
+                }
+            }
+        } else {
+            for name in self.directory()?.books.keys() {
+                if cancel.is_cancelled() {
+                    return Err(ResolveError::Cancelled);
+                }
+                let Some(lines) = self.book(name)? else {
+                    continue;
+                };
+                let book_keys =
+                    recompute_chunk_keys(&self.searcher, &lines.docs, 0..lines.docs.len())
+                        .map_err(index_error)?;
+                let book = books.entry(name.to_string()).or_default();
+                for key in book_keys.into_iter().flatten() {
+                    count(book, key.column_value());
+                }
+            }
+        }
+        coverage.books_live = books.values().filter(|(keyed, _)| *keyed).count() as u32;
+        coverage.books_covered = books.values().filter(|(_, covered)| *covered).count() as u32;
+        Ok(coverage)
+    }
+}
+
+/// The live index as compaction asks it: the key each live line of a book holds now, from
+/// the column. Compaction re-anchors a record on the nearest live line that holds its key,
+/// and prunes one whose book no longer holds it.
+pub(crate) struct LiveKeys<'a> {
+    resolver: &'a LiveResolver<'a>,
+    /// The library version the index holds, which the caller knows and the index does not.
+    library_version: u32,
+}
+
+impl<'a> LiveKeys<'a> {
+    /// The live index as compaction asks it, or `None` without the column: recomputing every
+    /// book's keys would read the whole store, and keys this cannot give would prune every
+    /// record as stale.
+    pub(crate) fn new(resolver: &'a LiveResolver<'a>, library_version: u32) -> Option<Self> {
+        resolver.has_column().then_some(Self {
+            resolver,
+            library_version,
+        })
+    }
+}
+
+impl LiveKeySource for LiveKeys<'_> {
+    fn library_version(&self) -> u32 {
+        self.library_version
+    }
+
+    fn book_keys(&self, book: &str, out: &mut Vec<(u32, u64)>) -> Result<bool, ResolveError> {
+        out.clear();
+        let Some(lines) = self.resolver.book(book)? else {
+            return Ok(false);
+        };
+        out.extend(
+            lines
+                .ordinals
+                .iter()
+                .zip(&lines.docs)
+                .map(|(&ordinal, &address)| {
+                    (ordinal, self.resolver.column_value(address).unwrap_or(0))
+                }),
+        );
+        Ok(true)
     }
 }
 
