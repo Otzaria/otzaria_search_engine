@@ -18,8 +18,10 @@
 //! opened by all of them.
 
 use crate::api::search_engine::LINE_TEXT_VERSION;
-use otzaria_semantic_search::semantic::chunk_key::KEY_VERSION;
-use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
+use once_cell::sync::Lazy;
+use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef, KEY_VERSION};
+use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
+use rayon::prelude::*;
 
 /// The chunking the library's vectors are built with: Meivin Round 2's, the sidecar's
 /// `config/models/meivin-round2-onnx/chunking.json`.
@@ -39,6 +41,31 @@ pub(crate) fn production_chunking() -> ChunkerConfig {
         embedding_text_version: 2,
         normalization_version: 1,
     }
+}
+
+/// [`production_chunking`], resolved once to the code that applies it.
+static PRODUCTION_CHUNKER: Lazy<Chunker> = Lazy::new(|| {
+    Chunker::new(production_chunking())
+        .expect("the production chunking is one the pinned sidecar implements")
+});
+
+/// The `chunkKey` column value of every line of a book, in order: the line's
+/// [`ChunkKey::column_value`] when the production recipe embeds it, and `0` when it does not.
+///
+/// `lines` is the whole book as the index stores it — each line's text and the section it
+/// belongs to — since a short line borrows its neighbours' text. The answers are the
+/// sidecar's `Chunker::chunk_keys`, computed in parallel: a line's text comes from its
+/// window alone, and the SHA-256 over it is most of the cost.
+pub(crate) fn column_values(lines: &[LineRef<'_>]) -> Vec<u64> {
+    let chunker = &*PRODUCTION_CHUNKER;
+    (0..lines.len())
+        .into_par_iter()
+        .map(|index| {
+            chunker
+                .embedded_text(lines, index)
+                .map_or(0, |text| ChunkKey::of(&text).column_value())
+        })
+        .collect()
 }
 
 /// What a `chunkKey` column was computed under, as an index's metadata records it.

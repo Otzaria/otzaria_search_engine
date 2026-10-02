@@ -42,7 +42,8 @@ use crate::lexicons::{
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
-use crate::semantic_keys::ChunkKeyRecipe;
+use crate::semantic_keys::{self, ChunkKeyRecipe};
+use otzaria_semantic_search::semantic::chunk_key::LineRef;
 
 #[cfg(feature = "semantic-integration")]
 use crate::semantic_errors::{self, SidecarCall};
@@ -1912,7 +1913,6 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 /// normalization that keeps or drops something else, another rule for sections — changes
 /// the text a line's key is computed from, so it is a new version, even where the schema
 /// does not change.
-#[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
 pub(crate) const LINE_TEXT_VERSION: u32 = 1;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
@@ -4934,6 +4934,27 @@ impl SearchEngine {
             .collect();
         let prepare_time = prepare_started.elapsed();
 
+        // The key each line's vector is stored under: the production recipe over the text
+        // the index stores and the sections the headings open, which the passes above just
+        // made. Only for a column in use — a version 4 index has none, and one written under
+        // another recipe counts as absent.
+        let keys_started = Instant::now();
+        let chunk_keys: Vec<u64> = match chunk_key_f {
+            Some(_) => {
+                let lines: Vec<LineRef<'_>> = normalized
+                    .iter()
+                    .zip(&reference_of_line)
+                    .map(|((plain, _, _), section)| LineRef {
+                        text: plain,
+                        section: u64::from(*section),
+                    })
+                    .collect();
+                semantic_keys::column_values(&lines)
+            }
+            None => Vec::new(),
+        };
+        let keys_time = keys_started.elapsed();
+
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
         for (segment, (normalized_line, vocalized_line, line_hash)) in
@@ -4958,7 +4979,8 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(generation_order, id),
                 line_hash_f    => line_hash
             );
-            set_chunk_key(&mut document, chunk_key_f, 0);
+            let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
+            set_chunk_key(&mut document, chunk_key_f, chunk_key);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -4971,7 +4993,7 @@ impl SearchEngine {
         let enqueue_time = enqueue_started.elapsed();
         info!(
             "add_text_book '{title}': {ordinal} docs, {text_bytes} bytes in {:?} \
-             (prepare {prepare_time:?}, enqueue {enqueue_time:?})",
+             (prepare {prepare_time:?}, keys {keys_time:?}, enqueue {enqueue_time:?})",
             started.elapsed()
         );
         Ok(ordinal as u32)
