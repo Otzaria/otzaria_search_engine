@@ -44,7 +44,9 @@ Future<LineSourceStatus> lineSourceStatus() =>
 
 /// The entry point to hand to `sqlite3_auto_extension` (as a function pointer)
 /// before the engine uses SQLite, followed by opening any connection; 0 when
-/// this build bundles its own SQLite and needs nothing from the host.
+/// this build bundles its own SQLite and needs nothing from the host. It stays
+/// registered and costs nothing after the first open; the app may
+/// `sqlite3_cancel_auto_extension` it once that open has returned.
 BigInt sqliteHostEntryAddress() =>
     RustLib.instance.api.crateApiSearchEngineSqliteHostEntryAddress();
 

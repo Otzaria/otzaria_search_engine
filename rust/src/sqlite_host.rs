@@ -62,9 +62,11 @@ pub fn entry_address() -> usize {
     }
 }
 
-/// `sqlite3_auto_extension` entry point. Runs inside the next `sqlite3_open*` Dart makes,
-/// installs the API table once and unregisters itself, so later Dart connections pay
-/// nothing.
+/// `sqlite3_auto_extension` entry point. Runs inside every `sqlite3_open*` and installs
+/// the API table on the first; later calls only return `SQLITE_OK`. It never unregisters
+/// itself: `sqlite3_cancel_auto_extension` from inside the callback moves the last
+/// registered extension into its slot, and the open in progress would skip that one. The
+/// host may cancel it after its first open if it wants to.
 ///
 /// # Safety
 /// Called by SQLite with a valid `sqlite3_api_routines` pointer that outlives the process's
@@ -82,9 +84,6 @@ pub unsafe extern "C" fn otzaria_sqlite_host_entry(
             return ffi::SQLITE_ERROR;
         }
         HOST_READY.store(true, Ordering::Release);
-        let entry: unsafe extern "C" fn() =
-            std::mem::transmute(otzaria_sqlite_host_entry as *const ());
-        ffi::sqlite3_cancel_auto_extension(Some(entry));
     }
     ffi::SQLITE_OK
 }
@@ -115,9 +114,20 @@ mod host_tests {
     }
 
     /// `sqlite3_auto_extension(entry)` followed by one `sqlite3_open`, through the
-    /// foreign library's own exports.
+    /// foreign library's own exports, with another extension registered after ours: the
+    /// open must run both.
     #[cfg(windows)]
     fn register_like_dart(dll: &str) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT_CALLS: AtomicU32 = AtomicU32::new(0);
+        unsafe extern "C" fn next_extension(
+            _db: *mut c_void,
+            _err: *mut *mut c_char,
+            _api: *const c_void,
+        ) -> c_int {
+            NEXT_CALLS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
         use std::ffi::{c_char, c_int, c_void};
         #[link(name = "kernel32")]
         extern "system" {
@@ -139,10 +149,19 @@ mod host_tests {
                 std::mem::transmute(symbol(b"sqlite3_open\0"));
             let close: unsafe extern "C" fn(*mut c_void) -> c_int =
                 std::mem::transmute(symbol(b"sqlite3_close\0"));
+            let cancel_auto_extension: unsafe extern "C" fn(*const c_void) -> c_int =
+                std::mem::transmute(symbol(b"sqlite3_cancel_auto_extension\0"));
             assert_eq!(auto_extension(super::entry_address() as *const c_void), 0);
+            assert_eq!(auto_extension(next_extension as *const c_void), 0);
             let mut db = std::ptr::null_mut();
             assert_eq!(open(b":memory:\0".as_ptr().cast(), &mut db), 0);
             close(db);
+            assert_eq!(
+                NEXT_CALLS.load(Ordering::SeqCst),
+                1,
+                "the next extension was skipped"
+            );
+            cancel_auto_extension(next_extension as *const c_void);
         }
     }
 }

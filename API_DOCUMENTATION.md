@@ -582,7 +582,10 @@ unchanged. Everything else (`TextStorage.inIndex`, the default) is stored as bef
 // Once, before the engine touches SQLite (app builds share Dart's SQLite):
 final entry = sqliteHostEntryAddress();          // BigInt; 0 = SQLite is bundled
 // if (entry != BigInt.zero) register Pointer.fromAddress(entry.toInt()) with
-// sqlite3_auto_extension, then open any connection.
+// sqlite3_auto_extension, then open any connection. The entry stays registered (it only
+// returns SQLITE_OK after the first open); the app may sqlite3_cancel_auto_extension it
+// after that first open. It never cancels itself: doing so inside the callback would make
+// that open skip the next registered extension.
 
 Future<void> configureLineSource({required String dbPath}); // lazy; new path drops caches
 Future<void> suspendLineSource();  // closes the file; waits for a running window
