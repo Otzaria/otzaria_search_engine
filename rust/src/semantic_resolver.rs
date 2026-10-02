@@ -11,15 +11,24 @@
 //! # Two ways to know a line's key
 //!
 //! * **The `chunkKey` column**, when the index has one this build uses
-//!   ([`SearchEngine::chunk_key_field`](crate::api::search_engine)): a hit is tried at its
-//!   hint first; then, when the line moved, against every line of the book, the nearest to
-//!   the hint first; and a hit that resolves in none of its books is looked for once more,
-//!   with every other unresolved hit of the search, in one pass over every column — the
-//!   text moved to another book. A key found nowhere is remembered for the generation.
+//!   ([`SearchEngine::chunk_key_field`](crate::api::search_engine)): every record of a hit
+//!   is tried at its hint; a book where one is not is searched once, every line of it, the
+//!   nearest to the hint first; and a hit that resolves in none of its books is looked for
+//!   once more, with every other unresolved hit of the search, in one pass over every
+//!   column — the text moved to another book. A key found nowhere is remembered for the
+//!   generation.
 //! * **Recomputed from the stored text**, for an index without the column — a version 4
-//!   index — or with one written under another recipe: the key of the line at the hint, and
-//!   then of the lines within [`RECOMPUTE_REACH`] of it, from their text and sections. No
-//!   pass over the whole index: a moved text is found near where it was, or not at all.
+//!   index — or with one written under another recipe: the key of the line at each hint,
+//!   and then of the lines within [`RECOMPUTE_REACH`] of a hint that does not hold it, from
+//!   their text and sections. No pass over the whole index: a moved text is found near where
+//!   it was, or not at all.
+//!
+//! # Every occurrence, and only the text's
+//!
+//! A text the library holds in several places is one vector with a record for each, in
+//! one book or in several, and each record that resolves is a line of its own: up to
+//! [`MAX_LINES_PER_HIT`] per hit, each line once in a search. Without grouping every one is
+//! a result; grouping folds them as it folds any lines, by section or by text.
 //!
 //! Either way a resolved line's key is its 64-bit column value or its full key; a result is
 //! checked against the full 128 bits again before it is shown.
@@ -41,7 +50,7 @@ use otzaria_semantic_search::semantic::resolve::{
 use otzaria_semantic_search::semantic::types::SearchFilters;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tantivy::columnar::Column;
 use tantivy::schema::{Facet, Field, IndexRecordOption, Value};
 use tantivy::{DocAddress, DocSet, Searcher, TantivyDocument, Term, TERMINATED};
@@ -114,6 +123,11 @@ pub(crate) struct BookLines {
     ordinals: Vec<u32>,
     docs: Vec<DocAddress>,
     info: BookInfo,
+    /// The positions that share a value of the book's repeat column with another of its
+    /// positions, by that value: what finds the other occurrences of a text the book holds
+    /// more than once, which a vector set records once per book. Read on first use; see
+    /// [`LiveResolver::repeats`].
+    repeats: OnceLock<HashMap<u64, Box<[u32]>>>,
 }
 
 impl BookLines {
@@ -233,11 +247,22 @@ impl<'a> LiveResolver<'a> {
         else {
             return Ok(false);
         };
-        let key = recompute_chunk_keys(&self.searcher, &lines.docs, position..position + 1)
+        self.holds(&lines, position, record.key)
+    }
+
+    /// Whether the line at `position` of `book` holds `key` by all 128 bits, recomputed from
+    /// the text this searcher reads: its own and its neighbours' within the recipe's window.
+    fn holds(
+        &self,
+        book: &BookLines,
+        position: usize,
+        key: ChunkKey,
+    ) -> Result<bool, ResolveError> {
+        let found = recompute_chunk_keys(&self.searcher, &book.docs, position..position + 1)
             .map_err(index_error)?
             .pop()
             .flatten();
-        Ok(key == Some(record.key))
+        Ok(found == Some(key))
     }
 
     /// The live books, built once per generation.
@@ -367,6 +392,7 @@ impl<'a> LiveResolver<'a> {
             ordinals: found.iter().map(|&(ordinal, _)| ordinal).collect(),
             docs: found.iter().map(|&(_, address)| address).collect(),
             info,
+            repeats: OnceLock::new(),
         });
         self.cache
             .lock()
@@ -423,51 +449,151 @@ impl<'a> LiveResolver<'a> {
         })
     }
 
-    /// The positions of `book` that hold `key`, the nearest to `hint` first: every one the
-    /// column has, or, recomputing, those within [`RECOMPUTE_REACH`] of the hint.
-    fn find_in_book(
+    /// The value a line's repeats in its book are found by: its `chunkKey` column value with
+    /// the column, the key's own first 64 bits; without one its `lineHash`, which every line
+    /// of one text shares once the text has letters enough to have one. `None` for a line
+    /// with neither. Only a candidate without the column: a repeat is held to the whole key
+    /// before it is a line of the hit's.
+    fn repeat_value(&self, address: DocAddress) -> Option<u64> {
+        let columns = &self.columns[address.segment_ord as usize];
+        let value = if self.column {
+            columns.chunk_key.as_ref()?.first(address.doc_id)
+        } else {
+            columns.line_hash.first(address.doc_id)
+        }?;
+        (value != 0).then_some(value)
+    }
+
+    /// `book`'s repeat map: every value of its repeat column that more than one of its
+    /// lines holds, with those lines' positions in order. Read once per book and
+    /// generation, on the first hit resolved in it.
+    fn repeats<'b>(&self, book: &'b BookLines) -> &'b HashMap<u64, Box<[u32]>> {
+        book.repeats.get_or_init(|| {
+            let mut values: Vec<(u64, u32)> = book
+                .docs
+                .iter()
+                .enumerate()
+                .filter_map(|(position, &address)| {
+                    Some((self.repeat_value(address)?, position as u32))
+                })
+                .collect();
+            values.sort_unstable();
+            values
+                .chunk_by(|a, b| a.0 == b.0)
+                .filter(|run| run.len() > 1)
+                .map(|run| {
+                    (
+                        run[0].0,
+                        run.iter().map(|&(_, position)| position).collect(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// The other lines of `book` that hold `key` as its line at `position` does, in order,
+    /// at most `limit` and none `taken`: a text the book holds more than once is recorded
+    /// once, at its first line, and each of its lines is a line of the hit's.
+    fn repeats_of(
+        &self,
+        book: &BookLines,
+        position: usize,
+        key: ChunkKey,
+        limit: usize,
+        taken: &HashSet<DocAddress>,
+    ) -> Result<Vec<usize>, ResolveError> {
+        let Some(value) = self.repeat_value(book.docs[position]) else {
+            return Ok(Vec::new());
+        };
+        let Some(positions) = self.repeats(book).get(&value) else {
+            return Ok(Vec::new());
+        };
+        let mut found = Vec::new();
+        for &other in positions.iter() {
+            if found.len() == limit {
+                break;
+            }
+            let other = other as usize;
+            if other == position || taken.contains(&book.docs[other]) {
+                continue;
+            }
+            let holds = self.column || self.holds(book, other, key)?;
+            if holds {
+                found.push(other);
+            }
+        }
+        Ok(found)
+    }
+
+    /// The position of `book` the record at `hint` names, when that line holds `key`: the
+    /// first look for every record, which a line that has not moved passes at the cost of
+    /// one key.
+    fn at_hint(
         &self,
         book: &BookLines,
         key: ChunkKey,
         hint: u32,
+    ) -> Result<Option<usize>, ResolveError> {
+        let Some(position) = book.position(hint) else {
+            return Ok(None);
+        };
+        let holds = if self.column {
+            self.column_value(book.docs[position]) == Some(key.column_value())
+        } else {
+            self.holds(book, position, key)?
+        };
+        Ok(holds.then_some(position))
+    }
+
+    /// The positions of `book` that hold `key` and are not `taken`, the nearest to `hint`
+    /// first and at most `limit`: every line of the book whose column
+    /// holds it, or, recomputing, those within [`RECOMPUTE_REACH`] of the hint. What a
+    /// record whose line is not at its hint is looked for by.
+    fn search_book(
+        &self,
+        book: &BookLines,
+        key: ChunkKey,
+        hint: u32,
+        limit: usize,
+        taken: &HashSet<DocAddress>,
         cancel: &CancellationToken,
     ) -> Result<Vec<usize>, ResolveError> {
+        if cancel.is_cancelled() {
+            return Err(ResolveError::Cancelled);
+        }
         let centre = book
             .position(hint)
             .unwrap_or_else(|| book.ordinals.partition_point(|&ordinal| ordinal < hint))
             .min(book.docs.len() - 1);
+        let mut found = Vec::new();
         if self.column {
             let wanted = key.column_value();
-            // The hint first, and the whole book only when the line is not there.
-            if self.column_value(book.docs[centre]) == Some(wanted) {
-                return Ok(vec![centre]);
+            for position in book.by_distance(centre) {
+                if found.len() == limit {
+                    break;
+                }
+                let address = book.docs[position];
+                if !taken.contains(&address) && self.column_value(address) == Some(wanted) {
+                    found.push(position);
+                }
             }
-            return Ok(book
-                .by_distance(centre)
-                .filter(|&position| self.column_value(book.docs[position]) == Some(wanted))
-                .take(MAX_LINES_PER_HIT)
-                .collect());
-        }
-        let at_hint = recompute_chunk_keys(&self.searcher, &book.docs, centre..centre + 1)
-            .map_err(index_error)?;
-        if at_hint.first().copied().flatten() == Some(key) {
-            return Ok(vec![centre]);
-        }
-        if cancel.is_cancelled() {
-            return Err(ResolveError::Cancelled);
+            return Ok(found);
         }
         let start = centre.saturating_sub(RECOMPUTE_REACH);
         let end = (centre + RECOMPUTE_REACH + 1).min(book.docs.len());
         let keys =
             recompute_chunk_keys(&self.searcher, &book.docs, start..end).map_err(index_error)?;
-        let mut positions: Vec<usize> = keys
-            .iter()
-            .enumerate()
-            .filter(|(_, found)| **found == Some(key))
-            .map(|(offset, _)| start + offset)
-            .collect();
-        positions.sort_by_key(|&position| (position.abs_diff(centre), position));
-        Ok(positions)
+        found.extend(
+            keys.iter()
+                .enumerate()
+                .filter(|(offset, line)| {
+                    **line == Some(key) && !taken.contains(&book.docs[start + offset])
+                })
+                .map(|(offset, _)| start + offset),
+        );
+        found.sort_by_key(|&position| (position.abs_diff(centre), position));
+        found.truncate(limit);
+        Ok(found)
     }
 
     /// One pass over every `chunkKey` column for the values `wanted` holds: where each
@@ -704,14 +830,12 @@ impl CandidateResolver for LiveResolver<'_> {
                 return Err(ResolveError::Cancelled);
             }
             let mut emitted = 0usize;
-            let mut seen_books: HashSet<&str> = HashSet::new();
+            // Every record at its hint first, and with each line found there the book's
+            // other lines of the same text, which the set does not record.
+            let mut missed: Vec<(Arc<BookLines>, u32)> = Vec::new();
             for record in &hit.records {
                 if emitted == MAX_LINES_PER_HIT {
                     break;
-                }
-                // A book's lines are looked through once per hit, whatever records name it.
-                if !seen_books.insert(&record.book) {
-                    continue;
                 }
                 let Some(book) = self.book(&record.book)? else {
                     continue;
@@ -719,13 +843,47 @@ impl CandidateResolver for LiveResolver<'_> {
                 if !admits(filters, &book.name, &book.info) {
                     continue;
                 }
-                for position in self.find_in_book(&book, hit.key, record.hint, cancel)? {
-                    if emitted == MAX_LINES_PER_HIT {
-                        break;
+                let Some(position) = self.at_hint(&book, hit.key, record.hint)? else {
+                    missed.push((book, record.hint));
+                    continue;
+                };
+                if !taken.insert(book.docs[position]) {
+                    continue;
+                }
+                lines.push(self.describe(hit_index, hit.key, &book, position)?);
+                emitted += 1;
+                let limit = MAX_LINES_PER_HIT - emitted;
+                for other in self.repeats_of(&book, position, hit.key, limit, &taken)? {
+                    taken.insert(book.docs[other]);
+                    lines.push(self.describe(hit_index, hit.key, &book, other)?);
+                    emitted += 1;
+                }
+            }
+            // Then a record whose line moved is looked for in its book: once per book with
+            // the column, every line of it; around each such hint without, and the repeats
+            // of what is found there.
+            let mut searched: HashSet<&str> = HashSet::new();
+            for (book, hint) in &missed {
+                if emitted == MAX_LINES_PER_HIT {
+                    break;
+                }
+                if self.column && !searched.insert(&book.name) {
+                    continue;
+                }
+                let limit = MAX_LINES_PER_HIT - emitted;
+                for position in self.search_book(book, hit.key, *hint, limit, &taken, cancel)? {
+                    if emitted == MAX_LINES_PER_HIT || !taken.insert(book.docs[position]) {
+                        continue;
                     }
-                    if taken.insert(book.docs[position]) {
-                        lines.push(self.describe(hit_index, hit.key, &book, position)?);
-                        emitted += 1;
+                    lines.push(self.describe(hit_index, hit.key, book, position)?);
+                    emitted += 1;
+                    if !self.column {
+                        let limit = MAX_LINES_PER_HIT - emitted;
+                        for other in self.repeats_of(book, position, hit.key, limit, &taken)? {
+                            taken.insert(book.docs[other]);
+                            lines.push(self.describe(hit_index, hit.key, book, other)?);
+                            emitted += 1;
+                        }
                     }
                 }
             }

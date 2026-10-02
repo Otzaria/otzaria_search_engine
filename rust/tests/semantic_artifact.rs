@@ -20,9 +20,9 @@ use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage}
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticCompactionPolicy, SemanticConfigInput, SemanticError,
-    SemanticErrorKind, SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource,
-    SemanticRetrievalMode, SemanticSearchResponse, SemanticState, SemanticVectorsInstallInput,
-    SemanticVectorsPackageKind,
+    SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode, SemanticLexicalMode,
+    SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
+    SemanticVectorsInstallInput, SemanticVectorsPackageKind,
 };
 use search_engine::semantic_keys::production_chunking;
 use std::collections::BTreeSet;
@@ -1040,6 +1040,134 @@ fn a_text_in_two_books_resolves_in_both() {
         2,
         "each line once"
     );
+}
+
+/// One page of `query` in `mode`, grouped by `grouping`.
+fn search_page(
+    engine: &SearchEngine,
+    query: &str,
+    limit: u32,
+    offset: u32,
+    mode: SemanticRetrievalMode,
+    grouping: Option<SemanticGroupingMode>,
+) -> SemanticSearchResponse {
+    engine
+        .search_semantic(
+            query.to_string(),
+            Vec::new(),
+            limit,
+            offset,
+            SemanticLexicalMode::Exact,
+            0,
+            mode,
+            grouping,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap()
+}
+
+/// A passage the book holds in two sections is one vector with one record — a set records a
+/// text once per book, at its first line — and each line that holds it is a line of its
+/// own: two results without grouping, two groups by section, one group of two by text, and
+/// one result on each of two pages of one. The same from the column and, in a version 4
+/// index, from the text.
+#[test]
+fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
+    let books = vec![(
+        "בראשית",
+        "/מקרא/תורה",
+        GENESIS,
+        0,
+        format!("<h2>פרק א</h2>\n{PROBE_LINE}\n<h2>פרק ב</h2>\n{PROBE_LINE}"),
+    )];
+    for version_4 in [false, true] {
+        let library = build_library_of(&books, version_4);
+        let engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        let semantic_only = SemanticRetrievalMode::SemanticOnly;
+        let occurrences = |response: &SemanticSearchResponse| -> Vec<(u64, u32)> {
+            response
+                .results
+                .iter()
+                .filter(|hit| hit.snippet_html == PROBE_LINE)
+                .map(|hit| (hit.segment, hit.merged_count))
+                .collect()
+        };
+
+        let ungrouped = search_page(&engine, PROBE_LINE, 10, 0, semantic_only, None);
+        assert_eq!(
+            occurrences(&ungrouped),
+            vec![(1, 1), (3, 1)],
+            "both sections hold the text; version 4: {version_4}"
+        );
+        assert!(
+            ungrouped.fallback_reason.is_none(),
+            "{:?}",
+            ungrouped.fallback_reason
+        );
+
+        // Each section's heading borrows the passage after it, so it is that section's
+        // other line.
+        let by_section = search_page(
+            &engine,
+            PROBE_LINE,
+            10,
+            0,
+            semantic_only,
+            Some(SemanticGroupingMode::SameSection),
+        );
+        let sections: Vec<(u64, Vec<u64>)> = by_section
+            .results
+            .iter()
+            .filter(|hit| hit.snippet_html == PROBE_LINE)
+            .map(|hit| {
+                (
+                    hit.segment,
+                    hit.merged.iter().map(|sibling| sibling.segment).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(sections, vec![(1, vec![0]), (3, vec![2])]);
+
+        let by_text = search_page(
+            &engine,
+            PROBE_LINE,
+            10,
+            0,
+            semantic_only,
+            Some(SemanticGroupingMode::IdenticalText),
+        );
+        let group = by_text
+            .results
+            .iter()
+            .find(|hit| hit.snippet_html == PROBE_LINE)
+            .expect("the repeated text is a group");
+        assert_eq!(group.merged_count, 2);
+        assert_eq!(group.merged.len(), 1);
+        assert_eq!(
+            [group.segment, group.merged[0].segment],
+            [1, 3],
+            "the sibling is the other section's line"
+        );
+
+        // Paged one at a time, the same lines in the same order, none twice.
+        let paged: Vec<(u64, u64)> = (0..ungrouped.results.len() as u32)
+            .map(|offset| {
+                let page = search_page(&engine, PROBE_LINE, 1, offset, semantic_only, None);
+                assert_eq!(page.results.len(), 1, "offset {offset}");
+                (page.results[0].id, page.results[0].segment)
+            })
+            .collect();
+        let whole: Vec<(u64, u64)> = ungrouped
+            .results
+            .iter()
+            .map(|hit| (hit.id, hit.segment))
+            .collect();
+        assert_eq!(paged, whole);
+    }
 }
 
 /// A filter admits books by what the live index says of them: a book moved to another
