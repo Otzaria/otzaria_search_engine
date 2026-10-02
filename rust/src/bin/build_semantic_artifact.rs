@@ -1,9 +1,10 @@
-//! Build the official semantic artifact from a Tantivy index (S4b).
+//! Build the library's semantic vectors from a Tantivy index, as one base package.
 //!
-//! The build-machine entry point: an index directory, a model file and a recipe in, a
-//! verified semantic artifact out. This is the only place the whole pipeline runs outside a
-//! test — `TantivyCorpus` gives the sidecar's builder a corpus, the builder applies the
-//! recipe and produces the vectors, and the packer writes and re-verifies the result.
+//! An index directory, a model file and a recipe in; a base package out: `segment.oxv`, its
+//! metadata, and `release.json`, the release manifest an installation is handed with the
+//! segment. `TantivyCorpus` gives the sidecar's builder a corpus, and the builder applies the
+//! recipe, embeds every line it keys, and writes the package. The development one-shot of
+//! the build: the release pipeline's plan, embed and assemble steps are the sidecar's.
 //!
 //! Not part of the FFI and not something the application runs. Building an artifact is a
 //! batch job on a machine with the weights and the whole library; a device installs what
@@ -13,7 +14,7 @@
 //! build_semantic_artifact \
 //!   --index ./tantivy-index --library-version 30 --release-tag v30-20260930120000 \
 //!   --model model.json --model-file seforim-embed-round2-int8.onnx --chunking chunking.json \
-//!   --out ./artifact
+//!   --out ./package
 //! ```
 //!
 //! `--model-file` is the ONNX graph the vectors are produced with, handed to the sidecar as
@@ -25,14 +26,9 @@
 //! `--features semantic-mock` for the deterministic stand-in, which then also needs
 //! `--allow-non-semantic` because its vectors carry no meaning.
 //!
-//! `--stamp-index` also writes the index's corpus stamp into `--index`
-//! ([`CORPUS_STAMP_FILE_NAME`](search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME)): the
-//! corpus the artifact was built for — its line recipe and library edition — and the
-//! segment set it was read from. It is what lets an application open the artifact against
-//! the index it ships with, since a device cannot describe its index itself. It is the one
-//! write this binary makes outside `--out`, which is why it is asked for rather than done
-//! by default. Build from the index as it will ship, after any optimize: a later commit or
-//! merge, even one that changes no line, invalidates the stamp.
+//! `--install <dir>` also installs the package into the vector set at `<dir>`, against the
+//! manifest digest the build announces, as a device installs a release: for development and
+//! tests, which then open that set. It is the one write this binary makes outside `--out`.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
@@ -46,10 +42,17 @@ fn main() {
 
 #[cfg(feature = "semantic-integration")]
 fn main() {
-    use otzaria_semantic_search::distribution::builder::{build, BuildRequest};
+    use otzaria_semantic_search::cancellation::CancellationToken;
+    use otzaria_semantic_search::distribution::builder::{
+        build, BuildRequest, RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME,
+    };
     use otzaria_semantic_search::distribution::corpus::CorpusIndex;
     use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
-    use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+    use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+    use otzaria_semantic_search::semantic::segment_set::{
+        install_package, InstallExpectation, InstallSource,
+    };
+    use otzaria_semantic_search::semantic::versioning::{IndexVersion, ModelIdentity};
     use search_engine::semantic_corpus::TantivyCorpus;
     use std::path::{Path, PathBuf};
     use std::process;
@@ -128,17 +131,27 @@ fn main() {
         identity.text.line_text_version
     );
 
+    let clip_q = flag("--clip-q").map_or(1.0, |value| {
+        value
+            .parse::<f32>()
+            .ok()
+            .filter(|q| *q > 0.0 && *q <= 1.0)
+            .unwrap_or_else(|| {
+                eprintln!("Error: --clip-q is a quantile above 0 and at most 1, not {value:?}");
+                process::exit(1);
+            })
+    });
     let report = build(
         BuildRequest {
             output_path: PathBuf::from(&out),
             model_path: PathBuf::from(required("--model-file")),
-            model,
+            model: model.clone(),
             chunking,
             created_at: flag("--created-at").unwrap_or_else(utc_timestamp),
-            collection_name: flag("--collection").unwrap_or_else(|| "chunks".to_string()),
             batch_size: flag("--batch")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(32),
+            clip_q,
             allow_non_semantic_backend: args.iter().any(|arg| arg == "--allow-non-semantic"),
         },
         &corpus,
@@ -148,25 +161,52 @@ fn main() {
         process::exit(1);
     });
 
-    println!("\n=== Built an official artifact ===");
-    println!("Path:          {}", report.artifact_path.display());
-    println!("Vectors:       {}", report.vector_count);
-    println!("Books:         {}", report.book_count);
-    println!("Payload bytes: {}", report.total_size_bytes);
-    println!("Digest:        {}", report.digest);
-    // After the build, so a failed one leaves no stamp claiming an artifact exists for it.
-    if args.iter().any(|arg| arg == "--stamp-index") {
-        let stamp = corpus
-            .write_stamp(Path::new(&index_path))
-            .unwrap_or_else(|error| {
-                eprintln!("Could not stamp the index at {index_path}: {error:#}");
-                process::exit(1);
-            });
-        println!("Index stamp:   {}", stamp.display());
+    println!("\n=== Built a base package ===");
+    println!("Path:             {}", report.output_path.display());
+    println!("Vectors:          {}", report.manifest.counts.slots);
+    println!("Books:            {}", report.manifest.counts.books);
+    println!("Planned lines:    {}", report.planned_lines);
+    println!("Clipped:          {}", report.clipped_components);
+    println!("Package digest:   {}", report.manifest.package_digest);
+    println!("Manifest SHA-256: {}", report.manifest_sha256);
+    if let Some(vectors_dir) = flag("--install") {
+        let manifest_path = report.output_path.join(RELEASE_MANIFEST_FILENAME);
+        let manifest_json = std::fs::read_to_string(&manifest_path).unwrap_or_else(|error| {
+            eprintln!("Could not read {}: {error}", manifest_path.display());
+            process::exit(1);
+        });
+        let identity = corpus.identity().unwrap_or_else(|error| {
+            eprintln!("The corpus has no identity: {error}");
+            process::exit(1);
+        });
+        let applied = install_package(
+            Path::new(&vectors_dir),
+            &InstallSource {
+                segment: &report.output_path.join(SEGMENT_FILENAME),
+                manifest_json: &manifest_json,
+            },
+            &InstallExpectation {
+                identity: IndexVersion {
+                    text: identity.text,
+                    model,
+                    store: readable_store_identity(),
+                },
+                published_manifest_sha256: Some(report.manifest_sha256.clone()),
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("Could not install the package into {vectors_dir}: {error}");
+            process::exit(1);
+        });
+        println!(
+            "Installed:        {vectors_dir}, generation {}",
+            applied.generation
+        );
     }
     println!(
-        "\nPublish that digest outside the artifact. Verified without it, an install \
-         detects damage\nand the wrong artifact, but not one deliberately rebuilt to match."
+        "\nPublish the manifest's SHA-256 outside it. Installed without it, a device \
+         detects damage\nand the wrong release, but not one deliberately rebuilt to match."
     );
 }
 
@@ -181,17 +221,18 @@ Required:
   --model-file <path>        The model the vectors are produced with: an ONNX graph
                              (*.onnx) with its tokenizer.json beside it
   --chunking <path>          JSON ChunkerConfig — the recipe itself
-  --out <dir>                Output directory; must not exist, or be empty
+  --out <dir>                Output directory for the package; must not exist, or be empty
 
 Optional:
   --release-tag <tag>        The release that edition was published as (default: none)
   --batch <N>                Texts per inference call (default: 32)
-  --collection <name>        Collection name in the payload header (default: \"chunks\")
+  --clip-q <q>               The quantile each dimension's int8 scale is calibrated at
+                             (default: 1, which clips nothing)
   --created-at <timestamp>   Manifest timestamp (default: now, UTC)
   --allow-non-semantic       Permit a backend whose vectors carry no meaning. For tests
-                             only: such an artifact passes every check and answers nonsense.
-  --stamp-index              Also write the corpus stamp into --index, which a device
-                             needs to open this artifact against that index
+                             only: such a package passes every check and answers nonsense.
+  --install <dir>            Also install the package into the vector set at <dir>, as a
+                             device installs a release
 
 Which lines get a vector is derived by applying the recipe to the corpus, before any
 inference. The recipe's three versions must name behaviour this build implements, and its
