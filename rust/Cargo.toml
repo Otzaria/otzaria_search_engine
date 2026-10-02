@@ -85,10 +85,9 @@ lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
-# The corpus stamp names the index's segment set by a SHA-256. Same crate and major
-# version the semantic sidecar hashes with, so the two sides cannot disagree about what
-# SHA-256 means.
-sha2 = "0.10"
+# A release may publish its vector segment compressed (`.oxv.zst`), and installing it
+# expands it. The version tantivy already builds, with no features: decoding only.
+zstd = { version = "0.13", default-features = false }
 
 # The semantic sidecar's persisted-vector format and its inference bindings
 # (ONNX Runtime) are part of the index identity.  A branch dependency
@@ -106,6 +105,9 @@ sha2 = "0.10"
 otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "71d83263a11044610d3f46bdae1bfccc50156539", default-features = false }
 
 [dev-dependencies]
+# A test checks a release's manifest by the digest it is published under. Same crate and
+# major version the semantic sidecar hashes with.
+sha2 = "0.10"
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),
 # ש-RegExp של Dart תומך בו ו-`regex` לא — בבדיקות מהדרים אותן עם backtracking
 # כמו בצד ה-Dart.
