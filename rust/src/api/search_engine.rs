@@ -42,6 +42,7 @@ use crate::lexicons::{
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
+use crate::semantic_keys::ChunkKeyRecipe;
 
 #[cfg(feature = "semantic-integration")]
 use crate::semantic_errors::{self, SidecarCall};
@@ -1884,7 +1885,20 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 //
 // v4: נוסף השדה `textHash` (FAST) — חתימת טקסט-בלבד לצד החתימה הקנונית,
 // כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 4;
+//
+// v5: נוסף השדה `chunkKey` (FAST) — מפתח הטקסט שהשורה מוטמעת בו (ראו
+// semantic_keys), בסוף הסכימה. בניגוד לכל הקפיצות הקודמות, אינדקס v4 *אינו*
+// דורש בנייה מחדש: המנוע פותח אותו בסכימה שלו, מחפש בו וממשיך לכתוב אליו,
+// בלי העמודה (ראו MIN_READABLE_SCHEMA_VERSION). רק אינדקס חדש מקבל אותה.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
+/// The oldest schema version this engine opens, searches and writes to as it was built,
+/// with no rebuild: version 4, the schema before the `chunkKey` column. Such an index stays
+/// at version 4 and has no column, whatever is added to it; only an index this engine
+/// creates gets one. Every version in between is a version this engine reads, each with the
+/// one schema [`schema_of_version`] gives it.
+const MIN_READABLE_SCHEMA_VERSION: u32 = 4;
+/// The column that holds each line's chunk key: see [`crate::semantic_keys`].
+const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 
 /// Version of the line recipe: how [`SearchEngine::add_text_book`] turns a book's text into
@@ -1987,6 +2001,16 @@ fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
     (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
 }
 
+/// Records `key` in the `chunkKey` column, when the index has one this build writes: `0`
+/// for a line with no vector, a line's [`ChunkKey::column_value`] for one with a vector.
+///
+/// [`ChunkKey::column_value`]: otzaria_semantic_search::semantic::chunk_key::ChunkKey::column_value
+fn set_chunk_key(document: &mut TantivyDocument, field: Option<Field>, key: u64) {
+    if let Some(field) = field {
+        document.add_u64(field, key);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct IndexMetadata {
     format: String,
@@ -1994,6 +2018,53 @@ struct IndexMetadata {
     engine_version: String,
     tantivy_version: String,
     created_at_unix_seconds: u64,
+    /// The recipe the index's `chunkKey` column was written under, as [`ChunkKeyRecipe`]'s
+    /// three fields: recorded when an index with the column is created, and absent from an
+    /// index without one, or one whose recipe is not known.
+    ///
+    /// Read leniently: a value that does not parse is a recipe not known, which makes the
+    /// column count as absent, and never makes the metadata unreadable. A column can always
+    /// be recomputed from the text, so nothing in it is a reason to rebuild an index.
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    line_text_version: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    chunk_key_version: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    chunk_key_chunking_identity: Option<u64>,
+}
+
+impl IndexMetadata {
+    /// The recipe the `chunkKey` column was written under, when all of it is recorded.
+    fn chunk_key_recipe(&self) -> Option<ChunkKeyRecipe> {
+        Some(ChunkKeyRecipe {
+            line_text_version: self.line_text_version?,
+            key_version: self.chunk_key_version?,
+            chunking_identity: self.chunk_key_chunking_identity?,
+        })
+    }
+}
+
+/// A value, or `None` when it is not one: never an error, so one field cannot make the
+/// rest of a document unreadable.
+fn lenient<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = JsonValue::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -2437,7 +2508,7 @@ fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
 /// אותה schema_version) — והאפליקציה נופלת בשקט לאינדקס זמני.
 /// גם meta.json חסר/פגום נחשב אי-התאמה: sidecar תקין לא מעיד כלום כשה-metadata
 /// של tantivy עצמו לא קריא, ופתיחת האינדקס תיכשל באותה מידה.
-fn stored_schema_mismatch(index_path: &Path) -> Option<String> {
+fn stored_schema_mismatch(index_path: &Path, version: u32, expected: &Schema) -> Option<String> {
     let raw = match fs::read_to_string(index_path.join("meta.json")) {
         Ok(raw) => raw,
         Err(err) => return Some(format!("tantivy meta.json is missing or unreadable: {err}")),
@@ -2450,8 +2521,10 @@ fn stored_schema_mismatch(index_path: &Path) -> Option<String> {
         return Some("tantivy meta.json has no schema entry".to_string());
     };
     match serde_json::from_value::<Schema>(schema_json) {
-        Ok(stored) if stored == current_schema() => None,
-        Ok(_) => Some("tantivy schema on disk differs from the engine schema".to_string()),
+        Ok(stored) if stored == *expected => None,
+        Ok(_) => Some(format!(
+            "tantivy schema on disk differs from the engine schema of version {version}"
+        )),
         Err(err) => Some(format!("stored tantivy schema is unreadable: {err}")),
     }
 }
@@ -2493,7 +2566,7 @@ fn check_sidecar_metadata(index_path: &Path, metadata_path: PathBuf) -> IndexCom
         );
     }
 
-    if metadata.schema_version < INDEX_SCHEMA_VERSION {
+    if metadata.schema_version < MIN_READABLE_SCHEMA_VERSION {
         return compatibility(
             false,
             "rebuild_required",
@@ -2513,7 +2586,11 @@ fn check_sidecar_metadata(index_path: &Path, metadata_path: PathBuf) -> IndexCom
         );
     }
 
-    if let Some(reason) = stored_schema_mismatch(index_path) {
+    // The schema the declared version has, and no other: a sidecar can declare a version
+    // its index was not built at, as an intermediate build did.
+    let expected = schema_of_version(metadata.schema_version)
+        .expect("every version from MIN_READABLE_SCHEMA_VERSION to INDEX_SCHEMA_VERSION has one");
+    if let Some(reason) = stored_schema_mismatch(index_path, metadata.schema_version, &expected) {
         return compatibility(
             false,
             "rebuild_required",
@@ -2570,16 +2647,16 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
         }
     };
 
-    if tantivy_schema_matches_current_version(&tantivy_metadata) {
+    if let Some(version) = readable_schema_version(&tantivy_metadata) {
         return compatibility(
             true,
             "legacy_compatible",
-            Some(INDEX_SCHEMA_VERSION),
+            Some(version),
             metadata_path,
-            Some(
-                "otzaria metadata is missing, but Tantivy schema matches the current engine"
-                    .to_string(),
-            ),
+            Some(format!(
+                "otzaria metadata is missing, but Tantivy schema matches the engine's schema \
+                 version {version}"
+            )),
         );
     }
 
@@ -2592,17 +2669,14 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
     )
 }
 
-/// Compares the full on-disk schema against the engine's current one — the
-/// same equality `Index::open_or_create` enforces — so a legacy index can't
-/// pass the check (e.g. on the `id` field alone) and then fail to open.
-fn tantivy_schema_matches_current_version(metadata: &JsonValue) -> bool {
-    let Some(schema_json) = metadata.get("schema") else {
-        return false;
-    };
-    match serde_json::from_value::<Schema>(schema_json.clone()) {
-        Ok(found_schema) => found_schema == current_schema(),
-        Err(_) => false,
-    }
+/// The version, of those this engine reads, whose schema the on-disk one is. Compares the
+/// full schema — the same equality `Index::open_or_create` enforces — so a legacy index
+/// can't pass the check (e.g. on the `id` field alone) and then fail to open.
+fn readable_schema_version(metadata: &JsonValue) -> Option<u32> {
+    let found: Schema = serde_json::from_value(metadata.get("schema")?.clone()).ok()?;
+    (MIN_READABLE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION)
+        .rev()
+        .find(|&version| schema_of_version(version).is_some_and(|schema| schema == found))
 }
 
 fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
@@ -2622,17 +2696,34 @@ fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
     }
 }
 
-fn ensure_current_index_metadata(index_path: &Path) -> Result<()> {
+/// Writes the metadata of an index found without any (`legacy_compatible`), a new one
+/// included: the version its schema is, and — when that schema has the `chunkKey` column
+/// and the index holds no document yet (`empty`) — this build's chunk-key recipe, under
+/// which every key it will hold is computed. The recipe of a column that already holds keys
+/// cannot be read back from it, so it is left unrecorded, and the column counts as absent.
+fn ensure_current_index_metadata(index_path: &Path, empty: bool) -> Result<()> {
     let compatibility = check_index_compatibility_path(index_path);
-    if compatibility.compatible && compatibility.status != "compatible" {
-        write_current_index_metadata(index_path)?;
+    if !compatibility.compatible || compatibility.status == "compatible" {
+        return Ok(());
     }
-    Ok(())
+    let Some(version) = compatibility.found_schema_version else {
+        return Ok(());
+    };
+    let has_column =
+        schema_of_version(version).is_some_and(|schema| schema.get_field(CHUNK_KEY_FIELD).is_ok());
+    let recipe = (has_column && empty).then(ChunkKeyRecipe::current);
+    write_index_metadata(index_path, &index_metadata(version, recipe))
 }
 
+/// What a new index's metadata is, written into a directory a test made by other means.
+#[cfg(test)]
 fn write_current_index_metadata(index_path: &Path) -> Result<()> {
+    write_index_metadata(index_path, &current_index_metadata())
+}
+
+fn write_index_metadata(index_path: &Path, metadata: &IndexMetadata) -> Result<()> {
     let metadata_path = index_metadata_path(index_path);
-    let serialized = serde_json::to_string_pretty(&current_index_metadata())?;
+    let serialized = serde_json::to_string_pretty(metadata)?;
     fs::write(&metadata_path, format!("{serialized}\n")).with_context(|| {
         format!(
             "failed to write index metadata to {}",
@@ -2641,17 +2732,70 @@ fn write_current_index_metadata(index_path: &Path) -> Result<()> {
     })
 }
 
+/// The metadata of a new index: this engine's schema version and chunk-key recipe.
+#[cfg(test)]
 fn current_index_metadata() -> IndexMetadata {
+    index_metadata(INDEX_SCHEMA_VERSION, Some(ChunkKeyRecipe::current()))
+}
+
+fn index_metadata(schema_version: u32, chunk_keys: Option<ChunkKeyRecipe>) -> IndexMetadata {
     IndexMetadata {
         format: INDEX_FORMAT.to_string(),
-        schema_version: INDEX_SCHEMA_VERSION,
+        schema_version,
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
         tantivy_version: TANTIVY_INDEX_VERSION.to_string(),
         created_at_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
+        line_text_version: chunk_keys.map(|recipe| recipe.line_text_version),
+        chunk_key_version: chunk_keys.map(|recipe| recipe.key_version),
+        chunk_key_chunking_identity: chunk_keys.map(|recipe| recipe.chunking_identity),
     }
+}
+
+/// The metadata an index directory holds, when it holds metadata this engine reads.
+fn read_index_metadata(index_path: &Path) -> Option<IndexMetadata> {
+    let raw = fs::read_to_string(index_metadata_path(index_path)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// The index's `chunkKey` column, when it has one written under this build's recipe.
+///
+/// A version 4 index has none. A column whose metadata records another recipe, or none,
+/// is one this build does not use: it counts as absent, so nothing reads it and nothing is
+/// written to it, and the keys of the index's lines are computed from their text instead.
+fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option<Field> {
+    let field = schema.get_field(CHUNK_KEY_FIELD).ok()?;
+    let recorded = read_index_metadata(index_path).and_then(|metadata| metadata.chunk_key_recipe());
+    let current = ChunkKeyRecipe::current();
+    if recorded == Some(current) {
+        return Some(field);
+    }
+    info!(
+        "the index's chunkKey column was written under {recorded:?}, and this build computes \
+         {current:?}: the column counts as absent"
+    );
+    None
+}
+
+/// Opens the index in `directory` with the schema it was built with, or creates one with
+/// [`current_schema`] when there is none.
+///
+/// An index of an older version this engine reads is opened as it is: `open_or_create`
+/// refuses it under [`current_schema`], and it is opened again under the schema of each
+/// older version in turn. A schema none of them is stays refused, as the `SchemaError`
+/// `open_or_create` returns.
+fn open_or_create_index(directory: MmapDirectory) -> tantivy::Result<Index> {
+    let mut opened = Index::open_or_create(directory.clone(), current_schema());
+    for version in (MIN_READABLE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).rev() {
+        if !matches!(opened, Err(tantivy::TantivyError::SchemaError(_))) {
+            break;
+        }
+        let schema = schema_of_version(version).expect("every readable version has a schema");
+        opened = Index::open_or_create(directory.clone(), schema);
+    }
+    opened
 }
 
 fn index_metadata_path(index_path: &Path) -> PathBuf {
@@ -2676,9 +2820,24 @@ fn compatibility(
     }
 }
 
-/// The schema this engine version requires. Kept in one place so `new()` and
-/// the legacy compatibility check can never drift apart.
+/// The schema of the indexes this engine creates, version [`INDEX_SCHEMA_VERSION`]. Kept in
+/// one place so `new()` and the compatibility checks can never drift apart.
 fn current_schema() -> Schema {
+    index_schema(true)
+}
+
+/// The one schema an index of `version` has, for the versions this engine reads.
+fn schema_of_version(version: u32) -> Option<Schema> {
+    match version {
+        INDEX_SCHEMA_VERSION => Some(index_schema(true)),
+        // The same fields in the same order, but the `chunkKey` column.
+        MIN_READABLE_SCHEMA_VERSION => Some(index_schema(false)),
+        _ => None,
+    }
+}
+
+/// The schema of version [`INDEX_SCHEMA_VERSION`], or of version 4 without `chunk_keys`.
+fn index_schema(chunk_keys: bool) -> Schema {
     let mut schema_builder = Schema::builder();
     // Deliberately NOT fast: a text fast field stores every raw line in a
     // columnar dictionary — a second full copy of the corpus — and nothing
@@ -2741,6 +2900,14 @@ fn current_schema() -> Schema {
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
+    if chunk_keys {
+        // The key of the text the line is embedded as, `ChunkKey::column_value` (see
+        // `semantic_keys`): 0 for a line the recipe does not embed, a PDF's, and any line
+        // not added by `add_text_book`. FAST only: read columnar to tie a stored vector to
+        // the lines that hold its text; neither searched nor stored. Last, so every other
+        // field keeps the number it has in a version 4 index, which has no such field.
+        schema_builder.add_u64_field(CHUNK_KEY_FIELD, FAST);
+    }
     schema_builder.build()
 }
 
@@ -2835,7 +3002,14 @@ const VOC_VARIANTS_PER_TOKEN: usize = 128;
 const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
 pub struct SearchEngine {
+    /// The schema of the index this engine opened, which is the one it was built with: a
+    /// version 4 index has no `chunkKey` field, and is not given one.
     schema: Schema,
+    /// The `chunkKey` column, when the index has one this build uses: written under the
+    /// chunk-key recipe this build computes (see [`live_chunk_key_field`]). `None` for a
+    /// version 4 index, which has none, and for a column written under another recipe,
+    /// which counts as absent: nothing writes to it, and nothing reads it.
+    chunk_key_field: Option<Field>,
     /// The directory this engine opened. Retained only so a build can ask whether the
     /// index it is about to read is one this version reads — see
     /// [`Self::index_compatibility`].
@@ -2892,9 +3066,8 @@ impl SearchEngine {
     pub fn new(path: &str) -> Self {
         init_engine_logger();
         debug!("new path={}", path);
-        let schema = current_schema();
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = match Index::open_or_create(mmap_directory, schema.clone()) {
+        let index = match open_or_create_index(mmap_directory) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -2902,6 +3075,7 @@ impl SearchEngine {
             ),
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
+        let schema = index.schema();
         // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
         // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
         // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
@@ -2970,12 +3144,19 @@ impl SearchEngine {
             }
         };
 
-        if let Err(err) = ensure_current_index_metadata(Path::new(path)) {
+        // Nothing committed yet, so a chunk-key recipe recorded now describes every key the
+        // index will hold.
+        let empty = index
+            .searchable_segment_ids()
+            .is_ok_and(|segments| segments.is_empty());
+        if let Err(err) = ensure_current_index_metadata(Path::new(path), empty) {
             debug!("failed to ensure index metadata: {err:#}");
         }
+        let chunk_key_field = live_chunk_key_field(&schema, Path::new(path));
 
         SearchEngine {
             schema,
+            chunk_key_field,
             index_path: PathBuf::from(path),
             index,
             index_writer,
@@ -4501,6 +4682,8 @@ impl SearchEngine {
             ),
             line_hash_f    => line_dedup_hash(&normalized_text)
         );
+        // Not a line of a book, so no key: only `add_text_book` knows a line's neighbours.
+        set_chunk_key(&mut document, self.chunk_key_field, 0);
         for facet in _extra_facets.iter().flatten() {
             document.add_facet(topics_f, Facet::from_text(facet)?);
         }
@@ -4541,6 +4724,7 @@ impl SearchEngine {
             generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
@@ -4564,6 +4748,7 @@ impl SearchEngine {
                 ),
                 line_hash_f    => line_hash
             );
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -4697,6 +4882,7 @@ impl SearchEngine {
         );
         let text_hash = content_fingerprint(text);
         let id_base = catalogue_id_base(catalogue_order)?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
@@ -4772,6 +4958,7 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(generation_order, id),
                 line_hash_f    => line_hash
             );
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -4849,6 +5036,7 @@ impl SearchEngine {
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
         let id_base = catalogue_id_base(catalogue_order)?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -4897,6 +5085,8 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(generation_order, id),
                 line_hash_f    => line_hash
             );
+            // A PDF's lines are not the library's text, so no vector is built from them.
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -4965,6 +5155,7 @@ impl SearchEngine {
             generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
@@ -4989,6 +5180,7 @@ impl SearchEngine {
                 ),
                 line_hash_f    => line_hash
             );
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -11632,7 +11824,7 @@ mod tests {
     fn old_sidecar_schema_requires_rebuild() {
         let dir = TempDir::new().unwrap();
         let mut metadata = current_index_metadata();
-        metadata.schema_version = INDEX_SCHEMA_VERSION - 1;
+        metadata.schema_version = MIN_READABLE_SCHEMA_VERSION - 1;
         fs::write(
             index_metadata_path(dir.path()),
             serde_json::to_string_pretty(&metadata).unwrap(),
@@ -11644,8 +11836,9 @@ mod tests {
         assert_eq!(compatibility.status, "rebuild_required");
         assert_eq!(
             compatibility.found_schema_version,
-            Some(INDEX_SCHEMA_VERSION - 1)
+            Some(MIN_READABLE_SCHEMA_VERSION - 1)
         );
+        assert!(compatibility.reason.unwrap().contains("older than"));
     }
 
     #[test]
