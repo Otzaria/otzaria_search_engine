@@ -1498,6 +1498,82 @@ fn a_text_copied_into_another_category_is_found_under_each_filter() {
     );
 }
 
+/// A text two admitted books hold, each many times over, and the set records in neither: more
+/// lines of it than a hit resolves to. Which of them come back does not depend on how a map
+/// of books happens to iterate, so it is the same after every commit, each of which plans
+/// the filter afresh.
+#[test]
+fn the_lines_of_a_widened_search_are_the_same_whatever_the_plan_iterates() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copies = |key: &'static str, order: u32| -> Book {
+        (
+            "עותקים",
+            "/עותקים",
+            key,
+            order,
+            vec![BERACHOT_TEXT; 20].join("\n"),
+        )
+    };
+    add_books(
+        &mut engine,
+        &[
+            copies("/books/copies-b.txt", 7),
+            copies("/books/copies-a.txt", 8),
+        ],
+    );
+    let lines = |engine: &SearchEngine| -> Vec<(String, u64)> {
+        let response = engine
+            .search_semantic(
+                BERACHOT_TEXT.to_string(),
+                vec!["/עותקים".to_string()],
+                50,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap();
+        response
+            .results
+            .into_iter()
+            .filter(|hit| hit.snippet_html == BERACHOT_TEXT)
+            .map(|hit| (hit.file_path, hit.segment))
+            .collect()
+    };
+    let first = lines(&engine);
+    assert_eq!(first.len(), 32, "one hit's lines, at most: {first:?}");
+    assert!(
+        first
+            .iter()
+            .filter(|(book, _)| book == "/books/copies-a.txt")
+            .count()
+            == 20,
+        "the admitted books in name order: {first:?}"
+    );
+    for round in 0..6u32 {
+        engine
+            .add_text_book(
+                "ספר נוסף".to_string(),
+                "/אחר".to_string(),
+                format!("/books/another-{round}.txt"),
+                20 + round,
+                0,
+                format!("שורה נוספת ארוכה דיה לעמוד לבדה מספר {round}"),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(lines(&engine), first, "after commit {round}");
+    }
+}
+
 /// A query with nothing to embed fails the semantic half of that one search: the lexical
 /// half is served and the session goes on serving.
 #[test]
