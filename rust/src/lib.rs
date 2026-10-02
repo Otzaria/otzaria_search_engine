@@ -34,3 +34,7 @@ mod semantic_errors;
 // crate root for the same reason: Dart gets the token, in `crate::api`, and nothing here. In
 // every build, since the token is part of the API whether or not the sidecar is.
 mod search_cancellation;
+// The chunk key the index stores for each line, and the recipe it is computed under. At the
+// crate root so flutter_rust_bridge generates no bindings for it, and in every build: the
+// release index is built by one build and opened by all of them.
+mod semantic_keys;
