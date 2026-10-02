@@ -219,49 +219,78 @@ pub struct Validation {
     pub keyed_lines: u64,
     /// Those whose key the set records in their own book.
     pub covered_lines: u64,
-    /// The set's records in the index's books.
+    /// The set's records: in the index's books, and in books the index does not hold.
     pub records: u64,
     /// Records whose hint is a line that holds their key: resolved at the first look.
     pub at_hint: u64,
     /// Records whose key their book holds at another line: re-anchored by the resolver.
     pub moved: u64,
-    /// Records whose key their book holds nowhere any more.
+    /// Records whose key their book holds nowhere any more, or whose book the index does not
+    /// hold at all.
     pub gone: u64,
+    /// Books the set records texts in that the index does not hold.
+    pub books_missing: u64,
+    /// Whether the index has a `chunkKey` column this build uses, which is what a device
+    /// resolves records by, and so whether it was held to the lines' text.
+    pub column_checked: bool,
+    /// Lines whose `chunkKey` column is not their text's key's first 64 bits, `0` for a line
+    /// the recipe does not embed: a device would not resolve a record to them, or would find
+    /// another text under their key.
+    pub column_mismatches: u64,
 }
 
 /// How the set's records land on the index at `index_path`, read-only: every book's lines
 /// keyed from their text, as [`export_plan`] keys them, against the records a scan of `set`
-/// reaches for that book. A set built from this index has every record at its hint and
-/// covers every keyed line.
+/// reaches for that book; the records of books the index does not hold; and, with the
+/// `chunkKey` column, every line's column against its text's key. A set built from this
+/// index has every record at its hint, covers every keyed line and names no missing book,
+/// and an index built by this build has no column mismatch.
 pub fn validate(
     index_path: &Path,
     set: &otzaria_semantic_search::semantic::segment_set::SegmentSet,
 ) -> Result<Validation> {
     use otzaria_semantic_search::distribution::gates::book_records;
-    use std::collections::HashSet;
-    let (searcher, _) = open_index(index_path)?;
-    let columns = SegmentColumns::of(&searcher, false)?;
+    use otzaria_semantic_search::semantic::oxv::reader::Segment;
+    use std::collections::{BTreeSet, HashSet};
+    let (searcher, chunk_key) = open_index(index_path)?;
+    let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
     let chunker = Chunker::new(production_chunking())?;
     let names: Vec<&String> = books.keys().collect();
-    let mut validation = Validation::default();
+    let mut validation = Validation {
+        column_checked: chunk_key.is_some(),
+        ..Validation::default()
+    };
     let mut records = Vec::new();
     for chunk in names.chunks(BOOKS_PER_BATCH) {
         let keyed = chunk
             .par_iter()
             .map(|name| {
-                Ok(plan_book(&searcher, &columns, &chunker, &books[*name])?
+                let mut mismatches = 0u64;
+                let keys = plan_book(&searcher, &columns, &chunker, &books[*name])?
                     .into_iter()
-                    .map(|line| match line.text {
-                        Some((sha256, _)) if !line.pdf => {
-                            Some(<[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32"))
+                    .map(|line| {
+                        let key = match &line.text {
+                            Some((sha256, _)) if !line.pdf => {
+                                Some(<[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32"))
+                            }
+                            _ => None,
+                        };
+                        if let Some(column) = line.column {
+                            let expected = line
+                                .text
+                                .as_ref()
+                                .map_or(0, |(sha256, _)| column_value(sha256));
+                            mismatches += u64::from(column != expected);
                         }
-                        _ => None,
+                        key
                     })
-                    .collect::<Vec<_>>())
+                    .collect::<Vec<_>>();
+                Ok((keys, mismatches))
             })
             .collect::<Result<Vec<_>>>()?;
-        for (name, keys) in chunk.iter().zip(keyed) {
+        for (name, (keys, mismatches)) in chunk.iter().zip(keyed) {
+            validation.column_mismatches += mismatches;
             book_records(set, name, &mut records);
             let held: HashSet<[u8; 16]> = records.iter().map(|(key, _)| key.0).collect();
             let present: HashSet<[u8; 16]> = keys.iter().flatten().copied().collect();
@@ -281,7 +310,94 @@ pub fn validate(
             }
         }
     }
+
+    // The books the set records texts in, from its segments' book tables: those the index
+    // does not hold resolve nowhere.
+    let mut set_books = BTreeSet::new();
+    for segment in &set.info().segments {
+        let path = set
+            .dir()
+            .join("segments")
+            .join(format!("{}.oxv", segment.id));
+        let opened = Segment::open(&path).with_context(|| format!("opening {}", path.display()))?;
+        set_books.extend(opened.books().iter().map(|book| book.name.to_string()));
+    }
+    for name in set_books.iter().filter(|name| !books.contains_key(*name)) {
+        book_records(set, name, &mut records);
+        if !records.is_empty() {
+            validation.books_missing += 1;
+            validation.records += records.len() as u64;
+            validation.gone += records.len() as u64;
+        }
+    }
     Ok(validation)
+}
+
+/// What a vector set must declare to be opened by this build with `model`: the line recipe
+/// this build indexes with, the model, and the store this build reads — what
+/// `open_semantic_artifact` holds a set to, with the one package it loaded among `model`'s
+/// query packages.
+pub fn installation_identity(model: ModelIdentity) -> IndexVersion {
+    IndexVersion {
+        text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
+        model,
+        store: readable_store_identity(),
+    }
+}
+
+/// `count` queries drawn from the index at `index_path`, the same ones whenever the index is
+/// the same: spans of three to ten consecutive words of its lines, PDF pages aside, at lines
+/// chosen with a fixed seed over every book's lines in order. What `validate_semantic_vectors`
+/// measures retrieval with when it is handed no queries; fewer only for an index with fewer
+/// lines of three words than the draw finds.
+pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
+    let (searcher, _) = open_index(index_path)?;
+    let books = books_of(&searcher)?;
+    let lines: Vec<DocAddress> = books.into_values().flatten().collect();
+    anyhow::ensure!(
+        !lines.is_empty(),
+        "the index at {} holds no line",
+        index_path.display()
+    );
+    let schema = searcher.schema();
+    let text_field = schema.get_field("text")?;
+    let is_pdf_field = schema.get_field("isPdf")?;
+    let mut state: u64 = 0x005E_ED0F_0E1A_7CA5;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut queries = Vec::with_capacity(count);
+    let mut draws = 0usize;
+    while queries.len() < count && draws < count.saturating_mul(50).max(50) {
+        draws += 1;
+        let address = lines[(next() % lines.len() as u64) as usize];
+        let document: TantivyDocument = searcher
+            .doc(address)
+            .with_context(|| format!("reading the document at {address:?}"))?;
+        if document
+            .get_first(is_pdf_field)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let words: Vec<&str> = document
+            .get_first(text_field)
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        if words.len() < 3 {
+            continue;
+        }
+        let len = (3 + (next() % 8) as usize).min(words.len());
+        let start = (next() % (words.len() - len + 1) as u64) as usize;
+        queries.push(words[start..start + len].join(" "));
+    }
+    Ok(queries)
 }
 
 /// The index at `index_path`, read-only, and its `chunkKey` column when this build uses it.
