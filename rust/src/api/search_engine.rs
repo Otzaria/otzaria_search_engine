@@ -3135,7 +3135,7 @@ fn read_index_metadata(index_path: &Path) -> Option<IndexMetadata> {
 /// A version 4 index has none. A column whose metadata records another recipe, or none,
 /// is one this build does not use: it counts as absent, so nothing reads it and nothing is
 /// written to it, and the keys of the index's lines are computed from their text instead.
-fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option<Field> {
+pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option<Field> {
     let field = schema.get_field(CHUNK_KEY_FIELD).ok()?;
     let recorded = read_index_metadata(index_path).and_then(|metadata| metadata.chunk_key_recipe());
     let current = ChunkKeyRecipe::current();
@@ -20999,7 +20999,7 @@ mod tests {
                     chunking,
                     created_at: "2026-10-01T00:00:00Z".to_string(),
                     batch_size: 2,
-                    clip_q: 1.0,
+                    codec: Default::default(),
                     allow_non_semantic_backend: true,
                 },
                 &corpus,

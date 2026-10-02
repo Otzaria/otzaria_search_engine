@@ -88,6 +88,9 @@ rayon = "1.10"
 # A release may publish its vector segment compressed (`.oxv.zst`), and installing it
 # expands it. The version tantivy already builds, with no features: decoding only.
 zstd = { version = "0.13", default-features = false }
+# A vector plan names each embedded text by its full SHA-256. Same crate and major version
+# the semantic sidecar hashes with.
+sha2 = "0.10"
 
 # The semantic sidecar's persisted-vector format and its inference bindings
 # (ONNX Runtime) are part of the index identity.  A branch dependency
@@ -102,12 +105,9 @@ zstd = { version = "0.13", default-features = false }
 # the inference crates come only with `onnx-backend`, which `semantic-onnx` turns
 # on and the sidecar declares for desktop targets only. The `semantic*` features
 # gate the code that talks to it.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "71d83263a11044610d3f46bdae1bfccc50156539", default-features = false }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "bc4c85410a5e33991920827b6cbcf9a04b379e8b", default-features = false }
 
 [dev-dependencies]
-# A test checks a release's manifest by the digest it is published under. Same crate and
-# major version the semantic sidecar hashes with.
-sha2 = "0.10"
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),
 # ש-RegExp של Dart תומך בו ו-`regex` לא — בבדיקות מהדרים אותן עם backtracking
 # כמו בצד ה-Dart.
