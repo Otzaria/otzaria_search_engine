@@ -436,6 +436,7 @@ fn guard() -> std::sync::MutexGuard<'static, ()> {
 type Probe = Box<dyn Fn(&SearchEngine) -> Vec<SearchResult>>;
 
 type OrderOf = fn() -> ResultsOrder;
+type Run<'a> = dyn Fn(&SearchEngine) -> Vec<SearchResult> + 'a;
 
 fn orders() -> Vec<(&'static str, OrderOf)> {
     vec![
@@ -1435,7 +1436,7 @@ fn real_library_smoke() {
     let started = std::time::Instant::now();
     for q in queries {
         for grouping in [None, Some(ResultGrouping::IdenticalText)] {
-            let runs: [&dyn Fn(&SearchEngine) -> Vec<SearchResult>; 3] = [
+            let runs: [&Run<'_>; 3] = [
                 &|e| {
                     e.search_exact(
                         q.to_string(),
