@@ -56,6 +56,11 @@ path = "src/bin/build_semantic_artifact.rs"
 name = "export_semantic_plan"
 path = "src/bin/export_semantic_plan.rs"
 
+# How an installed vector set lands on a release index: coverage and resolution.
+[[bin]]
+name = "validate_semantic_vectors"
+path = "src/bin/validate_semantic_vectors.rs"
+
 # Retired with the v1 artifact; it says so and exits. The sharded build's last step is
 # the sidecar's `assemble`.
 [[bin]]
