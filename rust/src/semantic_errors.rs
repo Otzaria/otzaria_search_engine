@@ -295,6 +295,10 @@ fn classify(
         SemanticSearchError::InvalidRankingParameter { parameter, .. } => {
             (K::InvalidInput, Some(ranking_field(parameter)))
         }
+        // The resolver a search hands the sidecar could not tie its vectors to live lines,
+        // and that search's lexical results were served instead. Nothing passes the sidecar
+        // a resolver yet, so nothing raises it; it is a search's failure when something does.
+        SemanticSearchError::Resolution { .. } => (K::QueryFailed, None),
         SemanticSearchError::Manifest(_)
         | SemanticSearchError::Chunking(_)
         | SemanticSearchError::Fusion(_)
@@ -444,7 +448,7 @@ fn artifact_kind(
             (K::ArtifactIncompatible, Some(identity_path(field)))
         }
         // Every field that disagreed is in the message; `field` is the first, in the
-        // sidecar's own order — corpus, then model, then store — which is also the order
+        // sidecar's own order — text, then model, then store — which is also the order
         // in which installing the right thing fixes the rest.
         ArtifactError::IdentityMismatch { mismatches } => (
             K::ArtifactIncompatible,
@@ -469,6 +473,15 @@ fn artifact_kind(
         ArtifactError::InvalidInstallTarget { .. } => {
             (K::InvalidInput, Some("artifact_dir".to_string()))
         }
+        // A delta that is not the next step for the vectors installed: a sound package,
+        // built for another chain position or codec epoch. Only installing a vector set
+        // raises it, which nothing here does yet.
+        ArtifactError::DeltaDoesNotApply { field, .. } => {
+            (K::ArtifactIncompatible, Some((*field).to_string()))
+        }
+        // The device ran out of room installing or compacting a vector set, which nothing
+        // here does yet; a kind of its own comes with the calls that do.
+        ArtifactError::InsufficientSpace { .. } => (K::Internal, None),
         // An install interrupted and not resolvable, and any other I/O failure. Neither is
         // a damaged artifact, and the first must not be answered by downloading over it:
         // the only good copy may be parked beside the target.
@@ -865,13 +878,21 @@ mod tests {
             (
                 ArtifactError::IdentityMismatch {
                     mismatches: vec![
-                        mismatch(IdentityField::LibraryVersion),
-                        mismatch(IdentityField::ModelId),
+                        mismatch(IdentityField::LineTextVersion),
+                        mismatch(IdentityField::FamilyId),
                     ],
                 },
                 installed.path(),
                 K::ArtifactIncompatible,
-                Some("corpus.library_version"),
+                Some("text.line_text_version"),
+            ),
+            (
+                ArtifactError::IdentityMismatch {
+                    mismatches: vec![mismatch(IdentityField::QueryPackages)],
+                },
+                installed.path(),
+                K::ArtifactIncompatible,
+                Some("model.query_packages"),
             ),
             (
                 ArtifactError::IdentityMismatch {
@@ -892,12 +913,12 @@ mod tests {
             ),
             (
                 ArtifactError::IncompleteIdentity {
-                    field: IdentityField::CorpusId,
+                    field: IdentityField::TokenizerChecksum,
                     reason: "is blank".into(),
                 },
                 installed.path(),
                 K::ArtifactCorrupt,
-                Some("corpus.corpus_id"),
+                Some("model.tokenizer_checksum"),
             ),
             (
                 ArtifactError::NoPayload,
@@ -953,6 +974,24 @@ mod tests {
                 installed.path(),
                 K::InvalidInput,
                 Some("artifact_dir"),
+            ),
+            (
+                ArtifactError::DeltaDoesNotApply {
+                    field: "delta.from_library_version",
+                    reason: "r".into(),
+                },
+                installed.path(),
+                K::ArtifactIncompatible,
+                Some("delta.from_library_version"),
+            ),
+            (
+                ArtifactError::InsufficientSpace {
+                    needed: 2,
+                    available: 1,
+                },
+                installed.path(),
+                K::Internal,
+                None,
             ),
             (
                 ArtifactError::InterruptedInstall { reason: "r".into() },
@@ -1119,6 +1158,13 @@ mod tests {
             kind(SemanticSearchError::Cancelled, session()),
             K::Cancelled
         );
+        assert_eq!(
+            kind(
+                SemanticSearchError::Resolution { reason: "r".into() },
+                session()
+            ),
+            K::QueryFailed
+        );
         for internal in [
             SemanticSearchError::Manifest(ManifestError::WriteFailed { reason: "r".into() }),
             SemanticSearchError::Fusion("f".into()),
@@ -1155,7 +1201,7 @@ mod tests {
     fn the_installations_own_values_are_invalid_input_with_the_sidecars_message() {
         let valid = LocalModel {
             model_path: PathBuf::from(MODEL),
-            model_id: "m".into(),
+            family_id: "m".into(),
             model_quantization: "int8".into(),
             embedding_dim: 256,
             pooling: "in-graph".into(),

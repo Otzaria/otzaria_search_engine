@@ -18,7 +18,7 @@
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::mock;
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
-use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use otzaria_semantic_search::semantic::zevc_store::VECTORS_FILENAME;
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
@@ -35,7 +35,9 @@ use tempfile::TempDir;
 
 const GENESIS: &str = "/books/genesis.txt";
 const BERACHOT: &str = "/books/berachot.txt";
-const LIBRARY_VERSION: &str = "otzaria-library-2026-10";
+/// The library edition the build labels the index with.
+const LIBRARY_VERSION: u32 = 30;
+const RELEASE_TAG: &str = "v30-20261001000000";
 
 /// The third line is under `min_embeddable_chars`, so the recipe skips it: four vectors for
 /// five lines.
@@ -145,19 +147,21 @@ fn build_library(stamp: bool) -> Library {
     let model_file = mock::write_stub_onnx_package(&work.join("model"));
     let chunking = ChunkerConfig::default();
     let model = ModelIdentity {
-        model_id: "test-mock".to_string(),
-        model_checksum: validate_onnx_package(&model_file)
-            .unwrap()
-            .checksum()
-            .to_string(),
-        model_quantization: "int8".to_string(),
-        embedding_backend: "mock-hash-v1".to_string(),
+        family_id: "test-mock@0000000".to_string(),
+        tokenizer_checksum: mock::stub_tokenizer_checksum(),
         embedding_dim: 64,
         pooling: "in-graph".to_string(),
         max_tokens: 512,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
         chunking_identity: chunking.identity(),
+        query_packages: vec![ModelPackage {
+            checksum: validate_onnx_package(&model_file)
+                .unwrap()
+                .checksum()
+                .to_string(),
+            quantization: "int8".to_string(),
+        }],
     };
     std::fs::write(
         work.join("model.json"),
@@ -171,12 +175,15 @@ fn build_library(stamp: bool) -> Library {
     .unwrap();
 
     let artifact = root.path().join("artifact");
+    let library_version = LIBRARY_VERSION.to_string();
     let mut command = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"));
     command.args([
         "--index",
         index.to_str().unwrap(),
         "--library-version",
-        LIBRARY_VERSION,
+        &library_version,
+        "--release-tag",
+        RELEASE_TAG,
         "--model",
         work.join("model.json").to_str().unwrap(),
         "--model-file",
@@ -358,8 +365,17 @@ fn the_stamp_is_the_one_file_the_build_writes_into_the_index() {
         &std::fs::read_to_string(stamped.artifact.join("manifest.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(stamp["corpus"], manifest["identity"]["corpus"]);
+    assert_eq!(stamp["corpus"]["text"], manifest["identity"]["text"]);
+    assert_eq!(
+        stamp["corpus"]["library_version"],
+        manifest["to_library_version"]
+    );
+    assert_eq!(
+        stamp["corpus"]["library_release_tag"],
+        manifest["library_release_tag"]
+    );
     assert_eq!(stamp["corpus"]["library_version"], LIBRARY_VERSION);
+    assert_eq!(stamp["corpus"]["library_release_tag"], RELEASE_TAG);
 }
 
 #[test]
@@ -391,33 +407,44 @@ fn a_damaged_corpus_stamp_is_no_stamp() {
     assert_refused(&engine, &error, SemanticErrorKind::IndexNotStamped, None);
 }
 
-/// A stamp that names another corpus — another release of the library — is refused by the
-/// identity comparison, which names the field.
+/// A stamp that names another corpus is refused, by name: another release of the library,
+/// which the artifact's manifest records the edition of, and lines made by another line
+/// recipe, which its identity names.
 #[test]
 fn a_stamp_for_another_corpus_is_refused_by_name() {
-    let library = build_library(true);
-    let mut stamp: JsonValue =
-        serde_json::from_str(&std::fs::read_to_string(library.stamp_path()).unwrap()).unwrap();
-    stamp["corpus"]["library_version"] = JsonValue::from("otzaria-library-1999-01");
-    std::fs::write(library.stamp_path(), stamp.to_string()).unwrap();
+    type StampEdit = (&'static str, fn(&mut JsonValue));
+    let edits: [StampEdit; 3] = [
+        ("to_library_version", |corpus| {
+            corpus["library_version"] = JsonValue::from(LIBRARY_VERSION - 1)
+        }),
+        ("library_release_tag", |corpus| {
+            corpus["library_release_tag"] = JsonValue::from("v29-20260901000000")
+        }),
+        ("text.line_text_version", |corpus| {
+            corpus["text"]["line_text_version"] = JsonValue::from(2)
+        }),
+    ];
+    for (field, edit) in edits {
+        let library = build_library(true);
+        let mut stamp: JsonValue =
+            serde_json::from_str(&std::fs::read_to_string(library.stamp_path()).unwrap()).unwrap();
+        edit(&mut stamp["corpus"]);
+        std::fs::write(library.stamp_path(), stamp.to_string()).unwrap();
 
-    let engine = library.engine();
-    let error = open_refusal(&engine, library.input());
-    assert!(
-        error.message.contains("corpus.library_version"),
-        "{}",
-        error.message
-    );
-    assert_refused(
-        &engine,
-        &error,
-        SemanticErrorKind::ArtifactIncompatible,
-        Some("corpus.library_version"),
-    );
+        let engine = library.engine();
+        let error = open_refusal(&engine, library.input());
+        assert!(error.message.contains(field), "{field}: {}", error.message);
+        assert_refused(
+            &engine,
+            &error,
+            SemanticErrorKind::ArtifactIncompatible,
+            Some(field),
+        );
+    }
 }
 
 /// The index this artifact was built for, changed afterwards: the stamp no longer vouches
-/// for it, since nothing on the device can recompute `corpus_id`.
+/// for it, since nothing on the device can re-read the corpus to describe it.
 #[test]
 fn an_index_changed_after_it_was_stamped_is_refused() {
     let library = build_library(true);
@@ -438,19 +465,16 @@ fn an_index_changed_after_it_was_stamped_is_refused() {
 /// A model-identity field, and one edit of it alone.
 type IdentityEdit = (&'static str, fn(&mut ModelIdentity));
 
-/// Fields the artifact records, and the checksum the sidecar reads off the loaded model
-/// instead: a disagreement in either kind is refused by name, and leaves nothing open.
+/// Fields the artifact records, and the package and tokenizer the model file has instead: a
+/// disagreement in either kind is refused by name, and leaves nothing open.
 #[test]
 fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
     let library = build_library(true);
     let engine = library.engine();
 
-    let edits: [IdentityEdit; 3] = [
-        ("model.model_id", |m| {
-            m.model_id = "another-model".to_string()
-        }),
-        ("model.model_quantization", |m| {
-            m.model_quantization = "fp32".to_string()
+    let edits: [IdentityEdit; 2] = [
+        ("model.family_id", |m| {
+            m.family_id = "another-model@0000000".to_string()
         }),
         ("model.chunking_identity", |m| m.chunking_identity ^= 1),
     ];
@@ -471,13 +495,15 @@ fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
         );
     }
 
-    // Not compared with the artifact by the sidecar, which takes them from the loaded
-    // model: an identity file that disagrees with the model describes other weights, and
-    // `field` is the identity file's own key.
+    // Not compared with the artifact by the sidecar, which takes them from the model file:
+    // an identity file that disagrees with the model describes other weights, and `field`
+    // is the identity file's own key.
     let edits: [IdentityEdit; 2] = [
-        ("model_checksum", |m| m.model_checksum = "0".repeat(64)),
-        ("embedding_backend", |m| {
-            m.embedding_backend = "onnxruntime-sentence-v1".to_string()
+        ("query_packages", |m| {
+            m.query_packages[0].checksum = "0".repeat(64)
+        }),
+        ("tokenizer_checksum", |m| {
+            m.tokenizer_checksum = "0".repeat(64)
         }),
     ];
     for (field, edit) in edits {

@@ -67,7 +67,7 @@ use otzaria_semantic_search::semantic::types::{
     SearchFilters as SidecarSearchFilters, SearchMode as SidecarSearchMode,
 };
 #[cfg(feature = "semantic-integration")]
-use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 #[cfg(feature = "semantic-integration")]
 use std::sync::{PoisonError, RwLock};
 
@@ -483,13 +483,15 @@ pub struct SemanticArtifactInput {
     /// The text of the model's identity file: the JSON `ModelIdentity` the
     /// artifact was built with (`--model` of `build_semantic_artifact`), such as
     /// the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin
-    /// INT8 graph. Text rather than a path, so an application can ship it as an
+    /// model. Text rather than a path, so an application can ship it as an
     /// asset.
     ///
-    /// Every field is compared: the recipe fields with the artifact's, and
-    /// `model_checksum` and `embedding_backend` with the model at `model_path`
-    /// once it has loaded, so an identity file that describes other weights is
-    /// refused rather than trusted.
+    /// It describes the model family, every package of it the artifact may be
+    /// queried with among `query_packages`. Every field is compared: the family
+    /// and recipe fields with the artifact's; the graph at `model_path` must be
+    /// one of `query_packages`, by its checksum; and `tokenizer_checksum` is
+    /// compared with the tokenizer beside it once the model has loaded. So an
+    /// identity file that describes other weights is refused rather than trusted.
     pub model_identity_json: String,
     /// The artifact's digest as published outside it, when the release publishes
     /// one. Without it, opening still detects damage and a wrong artifact, but
@@ -528,7 +530,7 @@ pub struct SemanticArtifactInput {
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no artifact at `artifact_dir`: no directory, or no `manifest.json` in it | download and install the artifact | `open_semantic_artifact` |
 /// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
-/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
+/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's, or lines made by another line recipe), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
 /// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
 /// | `ArtifactStale` | the lexical index was committed to after the artifact was opened, so its line ids may name lines that moved | `disable_semantic`, then open the artifact built for this index | status, search fallback |
 /// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |
@@ -608,10 +610,10 @@ pub enum SemanticErrorKind {
 ///
 /// | kind | `field` |
 /// | --- | --- |
-/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `text.line_text_version`, `model.family_id`, `store.store_format_version`, `to_library_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
-/// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
+/// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
@@ -1207,6 +1209,107 @@ fn check_onnx_runtime_path(path: Option<&str>) -> Result<(), SemanticError> {
     Ok(())
 }
 
+/// The package of the family `model_identity_json` declares that the graph at `model_path` is,
+/// found by its checksum: the package this installation embeds queries with, and so the one
+/// it names to the artifact.
+///
+/// A graph that is no package of the family is refused before anything loads: the identity
+/// file describes other weights. A file that is no model at all is refused as the sidecar
+/// would refuse it when it loads, by kind.
+#[cfg(feature = "semantic-integration")]
+fn family_package(
+    key: &SemanticArtifactKey,
+    call: SidecarCall<'_>,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<ModelPackage, SemanticError> {
+    use otzaria_semantic_search::errors::SemanticSearchError;
+    use otzaria_semantic_search::semantic::model_package::validate_model;
+
+    let package = validate_model(&key.model_path).map_err(|err| {
+        let err = SemanticSearchError::EmbeddingRuntime(err);
+        semantic_errors::sidecar_error(&err, call, refused(&err))
+    })?;
+    key.model
+        .query_packages
+        .iter()
+        .find(|declared| declared.checksum == package.checksum())
+        .cloned()
+        .ok_or_else(|| {
+            let declared = key
+                .model
+                .query_packages
+                .iter()
+                .map(|declared| format!("{} {}", declared.quantization, declared.checksum))
+                .collect::<Vec<_>>()
+                .join(", ");
+            SemanticError::new(
+                SemanticErrorKind::ModelIdentityMismatch,
+                format!(
+                    "model_identity_json declares query_packages '{declared}', but the model at \
+                     {} is the package '{}', which is none of them: the identity file describes \
+                     other weights",
+                    key.model_path.display(),
+                    package.checksum()
+                ),
+            )
+            .with_field("query_packages")
+        })
+}
+
+/// Refuses an artifact built from another edition of the library than the one the index
+/// holds, by its corpus stamp.
+///
+/// The artifact's records name lines by their position in the library it was built from, so
+/// it serves that edition and no other; the line recipe and the model being the same does
+/// not make another edition's positions this one's. Its identity no longer names the corpus,
+/// so the edition its manifest records is compared here, with `field` its path in
+/// `manifest.json`.
+#[cfg(feature = "semantic-integration")]
+fn ensure_same_edition(
+    index: &OfficialSemanticIndex,
+    corpus: &otzaria_semantic_search::distribution::corpus::CorpusIdentity,
+    index_path: &Path,
+    call: SidecarCall<'_>,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<(), SemanticError> {
+    use otzaria_semantic_search::distribution::package::IndexPackage;
+    use otzaria_semantic_search::errors::SemanticSearchError;
+
+    let manifest = IndexPackage::read(index.root())
+        .map_err(|err| {
+            let err = SemanticSearchError::Artifact(err);
+            semantic_errors::sidecar_error(&err, call, refused(&err))
+        })?
+        .manifest;
+    for (field, built_from, holds) in [
+        (
+            "to_library_version",
+            manifest.to_library_version.to_string(),
+            corpus.library_version.to_string(),
+        ),
+        (
+            "library_release_tag",
+            manifest.library_release_tag,
+            corpus.library_release_tag.clone(),
+        ),
+    ] {
+        if built_from != holds {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ArtifactIncompatible,
+                format!(
+                    "the artifact at {} was built from the library at {field} '{built_from}', \
+                     and the index at {} holds '{holds}' by its corpus stamp: the artifact \
+                     names lines by their position in the edition it was built from",
+                    index.root().display(),
+                    index_path.display()
+                ),
+            )
+            .with_field(field));
+        }
+    }
+    Ok(())
+}
+
 /// `options` as the sidecar's `RankingProfile`, refused by the sidecar's own
 /// `RankingProfile::validate` when a value is outside its range.
 ///
@@ -1783,6 +1886,20 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 4;
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
+
+/// Version of the line recipe: how [`SearchEngine::add_text_book`] turns a book's text into
+/// the documents the index stores, which is the text every semantic chunk key is computed
+/// from. Version 1: the text is split on `\n`; every line becomes one document, a blank one
+/// included, whose `text` is [`normalize_text_for_indexing`] of it; and a line that starts
+/// with `<h` opens a new section and belongs to it.
+///
+/// Declared to the semantic sidecar as `text.line_text_version`, the half of a vector set's
+/// identity that only this crate can know. A change to any of the four — another split, a
+/// normalization that keeps or drops something else, another rule for sections — changes
+/// the text a line's key is computed from, so it is a new version, even where the schema
+/// does not change.
+#[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+pub(crate) const LINE_TEXT_VERSION: u32 = 1;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
@@ -3131,16 +3248,16 @@ impl SearchEngine {
     ///
     /// | half | expected value, from | fixed by |
     /// | --- | --- | --- |
-    /// | corpus | the corpus stamp inside this index's directory, and the index's own segment set | installing the release's index with its artifact |
+    /// | text | the corpus stamp inside this index's directory: its line recipe and library edition, and the index's own segment set | installing the release's index with its artifact |
     /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
     /// | store | what this build can read | a build that reads the artifact's format |
     ///
-    /// The corpus identity is read from the index, never passed in: nothing on
-    /// a device can recompute `corpus_id`, which digests every stored line, so
-    /// the build machine writes it into the index directory beside the index it
-    /// describes (`build_semantic_artifact --stamp-index`), together with the
-    /// index's segment set at that moment. An index added to, deleted from or
-    /// merged since is refused here, and so is one stamped for another corpus.
+    /// The corpus is read from the index, never passed in: the build machine
+    /// writes it into the index directory beside the index it describes
+    /// (`build_semantic_artifact --stamp-index`), together with the index's
+    /// segment set at that moment. An index added to, deleted from or merged
+    /// since is refused here, and so is one stamped for another line recipe or
+    /// another edition of the library than the artifact was built from.
     ///
     /// A mismatch is an error naming every field that disagreed, and nothing is
     /// left open. On success the session is read-only: `semantic_index_books`,
@@ -3202,32 +3319,32 @@ impl SearchEngine {
             let segments_sha256 = stamp.segments_sha256.clone();
             drop(segments);
 
-            let local = LocalModel {
-                model_path: key.model_path.clone(),
-                model_id: key.model.model_id.clone(),
-                model_quantization: key.model.model_quantization.clone(),
-                embedding_dim: key.model.embedding_dim,
-                pooling: key.model.pooling.clone(),
-                max_tokens: key.model.max_tokens,
-                embedding_text_version: key.model.embedding_text_version,
-                normalization_version: key.model.normalization_version,
-                chunking_identity: key.model.chunking_identity,
-            };
             let refused = |err: &dyn std::fmt::Display| {
                 format!(
                     "failed to open the semantic artifact at {}: {err}",
                     key.artifact_dir.display()
                 )
             };
+            let call = SidecarCall::OpenArtifact {
+                artifact_dir: &key.artifact_dir,
+                model_path: &key.model_path,
+                onnx_runtime: key.onnx_runtime.as_deref(),
+            };
             // The installation's own half first, by the checks the sidecar makes of it
             // before it reads the artifact: the sidecar reports a refusal of either side
             // in the same types, and settling this one first is what makes the kind of
             // whatever it refuses afterwards that of the artifact, the model or the
-            // runtime.
-            semantic_errors::check_local_model(&local, |err| refused(err))?;
+            // runtime. None of them reads the package's precision, which is found next.
+            let family = LocalModel::of_family(key.model_path.clone(), &key.model, "");
+            semantic_errors::check_local_model(&family, |err| refused(err))?;
+            let package = family_package(&key, call, &refused)?;
+            let local = LocalModel {
+                model_quantization: package.quantization,
+                ..family
+            };
             let index = OfficialSemanticIndex::open(OfficialIndexConfig {
                 artifact_path: key.artifact_dir.clone(),
-                corpus: stamp.corpus,
+                text: stamp.corpus.text.clone(),
                 model: local,
                 // As for `configure_semantic`. No identity field reads it, so it makes no
                 // artifact the wrong one.
@@ -3236,48 +3353,28 @@ impl SearchEngine {
                 },
                 published_digest: key.published_digest.clone(),
             })
-            .map_err(|err| {
-                semantic_errors::sidecar_error(
-                    &err,
-                    SidecarCall::OpenArtifact {
-                        artifact_dir: &key.artifact_dir,
-                        model_path: &key.model_path,
-                        onnx_runtime: key.onnx_runtime.as_deref(),
-                    },
-                    refused(&err),
-                )
-            })?;
+            .map_err(|err| semantic_errors::sidecar_error(&err, call, refused(&err)))?;
 
-            // The two fields the sidecar takes from the loaded model rather than from the
-            // identity file. The artifact agreed with the model, so an identity file that
-            // disagrees with either describes other weights, and is refused rather than
-            // quietly outvoted.
+            // The field the sidecar takes from the loaded package rather than from the
+            // identity file. The artifact agreed with the package, so an identity file that
+            // disagrees with it describes other weights, and is refused rather than quietly
+            // outvoted.
             let loaded = &index.identity().model;
-            for (field, declared, actual) in [
-                (
-                    "model_checksum",
-                    &key.model.model_checksum,
-                    &loaded.model_checksum,
-                ),
-                (
-                    "embedding_backend",
-                    &key.model.embedding_backend,
-                    &loaded.embedding_backend,
-                ),
-            ] {
-                if declared != actual {
-                    return Err(SemanticError::new(
-                        SemanticErrorKind::ModelIdentityMismatch,
-                        format!(
-                            "model_identity_json declares {field} '{declared}', but the model \
-                             at {} is '{actual}', as is the artifact: the identity file \
-                             describes other weights",
-                            key.model_path.display()
-                        ),
-                    )
-                    .with_field(field));
-                }
+            if key.model.tokenizer_checksum != loaded.tokenizer_checksum {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ModelIdentityMismatch,
+                    format!(
+                        "model_identity_json declares tokenizer_checksum '{}', but the model \
+                         at {} has '{}', as does the artifact: the identity file describes \
+                         other weights",
+                        key.model.tokenizer_checksum,
+                        key.model_path.display(),
+                        loaded.tokenizer_checksum
+                    ),
+                )
+                .with_field("tokenizer_checksum"));
             }
+            ensure_same_edition(&index, &stamp.corpus, &self.index_path, call, &refused)?;
 
             let mut active = self
                 .semantic_runtime

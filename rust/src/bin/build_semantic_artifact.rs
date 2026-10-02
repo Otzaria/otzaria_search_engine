@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! build_semantic_artifact \
-//!   --index ./tantivy-index --library-version otzaria-library-2026-08 \
+//!   --index ./tantivy-index --library-version 30 --release-tag v30-20260930120000 \
 //!   --model model.json --model-file seforim-embed-round2-int8.onnx --chunking chunking.json \
 //!   --out ./artifact
 //! ```
@@ -27,12 +27,12 @@
 //!
 //! `--stamp-index` also writes the index's corpus stamp into `--index`
 //! ([`CORPUS_STAMP_FILE_NAME`](search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME)): the
-//! corpus identity the artifact was built for, and the segment set it was read from. It is
-//! what lets an application open the artifact against the index it ships with, since a
-//! device cannot recompute `corpus_id`. It is the one write this binary makes outside
-//! `--out`, which is why it is asked for rather than done by default. Build from the index
-//! as it will ship, after any optimize: a later commit or merge, even one that changes no
-//! line, invalidates the stamp.
+//! corpus the artifact was built for — its line recipe and library edition — and the
+//! segment set it was read from. It is what lets an application open the artifact against
+//! the index it ships with, since a device cannot describe its index itself. It is the one
+//! write this binary makes outside `--out`, which is why it is asked for rather than done
+//! by default. Build from the index as it will ship, after any optimize: a later commit or
+//! merge, even one that changes no line, invalidates the stamp.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
@@ -84,7 +84,8 @@ fn main() {
 
     let index_path = required("--index");
     let out = required("--out");
-    let library_version = required("--library-version");
+    let library_version = library_version(&required("--library-version"));
+    let release_tag = flag("--release-tag").unwrap_or_default();
     let model: ModelIdentity =
         serde_json::from_value(read_json("model identity", &required("--model"))).unwrap_or_else(
             |error| {
@@ -104,20 +105,27 @@ fn main() {
     // `SearchEngine` here would create an index for a mistyped path, re-stamp metadata on
     // a legacy-compatible one, hold the writer lock for the whole build, and panic on an
     // incompatible schema instead of reporting it.
-    let corpus =
-        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
-            .unwrap_or_else(|error| {
-                eprintln!("Could not read the corpus at {index_path}: {error:#}");
-                process::exit(1);
-            });
+    let corpus = TantivyCorpus::from_index_path(
+        Path::new(&index_path),
+        library_version,
+        release_tag,
+        chunking.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the corpus at {index_path}: {error:#}");
+        process::exit(1);
+    });
+    let identity = corpus.identity().unwrap_or_else(|error| {
+        eprintln!("The corpus has no identity: {error}");
+        process::exit(1);
+    });
     println!(
-        "Corpus: {} line(s) across {} book(s)\ncorpus_id: {}",
+        "Corpus: {} line(s) across {} book(s)\nLibrary: version {} ({:?}), line text version {}",
         corpus.line_count(),
         corpus.book_count(),
-        corpus
-            .identity()
-            .map(|identity| identity.corpus_id)
-            .unwrap_or_default()
+        identity.library_version,
+        identity.library_release_tag,
+        identity.text.line_text_version
     );
 
     let report = build(
@@ -168,7 +176,7 @@ build_semantic_artifact — a Tantivy index and a model in, a semantic artifact 
 
 Required:
   --index <dir>              The lexical index to read the corpus from, read-only
-  --library-version <name>   Catalogue release the index was built from
+  --library-version <N>      The library edition the index was built from: its db_version
   --model <path>             JSON ModelIdentity describing how the vectors are produced
   --model-file <path>        The model the vectors are produced with: an ONNX graph
                              (*.onnx) with its tokenizer.json beside it
@@ -176,6 +184,7 @@ Required:
   --out <dir>                Output directory; must not exist, or be empty
 
 Optional:
+  --release-tag <tag>        The release that edition was published as (default: none)
   --batch <N>                Texts per inference call (default: 32)
   --collection <name>        Collection name in the payload header (default: \"chunks\")
   --created-at <timestamp>   Manifest timestamp (default: now, UTC)
@@ -187,6 +196,21 @@ Optional:
 Which lines get a vector is derived by applying the recipe to the corpus, before any
 inference. The recipe's three versions must name behaviour this build implements, and its
 hash must be the chunking_identity the model declares.";
+
+/// `--library-version` as the edition it names: the library's `db_version`, which starts at 1.
+#[cfg(feature = "semantic-integration")]
+fn library_version(value: &str) -> u32 {
+    match value.parse::<u32>() {
+        Ok(version) if version > 0 => version,
+        _ => {
+            eprintln!(
+                "Error: --library-version is the library's db_version, a whole number from 1, \
+                 not {value:?}.\n\n{USAGE}"
+            );
+            std::process::exit(1);
+        }
+    }
+}
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for the manifest, without pulling in a date crate for one string.
 #[cfg(feature = "semantic-integration")]

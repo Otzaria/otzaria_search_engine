@@ -94,15 +94,15 @@ type in, and every field of the artifact's identity is compared:
 
 | what | written by | compared, on opening, with | a mismatch means |
 | --- | --- | --- | --- |
-| the corpus stamp, `otzaria_semantic_corpus.json` inside the lexical index | the build machine, by `build_semantic_artifact --stamp-index` or `pack_semantic_artifact --stamp-index` | the index's segment set, and then the artifact's corpus identity | another release's index, or this one changed since: install the release's index and artifact together |
-| the model identity, `modelIdentityJson` | the model's publisher: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph, the file the artifact was built with | the artifact's model identity, and the model at `modelPath` once it has loaded (`model_checksum`, `embedding_backend`) | another model, or an identity file that describes other weights |
+| the corpus stamp, `otzaria_semantic_corpus.json` inside the lexical index | the build machine, by `build_semantic_artifact --stamp-index` or `pack_semantic_artifact --stamp-index` | the index's segment set, and then the artifact's line recipe and the library edition it was built from | another release's index, or this one changed since: install the release's index and artifact together |
+| the model identity, `modelIdentityJson` | the model's publisher: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin model, the file the artifact was built with | the artifact's model identity, and the model at `modelPath`: its package among `query_packages`, and once it has loaded its `tokenizer_checksum` | another model, or an identity file that describes other weights |
 | the artifact | the build machine: `build_semantic_artifact`, or `pack_semantic_artifact` after a sharded build | this build's store format, and its payload's checksums as it loads | a damaged artifact, or one this build cannot read |
 | `publishedDigest` | the build machine prints it; the release publishes it outside the artifact | the artifact's own digest | an artifact rebuilt to look like the published one |
 
-The corpus identity comes from the index, not from the caller, because it has to
-describe the index that is actually open, and the artifact's own copy proves
-nothing about that. It cannot be recomputed on a device either: `corpus_id`
-digests every stored line, so the build machine writes it into the index
+The corpus comes from the index, not from the caller, because it has to describe
+the index that is actually open, and the artifact's own description proves
+nothing about that. It cannot be described on a device either, which would mean
+reading every stored line, so the build machine writes it into the index
 directory, with the index's segment set at that moment, and the index carries it
 wherever it is shipped. An index added to, deleted from or merged since is
 refused, since the artifact's line ids may then name lines that moved, so the
@@ -287,10 +287,10 @@ The Meivin model the application uses is its INT8 graph,
 `seforim-embed-round2-int8.onnx`, with its `tokenizer.json` beside it: the
 accuracy it gives up is negligible, and it is a quarter of the size, which
 matters on weak machines. Its identity file is the sidecar's
-`config/models/meivin-round2-onnx/model.json`. The full-precision
-`seforim-embed-round2-fp32.onnx` remains an alternative, with an identity of its
-own (`config/models/meivin-round2-onnx-fp32/model.json`), so vectors from one are
-never compared with the other's.
+`config/models/meivin-round2-onnx/model.json`, which describes the model family:
+the full-precision `seforim-embed-round2-fp32.onnx` is its other package, and
+queries from either land in the same space, so an artifact that lists both among
+its `query_packages` opens with either graph.
 
 ### The ONNX Runtime library
 

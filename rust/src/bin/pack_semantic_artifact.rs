@@ -6,9 +6,9 @@
 //!
 //! ```text
 //! pack_semantic_artifact \
-//!   --index ./tantivy-index --library-version v20-… \
+//!   --index ./tantivy-index --library-version 30 --release-tag v30-20260930120000 \
 //!   --vectors merged/vectors.f32 --records merged/records.jsonl \
-//!   --model model.json --chunking chunking.json --out ./artifact
+//!   --model model.json --chunking chunking.json --provenance provenance.json --out ./artifact
 //! ```
 //!
 //! **Everything the vectors cannot vouch for is checked here**, and only here: that every
@@ -17,13 +17,15 @@
 //! exactly the set the recipe embeds, no more and no fewer. Nothing upstream can perform
 //! either check: a GPU worker has no corpus, and the assembler only counts.
 //!
-//! **No inference backend is required.** Packing never turns text into a vector.
+//! **No inference backend is required.** Packing never turns text into a vector, so what did
+//! is declared: `--provenance` names the package of the model family that embedded the
+//! vectors and the worker that ran it, which the manifest records and nothing compares.
 //!
 //! `--stamp-index` also writes the index's corpus stamp into `--index`, as
-//! `build_semantic_artifact --stamp-index` does: the identity this artifact was packed
-//! against and the segment set it was read from, which a device compares instead of
-//! recomputing `corpus_id`. Pack against the index as it will ship, after any optimize: a
-//! later commit or merge invalidates the stamp.
+//! `build_semantic_artifact --stamp-index` does: the corpus this artifact was packed
+//! against and the segment set it was read from, which a device reads instead of describing
+//! its index itself. Pack against the index as it will ship, after any optimize: a later
+//! commit or merge invalidates the stamp.
 
 #[cfg(not(feature = "semantic-integration"))]
 fn main() {
@@ -39,7 +41,7 @@ fn main() {
     use otzaria_semantic_search::distribution::corpus::CorpusIndex;
     use otzaria_semantic_search::distribution::packer::{pack, read_vector_inputs, PackRequest};
     use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
-    use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+    use otzaria_semantic_search::semantic::versioning::{ModelIdentity, VectorProvenance};
     use search_engine::semantic_corpus::TantivyCorpus;
     use std::path::{Path, PathBuf};
     use std::process;
@@ -74,7 +76,16 @@ fn main() {
 
     let index_path = required("--index");
     let out = PathBuf::from(required("--out"));
-    let library_version = required("--library-version");
+    let library_version = match required("--library-version").parse::<u32>() {
+        Ok(version) if version > 0 => version,
+        _ => {
+            eprintln!(
+                "Error: --library-version is the library's db_version, a whole number from 1.\n\n{USAGE}"
+            );
+            process::exit(1);
+        }
+    };
+    let release_tag = flag("--release-tag").unwrap_or_default();
     let vectors = required("--vectors");
     let records = required("--records");
     let model: ModelIdentity =
@@ -90,21 +101,34 @@ fn main() {
                 eprintln!("the chunking file is not a ChunkerConfig: {error}");
                 process::exit(1);
             });
-
-    let corpus =
-        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
+    let provenance: VectorProvenance =
+        serde_json::from_value(read_json("vector provenance", &required("--provenance")))
             .unwrap_or_else(|error| {
-                eprintln!("Could not read the corpus at {index_path}: {error:#}");
+                eprintln!("the provenance file is not a VectorProvenance: {error}");
                 process::exit(1);
             });
+
+    let corpus = TantivyCorpus::from_index_path(
+        Path::new(&index_path),
+        library_version,
+        release_tag,
+        chunking.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the corpus at {index_path}: {error:#}");
+        process::exit(1);
+    });
+    let identity = corpus.identity().unwrap_or_else(|error| {
+        eprintln!("The corpus has no identity: {error}");
+        process::exit(1);
+    });
     println!(
-        "Corpus: {} line(s) across {} book(s)\ncorpus_id: {}",
+        "Corpus: {} line(s) across {} book(s)\nLibrary: version {} ({:?}), line text version {}",
         corpus.line_count(),
         corpus.book_count(),
-        corpus
-            .identity()
-            .map(|identity| identity.corpus_id)
-            .unwrap_or_default()
+        identity.library_version,
+        identity.library_release_tag,
+        identity.text.line_text_version
     );
 
     let inputs = read_vector_inputs(
@@ -121,6 +145,7 @@ fn main() {
         PackRequest {
             output_path: out,
             model,
+            provenance,
             created_at: flag("--created-at").unwrap_or_else(utc_timestamp),
             collection_name: flag("--collection").unwrap_or_else(|| "chunks".to_string()),
         },
@@ -207,16 +232,21 @@ const USAGE: &str = "\
 Pack ready-made vectors into an official artifact, against a live Tantivy index.
 
 Usage:
-  pack_semantic_artifact --index <dir> --library-version <version> \\
+  pack_semantic_artifact --index <dir> --library-version <N> \\
       --vectors <vectors.f32> --records <records.jsonl> \\
-      --model <model.json> --chunking <chunking.json> --out <dir>
+      --model <model.json> --chunking <chunking.json> --provenance <provenance.json> \\
+      --out <dir>
 
   --index            Tantivy index directory, opened read-only
-  --library-version  The library version the index was built from
+  --library-version  The library edition the index was built from: its db_version
+  --release-tag      The release that edition was published as (default: none)
   --vectors          Raw little-endian f32, count x embedding_dim, no header
   --records          JSONL, one record per vector, in the same order
-  --model            JSON ModelIdentity
+  --model            JSON ModelIdentity: the model family
   --chunking         JSON ChunkerConfig; its hash must be the model's chunking_identity
+  --provenance       JSON VectorProvenance: the package of the family that embedded the
+                     vectors (passage_package: checksum, quantization) and the worker
+                     that ran it (worker: backend, device)
   --out              Output directory; must not exist, or be empty
   --stamp-index      Also write the corpus stamp into --index, which a device needs to
                      open this artifact against that index

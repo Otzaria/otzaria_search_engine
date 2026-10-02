@@ -39,8 +39,8 @@
 //! runtime passed as `onnx_runtime_path`, in a child process of its own from which
 //! `OTZARIA_ONNX_RUNTIME` is removed. They also need the model's published identity files,
 //! `model.json` and `chunking.json`, from the directory `OTZARIA_TEST_ONNX_IDENTITY` names:
-//! the sidecar's `config/models/meivin-round2-onnx` for the INT8 graph,
-//! `config/models/meivin-round2-onnx-fp32` for the fp32 one. Run them with:
+//! the sidecar's `config/models/meivin-round2-onnx`, whose `model.json` is the model family
+//! and lists both the INT8 and the fp32 package. Run them with:
 //!
 //! ```sh
 //! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-int8.onnx \
@@ -442,6 +442,8 @@ fn build_artifact(
         "--index",
         index.to_str().unwrap(),
         "--library-version",
+        "1",
+        "--release-tag",
         "meivin-probe",
         "--model",
         identity.join("model.json").to_str().unwrap(),
@@ -512,7 +514,7 @@ fn assert_each_query_ranks_its_line_first(engine: &SearchEngine) {
 /// artifact and stamps the index, and the device opens that artifact against the index and
 /// embeds nothing but the queries. The identity files are the model's published ones, used
 /// by both sides exactly as a release would use them, so this also shows the published
-/// `model_checksum` names the graph on disk.
+/// `query_packages` names the graph on disk.
 #[test]
 #[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
             OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \
