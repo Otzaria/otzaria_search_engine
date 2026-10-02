@@ -467,9 +467,9 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
         ArtifactError::DeltaDoesNotApply { field, .. } => {
             (K::ArtifactIncompatible, Some((*field).to_string()))
         }
-        // The device ran out of room installing or compacting a vector set, which nothing
-        // here does yet; a kind of its own comes with the calls that do.
-        ArtifactError::InsufficientSpace { .. } => (K::Internal, None),
+        // The device ran out of room installing or compacting a vector set: the one state
+        // the application can do something about that no other kind names.
+        ArtifactError::InsufficientSpace { .. } => (K::InsufficientDiskSpace, None),
         // An install interrupted and not resolvable, and any other I/O failure. Neither is
         // a damaged artifact, and the first must not be answered by downloading over it:
         // the only good copy may be parked beside the target.
@@ -978,7 +978,7 @@ mod tests {
                     available: 1,
                 },
                 installed.path(),
-                K::Internal,
+                K::InsufficientDiskSpace,
                 None,
             ),
             (

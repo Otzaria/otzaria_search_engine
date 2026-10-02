@@ -63,6 +63,8 @@ pub(crate) const MAX_LINES_PER_HIT: usize = MAX_RECORDS_PER_HIT;
 pub(crate) struct ResolvedRecord {
     pub(crate) address: DocAddress,
     pub(crate) key: ChunkKey,
+    /// The line's ordinal in its book.
+    pub(crate) ordinal: u32,
 }
 
 /// What a resolver remembers from one search to the next, for one generation of the index.
@@ -200,6 +202,41 @@ impl<'a> LiveResolver<'a> {
 
     fn generation_id(&self) -> u64 {
         self.searcher.generation().generation_id()
+    }
+
+    /// The searcher every address this resolver hands out belongs to.
+    pub(crate) fn searcher(&self) -> &Searcher {
+        &self.searcher
+    }
+
+    /// Where each line this search resolved is, and the key it was resolved by, by
+    /// `(file_path, line_id)`.
+    pub(crate) fn records(&self) -> HashMap<(String, u64), ResolvedRecord> {
+        std::mem::take(&mut *self.records.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Whether the line `record` names holds its key by the full 128 bits, recomputed from
+    /// the text this searcher reads: what a result is checked against before it is shown.
+    /// A line resolved by recomputing was held to all 128 already; one resolved by the
+    /// column, to its 64.
+    pub(crate) fn verify(&self, book: &str, record: &ResolvedRecord) -> Result<bool, ResolveError> {
+        if !self.column {
+            return Ok(true);
+        }
+        let Some(lines) = self.book(book)? else {
+            return Ok(false);
+        };
+        let Some(position) = lines
+            .position(record.ordinal)
+            .filter(|&position| lines.docs[position] == record.address)
+        else {
+            return Ok(false);
+        };
+        let key = recompute_chunk_keys(&self.searcher, &lines.docs, position..position + 1)
+            .map_err(index_error)?
+            .pop()
+            .flatten();
+        Ok(key == Some(record.key))
     }
 
     /// The live books, built once per generation.
@@ -365,7 +402,11 @@ impl<'a> LiveResolver<'a> {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 (book.name.to_string(), line_id),
-                ResolvedRecord { address, key },
+                ResolvedRecord {
+                    address,
+                    key,
+                    ordinal: book.ordinals[position],
+                },
             );
         Ok(ResolvedLine {
             hit: hit as u32,
