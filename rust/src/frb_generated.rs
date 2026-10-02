@@ -7159,17 +7159,17 @@ impl SseDecode for crate::api::search_engine::SearchStreamUpdate {
 impl SseDecode for crate::api::search_engine::SemanticArtifactInput {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_artifactDir = <String>::sse_decode(deserializer);
+        let mut var_vectorsDir = <String>::sse_decode(deserializer);
         let mut var_modelPath = <String>::sse_decode(deserializer);
         let mut var_modelIdentityJson = <String>::sse_decode(deserializer);
-        let mut var_publishedDigest = <Option<String>>::sse_decode(deserializer);
         let mut var_onnxRuntimePath = <Option<String>>::sse_decode(deserializer);
+        let mut var_scanThreads = <Option<u32>>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticArtifactInput {
-            artifact_dir: var_artifactDir,
+            vectors_dir: var_vectorsDir,
             model_path: var_modelPath,
             model_identity_json: var_modelIdentityJson,
-            published_digest: var_publishedDigest,
             onnx_runtime_path: var_onnxRuntimePath,
+            scan_threads: var_scanThreads,
         };
     }
 }
@@ -8487,11 +8487,11 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SearchStreamUp
 impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticArtifactInput {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.artifact_dir.into_into_dart().into_dart(),
+            self.vectors_dir.into_into_dart().into_dart(),
             self.model_path.into_into_dart().into_dart(),
             self.model_identity_json.into_into_dart().into_dart(),
-            self.published_digest.into_into_dart().into_dart(),
             self.onnx_runtime_path.into_into_dart().into_dart(),
+            self.scan_threads.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -10004,11 +10004,11 @@ impl SseEncode for crate::api::search_engine::SearchStreamUpdate {
 impl SseEncode for crate::api::search_engine::SemanticArtifactInput {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.artifact_dir, serializer);
+        <String>::sse_encode(self.vectors_dir, serializer);
         <String>::sse_encode(self.model_path, serializer);
         <String>::sse_encode(self.model_identity_json, serializer);
-        <Option<String>>::sse_encode(self.published_digest, serializer);
         <Option<String>>::sse_encode(self.onnx_runtime_path, serializer);
+        <Option<u32>>::sse_encode(self.scan_threads, serializer);
     }
 }
 

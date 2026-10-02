@@ -7928,11 +7928,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 5)
       throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return SemanticArtifactInput(
-      artifactDir: dco_decode_String(arr[0]),
+      vectorsDir: dco_decode_String(arr[0]),
       modelPath: dco_decode_String(arr[1]),
       modelIdentityJson: dco_decode_String(arr[2]),
-      publishedDigest: dco_decode_opt_String(arr[3]),
-      onnxRuntimePath: dco_decode_opt_String(arr[4]),
+      onnxRuntimePath: dco_decode_opt_String(arr[3]),
+      scanThreads: dco_decode_opt_box_autoadd_u_32(arr[4]),
     );
   }
 
@@ -9561,17 +9561,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_artifactDir = sse_decode_String(deserializer);
+    var var_vectorsDir = sse_decode_String(deserializer);
     var var_modelPath = sse_decode_String(deserializer);
     var var_modelIdentityJson = sse_decode_String(deserializer);
-    var var_publishedDigest = sse_decode_opt_String(deserializer);
     var var_onnxRuntimePath = sse_decode_opt_String(deserializer);
+    var var_scanThreads = sse_decode_opt_box_autoadd_u_32(deserializer);
     return SemanticArtifactInput(
-      artifactDir: var_artifactDir,
+      vectorsDir: var_vectorsDir,
       modelPath: var_modelPath,
       modelIdentityJson: var_modelIdentityJson,
-      publishedDigest: var_publishedDigest,
       onnxRuntimePath: var_onnxRuntimePath,
+      scanThreads: var_scanThreads,
     );
   }
 
@@ -11271,11 +11271,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.artifactDir, serializer);
+    sse_encode_String(self.vectorsDir, serializer);
     sse_encode_String(self.modelPath, serializer);
     sse_encode_String(self.modelIdentityJson, serializer);
-    sse_encode_opt_String(self.publishedDigest, serializer);
     sse_encode_opt_String(self.onnxRuntimePath, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.scanThreads, serializer);
   }
 
   @protected
@@ -12628,51 +12628,49 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   bool hasTranslationDictionary() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineHasTranslationDictionary(that: this);
 
-  /// Open a prebuilt semantic artifact and serve semantic and hybrid search
-  /// from it, with every result hydrated from this Tantivy index as
+  /// Open the vector set installed on this device and serve semantic and hybrid
+  /// search from it, with every result hydrated from this Tantivy index as
   /// [`Self::search_semantic`] always does. **This is the application's
   /// semantic path**: the library's vectors are built on the build machine,
   /// and the device embeds only the query. When this crate was built without
   /// the optional semantic feature this is a no-op that returns an explicit
   /// `NotInBuild` status.
   ///
-  /// Opening verifies the artifact against this installation, all of it and
-  /// before reading a vector:
+  /// Opening recovers what an interrupted install left, opens the generation
+  /// `CURRENT` names (or `PREVIOUS`, when it does not open), loads the model,
+  /// and verifies the set against this installation, all of it and before a
+  /// vector is read:
   ///
   /// | half | expected value, from | fixed by |
   /// | --- | --- | --- |
-  /// | text | the corpus stamp inside this index's directory: its line recipe and library edition, and the index's own segment set | installing the release's index with its artifact |
-  /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
-  /// | store | what this build can read | a build that reads the artifact's format |
+  /// | text | the line recipe this build indexes with, and the key function it computes keys with | a set built for this application's line recipe |
+  /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the set was built with |
+  /// | store | what this build can read | a build that reads the set's format |
   ///
-  /// The corpus is read from the index, never passed in: the build machine
-  /// writes it into the index directory beside the index it describes
-  /// (`build_semantic_artifact --stamp-index`), together with the index's
-  /// segment set at that moment. An index added to, deleted from or merged
-  /// since is refused here, and so is one stamped for another line recipe or
-  /// another edition of the library than the artifact was built from.
+  /// The set is not tied to one state of the index. Its vectors are addressed by
+  /// the key of the text they were embedded from, and each hit is resolved, on
+  /// every search, to the live lines that hold that text: lines added, deleted,
+  /// moved or renumbered since the set was built leave every unchanged line's
+  /// vector usable, and nothing goes stale.
   ///
   /// A mismatch is an error naming every field that disagreed, and nothing is
   /// left open. On success the session is read-only: `semantic_index_books`,
   /// `remove_semantic_books`, `reset_semantic_index` and `semantic_index_diff`
-  /// are refused by name, and so is [`Self::configure_semantic`]. A commit to
-  /// this index afterwards makes the artifact stale: searches then fall back
-  /// to lexical results with the reason, and [`Self::semantic_status`]
-  /// reports it, until the session is disabled and a matching pair opened.
+  /// are refused by name, and so is [`Self::configure_semantic`].
   ///
   /// - Called again with the same inputs it is a no-op returning the status.
   /// - Called while another session is open it fails: call
   ///   [`Self::disable_semantic`] first.
   ///
   /// Every refusal is a [`SemanticError`] whose kind says which of these it was,
-  /// so the application can tell the user what to install: the artifact, the
-  /// release's index, the model or ONNX Runtime. The table on
-  /// [`SemanticErrorKind`] has each kind, and `field` names the identity field
-  /// that disagreed when the artifact was built for something else.
+  /// so the application can tell the user what to install: the vectors, the
+  /// model or ONNX Runtime. The table on [`SemanticErrorKind`] has each kind, and
+  /// `field` names the identity field that disagreed when the set was built for
+  /// something else.
   ///
   /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
-  /// the artifact's vectors, which takes time, and a `&mut self` binding would
-  /// hold the engine's write lock throughout, stalling every lexical search.
+  /// maps the set, which takes time, and a `&mut self` binding would hold the
+  /// engine's write lock throughout, stalling every lexical search.
   Future<SemanticStatus> openSemanticArtifact({
     required SemanticArtifactInput config,
   }) =>

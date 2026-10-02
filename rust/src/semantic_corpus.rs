@@ -8,23 +8,19 @@
 //!
 //! # One snapshot, for the whole build
 //!
-//! A build reads the corpus at least three times: once to derive the set of lines the
-//! recipe embeds, once to derive the text to embed, and once when the packer joins each
-//! finished vector back to its metadata. [`TantivyCorpus`] holds **one [`Searcher`]** for
-//! its whole life and never reloads, because those three reads landing on three different
-//! commits would mix a plan from one, context text from a second and metadata from a third.
-//!
-//! The packer's `source_line_sha256` would not catch that. It compares the *anchor* line's
-//! text against the corpus, and the anchor is not what moved: a short line borrows text
-//! from its neighbours, so a neighbour edited between two reads changes what was embedded
-//! while every digest still agrees.
+//! A build reads the corpus more than once: to derive the set of lines the recipe embeds,
+//! to derive the text to embed, and to derive the plan again as it embeds. [`TantivyCorpus`]
+//! holds **one [`Searcher`]** for its whole life and never reloads, because those reads
+//! landing on different commits would mix a plan from one with context text from another:
+//! a short line borrows text from its neighbours, so a neighbour edited between two reads
+//! changes what was embedded while the line itself still agrees.
 //!
 //! # The set has to be checkable against something the scan did not produce
 //!
 //! [`CorpusBooks`] is the *only* source of the coverage contract: the plan is built from
-//! `book_keys()` and `book_line_ids()`, and the packer then compares the vectors against
-//! that same plan. A book this module failed to enumerate would therefore vanish from both
-//! sides at once, and coverage would confirm itself.
+//! `book_keys()` and `book_line_ids()`, and the build then holds its vectors to that same
+//! plan. A book this module failed to enumerate would therefore vanish from both sides at
+//! once, and coverage would confirm itself.
 //!
 //! So [`TantivyCorpus::open`] cross-checks its enumeration against
 //! [`Searcher::num_docs`] — a count Tantivy computes from each segment's metadata and its
@@ -37,7 +33,7 @@
 //! build the book map, and once over the stored fields, so that a document it could not
 //! describe refuses the corpus before a build starts from it. The second decompresses the
 //! whole store. Both are build-machine costs paid once per build, and neither happens on a
-//! device — the application opens a finished artifact and never sees this type.
+//! device — the application opens an installed vector set and never sees this type.
 
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::builder::BuildPlan;
@@ -49,11 +45,8 @@ use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::recipe::EmbeddingRecipe;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, TextIdentity};
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use tantivy::schema::{Facet, Value};
 use tantivy::{DocAddress, Index, ReloadPolicy, Searcher, TantivyDocument};
@@ -491,228 +484,6 @@ impl CorpusBooks for TantivyCorpus {
     }
 }
 
-// ── The corpus stamp ────────────────────────────────────────────────────────────────────
-//
-// What a device reads instead of describing its index itself, which it cannot afford to.
-
-/// The file, inside a lexical index's directory, that says which corpus the index holds.
-///
-/// Opening a prebuilt semantic artifact needs the [`CorpusIdentity`] of the index that is
-/// actually open, and the artifact's own description cannot serve: comparing an artifact
-/// with itself proves nothing. The build writes it here, beside the index it describes, and
-/// the index carries it wherever it is shipped: the line recipe the artifact's identity is
-/// compared with, and the library edition its manifest must name. An artifact is then
-/// refused against any other index — another release, or this one changed since — rather
-/// than handing back ids that name other lines.
-///
-/// Written by `build_semantic_artifact --stamp-index` and `pack_semantic_artifact
-/// --stamp-index`, from the snapshot the artifact was built from; read by
-/// [`SearchEngine::open_semantic_artifact`](crate::api::search_engine::SearchEngine::open_semantic_artifact).
-/// So the index is stamped as it will ship, after any optimize: a later add, delete or
-/// merge, even one that changes no line, leaves the stamp naming a segment set the index
-/// no longer has, and every device then refuses the artifact.
-pub const CORPUS_STAMP_FILE_NAME: &str = "otzaria_semantic_corpus.json";
-
-/// The stamp's format tag and version, refused on a mismatch rather than half-read.
-/// Version 2 carries the corpus as a line recipe and a library edition; version 1 carried
-/// a digest of the documents, which no artifact names any more.
-const CORPUS_STAMP_FORMAT: &str = "otzaria-semantic-corpus";
-const CORPUS_STAMP_VERSION: u32 = 2;
-
-/// Folded into [`segments_digest`], so a change to what is hashed cannot compare equal to a
-/// digest computed the old way.
-const SEGMENTS_DIGEST_VERSION: &str = "otzaria-index-segments-v1";
-
-/// A [`CorpusIdentity`], and the exact index state it was derived from.
-///
-/// `corpus` describes the documents; `segments_sha256` ties that description to one state
-/// of this directory, which is what makes the stamp checkable on a device at all: the
-/// documents cannot be re-read there, but the segment set can be read in microseconds. Any
-/// add, delete or merge after the stamp was written changes the set, and the stamp then no
-/// longer vouches for the index. A commit that changed nothing does not.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CorpusStamp {
-    pub format: String,
-    pub format_version: u32,
-    pub corpus: CorpusIdentity,
-    pub segments_sha256: String,
-}
-
-/// A digest of the segment set `searcher` sees: every segment's id, `max_doc` and deleted
-/// count, sorted, so it names one committed state of the index and nothing about the order
-/// segments were listed in.
-pub fn segments_digest(searcher: &Searcher) -> String {
-    let mut segments: Vec<String> = searcher
-        .segment_readers()
-        .iter()
-        .map(|reader| {
-            format!(
-                "{}\t{}\t{}",
-                reader.segment_id().uuid_string(),
-                reader.max_doc(),
-                reader.num_deleted_docs()
-            )
-        })
-        .collect();
-    segments.sort_unstable();
-    let mut hasher = Sha256::new();
-    hasher.update(SEGMENTS_DIGEST_VERSION.as_bytes());
-    hasher.update(b"\n");
-    for segment in &segments {
-        hasher.update(segment.as_bytes());
-        hasher.update(b"\n");
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-impl TantivyCorpus {
-    /// The stamp for the snapshot this corpus holds: its identity, and the segment set it
-    /// was read from — the one the artifact built from this corpus describes.
-    pub fn stamp(&self) -> CorpusStamp {
-        CorpusStamp {
-            format: CORPUS_STAMP_FORMAT.to_string(),
-            format_version: CORPUS_STAMP_VERSION,
-            corpus: self.identity.clone(),
-            segments_sha256: segments_digest(&self.searcher),
-        }
-    }
-
-    /// Write [`Self::stamp`] into `index_path`, replacing any earlier stamp atomically: a
-    /// reader sees the old stamp or the new one, never half of either.
-    ///
-    /// `index_path` must be the directory this corpus was read from; the stamp describes
-    /// that snapshot and would refuse, on any device, to vouch for another.
-    pub fn write_stamp(&self, index_path: &Path) -> Result<PathBuf> {
-        let target = index_path.join(CORPUS_STAMP_FILE_NAME);
-        let json = serde_json::to_vec_pretty(&self.stamp()).context("serializing the stamp")?;
-        let mut file = tempfile::NamedTempFile::new_in(index_path)
-            .with_context(|| format!("creating a file in {}", index_path.display()))?;
-        file.write_all(&json)
-            .and_then(|()| file.as_file().sync_all())
-            .with_context(|| format!("writing {}", target.display()))?;
-        file.persist(&target)
-            .with_context(|| format!("replacing {}", target.display()))?;
-        Ok(target)
-    }
-}
-
-/// Why an index's corpus stamp cannot vouch for it.
-///
-/// Typed, where the rest of this module is `anyhow`, because the device has to tell the
-/// user which it is, and that is decided from the variant, never from the message: an index
-/// that was never stamped and one changed since it was are both answered by installing the
-/// release's index with its artifact, but they are different things to have happened, and
-/// an I/O failure is neither. The message is the same text either way, and names the file
-/// and the fix, because the fix is never on the device.
-#[derive(Debug)]
-pub enum CorpusStampError {
-    /// The index directory holds no stamp.
-    Missing { index_path: PathBuf },
-    /// The file is there, and is not a stamp this build reads: not JSON, not a stamp, or
-    /// another format or version of one.
-    Unrecognized(anyhow::Error),
-    /// The file could not be read for a reason other than its absence.
-    Unreadable(anyhow::Error),
-    /// A stamp this build reads, written for a segment set the index no longer has.
-    Outdated {
-        index_path: PathBuf,
-        stamped: String,
-        current: String,
-    },
-}
-
-impl std::fmt::Display for CorpusStampError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Missing { index_path } => write!(
-                f,
-                "the lexical index at {} carries no corpus stamp ({CORPUS_STAMP_FILE_NAME}), \
-                 so nothing says which corpus it holds. A semantic artifact opens only against \
-                 the index it was built from, stamped on the build machine with \
-                 `build_semantic_artifact --stamp-index` or `pack_semantic_artifact \
-                 --stamp-index`; install that index with the artifact",
-                index_path.display()
-            ),
-            // The whole chain, on one line: the context names the file, the cause what was
-            // wrong with it.
-            Self::Unrecognized(error) | Self::Unreadable(error) => write!(f, "{error:#}"),
-            Self::Outdated {
-                index_path,
-                stamped,
-                current,
-            } => write!(
-                f,
-                "the lexical index at {} has changed since its corpus stamp was written (its \
-                 segments were {stamped}, and are {current}), so the stamp no longer says which \
-                 corpus it holds, and an artifact built for it may name lines that moved. \
-                 Install the release's index and artifact together, or re-stamp the index on \
-                 the build machine and rebuild the artifact from it",
-                index_path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CorpusStampError {}
-
-impl CorpusStamp {
-    /// Read the stamp an index directory carries.
-    ///
-    /// Every failure names the file and the fix, because the fix is never on the device:
-    /// an index without a stamp, or with a foreign one, needs the release's own index.
-    pub fn read(index_path: &Path) -> Result<Self, CorpusStampError> {
-        let path = index_path.join(CORPUS_STAMP_FILE_NAME);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(CorpusStampError::Missing {
-                    index_path: index_path.to_path_buf(),
-                });
-            }
-            Err(error) => {
-                return Err(CorpusStampError::Unreadable(
-                    anyhow::Error::new(error).context(format!("reading {}", path.display())),
-                ));
-            }
-        };
-        let stamp: Self = serde_json::from_str(&text)
-            .with_context(|| format!("{} is not a corpus stamp", path.display()))
-            .map_err(CorpusStampError::Unrecognized)?;
-        if stamp.format != CORPUS_STAMP_FORMAT || stamp.format_version != CORPUS_STAMP_VERSION {
-            return Err(CorpusStampError::Unrecognized(anyhow::anyhow!(
-                "{} is a {:?} stamp, version {}; this build reads {CORPUS_STAMP_FORMAT:?} \
-                 version {CORPUS_STAMP_VERSION}",
-                path.display(),
-                stamp.format,
-                stamp.format_version
-            )));
-        }
-        Ok(stamp)
-    }
-
-    /// Refuse the stamp unless `searcher` sees exactly the segment set it was written for.
-    ///
-    /// A mismatch means the index was added to, deleted from or merged since it was
-    /// stamped — or is another copy of it altogether — so the stamp's corpus no longer
-    /// vouches for what it holds, and an artifact's ids may name lines that moved.
-    pub fn ensure_describes(
-        &self,
-        searcher: &Searcher,
-        index_path: &Path,
-    ) -> Result<(), CorpusStampError> {
-        let current = segments_digest(searcher);
-        if current != self.segments_sha256 {
-            return Err(CorpusStampError::Outdated {
-                index_path: index_path.to_path_buf(),
-                stamped: self.segments_sha256.clone(),
-                current,
-            });
-        }
-        Ok(())
-    }
-}
-
 /// Refuse a snapshot holding a line the build could not describe.
 ///
 /// **Every field of every line, before anything else reads one.** A document the index
@@ -980,7 +751,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut engine = engine_with_books(&dir);
         let snapshot = corpus(&engine);
-        let before = snapshot.stamp();
         let count_before = snapshot.line_count();
 
         engine
@@ -998,7 +768,6 @@ mod tests {
 
         assert_eq!(snapshot.line_count(), count_before);
         assert_eq!(snapshot.book_count(), 2);
-        assert_eq!(snapshot.stamp(), before);
 
         // And the same engine, asked again, sees the commit — so the snapshot above is a
         // property of the corpus rather than of a reader that never reloads.
@@ -1366,25 +1135,31 @@ mod tests {
         assert!(!corpus.book_line_ids(GENESIS).unwrap().contains(&middle));
     }
 
-    /// **S4b's acceptance gate, without Dart:** a Tantivy index and a model in, a full
-    /// semantic artifact out, verified against that same index.
+    /// **The build's acceptance gate, without Dart:** a Tantivy index and a model in, a
+    /// base package out, which installs into a vector set against its published digest.
     ///
-    /// Everything before this ran the builder against a transcription of an index. This is
-    /// the index — the recipe applied to real documents, the identity taken off the
-    /// snapshot, and every record joined back to the corpus that produced it. The backend
-    /// is the deterministic stand-in, so the vectors mean nothing; what is under test is
-    /// the join, the coverage and the identity, none of which depend on that.
+    /// The recipe applied to real documents, the identity taken off the snapshot, and one
+    /// slot per embedded text. The backend is the deterministic stand-in, so the vectors mean
+    /// nothing; what is under test is the plan, the counts and the identity, none of which
+    /// depend on that.
     ///
     /// Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the stand-in and
     /// its stub ONNX package exist only with `semantic-mock`, and `semantic-onnx` would take
     /// the stub ahead of the stand-in and fail to load it.
     #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
     #[test]
-    fn a_tantivy_index_and_a_model_produce_an_artifact_that_verifies() {
-        use otzaria_semantic_search::distribution::builder::{build, BuildRequest};
-        use otzaria_semantic_search::distribution::packer::validate_artifact;
+    fn a_tantivy_index_and_a_model_produce_a_package_that_installs() {
+        use otzaria_semantic_search::cancellation::CancellationToken;
+        use otzaria_semantic_search::distribution::builder::{
+            build, BuildRequest, RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME,
+        };
         use otzaria_semantic_search::semantic::embedding::mock;
         use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
+        use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+        use otzaria_semantic_search::semantic::segment_set::{
+            install_package, InstallExpectation, InstallSource,
+        };
+        use otzaria_semantic_search::semantic::versioning::IndexVersion;
 
         let dir = TempDir::new().unwrap();
         let engine = engine_with_books(&dir);
@@ -1404,7 +1179,7 @@ mod tests {
             ..model_for(&chunking)
         };
 
-        let out = dir.path().join("artifact");
+        let out = dir.path().join("package");
         let report = build(
             BuildRequest {
                 output_path: out.clone(),
@@ -1412,30 +1187,50 @@ mod tests {
                 model: model.clone(),
                 chunking,
                 created_at: "2026-08-09T00:00:00Z".to_string(),
-                collection_name: "chunks".to_string(),
                 batch_size: 2,
+                clip_q: 1.0,
                 // The stand-in's vectors carry no meaning; saying so is what keeps the
                 // refusal the default for everything that ships.
                 allow_non_semantic_backend: true,
             },
             &corpus,
         )
-        .expect("a Tantivy corpus builds an artifact");
+        .expect("a Tantivy corpus builds a package");
 
         assert_eq!(
-            report.vector_count, 4,
+            report.planned_lines, 4,
             "five live lines, and the recipe skips the one below min_embeddable_chars"
         );
-        assert_eq!(report.book_count, 2);
-        assert_eq!(report.identity.text, corpus.identity().unwrap().text);
-
-        // Verified again from the outside, against the same snapshot: the ids cover the
-        // recipe exactly, and every stored record still agrees with the index field by
-        // field.
+        assert_eq!(report.manifest.counts.slots, 4);
+        assert_eq!(report.manifest.counts.books, 2);
         assert_eq!(
-            validate_artifact(&out, &model, &corpus).unwrap().digest,
-            report.digest
+            report.manifest.identity.text,
+            corpus.identity().unwrap().text
         );
+        assert_eq!(report.manifest.to_library_version, LIBRARY_VERSION);
+
+        // Installed from the outside, as a device installs it: against the digest the
+        // build announced, and an installation of this line recipe and this model.
+        let manifest_json = std::fs::read_to_string(out.join(RELEASE_MANIFEST_FILENAME)).unwrap();
+        let applied = install_package(
+            &dir.path().join("vectors"),
+            &InstallSource {
+                segment: &out.join(SEGMENT_FILENAME),
+                manifest_json: &manifest_json,
+            },
+            &InstallExpectation {
+                identity: IndexVersion {
+                    text: corpus.identity().unwrap().text,
+                    model,
+                    store: readable_store_identity(),
+                },
+                published_manifest_sha256: Some(report.manifest_sha256.clone()),
+            },
+            &CancellationToken::new(),
+        )
+        .expect("the package installs against its published digest");
+        assert_eq!(applied.slots_added, 4);
+        assert_eq!(applied.library_version, LIBRARY_VERSION);
     }
 
     /// The identity fields this side owns are this build's, not typed in beside the
