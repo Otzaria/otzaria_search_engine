@@ -40,7 +40,9 @@
 //! `OTZARIA_ONNX_RUNTIME` is removed. They also need the model's published identity files,
 //! `model.json` and `chunking.json`, from the directory `OTZARIA_TEST_ONNX_IDENTITY` names:
 //! the sidecar's `config/models/meivin-round2-onnx`, whose `model.json` is the model family
-//! and lists both the INT8 and the fp32 package. Run them with:
+//! and lists both the INT8 and the fp32 package. One more needs those files and nothing
+//! else: the chunking compiled in to key the index's lines must be the family's. Run them
+//! with:
 //!
 //! ```sh
 //! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-int8.onnx \
@@ -508,6 +510,32 @@ fn assert_each_query_ranks_its_line_first(engine: &SearchEngine) {
             "the line the query is about must rank first; ranking (text, score): {texts:?}"
         );
     }
+}
+
+/// The chunking this crate compiles in, to key every line it indexes, is the one the model
+/// family publishes: its `chunking.json`, whose hash is `chunking_identity` in the family's
+/// `model.json`. A key computed under any other would name no vector built from the family's.
+#[test]
+#[ignore = "needs the model's identity files; set OTZARIA_TEST_ONNX_IDENTITY and pass --ignored"]
+fn the_compiled_in_chunking_is_the_one_the_model_publishes() {
+    let Some([identity]) = needed([required_file(
+        IDENTITY_ENV,
+        "the directory with the model's model.json and chunking.json, such as the sidecar's \
+         config/models/meivin-round2-onnx",
+    )]) else {
+        return;
+    };
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(identity.join(name)).unwrap()).unwrap()
+    };
+    let compiled = search_engine::semantic_keys::production_chunking();
+    let published: otzaria_semantic_search::semantic::chunker::ChunkerConfig =
+        serde_json::from_value(read("chunking.json")).unwrap();
+    assert_eq!(compiled, published);
+    assert_eq!(
+        read("model.json")["chunking_identity"].as_u64(),
+        Some(compiled.identity())
+    );
 }
 
 /// The application's path with the real model: the build binary embeds the library into an
