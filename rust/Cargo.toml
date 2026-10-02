@@ -110,7 +110,7 @@ sha2 = "0.10"
 # the inference crates come only with `onnx-backend`, which `semantic-onnx` turns
 # on and the sidecar declares for desktop targets only. The `semantic*` features
 # gate the code that talks to it.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "bc4c85410a5e33991920827b6cbcf9a04b379e8b", default-features = false }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "9effe41c0c8fb06dc3ab3fcc37307ddf03644ac1", default-features = false }
 
 [dev-dependencies]
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),
