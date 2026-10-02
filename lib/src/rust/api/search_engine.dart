@@ -318,8 +318,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   ///
   /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
   /// compaction leaves the set as it was. It refuses to start without
-  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
-  /// An open session on the same set is moved onto the compacted generation.
+  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
+  /// and while another install or compaction of the set runs, as `SessionConflict`
+  /// about `vectors_dir`. An open session on the same set is moved onto the compacted
+  /// generation.
   Future<SemanticCompactionReport> compactSemanticVectors({
     required String vectorsDir,
     int? liveLibraryVersion,
@@ -815,15 +817,22 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// The set is locked throughout, and the new generation goes live in one flip: a
   /// release that is refused, cancelled through `cancellation`, or cut off by a crash
   /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-  /// the set's `incoming/` folder first, so it needs its expanded size free besides what
-  /// the install needs. An open session on the same set is moved onto the new
+  /// a file of the install's own in the set's `incoming/` folder first, so it needs its
+  /// expanded size free besides what the install needs; the file is gone when this
+  /// returns, installed or not. An open session on the same set is moved onto the new
   /// generation before this returns.
+  ///
+  /// One install or compaction of a set runs at a time. While another runs in this
+  /// process, this one is refused before it reads anything; while one runs in another
+  /// process, once it reaches the set's lock. Either way the refusal is a
+  /// `SessionConflict` about `vectors_dir`, and the set is as it was.
   ///
   /// Refusals are [`SemanticError`]s of the kinds in the table on
   /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
   /// published one, `ArtifactIncompatible` for a release of another identity or a delta
   /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
-  /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+  /// its manifest describes, `InsufficientDiskSpace`, `SessionConflict`, and
+  /// `Cancelled`.
   ///
   /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
   /// engine's write lock while it copies a segment of hundreds of megabytes.
@@ -2585,6 +2594,7 @@ class SemanticCoverage {
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
+/// | `SessionConflict` | `vectors_dir`, when another install or compaction of that vector set is running |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say; for a compaction, `policy.` and the [`SemanticCompactionPolicy`] option |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
@@ -2650,7 +2660,7 @@ class SemanticError implements FrbException {
 /// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
 /// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
-/// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
+/// | `SessionConflict` | another semantic session is open, or this one with different inputs; or, installing or compacting, another install or compaction of the same vector set is running (`field` is `vectors_dir` then) | `disable_semantic` first, if replacing it is intended; for a set busy with another install or compaction, try again once it has finished | `configure_semantic`, `open_semantic_artifact`, installing, compacting |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
