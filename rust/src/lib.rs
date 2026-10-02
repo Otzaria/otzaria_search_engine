@@ -36,5 +36,6 @@ mod semantic_errors;
 mod search_cancellation;
 // The chunk key the index stores for each line, and the recipe it is computed under. At the
 // crate root so flutter_rust_bridge generates no bindings for it, and in every build: the
-// release index is built by one build and opened by all of them.
-mod semantic_keys;
+// release index is built by one build and opened by all of them. Public for the Rust side
+// alone: the tests and tools hold the recipe to the one a model publishes.
+pub mod semantic_keys;
