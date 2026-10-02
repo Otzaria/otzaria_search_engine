@@ -712,8 +712,7 @@ fn lexical_search_and_status_stay_available_while_indexing_runs() {
 #[test]
 fn library_text_reaches_the_sidecar_path_like_stored_text() {
     use search_engine::api::search_engine::{
-        configure_line_source, resume_line_source, suspend_line_source, DocumentInput, TextStatus,
-        TextStorage,
+        configure_line_source, resume_line_source, suspend_line_source, TextStatus, TextStorage,
     };
     let rows = [
         "<h1>בראשית</h1>",
@@ -752,30 +751,20 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(dir.join("tantivy")).unwrap();
         let mut engine = SearchEngine::new(dir.join("tantivy").to_str().unwrap());
-        engine
-            .add_documents_batch(
-                rows.iter()
-                    .enumerate()
-                    .map(|(segment, row)| DocumentInput {
-                        id: (1u64 << 32) + segment as u64 + 1,
-                        title: "בראשית".to_string(),
-                        reference: "בראשית".to_string(),
-                        topics: TOPICS.to_string(),
-                        text: row.to_string(),
-                        segment: segment as u64,
-                        is_pdf: false,
-                        file_path: "id:1".to_string(),
-                        content_hash: None,
-                        text_hash: None,
-                        text_vocalized: None,
-                        section_id: Some(SECTION),
-                        generation_order: None,
-                        extra_facets: None,
-                        text_storage: Some(storage),
-                    })
-                    .collect(),
+        // Only a whole book can keep its text in the library database.
+        let added = engine
+            .add_text_book(
+                "בראשית".to_string(),
+                TOPICS.to_string(),
+                "id:1".to_string(),
+                0,
+                0,
+                rows.join("\n"),
+                None,
+                storage,
             )
             .unwrap();
+        assert_eq!(added as usize, rows.len());
         engine.commit().unwrap();
         let semantic_root = TempDir::new_in(&dir).unwrap();
         configure(&mut engine, &semantic_root);
@@ -792,7 +781,8 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
                     .enumerate()
                     .map(|(segment, row)| SemanticBookLineInput {
                         line_id: (1u64 << 32) + segment as u64 + 1,
-                        section_id: SECTION,
+                        // What add_text_book gives every line under the book's heading.
+                        section_id: (1u64 << 32) + 1,
                         text: row.to_string(),
                         line_hash: 7,
                         reference: "בראשית".to_owned(),

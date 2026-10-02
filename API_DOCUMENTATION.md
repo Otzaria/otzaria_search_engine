@@ -281,14 +281,27 @@ Future<LineSourceStatus> lineSourceStatus();
   `TextStorage.libraryDb` only when the text is the `\n`-joined rows of an official book
   read from the library database; `filePath` must then be `id:<bookId>`. A document's
   `segment` is its row's 0-based position in the book's `lineIndex` order.
-- `DocumentInput.textStorage` (optional, `null` = `inIndex`) does the same for
-  `addDocumentsBatch` / `upsertDocumentsBatch`. `addPdfBook` always stores its text.
-- Every library row of one result window is read in a single read transaction. A row
-  is verified against the index (`lineHash`, or the book's row count for lines too short
-  to sign); see `TextStatus` below.
+- `libraryDb` needs the line source configured while indexing: the book's text is split
+  into lines and their count is compared with the book's rows in the database. When they
+  differ (a row containing `\n`, another database) or the source cannot be read
+  (unconfigured, suspended, busy), the book is indexed as `inIndex` instead — its text is
+  stored and its results are always `ok` — and a warning is logged. The return value is
+  unchanged.
+- `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
+  `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
+  ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
+- Each library line carries `lineCheck`, a CRC-32 of its exact text (spacing, punctuation,
+  nikud and markup included). Every library row of one result window is read in a single
+  read transaction and must match its `lineCheck`; see `TextStatus` below.
 - `suspendLineSource` must be called before the database file is renamed or replaced
   (Windows cannot replace an open file); while suspended, library results are
-  `TextStatus.unavailable`.
+  `TextStatus.unavailable`. A write by another connection without a suspend is noticed
+  (`PRAGMA data_version`) by the next window, which drops its cached row maps first.
+- While another connection holds a write lock on the database, a window waits at most
+  100 ms, its library results are `unavailable`, and the next second of windows does not
+  touch the database at all.
+- The database is opened by its plain path, read-only, so UNC paths (`\\server\share\...`)
+  work.
 
 ---
 
@@ -313,11 +326,11 @@ class SearchResult {
 ```
 
 `textStatus` is always `ok` for text stored in the index. For `TextStorage.libraryDb`
-documents: `stale` — the database no longer holds the indexed line (changed, moved or
-deleted); `text` is the database's current line, HTML-escaped and unhighlighted (empty
-when the row is gone), and reindexing the book fixes it. `unavailable` — the line source
-is unconfigured, suspended or unreadable; `text` is empty. `SemanticSearchResult` carries
-the same field.
+documents: `stale` — the database no longer holds the indexed line (changed in any way,
+moved or deleted); `text` is the database's current line, HTML-escaped and unhighlighted
+(empty when the row is gone), and reindexing the book fixes it. `unavailable` — the line
+source is unconfigured, suspended, busy or unreadable; `text` is empty.
+`SemanticSearchResult` carries the same field.
 
 **Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags by default (configurable via `HighlightConfig`). If no snippet is generated, it contains the full document text.
 

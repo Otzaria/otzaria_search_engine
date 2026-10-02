@@ -88,6 +88,8 @@ rusqlite = { version = "0.32", default-features = false }
 # Per-row zstd frames of `line_content.content` (schema 6 with `zstd_dict`).
 # Already compiled for tantivy-sstable; same version and features.
 zstd = "0.13"
+# CRC-32 of a line for `lineCheck` (hardware-accelerated; already built for tantivy).
+crc32fast = "1.5"
 lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
