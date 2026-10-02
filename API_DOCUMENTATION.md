@@ -441,7 +441,9 @@ IndexCompatibility checkIndexCompatibility({required String path})
 
 Checks whether an existing index is compatible with the current search engine schema.
 
-The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies the current required schema shape.
+The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies its full schema against the schemas this engine reads.
+
+This engine reads schema versions 4 and 5, and creates 5. A version 4 index is `compatible` and needs no rebuild: it opens, searches and takes books as it always did, and stays version 4. It lacks only the `chunkKey` column, which only an index this engine creates has.
 
 **Parameters:**
 - `path` (String): File system path of the Tantivy index directory
@@ -449,9 +451,9 @@ The engine writes an `otzaria_index_meta.json` sidecar file next to compatible i
 **Returns:** IndexCompatibility
 
 Common `status` values:
-- `compatible`: Otzaria metadata exists and matches the current schema version
-- `legacy_compatible`: Otzaria metadata is missing, but the full Tantivy schema matches the current engine
-- `rebuild_required`: The index schema is older or incompatible and should be rebuilt
+- `compatible`: Otzaria metadata exists, declares a schema version this engine reads, and the index has that version's schema
+- `legacy_compatible`: Otzaria metadata is missing, but the full Tantivy schema is one this engine reads
+- `rebuild_required`: The index schema is older than version 4, or is not the schema its version has, and should be rebuilt
 - `engine_too_old`: The index schema is newer than this engine supports
 - `missing_index`: The index directory does not exist
 - `invalid_index_path`: The given path is not a valid directory path
@@ -520,14 +522,14 @@ class IndexCompatibility {
   bool compatible;             // Whether the current engine can use this index
   String status;               // Machine-readable status
   int? foundSchemaVersion;     // Version found in metadata, when known
-  int requiredSchemaVersion;   // Version required by this engine
+  int requiredSchemaVersion;   // Version this engine creates (it also reads 4)
   String engineVersion;        // Rust engine package version
   String metadataPath;         // Expected otzaria_index_meta.json path
   String? reason;              // Human-readable detail for non-trivial states
 }
 ```
 
-Compatibility is controlled by `requiredSchemaVersion`, not by the package release number. A patch release can keep the same schema version when no rebuild is required.
+Compatibility is controlled by the schema version, not by the package release number: `compatible` is the answer, and `foundSchemaVersion` below `requiredSchemaVersion` is not a reason to rebuild by itself. A patch release can keep the same schema version when no rebuild is required.
 
 ---
 
