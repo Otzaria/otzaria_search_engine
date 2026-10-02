@@ -138,10 +138,11 @@ File writeStubOnnxPackage(Directory dir) {
   return file;
 }
 
-/// The sidecar's `model_checksum` for the ONNX package whose graph is [graph]:
-/// the SHA-256 of its manifest, `otzaria-onnx-package-v1` and then a line of
-/// name, size and SHA-256 for each file, in name order. A package without
-/// external data, as the stub is, holds the graph and `tokenizer.json`.
+/// The sidecar's checksum of the ONNX package whose graph is [graph], as a
+/// model identity's `query_packages` names it: the SHA-256 of its manifest,
+/// `otzaria-onnx-package-v1` and then a line of name, size and SHA-256 for each
+/// file, in name order. A package without external data, as the stub is, holds
+/// the graph and `tokenizer.json`.
 String onnxPackageChecksum(File graph) {
   final files = [graph, File('${graph.parent.path}/tokenizer.json')];
   final named = {
@@ -155,6 +156,12 @@ String onnxPackageChecksum(File graph) {
   }
   return sha256.convert(utf8.encode(manifest.toString())).toString();
 }
+
+/// The sidecar's `tokenizer_checksum` for the ONNX package whose graph is
+/// [graph]: the SHA-256 of the `tokenizer.json` beside it.
+String onnxTokenizerChecksum(File graph) => sha256
+    .convert(File('${graph.parent.path}/tokenizer.json').readAsBytesSync())
+    .toString();
 
 /// The configuration the FFI suites open the sidecar with: the stub graph at
 /// [modelPath], under the pooling the stand-in claims for an ONNX graph, and

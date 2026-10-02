@@ -668,19 +668,21 @@ Future<void> main() async {
   group('semantic FFI with a prebuilt artifact', () {
     const bookKey = '/books/genesis.txt';
     const probeLine = 'ויאמר אלהים יהי אור ויהי אור';
-    // `ChunkerConfig::default().identity()`: the recipe below, which the
-    // artifact's model identity has to name.
-    const chunkingIdentity = 6636791861761206090;
+    // The chunking this build keys the index's lines under, Meivin Round 2's,
+    // which the vector set's model identity has to name: `chunking.json` below,
+    // and its `ChunkerConfig::identity()`.
+    const chunkingIdentity = 2685558872390372738;
 
     late Directory root;
     late SearchEngine engine;
     late Map<String, Object> identity;
+    late SemanticVectorsInstallReport installed;
 
     SemanticArtifactInput input(
       Map<String, Object> modelIdentity, {
       String? onnxRuntimePath,
     }) => SemanticArtifactInput(
-      artifactDir: '${root.path}/artifact',
+      vectorsDir: '${root.path}/vectors',
       modelPath: '${root.path}/model/model.onnx',
       modelIdentityJson: jsonEncode(modelIdentity),
       onnxRuntimePath: onnxRuntimePath,
@@ -701,19 +703,20 @@ Future<void> main() async {
       await engine.commit();
 
       // The build machine's half: the model's identity, the recipe, and the
-      // artifact built from this index, which the build stamps as it goes.
+      // base package built from this index; then the device's, installing it.
       final model = writeStubOnnxPackage(Directory('${root.path}/model'));
       identity = {
-        'model_id': 'test-mock',
-        'model_checksum': onnxPackageChecksum(model),
-        'model_quantization': 'int8',
-        'embedding_backend': MockBackend.id,
+        'family_id': 'test-mock@0000000',
+        'tokenizer_checksum': onnxTokenizerChecksum(model),
         'embedding_dim': 64,
         'pooling': 'in-graph',
         'max_tokens': 512,
-        'embedding_text_version': 1,
+        'embedding_text_version': 2,
         'normalization_version': 1,
         'chunking_identity': chunkingIdentity,
+        'query_packages': [
+          {'checksum': onnxPackageChecksum(model), 'quantization': 'int8'},
+        ],
       };
       File('${root.path}/model.json').writeAsStringSync(jsonEncode(identity));
       File('${root.path}/chunking.json').writeAsStringSync(
@@ -723,7 +726,7 @@ Future<void> main() async {
           'max_chunk_chars': 512,
           'min_embeddable_chars': 5,
           'chunking_version': 1,
-          'embedding_text_version': 1,
+          'embedding_text_version': 2,
           'normalization_version': 1,
         }),
       );
@@ -731,6 +734,8 @@ Future<void> main() async {
         '--index',
         index.path,
         '--library-version',
+        '1',
+        '--release-tag',
         'otzaria-library-ffi',
         '--model',
         '${root.path}/model.json',
@@ -739,16 +744,31 @@ Future<void> main() async {
         '--chunking',
         '${root.path}/chunking.json',
         '--out',
-        '${root.path}/artifact',
+        '${root.path}/package',
         '--created-at',
         '2026-10-01T00:00:00Z',
         '--allow-non-semantic',
-        '--stamp-index',
       ]);
       expect(
         built.exitCode,
         0,
         reason: 'the build failed:\n${built.stdout}\n${built.stderr}',
+      );
+      // Published beside the release, as the build prints it.
+      final digest = RegExp(
+        r'Manifest SHA-256: ([0-9a-f]{64})',
+      ).firstMatch(built.stdout as String)!.group(1);
+      installed = await engine.installSemanticVectors(
+        input: SemanticVectorsInstallInput(
+          vectorsDir: '${root.path}/vectors',
+          segmentPath: '${root.path}/package/segment.oxv',
+          manifestJson: File(
+            '${root.path}/package/release.json',
+          ).readAsStringSync(),
+          publishedManifestSha256: digest,
+          modelIdentityJson: jsonEncode(identity),
+        ),
+        cancellation: SemanticCancellationToken(),
       );
     });
 
@@ -760,7 +780,7 @@ Future<void> main() async {
       }
     });
 
-    test('an opened artifact serves a hydrated semantic-only hit', () async {
+    test('an opened vector set serves a hydrated semantic-only hit', () async {
       final status = await engine.openSemanticArtifact(config: input(identity));
       expect(status.enabled, isTrue);
       expect(status.available, isTrue, reason: status.lastError);
@@ -790,6 +810,36 @@ Future<void> main() async {
       expect(hit.needsHydration, isFalse);
       expect(hit.snippetHtml, probeLine);
       expect(hit.filePath, bookKey);
+    });
+
+    test('a commit after opening leaves the vector set serving', () async {
+      await engine.openSemanticArtifact(config: input(identity));
+      await engine.addTextBook(
+        title: 'נוסף',
+        topics: '/אחר',
+        filePath: '/books/another.txt',
+        catalogueOrder: 1,
+        generationOrder: 0,
+        text: 'שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה',
+      );
+      await engine.commit();
+
+      final status = await engine.semanticStatus();
+      expect(status.state, SemanticState.ready);
+      final response = await engine.searchSemantic(
+        query: probeLine,
+        facets: const [],
+        limit: 10,
+        offset: 0,
+        lexicalMode: SemanticLexicalMode.exact,
+        fuzzyMaxDistance: 0,
+        retrievalMode: SemanticRetrievalMode.semanticOnly,
+        matchNikud: false,
+        matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
+      );
+      expect(response.semanticAvailable, isTrue);
+      expect(response.results.first.snippetHtml, probeLine);
     });
 
     test(
@@ -858,16 +908,16 @@ Future<void> main() async {
       () async {
         await expectLater(
           engine.openSemanticArtifact(
-            config: input({...identity, 'model_id': 'another-model'}),
+            config: input({...identity, 'family_id': 'another-model@0000000'}),
           ),
           throwsA(
             isSemanticError(
               SemanticErrorKind.artifactIncompatible,
-              field: 'model.model_id',
+              field: 'model.family_id',
             ).having(
               (error) => error.message,
               'message',
-              contains('model.model_id'),
+              contains('model.family_id'),
             ),
           ),
         );
@@ -877,12 +927,119 @@ Future<void> main() async {
       },
     );
 
-    test('a missing artifact is refused as missing, by kind', () async {
+    test(
+      'the installed set reports itself, its coverage and its checks',
+      () async {
+        expect(installed.kind, SemanticVectorsPackageKind.base);
+        expect(installed.libraryVersion, 1);
+        expect(installed.slotsAdded, BigInt.from(2));
+        expect(installed.alreadyApplied, isFalse);
+
+        final vectorsDir = '${root.path}/vectors';
+        final info = await engine.semanticVectorsInfo(vectorsDir: vectorsDir);
+        expect(info.present, isTrue);
+        expect(info.generation, installed.generation);
+        expect(info.libraryReleaseTag, 'otzaria-library-ffi');
+        expect(info.identityDigest, hasLength(64));
+        expect(info.segments.single.kind, SemanticVectorsPackageKind.base);
+        expect(
+          (await engine.semanticVectorsInfo(
+            vectorsDir: '${root.path}/not-installed',
+          )).present,
+          isFalse,
+        );
+
+        final coverage = await engine.semanticCoverage(
+          vectorsDir: vectorsDir,
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(coverage.liveKeyedLines, BigInt.from(2));
+        expect(coverage.coveredLines, BigInt.from(2));
+        expect(coverage.booksCovered, 1);
+        expect(coverage.ratio, 1.0);
+
+        final verified = await engine.verifySemanticVectors(
+          vectorsDir: vectorsDir,
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(verified.segments, 1);
+        expect(verified.bytesChecked, greaterThan(BigInt.zero));
+      },
+    );
+
+    test(
+      'a compaction follows its policy, whose defaults are the engine\'s',
+      () async {
+        // The constructor's defaults are written in Dart, `defaults()` is read
+        // from the engine.
+        expect(
+          const SemanticCompactionPolicy(),
+          SemanticCompactionPolicy.defaults(),
+        );
+        final vectorsDir = '${root.path}/vectors';
+        await engine.openSemanticArtifact(config: input(identity));
+
+        final unforced = await engine.compactSemanticVectors(
+          vectorsDir: vectorsDir,
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(unforced.compacted, isFalse, reason: unforced.reason);
+        final forced = await engine.compactSemanticVectors(
+          vectorsDir: vectorsDir,
+          liveLibraryVersion: 1,
+          policy: const SemanticCompactionPolicy(force: true),
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(forced.compacted, isTrue, reason: forced.reason);
+        expect(forced.generation, greaterThan(installed.generation));
+        final status = await engine.semanticStatus();
+        expect(status.state, SemanticState.ready);
+        expect(status.vectorsLibraryVersion, 1);
+        expect(status.vectorSegments, 1);
+
+        await expectLater(
+          engine.compactSemanticVectors(
+            vectorsDir: vectorsDir,
+            policy: const SemanticCompactionPolicy(minFreeSpaceFactor: 0.5),
+            cancellation: SemanticCancellationToken(),
+          ),
+          throwsA(
+            isSemanticError(
+              SemanticErrorKind.invalidInput,
+              field: 'policy.min_free_space_factor',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'a release that is not the published one is refused, by kind',
+      () async {
+        await expectLater(
+          engine.installSemanticVectors(
+            input: SemanticVectorsInstallInput(
+              vectorsDir: '${root.path}/vectors',
+              segmentPath: '${root.path}/package/segment.oxv',
+              manifestJson: File(
+                '${root.path}/package/release.json',
+              ).readAsStringSync(),
+              publishedManifestSha256: '0' * 64,
+              modelIdentityJson: jsonEncode(identity),
+            ),
+            cancellation: SemanticCancellationToken(),
+          ),
+          throwsA(isSemanticError(SemanticErrorKind.artifactNotPublished)),
+        );
+      },
+    );
+
+    test('a missing vector set is refused as missing, by kind', () async {
       Object? thrown;
       try {
         await engine.openSemanticArtifact(
           config: SemanticArtifactInput(
-            artifactDir: '${root.path}/not-installed',
+            vectorsDir: '${root.path}/not-installed',
             modelPath: '${root.path}/model/model.onnx',
             modelIdentityJson: jsonEncode(identity),
           ),
@@ -897,49 +1054,10 @@ Future<void> main() async {
         thrown.toString(),
         allOf(
           startsWith('SemanticError(artifactMissing)'),
-          contains('manifest.json'),
+          contains('not-installed'),
         ),
       );
     });
-
-    test(
-      'a commit after opening makes the artifact stale, in status and search',
-      () async {
-        await engine.openSemanticArtifact(config: input(identity));
-        await engine.addDocument(
-          id: BigInt.from(99),
-          title: 'נוסף',
-          reference: 'נוסף א',
-          topics: '/אחר',
-          text: 'שורה שלא הייתה בספרייה כשהארטיפקט נבנה ממנה',
-          segment: BigInt.zero,
-          isPdf: false,
-          filePath: '/books/another.txt',
-        );
-        await engine.commit();
-
-        final status = await engine.semanticStatus();
-        expect(status.state, SemanticState.stale);
-        expect(status.errorKind, SemanticErrorKind.artifactStale);
-        expect(status.available, isFalse);
-
-        final response = await engine.searchSemantic(
-          query: probeLine,
-          facets: const [],
-          limit: 10,
-          offset: 0,
-          lexicalMode: SemanticLexicalMode.exact,
-          fuzzyMaxDistance: 0,
-          retrievalMode: SemanticRetrievalMode.hybrid,
-          matchNikud: false,
-          matchTaamim: false,
-          cancellation: SemanticCancellationToken(),
-        );
-        expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
-        expect(response.fallbackKind, SemanticErrorKind.artifactStale);
-        expect(response.fallbackReason, status.lastError);
-      },
-    );
   }, skip: artifactSkipReason ?? false);
 }
 

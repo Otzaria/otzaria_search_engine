@@ -1,33 +1,30 @@
-//! The application's semantic path, end to end through the public API: a lexical index, an
-//! artifact built from it by the build binary with `--stamp-index`, and that artifact opened
-//! with `SearchEngine::open_semantic_artifact`, searched, and hydrated from the index.
+//! The application's semantic path, end to end through the public API: a lexical index, a
+//! base package built from it by the build binary and installed into a vector set, and that
+//! set opened with `SearchEngine::open_semantic_artifact`.
 //!
 //! Everything here is what a device does and nothing it does not: it never embeds a line.
-//! The build binary stands in for the build machine, and the identities the device supplies
-//! are the files the build used: the model's identity JSON, and the corpus stamp the build
-//! wrote into the index directory.
+//! The build binary stands in for the build machine, and the identity the device supplies
+//! is the model's identity file the build used.
 //!
 //! Gated like `tests/build_semantic_artifact.rs`, and for its reasons: the model is the stub
 //! ONNX package, which only the deterministic stand-in serves, and `semantic-onnx` would take
 //! it ahead of the stand-in and fail to load it. The stand-in embeds a text as a hash of it,
-//! so a query that is a line's exact text scores that line 1.0 and nothing else as high,
-//! which is what lets these tests know which line must come back.
+//! so a query that is a line's exact embedded text scores that line 1.0 and nothing else as
+//! high, which is what lets these tests know which line must come back.
 
 #![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
-use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::mock;
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
-use otzaria_semantic_search::semantic::versioning::ModelIdentity;
-use otzaria_semantic_search::semantic::zevc_store::VECTORS_FILENAME;
+use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
-    SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
-    SemanticSearchResponse, SemanticState,
+    SemanticCancellationToken, SemanticCompactionPolicy, SemanticConfigInput, SemanticError,
+    SemanticErrorKind, SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource,
+    SemanticRetrievalMode, SemanticSearchResponse, SemanticState, SemanticVectorsInstallInput,
+    SemanticVectorsPackageKind,
 };
-use search_engine::semantic_corpus::CORPUS_STAMP_FILE_NAME;
-use serde_json::Value as JsonValue;
+use search_engine::semantic_keys::production_chunking;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,7 +32,9 @@ use tempfile::TempDir;
 
 const GENESIS: &str = "/books/genesis.txt";
 const BERACHOT: &str = "/books/berachot.txt";
-const LIBRARY_VERSION: &str = "otzaria-library-2026-10";
+/// The library edition the build labels the index with.
+const LIBRARY_VERSION: u32 = 30;
+const RELEASE_TAG: &str = "v30-20261001000000";
 
 /// The third line is under `min_embeddable_chars`, so the recipe skips it: four vectors for
 /// five lines.
@@ -49,15 +48,34 @@ const EMBEDDED: u32 = 4;
 /// A line whose exact text a query repeats, so the stand-in must rank it first.
 const PROBE_LINE: &str = "ויאמר אלהים יהי אור ויהי אור";
 
+/// One book as `add_text_book` takes it: title, topics, key, catalogue order, text.
+type Book = (&'static str, &'static str, &'static str, u32, String);
+
+/// The two books every library here starts from.
+fn default_books() -> Vec<Book> {
+    vec![
+        ("בראשית", "/מקרא/תורה", GENESIS, 0, GENESIS_TEXT.to_string()),
+        (
+            "משנה ברכות",
+            "/משנה/זרעים",
+            BERACHOT,
+            1,
+            BERACHOT_TEXT.to_string(),
+        ),
+    ]
+}
+
 /// What the build machine produced, and where.
 struct Library {
     _root: TempDir,
     index: PathBuf,
-    artifact: PathBuf,
+    /// Where the build put its inputs: the model's identity and the chunking.
+    work: PathBuf,
+    /// The base package of [`LIBRARY_VERSION`], as published.
+    package: PathBuf,
+    vectors: PathBuf,
     model_file: PathBuf,
     model: ModelIdentity,
-    /// The digest the build binary reported, which a release would publish.
-    digest: String,
 }
 
 impl Library {
@@ -72,11 +90,11 @@ impl Library {
 
     fn input_with_identity(&self, model_identity_json: String) -> SemanticArtifactInput {
         SemanticArtifactInput {
-            artifact_dir: self.artifact.to_string_lossy().into_owned(),
+            vectors_dir: self.vectors.to_string_lossy().into_owned(),
             model_path: self.model_file.to_string_lossy().into_owned(),
             model_identity_json,
-            published_digest: None,
             onnx_runtime_path: None,
+            scan_threads: None,
         }
     }
 
@@ -84,80 +102,106 @@ impl Library {
     fn engine(&self) -> SearchEngine {
         SearchEngine::new(self.index.to_str().unwrap())
     }
+}
 
-    fn stamp_path(&self) -> PathBuf {
-        self.index.join(CORPUS_STAMP_FILE_NAME)
+fn add_books(engine: &mut SearchEngine, books: &[Book]) {
+    for (title, topics, key, order, text) in books {
+        engine
+            .add_text_book(
+                title.to_string(),
+                topics.to_string(),
+                key.to_string(),
+                *order,
+                0,
+                text.clone(),
+                None,
+            )
+            .unwrap();
     }
-}
-
-fn add_books(engine: &mut SearchEngine) {
-    engine
-        .add_text_book(
-            "בראשית".to_string(),
-            "/מקרא/תורה".to_string(),
-            GENESIS.to_string(),
-            0,
-            0,
-            GENESIS_TEXT.to_string(),
-            None,
-        )
-        .unwrap();
-    engine
-        .add_text_book(
-            "משנה ברכות".to_string(),
-            "/משנה/זרעים".to_string(),
-            BERACHOT.to_string(),
-            1,
-            0,
-            BERACHOT_TEXT.to_string(),
-            None,
-        )
-        .unwrap();
     engine.commit().unwrap();
 }
 
-/// Change what the index holds: a third book, committed.
-fn add_another_book(engine: &mut SearchEngine) {
-    engine
-        .add_text_book(
-            "ספר נוסף".to_string(),
-            "/אחר".to_string(),
-            "/books/another.txt".to_string(),
-            2,
-            0,
-            "שורה שלא הייתה בספרייה כשהארטיפקט נבנה ממנה".to_string(),
-            None,
-        )
-        .unwrap();
-    engine.commit().unwrap();
+/// Replace one book, as the application reindexes a book that changed.
+fn replace_book(engine: &mut SearchEngine, book: Book) {
+    engine.delete_documents_by_file_path(book.2).unwrap();
+    add_books(engine, &[book]);
 }
 
-/// Build the library the way a release does: the lexical index, closed, then the artifact
-/// from it — stamping the index when `stamp` asks for it.
-fn build_library(stamp: bool) -> Library {
+/// An empty index of schema version 4, as the engine before the `chunkKey` column made
+/// one: this engine's schema without that field, and version 4's metadata.
+fn version_4_index(dir: &Path) {
+    let probe = TempDir::new().unwrap();
+    drop(SearchEngine::new(probe.path().to_str().unwrap()));
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(probe.path().join("meta.json")).unwrap())
+            .unwrap();
+    let mut fields = meta["schema"].as_array().unwrap().clone();
+    fields.retain(|field| field["name"] != "chunkKey");
+    let schema: tantivy::schema::Schema =
+        serde_json::from_value(serde_json::Value::Array(fields)).unwrap();
+    tantivy::Index::create_in_dir(dir, schema).unwrap();
+    std::fs::write(
+        dir.join("otzaria_index_meta.json"),
+        serde_json::json!({
+            "format": "otzaria-search-index",
+            "schema_version": 4,
+            "engine_version": "0.8.7",
+            "tantivy_version": "0.26.2",
+            "created_at_unix_seconds": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// Bookkeeping files of a directory: what a tool that writes into it would add.
+fn bookkeeping(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json") || name.starts_with('.'))
+        .collect()
+}
+
+/// Build the library the way a release does — the lexical index, closed, then a base
+/// package built from it — and install it as a device installs a release.
+fn build_library() -> Library {
+    build_library_of(&default_books(), false)
+}
+
+/// [`build_library`] of `books`, into an index of schema version 4 when `version_4` asks.
+fn build_library_of(books: &[Book], version_4: bool) -> Library {
     let root = TempDir::new().unwrap();
     let index = root.path().join("tantivy");
     let work = root.path().join("work");
     std::fs::create_dir_all(&index).unwrap();
     std::fs::create_dir_all(&work).unwrap();
-    add_books(&mut SearchEngine::new(index.to_str().unwrap()));
+    if version_4 {
+        version_4_index(&index);
+    }
+    add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
 
     let model_file = mock::write_stub_onnx_package(&work.join("model"));
-    let chunking = ChunkerConfig::default();
+    // The chunking this build keys the index's lines under, as the library's vectors are
+    // built with it. The stand-in embeds a bag of words, so a query still ranks first the
+    // line whose words it repeats, role prefixes aside.
+    let chunking = production_chunking();
     let model = ModelIdentity {
-        model_id: "test-mock".to_string(),
-        model_checksum: validate_onnx_package(&model_file)
-            .unwrap()
-            .checksum()
-            .to_string(),
-        model_quantization: "int8".to_string(),
-        embedding_backend: "mock-hash-v1".to_string(),
+        family_id: "test-mock@0000000".to_string(),
+        tokenizer_checksum: mock::stub_tokenizer_checksum(),
         embedding_dim: 64,
         pooling: "in-graph".to_string(),
         max_tokens: 512,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
         chunking_identity: chunking.identity(),
+        query_packages: vec![ModelPackage {
+            checksum: validate_onnx_package(&model_file)
+                .unwrap()
+                .checksum()
+                .to_string(),
+            quantization: "int8".to_string(),
+        }],
     };
     std::fs::write(
         work.join("model.json"),
@@ -170,13 +214,54 @@ fn build_library(stamp: bool) -> Library {
     )
     .unwrap();
 
-    let artifact = root.path().join("artifact");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"));
-    command.args([
+    let vectors = root.path().join("vectors");
+    let package = root.path().join("package");
+    let index_before = bookkeeping(&index);
+    build_package(
+        &index,
+        &work,
+        &model_file,
+        LIBRARY_VERSION,
+        RELEASE_TAG,
+        &package,
+        Some(&vectors),
+    );
+    assert_eq!(
+        bookkeeping(&index),
+        index_before,
+        "a vector set needs nothing written into the lexical index"
+    );
+
+    Library {
+        _root: root,
+        index,
+        work,
+        package,
+        vectors,
+        model_file,
+        model,
+    }
+}
+
+/// A base package of `index` as library version `library_version`, written to `out`, and
+/// installed into `install` by the build binary when given.
+fn build_package(
+    index: &Path,
+    work: &Path,
+    model_file: &Path,
+    library_version: u32,
+    release_tag: &str,
+    out: &Path,
+    install: Option<&Path>,
+) {
+    let library_version = library_version.to_string();
+    let mut args = vec![
         "--index",
         index.to_str().unwrap(),
         "--library-version",
-        LIBRARY_VERSION,
+        library_version.as_str(),
+        "--release-tag",
+        release_tag,
         "--model",
         work.join("model.json").to_str().unwrap(),
         "--model-file",
@@ -184,42 +269,79 @@ fn build_library(stamp: bool) -> Library {
         "--chunking",
         work.join("chunking.json").to_str().unwrap(),
         "--out",
-        artifact.to_str().unwrap(),
+        out.to_str().unwrap(),
         "--created-at",
         "2026-10-01T00:00:00Z",
         "--allow-non-semantic",
-    ]);
-    if stamp {
-        command.arg("--stamp-index");
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    if let Some(install) = install {
+        args.extend([
+            "--install".to_string(),
+            install.to_string_lossy().into_owned(),
+        ]);
     }
-    let built = command.output().expect("the build binary runs");
-    let stdout = String::from_utf8_lossy(&built.stdout).into_owned();
+    let built = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"))
+        .args(&args)
+        .output()
+        .expect("the build binary runs");
     assert!(
         built.status.success(),
-        "build failed:\n{stdout}\n{}",
+        "build failed:\n{}\n{}",
+        String::from_utf8_lossy(&built.stdout),
         String::from_utf8_lossy(&built.stderr)
     );
-    let digest = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("Digest:"))
-        .expect("the binary reports a digest")
-        .trim()
-        .to_string();
+}
 
-    Library {
-        _root: root,
-        index,
-        artifact,
-        model_file,
-        model,
-        digest,
-    }
+fn search(
+    engine: &SearchEngine,
+    query: &str,
+    facets: &[&str],
+    mode: SemanticRetrievalMode,
+) -> SemanticSearchResponse {
+    engine
+        .search_semantic(
+            query.to_string(),
+            facets.iter().map(|facet| facet.to_string()).collect(),
+            10,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            mode,
+            None,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap()
+}
+
+/// The semantic-only results of `query`, as (book, line text, ordinal).
+fn semantic_lines(
+    engine: &SearchEngine,
+    query: &str,
+    facets: &[&str],
+) -> Vec<(String, String, u64)> {
+    let response = search(engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+    assert!(
+        response.semantic_available,
+        "{:?}",
+        response.fallback_reason
+    );
+    response
+        .results
+        .into_iter()
+        .map(|result| (result.file_path, result.snippet_html, result.segment))
+        .collect()
 }
 
 fn open_refusal(engine: &SearchEngine, input: SemanticArtifactInput) -> SemanticError {
     match engine.open_semantic_artifact(input) {
         Ok(status) => panic!(
-            "the artifact must be refused, and opened: {:?}",
+            "the vector set must be refused, and opened: {:?}",
             status.model_id
         ),
         Err(error) => error,
@@ -242,38 +364,15 @@ fn assert_refused(
     );
 }
 
-fn search(
-    engine: &SearchEngine,
-    query: &str,
-    mode: SemanticRetrievalMode,
-) -> SemanticSearchResponse {
-    engine
-        .search_semantic(
-            query.to_string(),
-            Vec::new(),
-            10,
-            0,
-            SemanticLexicalMode::Exact,
-            0,
-            mode,
-            None,
-            false,
-            false,
-            None,
-            &SemanticCancellationToken::new(),
-        )
-        .unwrap()
-}
-
-/// The whole path: stamped, opened, reported, searched both ways, hydrated.
+/// The set opens against the index it was built from, and reports itself.
 #[test]
-fn an_artifact_built_from_the_index_opens_and_answers_with_hydrated_lines() {
-    let library = build_library(true);
+fn an_installed_vector_set_opens_and_reports_itself() {
+    let library = build_library();
     let engine = library.engine();
 
     let status = engine
         .open_semantic_artifact(library.input())
-        .expect("the artifact built from this index opens against it");
+        .expect("the installed set opens");
     assert!(
         status.enabled && status.available,
         "{:?}",
@@ -283,174 +382,29 @@ fn an_artifact_built_from_the_index_opens_and_answers_with_hydrated_lines() {
     assert_eq!(status.vector_count, EMBEDDED);
     assert_eq!(status.indexed_book_count, 2);
     assert_eq!(status.needs_full_reindex, None);
-    assert!(
-        status.vectors_persisted,
-        "an artifact's vectors are on disk"
-    );
+    assert!(status.vectors_persisted, "a set's vectors are on disk");
     assert_eq!(status.state, SemanticState::Ready);
     assert_eq!((status.last_error, status.error_kind), (None, None));
-
-    // Semantic-only: the one line the query repeats comes back first, hydrated from this
-    // index and not from the artifact.
-    let response = search(&engine, PROBE_LINE, SemanticRetrievalMode::SemanticOnly);
-    assert_eq!(response.executed_mode, SemanticExecutedMode::SemanticOnly);
-    assert!(
-        response.semantic_available,
-        "{:?}",
-        response.fallback_reason
-    );
-    assert_eq!(response.fallback_kind, None);
-    let top = response.results.first().expect("a semantic hit");
-    assert_eq!(top.source, SemanticResultSource::Semantic);
-    assert!(!top.needs_hydration);
-    assert_eq!(top.snippet_html, PROBE_LINE);
-    assert_eq!(top.file_path, GENESIS);
-    let stored = engine
-        .get_document_by_id(top.id)
-        .unwrap()
-        .expect("the hit's id names a line of this index");
-    assert_eq!(stored.text, PROBE_LINE);
-
-    // Hybrid: both halves reach fusion, and the line both found is marked as such.
-    let response = search(&engine, PROBE_LINE, SemanticRetrievalMode::Hybrid);
-    assert_eq!(response.executed_mode, SemanticExecutedMode::Hybrid);
-    assert!(
-        response.fallback_reason.is_none(),
-        "{:?}",
-        response.fallback_reason
-    );
-    assert_eq!(response.fallback_kind, None);
-    let top = response.results.first().expect("a fused hit");
-    assert_eq!(top.id, stored.id);
-    assert_eq!(top.source, SemanticResultSource::Both);
+    assert_eq!(status.model_id, library.model.family_id);
 
     // Opening again with the same inputs changes nothing.
     let again = engine.open_semantic_artifact(library.input()).unwrap();
     assert_eq!(again.vector_count, EMBEDDED);
 }
 
-/// `--stamp-index` writes the stamp and nothing else into the index, and the stamp names the
-/// corpus the artifact was built for.
-#[test]
-fn the_stamp_is_the_one_file_the_build_writes_into_the_index() {
-    let unstamped = build_library(false);
-    let stamped = build_library(true);
-
-    // Segment files are named by a fresh id in every index, so only the bookkeeping files
-    // (Tantivy's meta and locks, this crate's metadata, the stamp) can be compared by name.
-    let bookkeeping = |dir: &Path| -> BTreeSet<String> {
-        std::fs::read_dir(dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".json") || name.starts_with('.'))
-            .collect()
-    };
-    assert!(!unstamped.stamp_path().exists());
-    let extra: Vec<String> = bookkeeping(&stamped.index)
-        .difference(&bookkeeping(&unstamped.index))
-        .cloned()
-        .collect();
-    assert_eq!(extra, vec![CORPUS_STAMP_FILE_NAME.to_string()]);
-
-    let stamp: JsonValue =
-        serde_json::from_str(&std::fs::read_to_string(stamped.stamp_path()).unwrap()).unwrap();
-    let manifest: JsonValue = serde_json::from_str(
-        &std::fs::read_to_string(stamped.artifact.join("manifest.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(stamp["corpus"], manifest["identity"]["corpus"]);
-    assert_eq!(stamp["corpus"]["library_version"], LIBRARY_VERSION);
-}
-
-#[test]
-fn an_index_without_a_corpus_stamp_is_refused_and_says_how_to_make_one() {
-    let library = build_library(false);
-    let engine = library.engine();
-    let error = open_refusal(&engine, library.input());
-    let message = &error.message;
-    assert!(
-        message.contains(CORPUS_STAMP_FILE_NAME) && message.contains("--stamp-index"),
-        "{message}"
-    );
-    assert_refused(&engine, &error, SemanticErrorKind::IndexNotStamped, None);
-}
-
-/// A stamp this build cannot read says nothing about the index, and is no stamp to it.
-#[test]
-fn a_damaged_corpus_stamp_is_no_stamp() {
-    let library = build_library(true);
-    std::fs::write(library.stamp_path(), "{ not a stamp").unwrap();
-
-    let engine = library.engine();
-    let error = open_refusal(&engine, library.input());
-    assert!(
-        error.message.contains("is not a corpus stamp"),
-        "{}",
-        error.message
-    );
-    assert_refused(&engine, &error, SemanticErrorKind::IndexNotStamped, None);
-}
-
-/// A stamp that names another corpus — another release of the library — is refused by the
-/// identity comparison, which names the field.
-#[test]
-fn a_stamp_for_another_corpus_is_refused_by_name() {
-    let library = build_library(true);
-    let mut stamp: JsonValue =
-        serde_json::from_str(&std::fs::read_to_string(library.stamp_path()).unwrap()).unwrap();
-    stamp["corpus"]["library_version"] = JsonValue::from("otzaria-library-1999-01");
-    std::fs::write(library.stamp_path(), stamp.to_string()).unwrap();
-
-    let engine = library.engine();
-    let error = open_refusal(&engine, library.input());
-    assert!(
-        error.message.contains("corpus.library_version"),
-        "{}",
-        error.message
-    );
-    assert_refused(
-        &engine,
-        &error,
-        SemanticErrorKind::ArtifactIncompatible,
-        Some("corpus.library_version"),
-    );
-}
-
-/// The index this artifact was built for, changed afterwards: the stamp no longer vouches
-/// for it, since nothing on the device can recompute `corpus_id`.
-#[test]
-fn an_index_changed_after_it_was_stamped_is_refused() {
-    let library = build_library(true);
-    let mut engine = library.engine();
-    add_another_book(&mut engine);
-
-    let error = open_refusal(&engine, library.input());
-    assert!(
-        error
-            .message
-            .contains("has changed since its corpus stamp was written"),
-        "{}",
-        error.message
-    );
-    assert_refused(&engine, &error, SemanticErrorKind::IndexStampMismatch, None);
-}
-
 /// A model-identity field, and one edit of it alone.
 type IdentityEdit = (&'static str, fn(&mut ModelIdentity));
 
-/// Fields the artifact records, and the checksum the sidecar reads off the loaded model
-/// instead: a disagreement in either kind is refused by name, and leaves nothing open.
+/// Fields the set records, and the package and tokenizer the model file has instead: a
+/// disagreement in either kind is refused by name, and leaves nothing open.
 #[test]
-fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
-    let library = build_library(true);
+fn a_model_identity_other_than_the_sets_is_refused_by_name() {
+    let library = build_library();
     let engine = library.engine();
 
-    let edits: [IdentityEdit; 3] = [
-        ("model.model_id", |m| {
-            m.model_id = "another-model".to_string()
-        }),
-        ("model.model_quantization", |m| {
-            m.model_quantization = "fp32".to_string()
+    let edits: [IdentityEdit; 2] = [
+        ("model.family_id", |m| {
+            m.family_id = "another-model@0000000".to_string()
         }),
         ("model.chunking_identity", |m| m.chunking_identity ^= 1),
     ];
@@ -462,7 +416,7 @@ fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
             library.input_with_identity(serde_json::to_string(&model).unwrap()),
         );
         assert!(error.message.contains(field), "{field}: {}", error.message);
-        // An artifact built for another model; `field` is the path the message names.
+        // A set built for another model; `field` is the path the message names.
         assert_refused(
             &engine,
             &error,
@@ -471,13 +425,15 @@ fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
         );
     }
 
-    // Not compared with the artifact by the sidecar, which takes them from the loaded
-    // model: an identity file that disagrees with the model describes other weights, and
-    // `field` is the identity file's own key.
+    // Not compared with the set by the sidecar, which takes them from the model file: an
+    // identity file that disagrees with the model describes other weights, and `field` is
+    // the identity file's own key.
     let edits: [IdentityEdit; 2] = [
-        ("model_checksum", |m| m.model_checksum = "0".repeat(64)),
-        ("embedding_backend", |m| {
-            m.embedding_backend = "onnxruntime-sentence-v1".to_string()
+        ("query_packages", |m| {
+            m.query_packages[0].checksum = "0".repeat(64)
+        }),
+        ("tokenizer_checksum", |m| {
+            m.tokenizer_checksum = "0".repeat(64)
         }),
     ];
     for (field, edit) in edits {
@@ -519,40 +475,11 @@ fn a_model_identity_other_than_the_artifacts_is_refused_by_name() {
     assert!(status.available);
 }
 
+/// The set is read-only on the device: every call that would build vectors is refused by
+/// name, and the session keeps serving.
 #[test]
-fn a_published_digest_is_checked() {
-    let library = build_library(true);
-    let engine = library.engine();
-
-    let wrong = SemanticArtifactInput {
-        published_digest: Some("0".repeat(64)),
-        ..library.input()
-    };
-    let error = open_refusal(&engine, wrong);
-    assert!(
-        error.message.contains("was published for it"),
-        "{}",
-        error.message
-    );
-    assert_refused(
-        &engine,
-        &error,
-        SemanticErrorKind::ArtifactNotPublished,
-        None,
-    );
-
-    let right = SemanticArtifactInput {
-        published_digest: Some(library.digest.clone()),
-        ..library.input()
-    };
-    assert!(engine.open_semantic_artifact(right).unwrap().available);
-}
-
-/// The artifact is read-only on the device: every call that would build vectors is refused
-/// by name, and the session keeps serving.
-#[test]
-fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
-    let library = build_library(true);
+fn every_build_side_call_on_an_opened_set_is_refused_as_read_only() {
+    let library = build_library();
     let mut engine = library.engine();
     engine.open_semantic_artifact(library.input()).unwrap();
 
@@ -566,7 +493,7 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
         lines: vec![SemanticBookLineInput {
             line_id: 1,
             section_id: 1,
-            text: PROBE_LINE.to_string(),
+            text: "ויאמר אלהים יהי אור ויהי אור".to_string(),
             line_hash: 1,
             reference: "בראשית א".to_string(),
             segment: 0,
@@ -597,22 +524,8 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
         assert_eq!(error.field, None, "{call}");
     }
 
-    let error = match engine.configure_semantic(SemanticConfigInput {
-        root_dir: library
-            .index
-            .join("semantic")
-            .to_string_lossy()
-            .into_owned(),
-        model_path: library.model_file.to_string_lossy().into_owned(),
-        model_id: "test-mock".to_string(),
-        embedding_dim: 64,
-        pooling: "in-graph".to_string(),
-        max_tokens: 512,
-        model_quantization: "int8".to_string(),
-        embedding_text_version: 1,
-        onnx_runtime_path: None,
-    }) {
-        Ok(_) => panic!("configure_semantic must not replace an opened artifact"),
+    let error = match engine.configure_semantic(dev_config(&library, &library.index)) {
+        Ok(_) => panic!("configure_semantic must not replace an opened set"),
         Err(error) => error,
     };
     assert!(
@@ -627,24 +540,29 @@ fn every_build_side_call_on_an_opened_artifact_is_refused_as_read_only() {
     assert_eq!(status.state, SemanticState::Ready);
 }
 
-/// A session opened by `configure_semantic` is not silently replaced by an artifact.
+/// A development session over the stub model, rooted in `dir`.
+fn dev_config(library: &Library, dir: &Path) -> SemanticConfigInput {
+    SemanticConfigInput {
+        root_dir: dir.join("semantic").to_string_lossy().into_owned(),
+        model_path: library.model_file.to_string_lossy().into_owned(),
+        model_id: "test-mock".to_string(),
+        embedding_dim: 64,
+        pooling: "in-graph".to_string(),
+        max_tokens: 512,
+        model_quantization: "int8".to_string(),
+        embedding_text_version: 1,
+        onnx_runtime_path: None,
+    }
+}
+
+/// A session opened by `configure_semantic` is not silently replaced by a vector set.
 #[test]
-fn an_artifact_does_not_replace_a_session_built_on_the_device() {
-    let library = build_library(true);
+fn a_vector_set_does_not_replace_a_session_built_on_the_device() {
+    let library = build_library();
     let mut engine = library.engine();
     let semantic_root = TempDir::new().unwrap();
     engine
-        .configure_semantic(SemanticConfigInput {
-            root_dir: semantic_root.path().to_string_lossy().into_owned(),
-            model_path: library.model_file.to_string_lossy().into_owned(),
-            model_id: "test-mock".to_string(),
-            embedding_dim: 64,
-            pooling: "in-graph".to_string(),
-            max_tokens: 512,
-            model_quantization: "int8".to_string(),
-            embedding_text_version: 1,
-            onnx_runtime_path: None,
-        })
+        .configure_semantic(dev_config(&library, semantic_root.path()))
         .unwrap();
 
     let error = open_refusal(&engine, library.input());
@@ -669,16 +587,18 @@ fn an_artifact_does_not_replace_a_session_built_on_the_device() {
     );
 }
 
-/// The runtime path on the application's own path. No identity field reads it, so the
-/// stand-in, which loads nothing, opens the artifact whatever it names. A repeat is compared
-/// on it, since the process keeps the first runtime it loads: the same path is a repeat, and
-/// none, or another, is refused naming it. An empty one is refused before anything opens.
+/// The runtime path and the scan's threads on the application's own path. No identity field
+/// reads either, so the stand-in, which loads nothing, opens the set whatever they say. A
+/// repeat is compared on them: the process keeps the first runtime it loads, and a scan's
+/// threads are the session's. The same values are a repeat; others are refused naming them.
+/// An empty runtime path and zero threads are refused before anything opens.
 #[test]
-fn a_runtime_path_opens_no_other_artifact_and_is_compared_on_a_repeat() {
-    let library = build_library(true);
+fn a_runtime_path_and_scan_threads_are_compared_on_a_repeat() {
+    let library = build_library();
     let mut engine = library.engine();
-    let with_runtime = |path: Option<&Path>| SemanticArtifactInput {
+    let with = |path: Option<&Path>, threads: Option<u32>| SemanticArtifactInput {
         onnx_runtime_path: path.map(|path| path.to_string_lossy().into_owned()),
+        scan_threads: threads,
         ..library.input()
     };
     let bundled = library
@@ -687,27 +607,28 @@ fn a_runtime_path_opens_no_other_artifact_and_is_compared_on_a_repeat() {
         .join("libonnxruntime.dylib");
 
     let status = engine
-        .open_semantic_artifact(with_runtime(Some(&bundled)))
-        .expect("the runtime path is not part of the artifact's identity");
+        .open_semantic_artifact(with(Some(&bundled), Some(2)))
+        .expect("neither the runtime path nor the threads are part of the set's identity");
     assert!(status.available, "{:?}", status.last_error);
     let again = engine
-        .open_semantic_artifact(with_runtime(Some(&bundled)))
-        .expect("the same runtime path is a repeat");
+        .open_semantic_artifact(with(Some(&bundled), Some(2)))
+        .expect("the same inputs are a repeat");
     assert_eq!(again.state, SemanticState::Ready);
 
     let elsewhere = library.index.join("libonnxruntime.dylib");
-    for changed in [None, Some(elsewhere.as_path())] {
-        let error = match engine.open_semantic_artifact(with_runtime(changed)) {
-            Ok(_) => panic!("{changed:?}: another runtime path must not pass for a repeat"),
+    for (changed, threads, field) in [
+        (None, Some(2), "onnx_runtime_path"),
+        (Some(elsewhere.as_path()), Some(2), "onnx_runtime_path"),
+        (Some(bundled.as_path()), Some(3), "scan_threads"),
+        (Some(bundled.as_path()), None, "scan_threads"),
+    ] {
+        let error = match engine.open_semantic_artifact(with(changed, threads)) {
+            Ok(_) => panic!("{changed:?} {threads:?}: other inputs must not pass for a repeat"),
             Err(error) => error,
         };
-        assert_eq!(
-            error.kind,
-            SemanticErrorKind::SessionConflict,
-            "{changed:?}"
-        );
+        assert_eq!(error.kind, SemanticErrorKind::SessionConflict, "{field}");
         assert!(
-            error.message.contains("and onnx_runtime_path changed"),
+            error.message.contains(&format!("and {field} changed")),
             "{}",
             error.message
         );
@@ -715,119 +636,70 @@ fn a_runtime_path_opens_no_other_artifact_and_is_compared_on_a_repeat() {
     assert_eq!(engine.semantic_status().state, SemanticState::Ready);
 
     engine.disable_semantic();
-    let error = open_refusal(
-        &engine,
-        SemanticArtifactInput {
-            onnx_runtime_path: Some(String::new()),
-            ..library.input()
-        },
-    );
-    assert_refused(
-        &engine,
-        &error,
-        SemanticErrorKind::InvalidInput,
-        Some("onnx_runtime_path"),
-    );
+    for (input, field) in [
+        (
+            SemanticArtifactInput {
+                onnx_runtime_path: Some(String::new()),
+                ..library.input()
+            },
+            "onnx_runtime_path",
+        ),
+        (with(None, Some(0)), "scan_threads"),
+    ] {
+        let error = open_refusal(&engine, input);
+        assert_refused(
+            &engine,
+            &error,
+            SemanticErrorKind::InvalidInput,
+            Some(field),
+        );
+    }
 }
 
-/// A commit after opening: the artifact may now name lines that moved, so it is not asked,
-/// and both the status and every search say why.
+/// Nothing at the directory, and a directory with nothing installed in it: either way there
+/// is no set to open, which is not the same as a damaged one.
 #[test]
-fn a_commit_after_opening_makes_the_artifact_stale_and_says_so() {
-    let library = build_library(true);
-    let mut engine = library.engine();
-    engine.open_semantic_artifact(library.input()).unwrap();
-    add_another_book(&mut engine);
-
-    let status = engine.semantic_status();
-    assert!(status.enabled && !status.available);
-    assert_eq!(status.state, SemanticState::Stale);
-    assert_eq!(status.error_kind, Some(SemanticErrorKind::ArtifactStale));
-    let reason = status.last_error.expect("the status says why");
-    assert!(
-        reason.contains("has changed since the semantic artifact"),
-        "{reason}"
-    );
-
-    let hybrid = search(&engine, PROBE_LINE, SemanticRetrievalMode::Hybrid);
-    assert_eq!(hybrid.executed_mode, SemanticExecutedMode::LexicalOnly);
-    assert_eq!(hybrid.fallback_reason.as_deref(), Some(reason.as_str()));
-    assert_eq!(hybrid.fallback_kind, Some(SemanticErrorKind::ArtifactStale));
-    assert!(
-        !hybrid.results.is_empty(),
-        "lexical results are still served"
-    );
-
-    let semantic = search(&engine, PROBE_LINE, SemanticRetrievalMode::SemanticOnly);
-    assert!(semantic.results.is_empty());
-    assert_eq!(semantic.fallback_reason.as_deref(), Some(reason.as_str()));
-    assert_eq!(
-        semantic.fallback_kind,
-        Some(SemanticErrorKind::ArtifactStale)
-    );
-
-    engine.disable_semantic();
-    assert_eq!(engine.semantic_status().state, SemanticState::NotConfigured);
-    let error = open_refusal(&engine, library.input());
-    assert!(
-        error
-            .message
-            .contains("has changed since its corpus stamp was written"),
-        "a stale index is refused at open too: {}",
-        error.message
-    );
-    assert_refused(&engine, &error, SemanticErrorKind::IndexStampMismatch, None);
-}
-
-/// Nothing at the artifact directory, and a directory with nothing installed in it: either
-/// way there is no artifact to open, which is not the same as a damaged one.
-#[test]
-fn a_missing_artifact_is_missing_and_not_corrupt() {
-    let library = build_library(true);
+fn a_missing_vector_set_is_missing_and_not_corrupt() {
+    let library = build_library();
     let engine = library.engine();
     let empty = TempDir::new().unwrap();
 
-    for artifact_dir in [library.artifact.join("absent"), empty.path().to_path_buf()] {
+    for vectors_dir in [library.vectors.join("absent"), empty.path().to_path_buf()] {
         let error = open_refusal(
             &engine,
             SemanticArtifactInput {
-                artifact_dir: artifact_dir.to_string_lossy().into_owned(),
+                vectors_dir: vectors_dir.to_string_lossy().into_owned(),
                 ..library.input()
             },
-        );
-        assert!(
-            error.message.contains("manifest.json"),
-            "{}: {}",
-            artifact_dir.display(),
-            error.message
         );
         assert_refused(&engine, &error, SemanticErrorKind::ArtifactMissing, None);
     }
 }
 
-/// One way to damage each layer the open checks: the metadata, a payload's presence, and a
-/// payload's bytes. All three are the artifact to download again.
+/// A set whose pointer to its live generation, or whose segment, is damaged: the vectors to
+/// download again.
 #[test]
-fn a_damaged_artifact_is_corrupt() {
+fn a_damaged_vector_set_is_corrupt() {
     type Damage = (&'static str, fn(&Path));
-    let damages: [Damage; 3] = [
-        ("garbled manifest", |artifact| {
-            std::fs::write(artifact.join("manifest.json"), "{ not json").unwrap()
+    let damages: [Damage; 2] = [
+        ("garbled CURRENT and PREVIOUS", |vectors| {
+            for pointer in ["CURRENT", "PREVIOUS"] {
+                std::fs::write(vectors.join(pointer), "not a pointer").unwrap();
+            }
         }),
-        ("missing payload", |artifact| {
-            std::fs::remove_file(artifact.join(VECTORS_FILENAME)).unwrap()
-        }),
-        // Same length, so only the payload's checksums can see it.
-        ("flipped payload byte", |artifact| {
-            let path = artifact.join(VECTORS_FILENAME);
-            let mut bytes = std::fs::read(&path).unwrap();
-            bytes[0] ^= 0xff;
-            std::fs::write(&path, bytes).unwrap();
+        // A byte inside the header, which its CRC covers.
+        ("flipped segment byte", |vectors| {
+            for entry in std::fs::read_dir(vectors.join("segments")).unwrap() {
+                let path = entry.unwrap().path();
+                let mut bytes = std::fs::read(&path).unwrap();
+                bytes[100] ^= 0xff;
+                std::fs::write(&path, bytes).unwrap();
+            }
         }),
     ];
     for (damage, apply) in damages {
-        let library = build_library(true);
-        apply(&library.artifact);
+        let library = build_library();
+        apply(&library.vectors);
 
         let engine = library.engine();
         let error = open_refusal(&engine, library.input());
@@ -846,7 +718,7 @@ fn a_damaged_artifact_is_corrupt() {
 /// install.
 #[test]
 fn a_missing_or_unusable_model_is_named_by_kind() {
-    let library = build_library(true);
+    let library = build_library();
     let engine = library.engine();
     let work = TempDir::new().unwrap();
 
@@ -885,7 +757,7 @@ fn a_missing_or_unusable_model_is_named_by_kind() {
 /// anything is opened: a model to replace, about `model_path`, with the sidecar's message.
 #[test]
 fn a_model_that_is_not_an_onnx_graph_is_invalid_and_named() {
-    let library = build_library(true);
+    let library = build_library();
     let engine = library.engine();
     let work = TempDir::new().unwrap();
     let gguf = work.path().join("model.gguf");
@@ -915,7 +787,7 @@ fn a_model_that_is_not_an_onnx_graph_is_invalid_and_named() {
 /// input to fix, and the message is the one the sidecar's own refusal of them has.
 #[test]
 fn an_identity_value_no_build_serves_is_invalid_input() {
-    let library = build_library(true);
+    let library = build_library();
     let engine = library.engine();
 
     // The field the refusal names, if it names one, what its message says, and the edit.
@@ -941,7 +813,7 @@ fn an_identity_value_no_build_serves_is_invalid_input() {
         assert!(
             error
                 .message
-                .starts_with("failed to open the semantic artifact at")
+                .starts_with("failed to open the semantic vectors at")
                 && error.message.contains(named),
             "{named}: {}",
             error.message
@@ -950,15 +822,265 @@ fn an_identity_value_no_build_serves_is_invalid_input() {
     }
 }
 
+/// The whole path: installed, opened, searched both ways, and every result a line of this
+/// index, hydrated from it.
+#[test]
+fn an_opened_set_answers_with_live_lines() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    // Semantic-only: the one line the query repeats comes back first, hydrated from this
+    // index.
+    let response = search(
+        &engine,
+        PROBE_LINE,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert_eq!(response.executed_mode, SemanticExecutedMode::SemanticOnly);
+    assert!(
+        response.semantic_available,
+        "{:?}",
+        response.fallback_reason
+    );
+    assert_eq!(response.fallback_kind, None);
+    let top = response.results.first().expect("a semantic hit");
+    assert_eq!(top.source, SemanticResultSource::Semantic);
+    assert!(!top.needs_hydration);
+    assert_eq!(top.snippet_html, PROBE_LINE);
+    assert_eq!(top.file_path, GENESIS);
+    assert_eq!(top.segment, 3);
+    let stored = engine
+        .get_document_by_id(top.id)
+        .unwrap()
+        .expect("the hit's id names a line of this index");
+    assert_eq!(stored.text, PROBE_LINE);
+
+    // Hybrid: both halves reach fusion, and the line both found is marked as such.
+    let response = search(&engine, PROBE_LINE, &[], SemanticRetrievalMode::Hybrid);
+    assert_eq!(response.executed_mode, SemanticExecutedMode::Hybrid);
+    assert!(
+        response.fallback_reason.is_none(),
+        "{:?}",
+        response.fallback_reason
+    );
+    let top = response.results.first().expect("a fused hit");
+    assert_eq!(top.id, stored.id);
+    assert_eq!(top.source, SemanticResultSource::Both);
+}
+
+/// Nothing goes stale: a commit after opening leaves the set serving, and its lines are
+/// the index's as they are now.
+#[test]
+fn a_commit_after_opening_leaves_the_set_serving() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    add_books(
+        &mut engine,
+        &[(
+            "ספר נוסף",
+            "/אחר",
+            "/books/another.txt",
+            2,
+            "שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה".to_string(),
+        )],
+    );
+
+    let status = engine.semantic_status();
+    assert_eq!(status.state, SemanticState::Ready);
+    assert!(status.available);
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
+/// A line pushed down by one inserted above it is found where it moved, by its key.
+#[test]
+fn a_line_inserted_above_is_found_where_it_moved() {
+    for version_4 in [false, true] {
+        let library = build_library_of(&default_books(), version_4);
+        let mut engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        replace_book(
+            &mut engine,
+            (
+                "בראשית",
+                "/מקרא/תורה",
+                GENESIS,
+                0,
+                format!("שורה חדשה בראש הספר שלא הייתה בו קודם\n{GENESIS_TEXT}"),
+            ),
+        );
+
+        assert_eq!(
+            semantic_lines(&engine, PROBE_LINE, &[]).first(),
+            Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
+            "schema version 4: {version_4}"
+        );
+    }
+}
+
+/// A text that left its book for another is found in the other one: the column is passed
+/// over once for every hit its own books no longer hold.
+#[test]
+fn a_text_moved_to_another_book_is_found_there() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    engine.delete_documents_by_file_path(BERACHOT).unwrap();
+    add_books(
+        &mut engine,
+        &[(
+            "משנה ברכות, מהדורה אחרת",
+            "/משנה/זרעים",
+            "/books/berachot-2.txt",
+            5,
+            format!("פתיחה למהדורה האחרת ארוכה דיה\n{BERACHOT_TEXT}"),
+        )],
+    );
+
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &[]).first(),
+        Some(&(
+            "/books/berachot-2.txt".to_string(),
+            BERACHOT_TEXT.to_string(),
+            1
+        ))
+    );
+}
+
+/// A line that is gone, and a short line whose neighbour changed, are not shown for the
+/// vector of what they were: neither text is in the index any more.
+#[test]
+fn a_line_that_is_gone_or_whose_context_changed_is_not_shown() {
+    // The middle line is short, so its vector is of it and its neighbours.
+    let short = "ויהי ערב ויהי";
+    let first = "שורה ראשונה ארוכה דיה לעמוד לבדה";
+    let third = "שורה שלישית ארוכה דיה לעמוד לבדה";
+    let embedded = format!("{first} {short} {third}");
+    let book: Book = (
+        "ספר קצרות",
+        "/בדיקה",
+        "/books/short.txt",
+        2,
+        format!("{first}\n{short}\n{third}"),
+    );
+    let mut books = default_books();
+    books.push(book.clone());
+    let library = build_library_of(&books, false);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        semantic_lines(&engine, &embedded, &[]).first(),
+        Some(&("/books/short.txt".to_string(), short.to_string(), 1)),
+        "the short line is found by its text and its neighbours'"
+    );
+
+    replace_book(
+        &mut engine,
+        (
+            book.0,
+            book.1,
+            book.2,
+            book.3,
+            format!("{first}\n{short}\nשורה שלישית אחרת לגמרי מזו שהייתה"),
+        ),
+    );
+    assert!(
+        !semantic_lines(&engine, &embedded, &[])
+            .iter()
+            .any(|(_, text, _)| text == short),
+        "the short line's text is now of other neighbours"
+    );
+
+    engine.delete_documents_by_file_path(GENESIS).unwrap();
+    engine.commit().unwrap();
+    assert!(
+        !semantic_lines(&engine, PROBE_LINE, &[])
+            .iter()
+            .any(|(_, text, _)| text == PROBE_LINE),
+        "a deleted line is not shown"
+    );
+}
+
+/// One text in two books is one vector, resolved in both books, each line once.
+#[test]
+fn a_text_in_two_books_resolves_in_both() {
+    let mut books = default_books();
+    books.push((
+        "בראשית, עותק",
+        "/מקרא/תורה",
+        "/books/genesis-copy.txt",
+        2,
+        GENESIS_TEXT.to_string(),
+    ));
+    let library = build_library_of(&books, false);
+    let engine = library.engine();
+    let status = engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        status.vector_count, EMBEDDED,
+        "a repeated text is one vector"
+    );
+
+    let lines = semantic_lines(&engine, PROBE_LINE, &[]);
+    let found: BTreeSet<&str> = lines
+        .iter()
+        .filter(|(_, text, _)| text == PROBE_LINE)
+        .map(|(book, _, _)| book.as_str())
+        .collect();
+    assert_eq!(found, BTreeSet::from([GENESIS, "/books/genesis-copy.txt"]));
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|(_, text, _)| text == PROBE_LINE)
+            .count(),
+        2,
+        "each line once"
+    );
+}
+
+/// A filter admits books by what the live index says of them: a book moved to another
+/// category is found under that one, and not under the one it left.
+#[test]
+fn a_book_moved_to_another_category_is_filtered_by_its_new_one() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert!(semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+        .iter()
+        .any(|(book, _, _)| book == GENESIS));
+
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/אחר/קטגוריה",
+            GENESIS,
+            0,
+            GENESIS_TEXT.to_string(),
+        ),
+    );
+    assert!(!semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+        .iter()
+        .any(|(book, _, _)| book == GENESIS));
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &["/אחר/קטגוריה"]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
 /// A query with nothing to embed fails the semantic half of that one search: the lexical
 /// half is served and the session goes on serving.
 #[test]
 fn a_query_with_nothing_to_embed_falls_back_for_that_query_only() {
-    let library = build_library(true);
+    let library = build_library();
     let engine = library.engine();
     engine.open_semantic_artifact(library.input()).unwrap();
 
-    let response = search(&engine, " ", SemanticRetrievalMode::SemanticOnly);
+    let response = search(&engine, " ", &[], SemanticRetrievalMode::SemanticOnly);
     assert!(!response.semantic_available);
     assert!(
         response
@@ -971,7 +1093,585 @@ fn a_query_with_nothing_to_embed_falls_back_for_that_query_only() {
     assert_eq!(response.fallback_kind, Some(SemanticErrorKind::QueryFailed));
 
     assert_eq!(engine.semantic_status().state, SemanticState::Ready);
-    let next = search(&engine, PROBE_LINE, SemanticRetrievalMode::SemanticOnly);
+    let next = search(
+        &engine,
+        PROBE_LINE,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
     assert!(next.semantic_available);
     assert_eq!(next.fallback_kind, None);
+}
+
+/// The release as the application downloads it: its segment, its manifest, and the
+/// manifest's digest as the release publishes it.
+fn release(package: &Path) -> (PathBuf, String, String) {
+    use sha2::Digest;
+    let manifest = std::fs::read_to_string(package.join("release.json")).unwrap();
+    let digest = format!("{:x}", sha2::Sha256::digest(manifest.as_bytes()));
+    (package.join("segment.oxv"), manifest, digest)
+}
+
+impl Library {
+    /// What installing `segment` and `manifest_json` into `vectors_dir` takes, for this
+    /// model.
+    fn install_input(
+        &self,
+        vectors_dir: &Path,
+        segment: &Path,
+        manifest_json: &str,
+        published_manifest_sha256: Option<String>,
+    ) -> SemanticVectorsInstallInput {
+        SemanticVectorsInstallInput {
+            vectors_dir: vectors_dir.to_string_lossy().into_owned(),
+            segment_path: segment.to_string_lossy().into_owned(),
+            manifest_json: manifest_json.to_string(),
+            published_manifest_sha256,
+            model_identity_json: self.model_json(),
+        }
+    }
+}
+
+fn dir_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+/// A release installs through the API as the build binary installs it, and reports itself,
+/// opens, serves and verifies.
+#[test]
+fn a_release_installs_through_the_api_and_reports_itself() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let vectors = library.package.with_file_name("fresh");
+    assert!(
+        !engine
+            .semantic_vectors_info(dir_string(&vectors))
+            .unwrap()
+            .present,
+        "nothing installed is not an error"
+    );
+
+    let (segment, manifest, digest) = release(&library.package);
+    let input = || library.install_input(&vectors, &segment, &manifest, Some(digest.clone()));
+    let report = engine.install_semantic_vectors(input(), &token).unwrap();
+    assert_eq!(report.kind, SemanticVectorsPackageKind::Base);
+    assert_eq!(report.library_version, LIBRARY_VERSION);
+    assert_eq!(report.segments, 1);
+    assert_eq!(report.slots_added, u64::from(EMBEDDED));
+    assert!(!report.already_applied && !report.needs_compaction);
+    assert!(segment.exists(), "a segment outside incoming/ is copied");
+
+    let info = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+    assert!(info.present && !info.recovered_from_previous);
+    assert_eq!(info.generation, report.generation);
+    assert_eq!(
+        (info.library_version, info.library_release_tag.as_str()),
+        (LIBRARY_VERSION, RELEASE_TAG)
+    );
+    assert_eq!(info.identity_digest.len(), 64);
+    assert_eq!(info.slots_live, u64::from(EMBEDDED));
+    assert_eq!(info.bytes_on_disk, report.bytes_on_disk);
+    assert_eq!(info.segments.len(), 1);
+    assert_eq!(info.segments[0].kind, SemanticVectorsPackageKind::Base);
+    assert_eq!(info.segments[0].to_library_version, LIBRARY_VERSION);
+
+    // A base replaces whatever the set holds, itself included.
+    let again = engine.install_semantic_vectors(input(), &token).unwrap();
+    assert!(!again.already_applied);
+    assert!(again.generation > report.generation);
+    assert_eq!(again.segments, 1);
+
+    let verified = engine
+        .verify_semantic_vectors(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(
+        (verified.generation, verified.segments),
+        (again.generation, 1)
+    );
+    assert!(verified.bytes_checked > 0);
+
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            ..library.input()
+        })
+        .unwrap();
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
+/// A segment published compressed is expanded and installed, and nothing of it is left
+/// behind, installed or refused.
+#[test]
+fn a_compressed_release_is_expanded_and_installed() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let compressed = segment.with_extension("oxv.zst");
+    let bytes = zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 3).unwrap();
+    std::fs::write(&compressed, &bytes).unwrap();
+    let truncated = segment.with_extension("truncated.oxv.zst");
+    std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
+    let incoming = |vectors: &Path| {
+        std::fs::read_dir(vectors.join("incoming"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    };
+
+    let vectors = library.package.with_file_name("from-zst");
+    let error = match engine.install_semantic_vectors(
+        library.install_input(&vectors, &truncated, &manifest, Some(digest.clone())),
+        &token,
+    ) {
+        Ok(_) => panic!("a truncated segment must be refused"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::ArtifactCorrupt,
+        "{}",
+        error.message
+    );
+    assert_eq!(incoming(&vectors), 0);
+    assert!(
+        !engine
+            .semantic_vectors_info(dir_string(&vectors))
+            .unwrap()
+            .present
+    );
+
+    let report = engine
+        .install_semantic_vectors(
+            library.install_input(&vectors, &compressed, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+    assert_eq!(report.slots_added, u64::from(EMBEDDED));
+    assert_eq!(incoming(&vectors), 0);
+    assert!(compressed.exists(), "the download is the application's");
+    engine
+        .verify_semantic_vectors(dir_string(&vectors), &token)
+        .unwrap();
+}
+
+/// A release that is not the one published, or not for this installation, is refused by
+/// kind and field, and the set is left as it was.
+#[test]
+fn a_release_not_published_or_not_for_this_installation_is_refused() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let before = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    let refusal =
+        |input: SemanticVectorsInstallInput| match engine.install_semantic_vectors(input, &token) {
+            Ok(_) => panic!("the release must be refused"),
+            Err(error) => error,
+        };
+
+    let error = refusal(library.install_input(
+        &library.vectors,
+        &segment,
+        &manifest,
+        Some(digest.replace(&digest[..2], "00")),
+    ));
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::ArtifactNotPublished,
+        "{}",
+        error.message
+    );
+
+    let error = refusal(library.install_input(
+        &library.vectors,
+        &segment,
+        "{\"not\": \"a release\"}",
+        None,
+    ));
+    assert_eq!(
+        (error.kind, error.field.as_deref()),
+        (SemanticErrorKind::ArtifactCorrupt, Some("manifest_json")),
+        "{}",
+        error.message
+    );
+    let error = refusal(library.install_input(
+        &library.vectors,
+        &library.package.join("absent.oxv"),
+        &manifest,
+        None,
+    ));
+    assert_eq!(
+        (error.kind, error.field.as_deref()),
+        (SemanticErrorKind::InvalidInput, Some("segment_path")),
+        "{}",
+        error.message
+    );
+
+    let edits: [IdentityEdit; 2] = [
+        ("model.chunking_identity", |model| {
+            model.chunking_identity ^= 1
+        }),
+        ("model.family_id", |model| {
+            model.family_id.push_str("-other")
+        }),
+    ];
+    for (field, edit) in edits {
+        let mut model = library.model.clone();
+        edit(&mut model);
+        let error = refusal(SemanticVectorsInstallInput {
+            model_identity_json: serde_json::to_string(&model).unwrap(),
+            ..library.install_input(&library.vectors, &segment, &manifest, Some(digest.clone()))
+        });
+        assert_eq!(
+            error.kind,
+            SemanticErrorKind::ArtifactIncompatible,
+            "{}",
+            error.message
+        );
+        assert_eq!(error.field.as_deref(), Some(field), "{}", error.message);
+    }
+
+    let after = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    assert_eq!(
+        (after.generation, after.bytes_on_disk),
+        (before.generation, before.bytes_on_disk)
+    );
+}
+
+/// The next release, installed under an open session, is what that session serves.
+#[test]
+fn an_install_moves_the_open_session_onto_the_release() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        engine.semantic_status().vectors_library_version,
+        Some(LIBRARY_VERSION)
+    );
+
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("שורה חדשה בראש הספר לפני כל השאר\n{GENESIS_TEXT}"),
+        ),
+    );
+    let next = library.package.with_file_name("package-next");
+    build_package(
+        &library.index,
+        &library.work,
+        &library.model_file,
+        LIBRARY_VERSION + 1,
+        "v31-20261101000000",
+        &next,
+        None,
+    );
+    let (segment, manifest, digest) = release(&next);
+    let report = engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(report.library_version, LIBRARY_VERSION + 1);
+
+    let status = engine.semantic_status();
+    assert_eq!(status.state, SemanticState::Ready);
+    assert_eq!(status.vectors_library_version, Some(LIBRARY_VERSION + 1));
+    assert_eq!(status.vector_count, EMBEDDED + 1);
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4))
+    );
+}
+
+/// A set compacts when its policy asks, or when forced; the open session follows it, and
+/// records move onto the lines that hold their text when the index has the column and is
+/// of the set's library version.
+#[test]
+fn a_set_compacts_when_asked_and_the_session_follows() {
+    for version_4 in [false, true] {
+        let library = build_library_of(&default_books(), version_4);
+        let mut engine = library.engine();
+        let token = SemanticCancellationToken::new();
+        let vectors = dir_string(&library.vectors);
+        engine.open_semantic_artifact(library.input()).unwrap();
+
+        let unforced = engine
+            .compact_semantic_vectors(vectors.clone(), None, None, &token)
+            .unwrap();
+        assert!(!unforced.compacted, "one base wants no compaction");
+
+        replace_book(
+            &mut engine,
+            (
+                "בראשית",
+                "/מקרא/תורה",
+                GENESIS,
+                0,
+                format!("ויהי ערב ויהי בקר יום אחד ושני ושלישי\n{GENESIS_TEXT}"),
+            ),
+        );
+        let forced = SemanticCompactionPolicy {
+            force: true,
+            ..SemanticCompactionPolicy::defaults()
+        };
+        let report = engine
+            .compact_semantic_vectors(
+                vectors.clone(),
+                Some(LIBRARY_VERSION),
+                Some(forced.clone()),
+                &token,
+            )
+            .unwrap();
+        assert!(report.compacted, "{}", report.reason);
+        assert!(report.generation > unforced.generation);
+        assert_eq!(report.slots_after, u64::from(EMBEDDED));
+        if version_4 {
+            assert_eq!(
+                (report.hints_refreshed, report.records_pruned),
+                (0, 0),
+                "without the column, records are kept as they are"
+            );
+        } else {
+            assert!(report.hints_refreshed >= 1, "{}", report.reason);
+        }
+
+        let info = engine.semantic_vectors_info(vectors.clone()).unwrap();
+        assert_eq!(info.generation, report.generation);
+        assert_eq!(info.segments.len(), 1);
+        assert_eq!(info.segments[0].kind, SemanticVectorsPackageKind::Compacted);
+        let status = engine.semantic_status();
+        assert_eq!(status.state, SemanticState::Ready);
+        assert!(!status.needs_compaction);
+        assert_eq!(
+            semantic_lines(&engine, PROBE_LINE, &[]).first(),
+            Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
+            "schema version 4: {version_4}"
+        );
+
+        // Another library version's index re-anchors nothing.
+        let other = engine
+            .compact_semantic_vectors(
+                vectors.clone(),
+                Some(LIBRARY_VERSION + 1),
+                Some(forced),
+                &token,
+            )
+            .unwrap();
+        assert_eq!((other.hints_refreshed, other.records_pruned), (0, 0));
+    }
+}
+
+/// A policy out of range is refused before anything is read, by the option at fault.
+#[test]
+fn a_compaction_policy_out_of_range_is_invalid_input() {
+    let library = build_library();
+    let engine = library.engine();
+    let policies = [
+        (
+            "policy.min_free_space_factor",
+            SemanticCompactionPolicy {
+                min_free_space_factor: 0.5,
+                ..SemanticCompactionPolicy::defaults()
+            },
+        ),
+        (
+            "policy.max_delta_ratio",
+            SemanticCompactionPolicy {
+                max_delta_ratio: f64::NAN,
+                ..SemanticCompactionPolicy::defaults()
+            },
+        ),
+        (
+            "policy.max_dead_ratio",
+            SemanticCompactionPolicy {
+                max_dead_ratio: -0.1,
+                ..SemanticCompactionPolicy::defaults()
+            },
+        ),
+    ];
+    for (field, policy) in policies {
+        let error = match engine.compact_semantic_vectors(
+            dir_string(&library.vectors),
+            None,
+            Some(policy),
+            &SemanticCancellationToken::new(),
+        ) {
+            Ok(report) => panic!("{field} must be refused: {}", report.reason),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.kind,
+            SemanticErrorKind::InvalidInput,
+            "{}",
+            error.message
+        );
+        assert_eq!(error.field.as_deref(), Some(field));
+    }
+}
+
+/// A damaged block, which opening does not read, is what verifying finds; after it, opening
+/// refuses the segment too.
+#[test]
+fn verifying_finds_a_damaged_block_and_opening_refuses_it_after() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    for entry in std::fs::read_dir(library.vectors.join("segments")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "oxv") {
+            let mut bytes = std::fs::read(&path).unwrap();
+            let middle = bytes.len() / 2;
+            bytes[middle] ^= 0xff;
+            std::fs::write(&path, bytes).unwrap();
+        }
+    }
+
+    let error = match engine.verify_semantic_vectors(dir_string(&library.vectors), &token) {
+        Ok(report) => panic!("the damage must be found: {} bytes", report.bytes_checked),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::ArtifactCorrupt,
+        "{}",
+        error.message
+    );
+    let error = open_refusal(&engine, library.input());
+    assert_refused(&engine, &error, SemanticErrorKind::ArtifactCorrupt, None);
+
+    let missing = engine
+        .verify_semantic_vectors(dir_string(&library.vectors.join("absent")), &token)
+        .err()
+        .expect("nothing to verify");
+    assert_eq!(
+        missing.kind,
+        SemanticErrorKind::ArtifactMissing,
+        "{}",
+        missing.message
+    );
+}
+
+/// Coverage counts the live lines the recipe embeds and those the set holds, the same from
+/// the column and recomputed without it.
+#[test]
+fn coverage_counts_the_live_lines_the_set_holds() {
+    for version_4 in [false, true] {
+        let library = build_library_of(&default_books(), version_4);
+        let mut engine = library.engine();
+        let token = SemanticCancellationToken::new();
+        let vectors = dir_string(&library.vectors);
+        let coverage = engine.semantic_coverage(vectors.clone(), &token).unwrap();
+        assert_eq!(
+            (
+                coverage.live_keyed_lines,
+                coverage.covered_lines,
+                coverage.books_live,
+                coverage.books_covered,
+                coverage.vectors_library_version,
+            ),
+            (
+                u64::from(EMBEDDED),
+                u64::from(EMBEDDED),
+                2,
+                2,
+                LIBRARY_VERSION
+            ),
+            "schema version 4: {version_4}"
+        );
+        assert_eq!(coverage.ratio, 1.0);
+
+        add_books(
+            &mut engine,
+            &[(
+                "ספר נוסף",
+                "/אחר",
+                "/books/another.txt",
+                2,
+                "שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה".to_string(),
+            )],
+        );
+        let coverage = engine.semantic_coverage(vectors.clone(), &token).unwrap();
+        assert_eq!(
+            (
+                coverage.live_keyed_lines,
+                coverage.covered_lines,
+                coverage.books_live,
+                coverage.books_covered,
+            ),
+            (u64::from(EMBEDDED) + 1, u64::from(EMBEDDED), 3, 2),
+            "schema version 4: {version_4}"
+        );
+
+        let cancelled = SemanticCancellationToken::new();
+        cancelled.cancel();
+        let error = engine
+            .semantic_coverage(vectors.clone(), &cancelled)
+            .err()
+            .expect("a cancelled count");
+        assert_eq!(error.kind, SemanticErrorKind::Cancelled);
+    }
+    let library = build_library();
+    let missing = library
+        .engine()
+        .semantic_coverage(
+            dir_string(&library.vectors.join("absent")),
+            &SemanticCancellationToken::new(),
+        )
+        .err()
+        .expect("nothing installed");
+    assert_eq!(
+        (missing.kind, missing.field.as_deref()),
+        (SemanticErrorKind::ArtifactMissing, Some("vectors_dir"))
+    );
+}
+
+/// A set built from the index finds every record at its hint and covers every keyed line;
+/// after a line is inserted above, the records below it are counted as moved.
+#[test]
+fn the_validator_finds_every_record_at_its_hint_until_lines_move() {
+    use otzaria_semantic_search::semantic::segment_set::SegmentSet;
+    use search_engine::semantic_plan::validate;
+    let library = build_library();
+    let fresh = validate(&library.index, &SegmentSet::open(&library.vectors).unwrap()).unwrap();
+    let embedded = u64::from(EMBEDDED);
+    assert_eq!(
+        (
+            fresh.keyed_lines,
+            fresh.covered_lines,
+            fresh.records,
+            fresh.at_hint
+        ),
+        (embedded, embedded, embedded, embedded)
+    );
+
+    let mut engine = library.engine();
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("שורה חדשה בראש הספר לפני כל השאר\n{GENESIS_TEXT}"),
+        ),
+    );
+    drop(engine);
+    let moved = validate(&library.index, &SegmentSet::open(&library.vectors).unwrap()).unwrap();
+    assert_eq!(moved.records, embedded);
+    assert_eq!(moved.keyed_lines, embedded + 1);
+    assert!(moved.moved >= 1, "{moved:?}");
+    assert_eq!(moved.at_hint + moved.moved + moved.gone, moved.records);
 }
