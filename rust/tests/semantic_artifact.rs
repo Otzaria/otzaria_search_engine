@@ -1281,6 +1281,80 @@ fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
     }
 }
 
+/// Two books can share ids — an index updated book by book can give two the same catalogue
+/// position, which a release index never has — so a grouped sibling is hydrated as the line
+/// of its own book, never as whichever line has its id. Here the sibling is one lexical
+/// search alone found, a line added after the vectors were built, to a book reindexed at the
+/// catalogue position another book has.
+#[test]
+fn a_grouped_sibling_is_hydrated_from_its_own_book() {
+    let order = 7;
+    let other = "/books/other.txt";
+    let first = "המילה המיוחדת מופיעה כאן בשורה ארוכה דיה לעמוד לבדה";
+    let added = "וגם בשורה הזאת המילה המיוחדת מופיעה בשורה אחרת";
+    let books = vec![
+        (
+            "ספר ראשון",
+            "/ראשון",
+            "/books/first.txt",
+            order,
+            "שורה ראשונה בספר הראשון ארוכה דיה לעמוד לבדה\n\
+             שורה שנייה בספר הראשון ארוכה דיה גם היא\n\
+             שורה שלישית בספר הראשון ארוכה דיה גם היא"
+                .to_string(),
+        ),
+        (
+            "ספר אחר",
+            "/אחר",
+            other,
+            order + 1,
+            format!("<h2>פרק</h2>\n{first}"),
+        ),
+    ];
+    let library = build_library_of(&books, false);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    replace_book(
+        &mut engine,
+        (
+            "ספר אחר",
+            "/אחר",
+            other,
+            order,
+            format!("<h2>פרק</h2>\n{first}\n{added}"),
+        ),
+    );
+
+    for mode in [
+        SemanticRetrievalMode::Hybrid,
+        SemanticRetrievalMode::LexicalOnly,
+    ] {
+        let response = search_page(
+            &engine,
+            "המילה המיוחדת",
+            10,
+            0,
+            mode,
+            Some(SemanticGroupingMode::SameSection),
+        );
+        let group = response
+            .results
+            .iter()
+            .find(|hit| hit.file_path == other && hit.merged_count == 2)
+            .unwrap_or_else(|| panic!("{mode:?}: the section's two lines are one group"));
+        assert_eq!(group.merged.len(), 1, "{mode:?}");
+        let sibling = &group.merged[0];
+        assert_eq!(
+            (sibling.file_path.as_str(), sibling.title.as_str()),
+            (other, "ספר אחר"),
+            "{mode:?}: a sibling of a section's group is of its book"
+        );
+        let mut lines = [group.segment, sibling.segment];
+        lines.sort_unstable();
+        assert_eq!(lines, [1, 2], "{mode:?}: the section's two lines");
+    }
+}
+
 /// A filter admits books by what the live index says of them: a book moved to another
 /// category is found under that one, and not under the one it left.
 #[test]

@@ -4937,7 +4937,7 @@ impl SearchEngine {
 
             // Every line a vector set's hit was resolved to, by (book, id): where it is in
             // the searcher the resolver read. Empty for a session built on this device, whose
-            // lines are hydrated by id.
+            // lines are hydrated by book and id.
             let records = resolver.records();
             // A semantic match is a line that holds the text its vector was embedded from by
             // all 128 bits of the key: the resolver checks every line it returns, primaries
@@ -4964,7 +4964,9 @@ impl SearchEngine {
                     Some(record) => {
                         Some(self.document_at(resolver.searcher(), record.address, item.id)?)
                     }
-                    None => self.get_document_by_id(item.id)?,
+                    // A line no vector set resolved, by its book and its id together, for
+                    // the same reason.
+                    None => self.document_in_book(resolver.searcher(), &item.file_path, item.id)?,
                 };
                 match hydrated {
                     Some(document) => surviving.push((item, Some(document))),
@@ -5011,7 +5013,13 @@ impl SearchEngine {
                             record.address,
                             sibling.id,
                         )?),
-                        None => self.get_document_by_id(sibling.id)?,
+                        // A sibling only lexical search found is of the group's book too:
+                        // hydrated by that book and its id, never by the id alone.
+                        None => self.document_in_book(
+                            resolver.searcher(),
+                            &sibling.file_path,
+                            sibling.id,
+                        )?,
                     };
                     match hydrated {
                         Some(document) => merged.push(MergedSibling {
@@ -6443,6 +6451,36 @@ impl SearchEngine {
             return Ok(None);
         };
         self.document_at(&searcher, addr, id).map(Some)
+    }
+
+    /// The line `id` of the book `file_path` in `searcher`, as [`Self::get_document_by_id`]
+    /// reads a line: found by the book and the id together, because two books' lines can
+    /// share an id — an index updated book by book can give two books one catalogue
+    /// position. `None` when the book holds no such line.
+    #[cfg(feature = "semantic-integration")]
+    fn document_in_book(
+        &self,
+        searcher: &Searcher,
+        file_path: &str,
+        id: u64,
+    ) -> Result<Option<SearchResult>> {
+        let book = TermQuery::new(
+            Term::from_field_text(self.schema.get_field("filePath")?, file_path),
+            IndexRecordOption::Basic,
+        );
+        let line = TermQuery::new(
+            Term::from_field_u64(self.schema.get_field("id")?, id),
+            IndexRecordOption::Basic,
+        );
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, Box::new(book) as Box<dyn Query>),
+            (Occur::Must, Box::new(line) as Box<dyn Query>),
+        ]);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
+        let Some((_, address)) = top_docs.into_iter().next() else {
+            return Ok(None);
+        };
+        self.document_at(searcher, address, id).map(Some)
     }
 
     /// The stored fields of the document at `address` in `searcher`, as a result: what a
