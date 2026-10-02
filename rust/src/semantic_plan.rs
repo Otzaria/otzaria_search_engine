@@ -212,6 +212,78 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     })
 }
 
+/// How a vector set's records land on a live index: see [`validate`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Validation {
+    /// Live lines the recipe embeds.
+    pub keyed_lines: u64,
+    /// Those whose key the set records in their own book.
+    pub covered_lines: u64,
+    /// The set's records in the index's books.
+    pub records: u64,
+    /// Records whose hint is a line that holds their key: resolved at the first look.
+    pub at_hint: u64,
+    /// Records whose key their book holds at another line: re-anchored by the resolver.
+    pub moved: u64,
+    /// Records whose key their book holds nowhere any more.
+    pub gone: u64,
+}
+
+/// How the set's records land on the index at `index_path`, read-only: every book's lines
+/// keyed from their text, as [`export_plan`] keys them, against the records a scan of `set`
+/// reaches for that book. A set built from this index has every record at its hint and
+/// covers every keyed line.
+pub fn validate(
+    index_path: &Path,
+    set: &otzaria_semantic_search::semantic::segment_set::SegmentSet,
+) -> Result<Validation> {
+    use otzaria_semantic_search::distribution::gates::book_records;
+    use std::collections::HashSet;
+    let (searcher, _) = open_index(index_path)?;
+    let columns = SegmentColumns::of(&searcher, false)?;
+    let books = books_of(&searcher)?;
+    let chunker = Chunker::new(production_chunking())?;
+    let names: Vec<&String> = books.keys().collect();
+    let mut validation = Validation::default();
+    let mut records = Vec::new();
+    for chunk in names.chunks(BOOKS_PER_BATCH) {
+        let keyed = chunk
+            .par_iter()
+            .map(|name| {
+                Ok(plan_book(&searcher, &columns, &chunker, &books[*name])?
+                    .into_iter()
+                    .map(|line| match line.text {
+                        Some((sha256, _)) if !line.pdf => {
+                            Some(<[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32"))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (name, keys) in chunk.iter().zip(keyed) {
+            book_records(set, name, &mut records);
+            let held: HashSet<[u8; 16]> = records.iter().map(|(key, _)| key.0).collect();
+            let present: HashSet<[u8; 16]> = keys.iter().flatten().copied().collect();
+            for key in keys.iter().flatten() {
+                validation.keyed_lines += 1;
+                validation.covered_lines += u64::from(held.contains(key));
+            }
+            for (key, hint) in &records {
+                validation.records += 1;
+                if keys.get(*hint as usize).copied().flatten() == Some(key.0) {
+                    validation.at_hint += 1;
+                } else if present.contains(&key.0) {
+                    validation.moved += 1;
+                } else {
+                    validation.gone += 1;
+                }
+            }
+        }
+    }
+    Ok(validation)
+}
+
 /// The index at `index_path`, read-only, and its `chunkKey` column when this build uses it.
 fn open_index(index_path: &Path) -> Result<(Searcher, Option<tantivy::schema::Field>)> {
     let compatibility =
