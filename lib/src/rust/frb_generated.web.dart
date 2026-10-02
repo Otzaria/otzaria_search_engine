@@ -195,6 +195,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCompactionPolicy dco_decode_box_autoadd_semantic_compaction_policy(
+    dynamic raw,
+  );
+
+  @protected
   SemanticConfigInput dco_decode_box_autoadd_semantic_config_input(dynamic raw);
 
   @protected
@@ -209,6 +214,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticRankingOptions dco_decode_box_autoadd_semantic_ranking_options(
     dynamic raw,
   );
+
+  @protected
+  SemanticVectorsInstallInput
+  dco_decode_box_autoadd_semantic_vectors_install_input(dynamic raw);
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
@@ -332,6 +341,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticSegmentInfo> dco_decode_list_semantic_segment_info(dynamic raw);
+
+  @protected
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
@@ -369,6 +381,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
+
+  @protected
+  SemanticCompactionPolicy?
+  dco_decode_opt_box_autoadd_semantic_compaction_policy(dynamic raw);
 
   @protected
   SemanticErrorKind? dco_decode_opt_box_autoadd_semantic_error_kind(
@@ -454,7 +470,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticBookLineInput dco_decode_semantic_book_line_input(dynamic raw);
 
   @protected
+  SemanticCompactionPolicy dco_decode_semantic_compaction_policy(dynamic raw);
+
+  @protected
+  SemanticCompactionReport dco_decode_semantic_compaction_report(dynamic raw);
+
+  @protected
   SemanticConfigInput dco_decode_semantic_config_input(dynamic raw);
+
+  @protected
+  SemanticCoverage dco_decode_semantic_coverage(dynamic raw);
 
   @protected
   SemanticError dco_decode_semantic_error(dynamic raw);
@@ -505,10 +530,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticSearchResult dco_decode_semantic_search_result(dynamic raw);
 
   @protected
+  SemanticSegmentInfo dco_decode_semantic_segment_info(dynamic raw);
+
+  @protected
   SemanticState dco_decode_semantic_state(dynamic raw);
 
   @protected
   SemanticStatus dco_decode_semantic_status(dynamic raw);
+
+  @protected
+  SemanticVectorsInfo dco_decode_semantic_vectors_info(dynamic raw);
+
+  @protected
+  SemanticVectorsInstallInput dco_decode_semantic_vectors_install_input(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsInstallReport dco_decode_semantic_vectors_install_report(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsPackageKind dco_decode_semantic_vectors_package_kind(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsVerification dco_decode_semantic_vectors_verification(
+    dynamic raw,
+  );
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
@@ -707,6 +758,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCompactionPolicy sse_decode_box_autoadd_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticConfigInput sse_decode_box_autoadd_semantic_config_input(
     SseDeserializer deserializer,
   );
@@ -723,6 +779,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticRankingOptions sse_decode_box_autoadd_semantic_ranking_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsInstallInput
+  sse_decode_box_autoadd_semantic_vectors_install_input(
     SseDeserializer deserializer,
   );
 
@@ -884,6 +946,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticSegmentInfo> sse_decode_list_semantic_segment_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
 
   @protected
@@ -931,6 +998,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchResult? sse_decode_opt_box_autoadd_search_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticCompactionPolicy?
+  sse_decode_opt_box_autoadd_semantic_compaction_policy(
     SseDeserializer deserializer,
   );
 
@@ -1032,9 +1105,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCompactionPolicy sse_decode_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticCompactionReport sse_decode_semantic_compaction_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticConfigInput sse_decode_semantic_config_input(
     SseDeserializer deserializer,
   );
+
+  @protected
+  SemanticCoverage sse_decode_semantic_coverage(SseDeserializer deserializer);
 
   @protected
   SemanticError sse_decode_semantic_error(SseDeserializer deserializer);
@@ -1115,10 +1201,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticSegmentInfo sse_decode_semantic_segment_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticState sse_decode_semantic_state(SseDeserializer deserializer);
 
   @protected
   SemanticStatus sse_decode_semantic_status(SseDeserializer deserializer);
+
+  @protected
+  SemanticVectorsInfo sse_decode_semantic_vectors_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsInstallInput sse_decode_semantic_vectors_install_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsInstallReport sse_decode_semantic_vectors_install_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsPackageKind sse_decode_semantic_vectors_package_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsVerification sse_decode_semantic_vectors_verification(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
@@ -1360,6 +1476,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_semantic_compaction_policy(
+    SemanticCompactionPolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_semantic_config_input(
     SemanticConfigInput self,
     SseSerializer serializer,
@@ -1380,6 +1502,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_semantic_ranking_options(
     SemanticRankingOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_vectors_install_input(
+    SemanticVectorsInstallInput self,
     SseSerializer serializer,
   );
 
@@ -1579,6 +1707,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_semantic_segment_info(
+    List<SemanticSegmentInfo> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
 
   @protected
@@ -1633,6 +1767,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_search_result(
     SearchResult? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_compaction_policy(
+    SemanticCompactionPolicy? self,
     SseSerializer serializer,
   );
 
@@ -1760,8 +1900,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_compaction_policy(
+    SemanticCompactionPolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_compaction_report(
+    SemanticCompactionReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_config_input(
     SemanticConfigInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_coverage(
+    SemanticCoverage self,
     SseSerializer serializer,
   );
 
@@ -1859,11 +2017,47 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_segment_info(
+    SemanticSegmentInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_state(SemanticState self, SseSerializer serializer);
 
   @protected
   void sse_encode_semantic_status(
     SemanticStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_info(
+    SemanticVectorsInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_install_input(
+    SemanticVectorsInstallInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_install_report(
+    SemanticVectorsInstallReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_package_kind(
+    SemanticVectorsPackageKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_verification(
+    SemanticVectorsVerification self,
     SseSerializer serializer,
   );
 

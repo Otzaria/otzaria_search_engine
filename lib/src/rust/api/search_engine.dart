@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_schema`, `default`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_schema`, `default`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `flush`, `from_api`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `line_dedup_hash`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `replay_automaton_hits`, `resolve_highlight`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `sorted_by_size`, `stored_schema_mismatch`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `IndexMetadata`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -303,6 +303,29 @@ abstract class SearchEngine implements RustOpaqueInterface {
 
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
+
+  /// Merge the set at `vectors_dir` into one segment, when `policy` (or, with `None`, the
+  /// sidecar's defaults, [`SemanticCompactionPolicy::defaults`]) asks for it; the report
+  /// says whether it did, and why. Deltas pile up as the library is updated, and each one
+  /// a search scans costs it time; the set wants compacting when
+  /// [`SemanticVectorsInfo::needs_compaction`] says so.
+  ///
+  /// `live_library_version` is the library version the open index holds, which the
+  /// application knows and the index does not. When it is the set's own, and the index
+  /// has the `chunkKey` column, every record is moved onto the live line that holds its
+  /// text, and records whose book no longer holds it are dropped; otherwise records are
+  /// kept as they are, which costs nothing but the space.
+  ///
+  /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
+  /// compaction leaves the set as it was. It refuses to start without
+  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
+  /// An open session on the same set is moved onto the compacted generation.
+  Future<SemanticCompactionReport> compactSemanticVectors({
+    required String vectorsDir,
+    int? liveLibraryVersion,
+    SemanticCompactionPolicy? policy,
+    required SemanticCancellationToken cancellation,
+  });
 
   /// Open a semantic session whose vectors are built on this device, and wire
   /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
@@ -782,6 +805,33 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// האם מילון תרגום ארמי-עברי טעון כרגע.
   bool hasTranslationDictionary();
 
+  /// Install a release of the library's vectors into the set at `vectors_dir`, creating
+  /// the set when there is none: a base replaces whatever the set holds, and a delta
+  /// brings it from the library version it stands at to the next. The release must be
+  /// of this installation — the line recipe this build indexes with, the model family
+  /// `model_identity_json` describes, chunked as this build keys lines, and the store
+  /// this build reads — and, given `published_manifest_sha256`, the one published.
+  ///
+  /// The set is locked throughout, and the new generation goes live in one flip: a
+  /// release that is refused, cancelled through `cancellation`, or cut off by a crash
+  /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
+  /// the set's `incoming/` folder first, so it needs its expanded size free besides what
+  /// the install needs. An open session on the same set is moved onto the new
+  /// generation before this returns.
+  ///
+  /// Refusals are [`SemanticError`]s of the kinds in the table on
+  /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
+  /// published one, `ArtifactIncompatible` for a release of another identity or a delta
+  /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
+  /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+  ///
+  /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
+  /// engine's write lock while it copies a segment of hundreds of megabytes.
+  Future<SemanticVectorsInstallReport> installSemanticVectors({
+    required SemanticVectorsInstallInput input,
+    required SemanticCancellationToken cancellation,
+  });
+
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   /// Deliberately **not** `#[frb(sync)]` — opening the index mmaps and reads every
   /// segment footer; a synchronous binding blocks the calling Dart isolate throughout.
@@ -1192,6 +1242,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int chunkSize,
   });
 
+  /// How much of the open index the set at `vectors_dir` covers: the live lines the
+  /// recipe embeds, and how many of them the set holds a vector for. From the `chunkKey`
+  /// column, one pass over it; on an index without the column, every book's keys are
+  /// recomputed from its stored text, which reads the whole store. Cancellable.
+  ///
+  /// A line is covered when any slot of the set holds its text's key, including a slot a
+  /// later delta deleted; a release deletes only texts no line of its library holds, so
+  /// that counts a line of an index older than the set at most.
+  Future<SemanticCoverage> semanticCoverage({
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  });
+
   /// Index or replace semantic vectors for complete books. The caller should
   /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
   /// be the global Tantivy document ids so semantic-only results can hydrate.
@@ -1231,6 +1294,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// isolate for that whole time. Progress polling is the expected caller, so
   /// it must not be able to freeze the UI.
   Future<SemanticStatus> semanticStatus();
+
+  /// What is installed at `vectors_dir`, from its small files alone: nothing is opened,
+  /// mapped or cleaned up, so it is cheap enough to ask before every download. Nothing
+  /// installed is not an error: [`SemanticVectorsInfo::present`] is `false` then.
+  /// `ArtifactCorrupt` when what is there does not read.
+  Future<SemanticVectorsInfo> semanticVectorsInfo({required String vectorsDir});
 
   /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
   /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
@@ -1288,6 +1357,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Normalizes `text`/`text_vocalized` exactly like
   /// [`Self::add_documents_batch`].
   Future<void> upsertDocumentsBatch({required List<DocumentInput> docs});
+
+  /// Read every block of every segment of the set at `vectors_dir` and check it against
+  /// its checksum: the check opening leaves out, to run on demand, such as after a crash
+  /// or before reporting a problem. It reads the whole set, so it takes the time a read of
+  /// that many bytes takes, and stops at a cancel.
+  ///
+  /// A damaged segment is marked so that every later open refuses it, and this returns
+  /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
+  /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+  Future<SemanticVectorsVerification> verifySemanticVectors({
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  });
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>>
@@ -2148,6 +2230,126 @@ class SemanticBookLineInput {
           segment == other.segment;
 }
 
+/// When [`SearchEngine::compact_semantic_vectors`] compacts, and how. The defaults are the
+/// sidecar's.
+class SemanticCompactionPolicy {
+  /// Compact once the deltas together are this fraction of the base or more.
+  final double maxDeltaRatio;
+
+  /// Compact once the set has more segments than this.
+  final int maxSegments;
+
+  /// Compact once this fraction of the vectors is dead.
+  final double maxDeadRatio;
+
+  /// Refuse to start without this many times the output's size free.
+  final double minFreeSpaceFactor;
+
+  /// Re-anchor every record on the live index, when it holds the set's library version
+  /// and has the `chunkKey` column.
+  final bool refreshHints;
+
+  /// Compact whatever the thresholds say.
+  final bool force;
+
+  const SemanticCompactionPolicy({
+    this.maxDeltaRatio = 0.2,
+    this.maxSegments = 4,
+    this.maxDeadRatio = 0.05,
+    this.minFreeSpaceFactor = 1.15,
+    this.refreshHints = true,
+    this.force = false,
+  });
+
+  /// The policy a compaction passed none runs under, read from the engine.
+  static SemanticCompactionPolicy defaults() => RustLib.instance.api
+      .crateApiSearchEngineSemanticCompactionPolicyDefaults();
+
+  @override
+  int get hashCode =>
+      maxDeltaRatio.hashCode ^
+      maxSegments.hashCode ^
+      maxDeadRatio.hashCode ^
+      minFreeSpaceFactor.hashCode ^
+      refreshHints.hashCode ^
+      force.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticCompactionPolicy &&
+          runtimeType == other.runtimeType &&
+          maxDeltaRatio == other.maxDeltaRatio &&
+          maxSegments == other.maxSegments &&
+          maxDeadRatio == other.maxDeadRatio &&
+          minFreeSpaceFactor == other.minFreeSpaceFactor &&
+          refreshHints == other.refreshHints &&
+          force == other.force;
+}
+
+/// What [`SearchEngine::compact_semantic_vectors`] did.
+class SemanticCompactionReport {
+  /// Whether the set was compacted; `reason` says why, or why not.
+  final bool compacted;
+  final String reason;
+
+  /// The set's live generation afterwards.
+  final BigInt generation;
+  final BigInt bytesBefore;
+  final BigInt bytesAfter;
+  final BigInt slotsBefore;
+  final BigInt slotsAfter;
+
+  /// Records whose book no longer holds their text, dropped.
+  final BigInt recordsPruned;
+
+  /// Records moved to the line that holds their text now.
+  final BigInt hintsRefreshed;
+  final BigInt elapsedMs;
+
+  const SemanticCompactionReport({
+    required this.compacted,
+    required this.reason,
+    required this.generation,
+    required this.bytesBefore,
+    required this.bytesAfter,
+    required this.slotsBefore,
+    required this.slotsAfter,
+    required this.recordsPruned,
+    required this.hintsRefreshed,
+    required this.elapsedMs,
+  });
+
+  @override
+  int get hashCode =>
+      compacted.hashCode ^
+      reason.hashCode ^
+      generation.hashCode ^
+      bytesBefore.hashCode ^
+      bytesAfter.hashCode ^
+      slotsBefore.hashCode ^
+      slotsAfter.hashCode ^
+      recordsPruned.hashCode ^
+      hintsRefreshed.hashCode ^
+      elapsedMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticCompactionReport &&
+          runtimeType == other.runtimeType &&
+          compacted == other.compacted &&
+          reason == other.reason &&
+          generation == other.generation &&
+          bytesBefore == other.bytesBefore &&
+          bytesAfter == other.bytesAfter &&
+          slotsBefore == other.slotsBefore &&
+          slotsAfter == other.slotsAfter &&
+          recordsPruned == other.recordsPruned &&
+          hintsRefreshed == other.hintsRefreshed &&
+          elapsedMs == other.elapsedMs;
+}
+
 /// Configuration for a semantic session whose vectors are built on this
 /// device, by [`SearchEngine::configure_semantic`] and
 /// [`SearchEngine::semantic_index_books`].
@@ -2316,6 +2518,58 @@ class SemanticConfigInput {
           onnxRuntimePath == other.onnxRuntimePath;
 }
 
+/// How much of the live index a vector set covers, as [`SearchEngine::semantic_coverage`]
+/// counts it.
+class SemanticCoverage {
+  /// Live lines the recipe embeds: the lines a vector could exist for.
+  final BigInt liveKeyedLines;
+
+  /// Those whose text the set holds a vector for.
+  final BigInt coveredLines;
+
+  /// Books with a line the recipe embeds.
+  final int booksLive;
+
+  /// Books with a covered line.
+  final int booksCovered;
+
+  /// The library version the set stands at.
+  final int vectorsLibraryVersion;
+
+  /// `covered_lines / live_keyed_lines`, or 0 when no line is keyed.
+  final double ratio;
+
+  const SemanticCoverage({
+    required this.liveKeyedLines,
+    required this.coveredLines,
+    required this.booksLive,
+    required this.booksCovered,
+    required this.vectorsLibraryVersion,
+    required this.ratio,
+  });
+
+  @override
+  int get hashCode =>
+      liveKeyedLines.hashCode ^
+      coveredLines.hashCode ^
+      booksLive.hashCode ^
+      booksCovered.hashCode ^
+      vectorsLibraryVersion.hashCode ^
+      ratio.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticCoverage &&
+          runtimeType == other.runtimeType &&
+          liveKeyedLines == other.liveKeyedLines &&
+          coveredLines == other.coveredLines &&
+          booksLive == other.booksLive &&
+          booksCovered == other.booksCovered &&
+          vectorsLibraryVersion == other.vectorsLibraryVersion &&
+          ratio == other.ratio;
+}
+
 /// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
 /// `FrbException`, where these calls used to throw `AnyhowException`: flutter_rust_bridge
 /// throws the error type of a `Result` as an exception class of its own.
@@ -2327,11 +2581,11 @@ class SemanticConfigInput {
 ///
 /// | kind | `field` |
 /// | --- | --- |
-/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `text.line_text_version`, `model.family_id`, `store.store_format_version`, `to_library_version`, or `metadata_version` |
-/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version` |
+/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
-/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say; for a compaction, `policy.` and the [`SemanticCompactionPolicy`] option |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
 class SemanticError implements FrbException {
@@ -2384,8 +2638,8 @@ class SemanticError implements FrbException {
 /// | --- | --- | --- | --- |
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
-/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing |
+/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
 /// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed | install the vectors built for this application and this model | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
@@ -2400,8 +2654,8 @@ class SemanticError implements FrbException {
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
-/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters | `search_semantic` |
-/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic` |
+/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 enum SemanticErrorKind {
   /// No semantic session is open.
@@ -2993,6 +3247,54 @@ class SemanticSearchResult {
           needsHydration == other.needsHydration;
 }
 
+/// One segment of an installed vector set.
+class SemanticSegmentInfo {
+  final String id;
+  final SemanticVectorsPackageKind kind;
+  final int fromLibraryVersion;
+  final int toLibraryVersion;
+  final BigInt slots;
+  final BigInt slotsDead;
+  final BigInt foreignUnresolved;
+  final BigInt size;
+
+  const SemanticSegmentInfo({
+    required this.id,
+    required this.kind,
+    required this.fromLibraryVersion,
+    required this.toLibraryVersion,
+    required this.slots,
+    required this.slotsDead,
+    required this.foreignUnresolved,
+    required this.size,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      kind.hashCode ^
+      fromLibraryVersion.hashCode ^
+      toLibraryVersion.hashCode ^
+      slots.hashCode ^
+      slotsDead.hashCode ^
+      foreignUnresolved.hashCode ^
+      size.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticSegmentInfo &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          kind == other.kind &&
+          fromLibraryVersion == other.fromLibraryVersion &&
+          toLibraryVersion == other.toLibraryVersion &&
+          slots == other.slots &&
+          slotsDead == other.slotsDead &&
+          foreignUnresolved == other.foreignUnresolved &&
+          size == other.size;
+}
+
 /// What the semantic session can do right now, the value a status view switches on.
 /// [`SemanticStatus::available`] says only whether semantic search is served; this says
 /// why it is not, and so what to offer.
@@ -3050,6 +3352,15 @@ class SemanticStatus {
   /// that failed, usually `semantic_index_books`, threw the precise kind.
   final SemanticErrorKind? errorKind;
 
+  /// The library version an opened vector set stands at; `None` for any other session.
+  final int? vectorsLibraryVersion;
+
+  /// The segments of an opened vector set; 0 for any other session.
+  final int vectorSegments;
+
+  /// Whether an opened vector set would be compacted now.
+  final bool needsCompaction;
+
   const SemanticStatus({
     required this.state,
     required this.enabled,
@@ -3065,6 +3376,9 @@ class SemanticStatus {
     this.needsFullReindex,
     this.lastError,
     this.errorKind,
+    this.vectorsLibraryVersion,
+    required this.vectorSegments,
+    required this.needsCompaction,
   });
 
   @override
@@ -3082,7 +3396,10 @@ class SemanticStatus {
       vectorsPersisted.hashCode ^
       needsFullReindex.hashCode ^
       lastError.hashCode ^
-      errorKind.hashCode;
+      errorKind.hashCode ^
+      vectorsLibraryVersion.hashCode ^
+      vectorSegments.hashCode ^
+      needsCompaction.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3102,7 +3419,248 @@ class SemanticStatus {
           vectorsPersisted == other.vectorsPersisted &&
           needsFullReindex == other.needsFullReindex &&
           lastError == other.lastError &&
-          errorKind == other.errorKind;
+          errorKind == other.errorKind &&
+          vectorsLibraryVersion == other.vectorsLibraryVersion &&
+          vectorSegments == other.vectorSegments &&
+          needsCompaction == other.needsCompaction;
+}
+
+/// What a vector set's directory holds, as [`SearchEngine::semantic_vectors_info`] reads it.
+class SemanticVectorsInfo {
+  /// Whether anything is installed there; every other field is empty when not.
+  final bool present;
+
+  /// The set's identity as 64 hex digits: what a release must name to be installed.
+  final String identityDigest;
+  final int libraryVersion;
+  final String libraryReleaseTag;
+  final BigInt generation;
+  final List<SemanticSegmentInfo> segments;
+  final BigInt slotsLive;
+  final BigInt slotsDead;
+  final BigInt bytesOnDisk;
+  final bool needsCompaction;
+
+  /// The live generation did not open and the one before it was opened instead.
+  final bool recoveredFromPrevious;
+
+  const SemanticVectorsInfo({
+    required this.present,
+    required this.identityDigest,
+    required this.libraryVersion,
+    required this.libraryReleaseTag,
+    required this.generation,
+    required this.segments,
+    required this.slotsLive,
+    required this.slotsDead,
+    required this.bytesOnDisk,
+    required this.needsCompaction,
+    required this.recoveredFromPrevious,
+  });
+
+  @override
+  int get hashCode =>
+      present.hashCode ^
+      identityDigest.hashCode ^
+      libraryVersion.hashCode ^
+      libraryReleaseTag.hashCode ^
+      generation.hashCode ^
+      segments.hashCode ^
+      slotsLive.hashCode ^
+      slotsDead.hashCode ^
+      bytesOnDisk.hashCode ^
+      needsCompaction.hashCode ^
+      recoveredFromPrevious.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticVectorsInfo &&
+          runtimeType == other.runtimeType &&
+          present == other.present &&
+          identityDigest == other.identityDigest &&
+          libraryVersion == other.libraryVersion &&
+          libraryReleaseTag == other.libraryReleaseTag &&
+          generation == other.generation &&
+          segments == other.segments &&
+          slotsLive == other.slotsLive &&
+          slotsDead == other.slotsDead &&
+          bytesOnDisk == other.bytesOnDisk &&
+          needsCompaction == other.needsCompaction &&
+          recoveredFromPrevious == other.recoveredFromPrevious;
+}
+
+/// A release of the library's vectors, as [`SearchEngine::install_semantic_vectors`]
+/// installs it: the segment and the release manifest published beside it.
+class SemanticVectorsInstallInput {
+  /// The vector set to install into, `<root>/vectors`: created when it does not exist.
+  final String vectorsDir;
+
+  /// The release's segment, as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd.
+  /// Inside the set's `incoming/` folder it is moved into the set; anywhere else it is
+  /// read and left where it is.
+  final String segmentPath;
+
+  /// The release manifest published beside the segment (`release.json`), as published:
+  /// its bytes are what the published digest names.
+  final String manifestJson;
+
+  /// The SHA-256 of `manifest_json` as the release publishes it outside the manifest.
+  /// Without it an install detects damage and the wrong release, not one deliberately
+  /// rebuilt to match.
+  final String? publishedManifestSha256;
+
+  /// The model identity this installation queries with, as for
+  /// [`SemanticArtifactInput::model_identity_json`]: a release it would not open is not
+  /// installed.
+  final String modelIdentityJson;
+
+  const SemanticVectorsInstallInput({
+    required this.vectorsDir,
+    required this.segmentPath,
+    required this.manifestJson,
+    this.publishedManifestSha256,
+    required this.modelIdentityJson,
+  });
+
+  @override
+  int get hashCode =>
+      vectorsDir.hashCode ^
+      segmentPath.hashCode ^
+      manifestJson.hashCode ^
+      publishedManifestSha256.hashCode ^
+      modelIdentityJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticVectorsInstallInput &&
+          runtimeType == other.runtimeType &&
+          vectorsDir == other.vectorsDir &&
+          segmentPath == other.segmentPath &&
+          manifestJson == other.manifestJson &&
+          publishedManifestSha256 == other.publishedManifestSha256 &&
+          modelIdentityJson == other.modelIdentityJson;
+}
+
+/// What [`SearchEngine::install_semantic_vectors`] did.
+class SemanticVectorsInstallReport {
+  final SemanticVectorsPackageKind kind;
+
+  /// The library version the set stands at afterwards.
+  final int libraryVersion;
+
+  /// The set's live generation afterwards.
+  final BigInt generation;
+  final int segments;
+  final BigInt slotsAdded;
+
+  /// Older vectors the release's tombstones deleted.
+  final BigInt tombstonesApplied;
+
+  /// Older vectors of texts the release shipped again, deleted in favour of its own.
+  final BigInt duplicatesRemoved;
+
+  /// Records of the release whose text no older segment holds live.
+  final BigInt foreignUnresolved;
+  final BigInt bytesOnDisk;
+
+  /// Whether [`SearchEngine::compact_semantic_vectors`] would compact the set now.
+  final bool needsCompaction;
+
+  /// A delta the set already stood at or past: nothing changed. A base always replaces
+  /// the set, so it is never already applied.
+  final bool alreadyApplied;
+
+  const SemanticVectorsInstallReport({
+    required this.kind,
+    required this.libraryVersion,
+    required this.generation,
+    required this.segments,
+    required this.slotsAdded,
+    required this.tombstonesApplied,
+    required this.duplicatesRemoved,
+    required this.foreignUnresolved,
+    required this.bytesOnDisk,
+    required this.needsCompaction,
+    required this.alreadyApplied,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^
+      libraryVersion.hashCode ^
+      generation.hashCode ^
+      segments.hashCode ^
+      slotsAdded.hashCode ^
+      tombstonesApplied.hashCode ^
+      duplicatesRemoved.hashCode ^
+      foreignUnresolved.hashCode ^
+      bytesOnDisk.hashCode ^
+      needsCompaction.hashCode ^
+      alreadyApplied.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticVectorsInstallReport &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          libraryVersion == other.libraryVersion &&
+          generation == other.generation &&
+          segments == other.segments &&
+          slotsAdded == other.slotsAdded &&
+          tombstonesApplied == other.tombstonesApplied &&
+          duplicatesRemoved == other.duplicatesRemoved &&
+          foreignUnresolved == other.foreignUnresolved &&
+          bytesOnDisk == other.bytesOnDisk &&
+          needsCompaction == other.needsCompaction &&
+          alreadyApplied == other.alreadyApplied;
+}
+
+/// What a segment is to the set it joins.
+enum SemanticVectorsPackageKind {
+  /// Every vector of one library version; replaces whatever the set held.
+  base,
+
+  /// What changed from one library version to the next.
+  delta,
+
+  /// A device's own merge of its set into one segment.
+  compacted,
+}
+
+/// What [`SearchEngine::verify_semantic_vectors`] read: every block of every segment of the
+/// set's live generation, each against its checksum.
+class SemanticVectorsVerification {
+  final BigInt generation;
+  final int segments;
+  final BigInt bytesChecked;
+  final BigInt elapsedMs;
+
+  const SemanticVectorsVerification({
+    required this.generation,
+    required this.segments,
+    required this.bytesChecked,
+    required this.elapsedMs,
+  });
+
+  @override
+  int get hashCode =>
+      generation.hashCode ^
+      segments.hashCode ^
+      bytesChecked.hashCode ^
+      elapsedMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticVectorsVerification &&
+          runtimeType == other.runtimeType &&
+          generation == other.generation &&
+          segments == other.segments &&
+          bytesChecked == other.bytesChecked &&
+          elapsedMs == other.elapsedMs;
 }
 
 /// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).
