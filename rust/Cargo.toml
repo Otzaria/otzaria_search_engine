@@ -84,9 +84,9 @@ lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
-# `corpus_id` is a SHA-256 over the documents an artifact is built from. Same crate and
-# major version the semantic sidecar hashes with, so the two sides cannot disagree about
-# what SHA-256 means.
+# The corpus stamp names the index's segment set by a SHA-256. Same crate and major
+# version the semantic sidecar hashes with, so the two sides cannot disagree about what
+# SHA-256 means.
 sha2 = "0.10"
 
 # The semantic sidecar's persisted-vector format and its inference bindings
@@ -102,7 +102,7 @@ sha2 = "0.10"
 # the inference crates come only with `onnx-backend`, which `semantic-onnx` turns
 # on and the sidecar declares for desktop targets only. The `semantic*` features
 # gate the code that talks to it.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "dc11d59ddbd70831cf78d76e69f0ee53232fb6a3", default-features = false }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "f42deec0a063814db287ee238005e90e51106c2a", default-features = false }
 
 [dev-dependencies]
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),

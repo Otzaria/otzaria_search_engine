@@ -801,16 +801,16 @@ abstract class SearchEngine implements RustOpaqueInterface {
   ///
   /// | half | expected value, from | fixed by |
   /// | --- | --- | --- |
-  /// | corpus | the corpus stamp inside this index's directory, and the index's own segment set | installing the release's index with its artifact |
+  /// | text | the corpus stamp inside this index's directory: its line recipe and library edition, and the index's own segment set | installing the release's index with its artifact |
   /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
   /// | store | what this build can read | a build that reads the artifact's format |
   ///
-  /// The corpus identity is read from the index, never passed in: nothing on
-  /// a device can recompute `corpus_id`, which digests every stored line, so
-  /// the build machine writes it into the index directory beside the index it
-  /// describes (`build_semantic_artifact --stamp-index`), together with the
-  /// index's segment set at that moment. An index added to, deleted from or
-  /// merged since is refused here, and so is one stamped for another corpus.
+  /// The corpus is read from the index, never passed in: the build machine
+  /// writes it into the index directory beside the index it describes
+  /// (`build_semantic_artifact --stamp-index`), together with the index's
+  /// segment set at that moment. An index added to, deleted from or merged
+  /// since is refused here, and so is one stamped for another line recipe or
+  /// another edition of the library than the artifact was built from.
   ///
   /// A mismatch is an error naming every field that disagreed, and nothing is
   /// left open. On success the session is read-only: `semantic_index_books`,
@@ -2012,13 +2012,15 @@ class SemanticArtifactInput {
   /// The text of the model's identity file: the JSON `ModelIdentity` the
   /// artifact was built with (`--model` of `build_semantic_artifact`), such as
   /// the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin
-  /// INT8 graph. Text rather than a path, so an application can ship it as an
+  /// model. Text rather than a path, so an application can ship it as an
   /// asset.
   ///
-  /// Every field is compared: the recipe fields with the artifact's, and
-  /// `model_checksum` and `embedding_backend` with the model at `model_path`
-  /// once it has loaded, so an identity file that describes other weights is
-  /// refused rather than trusted.
+  /// It describes the model family, every package of it the artifact may be
+  /// queried with among `query_packages`. Every field is compared: the family
+  /// and recipe fields with the artifact's; the graph at `model_path` must be
+  /// one of `query_packages`, by its checksum; and `tokenizer_checksum` is
+  /// compared with the tokenizer beside it once the model has loaded. So an
+  /// identity file that describes other weights is refused rather than trusted.
   final String modelIdentityJson;
 
   /// The artifact's digest as published outside it, when the release publishes
@@ -2327,10 +2329,10 @@ class SemanticConfigInput {
 ///
 /// | kind | `field` |
 /// | --- | --- |
-/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `corpus.library_version`, `model.model_id`, `store.store_format_version`, or `metadata_version` |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `text.line_text_version`, `model.family_id`, `store.store_format_version`, `to_library_version`, or `metadata_version` |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
-/// | `ModelIdentityMismatch` | the key of the model identity that the loaded model contradicts: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` |
+/// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `artifact_dir`, `onnx_runtime_path`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
@@ -2386,7 +2388,7 @@ class SemanticError implements FrbException {
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no artifact at `artifact_dir`: no directory, or no `manifest.json` in it | download and install the artifact | `open_semantic_artifact` |
 /// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
-/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
+/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's, or lines made by another line recipe), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
 /// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
 /// | `ArtifactStale` | the lexical index was committed to after the artifact was opened, so its line ids may name lines that moved | `disable_semantic`, then open the artifact built for this index | status, search fallback |
 /// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |

@@ -271,7 +271,7 @@ its input is a value to type in:
 | --- | --- |
 | `artifactDir` | the artifact directory the build binary wrote |
 | `modelPath` | the model queries are embedded with, an ONNX graph with `tokenizer.json` beside it: for the Meivin model, `seforim-embed-round2-int8.onnx` |
-| `modelIdentityJson` | the text of the model's identity file, the one the artifact was built with: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph |
+| `modelIdentityJson` | the text of the model's identity file, the one the artifact was built with: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin model. It describes the model family, and the graph at `modelPath` must be one of its `query_packages` |
 | `publishedDigest` | optional: the artifact's digest as published outside it |
 | `onnxRuntimePath` | optional: the ONNX Runtime library the application ships, the first place the runtime is looked for and, once passed, the only one; not part of any identity, and compared on a repeat call, since a process keeps the first runtime it loads |
 
@@ -283,10 +283,12 @@ The application's installation puts the data folder at `<root>/otzaria/`, with
 inside the signed bundle) or sits in the model's folder beside the graph, as the
 build for that machine's operating system and architecture.
 
-The corpus half of the identity is not an input: it is the corpus stamp the
-build machine writes into the lexical index (`--stamp-index`), checked against
-the index's segment set, because nothing on a device can recompute `corpus_id`.
-A mismatch anywhere is an error naming the fields, and leaves nothing open. On
+The corpus is not an input: it is the corpus stamp the build machine writes
+into the lexical index (`--stamp-index`), checked against the index's segment
+set, because nothing on a device can re-read the whole corpus to describe it.
+The artifact's identity is compared with the stamp's line recipe, and the
+library edition its manifest records with the stamp's. A mismatch anywhere is
+an error naming the fields, and leaves nothing open. On
 an opened artifact the calls that build vectors are refused as read-only, and a
 commit to the index afterwards makes it stale: searches fall back to lexical
 results, and `semanticStatus` reports why. INT8 vectors from x86 and ARM CPUs
@@ -407,7 +409,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `featureNotInBuild` | `state`, `fallbackKind` | no semantic support in this build | hide semantic search |
 | `artifactMissing` | `openSemanticArtifact` | no directory, or no `manifest.json` in it | download the artifact |
 | `artifactCorrupt` | `openSemanticArtifact` | damaged metadata or payload, or an identity left unfilled (`field`) | download it again |
-| `artifactIncompatible` | `openSemanticArtifact` | built for another corpus, model or store format; `field` is the first identity field that disagreed (`corpus.library_version`, `model.model_id`, `store.store_format_version`, `metadata_version`) | install the artifact built for this release |
+| `artifactIncompatible` | `openSemanticArtifact` | built for another corpus, model or store format; `field` is the first identity field that disagreed (`text.line_text_version`, `model.family_id`, `store.store_format_version`, `to_library_version`, `metadata_version`) | install the artifact built for this release |
 | `artifactNotPublished` | `openSemanticArtifact` | its digest is not the published one | download the official artifact |
 | `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after opening | `disableSemantic`, open the matching pair |
 | `indexNotStamped` | `openSemanticArtifact` | no corpus stamp this build reads | install the release's index |
@@ -415,7 +417,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `modelMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no file at `modelPath` | download the model |
 | `tokenizerMissing` | `openSemanticArtifact`, `semanticIndexBooks` | an ONNX graph without `tokenizer.json` beside it | install the whole package |
 | `modelInvalid` | `openSemanticArtifact`, `semanticIndexBooks` | not a usable model, or its backend could not load it; or, with `field` `model_path`, a path that names no ONNX graph, such as a GGUF | download the model again; for a path, point it at the package's `.onnx` graph |
-| `modelIdentityMismatch` | `openSemanticArtifact`, `semanticIndexBooks` | the identity does not describe the model; `field`: `model_checksum`, `embedding_backend`, `embedding_dim` or `pooling` | ship the matching identity file or model |
+| `modelIdentityMismatch` | `openSemanticArtifact`, `semanticIndexBooks` | the identity does not describe the model; `field`: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` | ship the matching identity file or model |
 | `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for: at `onnxRuntimePath` when it is passed | provide ONNX Runtime there |
 | `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
 | `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no ONNX backend in this build, as on Android and iOS | a desktop build |
