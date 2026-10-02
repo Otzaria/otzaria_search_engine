@@ -1532,10 +1532,12 @@ dependencies = [
 [[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
-source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=dc11d59ddbd70831cf78d76e69f0ee53232fb6a3#dc11d59ddbd70831cf78d76e69f0ee53232fb6a3"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=f42deec0a063814db287ee238005e90e51106c2a#f42deec0a063814db287ee238005e90e51106c2a"
 dependencies = [
+ "crc32fast",
  "libloading",
  "log",
+ "memmap2",
  "ort",
  "serde",
  "serde_json",

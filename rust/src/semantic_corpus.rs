@@ -19,9 +19,6 @@
 //! from its neighbours, so a neighbour edited between two reads changes what was embedded
 //! while every digest still agrees.
 //!
-//! `corpus_id` is derived from the same snapshot, so the identity an artifact carries names
-//! the documents it was actually built from.
-//!
 //! # The set has to be checkable against something the scan did not produce
 //!
 //! [`CorpusBooks`] is the *only* source of the coverage contract: the plan is built from
@@ -37,18 +34,20 @@
 //! # What this costs
 //!
 //! `open` walks every live document twice: once over the `id` and `filePath` columns to
-//! build the book map, and once over the stored fields to derive `corpus_id`. The second
-//! decompresses the whole store. Both are build-machine costs paid once per build, and
-//! neither happens on a device — the application opens a finished artifact and never sees
-//! this type.
+//! build the book map, and once over the stored fields, so that a document it could not
+//! describe refuses the corpus before a build starts from it. The second decompresses the
+//! whole store. Both are build-machine costs paid once per build, and neither happens on a
+//! device — the application opens a finished artifact and never sees this type.
 
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::builder::BuildPlan;
-use otzaria_semantic_search::distribution::corpus::{CorpusBooks, CorpusIndex, CorpusLine};
+use otzaria_semantic_search::distribution::corpus::{
+    CorpusBooks, CorpusIdentity, CorpusIndex, CorpusLine,
+};
 use otzaria_semantic_search::errors::PackError;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::recipe::EmbeddingRecipe;
-use otzaria_semantic_search::semantic::versioning::{CorpusIdentity, ModelIdentity};
+use otzaria_semantic_search::semantic::versioning::{ModelIdentity, TextIdentity};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -67,14 +66,6 @@ use tantivy::{DocAddress, Index, ReloadPolicy, Searcher, TantivyDocument};
 /// [`crate::api::search_engine`] — but it stops being true the moment the scheme changes,
 /// which is why the version is pinned here rather than assumed.
 pub const DOCUMENT_ID_SCHEME_VERSION: u32 = 1;
-
-/// Version the digest below was computed under.
-///
-/// Folded into `corpus_id` itself, so a change to *what* is hashed cannot silently produce
-/// a value that compares equal to one computed the old way. Version 2 covers every field of
-/// a line; version 1 covered only the id, the book key and the text, and therefore did not
-/// move when a re-section changed what a short line embedded.
-const CORPUS_ID_VERSION: u32 = 2;
 
 /// Where one line lives in the snapshot.
 #[derive(Debug, Clone, Copy)]
@@ -99,7 +90,7 @@ pub struct TantivyCorpus {
     /// The plan, computed at most once. `expected_line_ids` is called by both `pack` and
     /// `validate_artifact`, and chunking the library twice to answer the same question
     /// twice is the kind of cost a build notices.
-    /// A `Mutex` rather than a `RefCell`, so the corpus is `Sync`: `compute_corpus_id`
+    /// A `Mutex` rather than a `RefCell`, so the corpus is `Sync`: `ensure_every_line_reads`
     /// reads six million stored documents in parallel, and a `RefCell` anywhere in the
     /// struct would make that impossible for a cache neither thread touches.
     plan: Mutex<Option<BTreeSet<u64>>>,
@@ -120,7 +111,8 @@ impl TantivyCorpus {
     /// index this build cannot read is a `Result` rather than a panic from inside tantivy.
     pub fn from_index_path(
         index_path: &Path,
-        library_version: impl Into<String>,
+        library_version: u32,
+        library_release_tag: impl Into<String>,
         chunking: ChunkerConfig,
     ) -> Result<Self> {
         let compatibility =
@@ -138,7 +130,12 @@ impl TantivyCorpus {
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .with_context(|| format!("reading the index at {}", index_path.display()))?;
-        Self::open(reader.searcher(), library_version, chunking)
+        Self::open(
+            reader.searcher(),
+            library_version,
+            library_release_tag,
+            chunking,
+        )
     }
 
     /// Take the engine's current snapshot and describe it.
@@ -147,32 +144,42 @@ impl TantivyCorpus {
     /// see the module documentation for why that matters more than it looks.
     pub fn from_engine(
         engine: &crate::api::search_engine::SearchEngine,
-        library_version: impl Into<String>,
+        library_version: u32,
+        library_release_tag: impl Into<String>,
         chunking: ChunkerConfig,
     ) -> Result<Self> {
-        // The schema version an artifact declares has to be one something checked, not this
-        // build's constant repeated back. `SearchEngine` validates its index's metadata
-        // against `INDEX_SCHEMA_VERSION` when it opens it; asking again here is what turns
-        // that into a precondition of building rather than a fact about the binary.
+        // The line recipe an artifact declares has to describe an index something checked,
+        // not this build's constant repeated back about whatever directory it was handed.
+        // `SearchEngine` validates its index's metadata against the schema versions this
+        // build reads when it opens it; asking again here is what turns that into a
+        // precondition of building rather than a fact about the binary.
         ensure_compatible(&engine.index_compatibility())?;
-        Self::open(engine.corpus_searcher(), library_version, chunking)
+        Self::open(
+            engine.corpus_searcher(),
+            library_version,
+            library_release_tag,
+            chunking,
+        )
     }
 
     /// Take a snapshot of `searcher` and describe it.
     ///
-    /// `library_version` is the catalogue release the index was built from — the one fact
-    /// here that no index can report about itself. Everything else is read or derived:
-    /// `corpus_id` from the documents, the schema version from this build, and the id
-    /// scheme from the code that composes the ids.
+    /// `library_version` is the catalogue release the index was built from (the library's
+    /// `db_version`), and `library_release_tag` the name it was published under — the facts
+    /// here that no index can report about itself. Everything else is this build's: the line
+    /// recipe ([`LINE_TEXT_VERSION`](crate::api::search_engine::LINE_TEXT_VERSION)) is the
+    /// code that turned the library into these documents, and the id scheme the code that
+    /// composes their ids.
     ///
     /// `pub(crate)`, so the only way in is [`Self::from_engine`]. A bare `Searcher` carries
-    /// no evidence that the index it came from is one this build can read — the schema it
-    /// would then be labelled with is this crate's constant, not a value anything checked —
-    /// and an artifact labelled with an unverified schema version is an artifact that opens
-    /// against the wrong index.
+    /// no evidence that the index it came from is one this build can read — the line recipe
+    /// it would then be labelled with is this crate's constant, not a value anything
+    /// checked — and an artifact labelled with an unverified recipe is an artifact that
+    /// opens against the wrong index.
     pub(crate) fn open(
         searcher: Searcher,
-        library_version: impl Into<String>,
+        library_version: u32,
+        library_release_tag: impl Into<String>,
         chunking: ChunkerConfig,
     ) -> Result<Self> {
         let mut books: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -247,15 +254,14 @@ impl TantivyCorpus {
         }
         ensure_ids_encode_positions(&books)?;
 
-        // Built with a placeholder identity, because deriving `corpus_id` means reading
-        // every line through the same strict reader the build will use — which is a method
-        // on the corpus, not a second way to read a document.
-        let mut corpus = Self {
+        let corpus = Self {
             searcher,
             identity: CorpusIdentity {
-                corpus_id: String::new(),
-                library_version: library_version.into(),
-                tantivy_schema_version: crate::api::search_engine::INDEX_SCHEMA_VERSION,
+                text: TextIdentity::with_line_text_version(
+                    crate::api::search_engine::LINE_TEXT_VERSION,
+                ),
+                library_version,
+                library_release_tag: library_release_tag.into(),
                 document_id_scheme_version: DOCUMENT_ID_SCHEME_VERSION,
             },
             chunking,
@@ -263,13 +269,17 @@ impl TantivyCorpus {
             locations,
             plan: Mutex::new(None),
         };
-        corpus.identity.corpus_id = compute_corpus_id(&corpus)?;
+        // Every line through the same strict reader the build will use — a method on the
+        // corpus, not a second way to read a document.
+        ensure_every_line_reads(&corpus)?;
 
         log::info!(
-            "Semantic corpus opened over {} live line(s) in {} book(s); corpus_id {}",
+            "Semantic corpus opened over {} live line(s) in {} book(s); library version {}, \
+             line text version {}",
             expected,
             corpus.books.len(),
-            corpus.identity.corpus_id
+            corpus.identity.library_version,
+            corpus.identity.text.line_text_version
         );
 
         Ok(corpus)
@@ -483,17 +493,17 @@ impl CorpusBooks for TantivyCorpus {
 
 // ── The corpus stamp ────────────────────────────────────────────────────────────────────
 //
-// What a device compares instead of `corpus_id`, which it cannot afford to recompute.
+// What a device reads instead of describing its index itself, which it cannot afford to.
 
 /// The file, inside a lexical index's directory, that says which corpus the index holds.
 ///
 /// Opening a prebuilt semantic artifact needs the [`CorpusIdentity`] of the index that is
-/// actually open, and the artifact's own copy cannot serve: comparing an artifact with
-/// itself proves nothing. Deriving it means reading every stored document, which is a
-/// build-machine cost, so the build writes it here, beside the index it describes, and the
-/// index carries it wherever it is shipped. An artifact is then refused against any other
-/// index — another release, or this one changed since — rather than handing back ids that
-/// name other lines.
+/// actually open, and the artifact's own description cannot serve: comparing an artifact
+/// with itself proves nothing. The build writes it here, beside the index it describes, and
+/// the index carries it wherever it is shipped: the line recipe the artifact's identity is
+/// compared with, and the library edition its manifest must name. An artifact is then
+/// refused against any other index — another release, or this one changed since — rather
+/// than handing back ids that name other lines.
 ///
 /// Written by `build_semantic_artifact --stamp-index` and `pack_semantic_artifact
 /// --stamp-index`, from the snapshot the artifact was built from; read by
@@ -504,8 +514,10 @@ impl CorpusBooks for TantivyCorpus {
 pub const CORPUS_STAMP_FILE_NAME: &str = "otzaria_semantic_corpus.json";
 
 /// The stamp's format tag and version, refused on a mismatch rather than half-read.
+/// Version 2 carries the corpus as a line recipe and a library edition; version 1 carried
+/// a digest of the documents, which no artifact names any more.
 const CORPUS_STAMP_FORMAT: &str = "otzaria-semantic-corpus";
-const CORPUS_STAMP_VERSION: u32 = 1;
+const CORPUS_STAMP_VERSION: u32 = 2;
 
 /// Folded into [`segments_digest`], so a change to what is hashed cannot compare equal to a
 /// digest computed the old way.
@@ -513,11 +525,11 @@ const SEGMENTS_DIGEST_VERSION: &str = "otzaria-index-segments-v1";
 
 /// A [`CorpusIdentity`], and the exact index state it was derived from.
 ///
-/// `corpus_id` describes the documents; `segments_sha256` ties that description to one
-/// state of this directory, which is what makes the stamp checkable on a device at all:
-/// the identity cannot be recomputed there, but the segment set can be read in
-/// microseconds. Any add, delete or merge after the stamp was written changes the set, and
-/// the stamp then no longer vouches for the index. A commit that changed nothing does not.
+/// `corpus` describes the documents; `segments_sha256` ties that description to one state
+/// of this directory, which is what makes the stamp checkable on a device at all: the
+/// documents cannot be re-read there, but the segment set can be read in microseconds. Any
+/// add, delete or merge after the stamp was written changes the set, and the stamp then no
+/// longer vouches for the index. A commit that changed nothing does not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CorpusStamp {
@@ -682,8 +694,8 @@ impl CorpusStamp {
     /// Refuse the stamp unless `searcher` sees exactly the segment set it was written for.
     ///
     /// A mismatch means the index was added to, deleted from or merged since it was
-    /// stamped — or is another copy of it altogether — so `corpus_id` no longer vouches for
-    /// what it holds, and an artifact's ids may name lines that moved.
+    /// stamped — or is another copy of it altogether — so the stamp's corpus no longer
+    /// vouches for what it holds, and an artifact's ids may name lines that moved.
     pub fn ensure_describes(
         &self,
         searcher: &Searcher,
@@ -701,79 +713,29 @@ impl CorpusStamp {
     }
 }
 
-/// A deterministic digest of the corpus this snapshot holds.
+/// Refuse a snapshot holding a line the build could not describe.
 ///
-/// **Every field of every line, not just its text.** `corpus_id` is the *only* thing
-/// standing between an installed artifact and an index that has moved: on a device there is
-/// no join against Tantivy — [`OfficialSemanticIndex::open`] compares identities and then
-/// reads vectors. So anything that changes what a vector means, or what the application
-/// does with the result, has to change this value:
-///
-/// * `text` and `section_id` decide what was embedded — a short line takes its context from
-///   its neighbours *in the same section*, so a re-sectioned book embeds different text.
-/// * `facets` and `is_pdf` are what the sidecar filters on, before any hydration.
-/// * `line_hash` is what `IdenticalText` grouping collapses on, and `section_id` is what
-///   `SameSection` groups by.
-/// * `title` and `reference` are displayed from Tantivy at query time, but they are also
-///   stored in the artifact and compared record by record when it is validated — and "the
-///   build machine would have caught it" is not a guarantee an installation has.
-///
-/// The cost of the wider digest is that re-titling a book invalidates its vectors. That is
-/// the right default: repacking metadata without re-running inference is a future
-/// optimization, and silently accepting stale metadata is not.
-///
-/// Every field is length-prefixed through the canonical JSON of [`CorpusLine`], so no two
-/// different corpora serialize to the same bytes by moving a boundary.
-fn compute_corpus_id(corpus: &TantivyCorpus) -> Result<String> {
-    // Ascending id globally, so the value does not depend on how segments are laid out or
-    // on the order books happen to be enumerated in.
+/// **Every field of every line, before anything else reads one.** A document the index
+/// counts but cannot describe — a field missing, or doubled — would otherwise be found
+/// part-way through a build, after the plan was made from the lines read before it; read
+/// here, the corpus refuses to exist instead, and names the line.
+fn ensure_every_line_reads(corpus: &TantivyCorpus) -> Result<()> {
     let mut ordered: Vec<u64> = corpus.locations.keys().copied().collect();
     ordered.sort_unstable();
 
-    let mut hasher = Sha256::new();
-    hasher.update(CORPUS_ID_VERSION.to_le_bytes());
-    hasher.update((ordered.len() as u64).to_le_bytes());
-
-    // Read and serialize in parallel, hash in order. The cost here is Tantivy's stored
-    // fields — a block decompression and a struct built per line, six million times —
-    // and it is embarrassingly parallel; the hash is not, and must not be, because its
-    // value depends on the order bytes reach it. So the window below is what crosses
-    // between the two: threads fill it, the digest drains it, and the resulting
-    // `corpus_id` is bit-identical to the one a single thread produces.
-    //
-    // Measured on the release index: 5.9M lines, and the serial version had not
-    // finished opening the corpus after minutes.
+    // In parallel: the cost is Tantivy's stored fields — a block decompression and a
+    // struct built per line, six million times — and nothing depends on their order. In
+    // windows of ascending ids, so a refusal stops the read close to where it was found.
     const WINDOW: usize = 8192;
     for window in ordered.chunks(WINDOW) {
-        let lines = window
-            .par_iter()
-            .map(|&line_id| {
-                let address = corpus.locations[&line_id].address;
-                corpus
-                    .read_at(address, line_id)
-                    .map(|line| (line_id, line))
-                    .map_err(|reason| anyhow::anyhow!("{reason}"))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (line_id, line) in lines {
-            feed_line(&mut hasher, line_id, &line)?;
-        }
+        window.par_iter().try_for_each(|&line_id| {
+            let address = corpus.locations[&line_id].address;
+            corpus
+                .read_at(address, line_id)
+                .map(drop)
+                .map_err(|reason| anyhow::anyhow!("{reason}"))
+        })?;
     }
-
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-/// One line's contribution to the digest: its id, and the canonical JSON of everything the
-/// corpus says about it.
-///
-/// Serde emits a struct's fields in declaration order, so this is stable for a given
-/// [`CorpusLine`] — and a field *added* to that struct changes every `corpus_id`, which is
-/// correct: a field worth storing in an artifact is a field worth invalidating one over.
-fn feed_line(hasher: &mut Sha256, line_id: u64, line: &CorpusLine) -> Result<()> {
-    let canonical = serde_json::to_vec(line)?;
-    hasher.update(line_id.to_le_bytes());
-    hasher.update((canonical.len() as u64).to_le_bytes());
-    hasher.update(&canonical);
     Ok(())
 }
 
@@ -865,7 +827,7 @@ fn ensure_ids_encode_positions(books: &BTreeMap<String, Vec<u64>>) -> Result<()>
 mod tests {
     use super::*;
     use crate::api::search_engine::SearchEngine;
-    use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+    use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
     use tempfile::TempDir;
 
     const GENESIS: &str = "/books/genesis.txt";
@@ -907,23 +869,34 @@ mod tests {
         engine
     }
 
+    /// The library edition the fixture's index is labelled with.
+    const LIBRARY_VERSION: u32 = 30;
+    const LIBRARY_RELEASE_TAG: &str = "v30-20261001000000";
+
     fn corpus(engine: &SearchEngine) -> TantivyCorpus {
-        TantivyCorpus::from_engine(engine, "otzaria-library-2026-08", ChunkerConfig::default())
-            .unwrap()
+        TantivyCorpus::from_engine(
+            engine,
+            LIBRARY_VERSION,
+            LIBRARY_RELEASE_TAG,
+            ChunkerConfig::default(),
+        )
+        .unwrap()
     }
 
     fn model_for(chunking: &ChunkerConfig) -> ModelIdentity {
         ModelIdentity {
-            model_id: "test-mock".to_string(),
-            model_checksum: "ab".repeat(32),
-            model_quantization: "int8".to_string(),
-            embedding_backend: "mock-hash-v1".to_string(),
+            family_id: "test-mock@0000000".to_string(),
+            tokenizer_checksum: "cd".repeat(32),
             embedding_dim: 64,
             pooling: "in-graph".to_string(),
             max_tokens: 512,
             embedding_text_version: chunking.embedding_text_version,
             normalization_version: 1,
             chunking_identity: chunking.identity(),
+            query_packages: vec![ModelPackage {
+                checksum: "ab".repeat(32),
+                quantization: "int8".to_string(),
+            }],
         }
     }
 
@@ -1000,14 +973,14 @@ mod tests {
         ));
     }
 
-    /// The identity a build records has to name the documents it actually read. Held for
-    /// the whole build, so an index that moves under it changes nothing this build sees.
+    /// A build reads the documents of one snapshot. Held for the whole build, so an index
+    /// that moves under it changes nothing this build sees.
     #[test]
     fn the_snapshot_does_not_move_when_the_index_does() {
         let dir = TempDir::new().unwrap();
         let mut engine = engine_with_books(&dir);
         let snapshot = corpus(&engine);
-        let before = snapshot.identity().unwrap();
+        let before = snapshot.stamp();
         let count_before = snapshot.line_count();
 
         engine
@@ -1025,7 +998,7 @@ mod tests {
 
         assert_eq!(snapshot.line_count(), count_before);
         assert_eq!(snapshot.book_count(), 2);
-        assert_eq!(snapshot.identity().unwrap(), before);
+        assert_eq!(snapshot.stamp(), before);
 
         // And the same engine, asked again, sees the commit — so the snapshot above is a
         // property of the corpus rather than of a reader that never reloads.
@@ -1050,128 +1023,6 @@ mod tests {
             !corpus.book_keys().unwrap().contains(&BERACHOT.to_string()),
             "a book with no live line is not a book"
         );
-    }
-
-    /// **Every field of a line reaches the digest**, and a field added to `CorpusLine`
-    /// reaches it without anyone remembering to add it here.
-    ///
-    /// Driven off the *serialized* line rather than a hand-written list, for the same reason
-    /// the identity fields are: a list can be forgotten. On a device there is no join
-    /// against Tantivy — the installation compares `CorpusIdentity` and then reads vectors —
-    /// so a field left out of this digest is a field an index can change under a shipped
-    /// artifact with nothing anywhere noticing. `section_id` decides what a short line
-    /// embeds; `facets` and `is_pdf` are filtered on before hydration; `line_hash` and
-    /// `section_id` are what grouping collapses on.
-    #[test]
-    fn every_field_of_a_line_reaches_the_digest() {
-        let dir = TempDir::new().unwrap();
-        let engine = engine_with_books(&dir);
-        let corpus = corpus(&engine);
-        let line_id = corpus.book_line_ids(GENESIS).unwrap()[0];
-        let line = corpus.line(line_id).unwrap().unwrap();
-
-        let digest_of = |line: &CorpusLine| {
-            let mut hasher = Sha256::new();
-            feed_line(&mut hasher, line_id, line).unwrap();
-            format!("{:x}", hasher.finalize())
-        };
-        let baseline = digest_of(&line);
-        assert_eq!(
-            baseline,
-            digest_of(&line),
-            "the digest is a function of the line"
-        );
-
-        let serialized: serde_json::Map<String, serde_json::Value> =
-            match serde_json::to_value(&line).unwrap() {
-                serde_json::Value::Object(map) => map,
-                other => panic!("a corpus line serializes to an object, got {other:?}"),
-            };
-        assert!(!serialized.is_empty());
-
-        for (field, value) in &serialized {
-            let mut changed = serialized.clone();
-            changed.insert(field.clone(), disturb(value));
-            let changed: CorpusLine =
-                serde_json::from_value(serde_json::Value::Object(changed)).unwrap();
-            assert_ne!(
-                digest_of(&changed),
-                baseline,
-                "changing {field} must change corpus_id: nothing on a device would catch it"
-            );
-        }
-
-        // The id itself, which is not part of the serialized line.
-        let mut hasher = Sha256::new();
-        feed_line(&mut hasher, line_id + 1, &line).unwrap();
-        assert_ne!(format!("{:x}", hasher.finalize()), baseline);
-    }
-
-    /// Produce a different value of the same JSON type.
-    fn disturb(value: &serde_json::Value) -> serde_json::Value {
-        use serde_json::Value;
-        match value {
-            Value::String(text) => Value::String(format!("{text}!")),
-            Value::Bool(flag) => Value::Bool(!flag),
-            Value::Number(number) => {
-                Value::Number(serde_json::Number::from(number.as_u64().unwrap_or(0) + 1))
-            }
-            Value::Array(items) => {
-                let mut items = items.clone();
-                items.push(Value::String("/disturbed".to_string()));
-                Value::Array(items)
-            }
-            other => panic!("no disturbance defined for {other:?}"),
-        }
-    }
-
-    /// `corpus_id` is a property of the corpus, not of a run: the same library built twice
-    /// produces the same value, and a word changed in one line does not.
-    #[test]
-    fn the_corpus_id_is_reproducible_and_moves_with_the_documents() {
-        let first = TempDir::new().unwrap();
-        let baseline = corpus(&engine_with_books(&first))
-            .identity()
-            .unwrap()
-            .corpus_id;
-
-        let repeat = TempDir::new().unwrap();
-        assert_eq!(
-            corpus(&engine_with_books(&repeat))
-                .identity()
-                .unwrap()
-                .corpus_id,
-            baseline
-        );
-
-        // Through the index this time rather than through a synthesized line: a facet added
-        // to a book changes what the sidecar filters on, and must invalidate its vectors.
-        let refaceted = TempDir::new().unwrap();
-        let mut engine = SearchEngine::new(refaceted.path().to_str().unwrap());
-        engine
-            .add_text_book(
-                "בראשית".to_string(),
-                "/מקרא/תורה".to_string(),
-                GENESIS.to_string(),
-                0,
-                0,
-                GENESIS_TEXT.to_string(),
-                Some(vec!["/era/תנך".to_string(), "/author/משה".to_string()]),
-            )
-            .unwrap();
-        engine
-            .add_text_book(
-                "משנה ברכות".to_string(),
-                "/משנה/זרעים".to_string(),
-                BERACHOT.to_string(),
-                1,
-                0,
-                BERACHOT_TEXT.to_string(),
-                None,
-            )
-            .unwrap();
-        engine.commit().unwrap();
-        assert_ne!(corpus(&engine).identity().unwrap().corpus_id, baseline);
     }
 
     /// Coverage is the recipe applied to the corpus — not every document in the index, and
@@ -1281,10 +1132,10 @@ mod tests {
         drop(writer);
 
         let engine = SearchEngine::new(dir.path().to_str().unwrap());
-        // Refused at `open`, not at the line: deriving `corpus_id` reads every document
-        // through the same strict reader, so a corpus that cannot describe itself never
-        // becomes one a build can start from. The document is counted by `num_docs`, so
-        // the enumeration cross-check agrees with it and would never have seen it.
+        // Refused at `open`, not at the line: opening reads every document through the
+        // same strict reader, so a corpus that cannot describe itself never becomes one a
+        // build can start from. The document is counted by `num_docs`, so the enumeration
+        // cross-check agrees with it and would never have seen it.
         let error = expect_refusal(&engine, "a document with no isPdf must be refused");
         assert!(
             error.contains("isPdf") && error.contains(&maimed_id.to_string()),
@@ -1405,7 +1256,12 @@ mod tests {
     /// one just so `expect_err` compiles would put a `Searcher` and a book map in a panic
     /// message.
     fn expect_refusal(engine: &SearchEngine, what: &str) -> String {
-        match TantivyCorpus::from_engine(engine, "v", ChunkerConfig::default()) {
+        match TantivyCorpus::from_engine(
+            engine,
+            LIBRARY_VERSION,
+            LIBRARY_RELEASE_TAG,
+            ChunkerConfig::default(),
+        ) {
             Err(error) => format!("{error}"),
             Ok(_) => panic!("{what}"),
         }
@@ -1537,10 +1393,14 @@ mod tests {
 
         let model_file = mock::write_stub_onnx_package(&dir.path().join("model"));
         let model = ModelIdentity {
-            model_checksum: validate_onnx_package(&model_file)
-                .unwrap()
-                .checksum()
-                .to_string(),
+            tokenizer_checksum: mock::stub_tokenizer_checksum(),
+            query_packages: vec![ModelPackage {
+                checksum: validate_onnx_package(&model_file)
+                    .unwrap()
+                    .checksum()
+                    .to_string(),
+                quantization: "int8".to_string(),
+            }],
             ..model_for(&chunking)
         };
 
@@ -1567,7 +1427,7 @@ mod tests {
             "five live lines, and the recipe skips the one below min_embeddable_chars"
         );
         assert_eq!(report.book_count, 2);
-        assert_eq!(report.identity.corpus, corpus.identity().unwrap());
+        assert_eq!(report.identity.text, corpus.identity().unwrap().text);
 
         // Verified again from the outside, against the same snapshot: the ids cover the
         // recipe exactly, and every stored record still agrees with the index field by
@@ -1578,23 +1438,27 @@ mod tests {
         );
     }
 
-    /// The identity fields this side owns are read, not typed in beside the vectors.
+    /// The identity fields this side owns are this build's, not typed in beside the
+    /// vectors: the line recipe the index was written by, the key function the sidecar
+    /// implements and the id scheme; the edition is the one the build was told.
     #[test]
     fn the_identity_comes_from_the_index_and_this_build() {
         let dir = TempDir::new().unwrap();
         let engine = engine_with_books(&dir);
         let identity = corpus(&engine).identity().unwrap();
 
-        assert_eq!(identity.library_version, "otzaria-library-2026-08");
         assert_eq!(
-            identity.tantivy_schema_version,
-            crate::api::search_engine::INDEX_SCHEMA_VERSION
+            identity.text,
+            TextIdentity {
+                line_text_version: crate::api::search_engine::LINE_TEXT_VERSION,
+                key_version: otzaria_semantic_search::semantic::chunk_key::KEY_VERSION,
+            }
         );
+        assert_eq!(identity.library_version, LIBRARY_VERSION);
+        assert_eq!(identity.library_release_tag, LIBRARY_RELEASE_TAG);
         assert_eq!(
             identity.document_id_scheme_version,
             DOCUMENT_ID_SCHEME_VERSION
         );
-        assert_eq!(identity.corpus_id.len(), 64);
-        assert!(identity.corpus_id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

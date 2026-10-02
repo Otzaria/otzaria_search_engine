@@ -704,16 +704,17 @@ Future<void> main() async {
       // artifact built from this index, which the build stamps as it goes.
       final model = writeStubOnnxPackage(Directory('${root.path}/model'));
       identity = {
-        'model_id': 'test-mock',
-        'model_checksum': onnxPackageChecksum(model),
-        'model_quantization': 'int8',
-        'embedding_backend': MockBackend.id,
+        'family_id': 'test-mock@0000000',
+        'tokenizer_checksum': onnxTokenizerChecksum(model),
         'embedding_dim': 64,
         'pooling': 'in-graph',
         'max_tokens': 512,
         'embedding_text_version': 1,
         'normalization_version': 1,
         'chunking_identity': chunkingIdentity,
+        'query_packages': [
+          {'checksum': onnxPackageChecksum(model), 'quantization': 'int8'},
+        ],
       };
       File('${root.path}/model.json').writeAsStringSync(jsonEncode(identity));
       File('${root.path}/chunking.json').writeAsStringSync(
@@ -731,6 +732,8 @@ Future<void> main() async {
         '--index',
         index.path,
         '--library-version',
+        '1',
+        '--release-tag',
         'otzaria-library-ffi',
         '--model',
         '${root.path}/model.json',
@@ -858,16 +861,16 @@ Future<void> main() async {
       () async {
         await expectLater(
           engine.openSemanticArtifact(
-            config: input({...identity, 'model_id': 'another-model'}),
+            config: input({...identity, 'family_id': 'another-model@0000000'}),
           ),
           throwsA(
             isSemanticError(
               SemanticErrorKind.artifactIncompatible,
-              field: 'model.model_id',
+              field: 'model.family_id',
             ).having(
               (error) => error.message,
               'message',
-              contains('model.model_id'),
+              contains('model.family_id'),
             ),
           ),
         );

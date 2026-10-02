@@ -18,7 +18,7 @@ use otzaria_semantic_search::distribution::packer::validate_artifact;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::mock;
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
-use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::SearchEngine;
 use search_engine::semantic_corpus::TantivyCorpus;
 use std::path::Path;
@@ -27,7 +27,8 @@ use tempfile::TempDir;
 
 const GENESIS: &str = "/books/genesis.txt";
 const BERACHOT: &str = "/books/berachot.txt";
-const LIBRARY_VERSION: &str = "otzaria-library-2026-08";
+/// The library edition the build is told the index holds, as `--library-version` takes it.
+const LIBRARY_VERSION: &str = "30";
 
 /// The third line is under `min_embeddable_chars`, so the recipe skips it — and an artifact
 /// that skips it is complete rather than short. Without a line like it, a build that ignored
@@ -71,16 +72,18 @@ fn write_index(dir: &Path) {
 
 fn model_identity(checksum: &str, chunking: &ChunkerConfig) -> ModelIdentity {
     ModelIdentity {
-        model_id: "test-mock".to_string(),
-        model_checksum: checksum.to_string(),
-        model_quantization: "int8".to_string(),
-        embedding_backend: "mock-hash-v1".to_string(),
+        family_id: "test-mock@0000000".to_string(),
+        tokenizer_checksum: mock::stub_tokenizer_checksum(),
         embedding_dim: 64,
         pooling: "in-graph".to_string(),
         max_tokens: 512,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
         chunking_identity: chunking.identity(),
+        query_packages: vec![ModelPackage {
+            checksum: checksum.to_string(),
+            quantization: "int8".to_string(),
+        }],
     }
 }
 
@@ -179,11 +182,16 @@ fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
     // Verified independently, against the index the artifact names — a second open of the
     // same directory, in this process, with nothing carried over from the build.
     let engine = SearchEngine::new(fixture.index.path().to_str().unwrap());
-    let corpus =
-        TantivyCorpus::from_engine(&engine, LIBRARY_VERSION, fixture.chunking.clone()).unwrap();
+    let corpus = TantivyCorpus::from_engine(
+        &engine,
+        LIBRARY_VERSION.parse().unwrap(),
+        "",
+        fixture.chunking.clone(),
+    )
+    .unwrap();
     let report = validate_artifact(&out, &fixture.model, &corpus).unwrap();
     assert_eq!(report.vector_count, EMBEDDED);
-    assert_eq!(report.identity.corpus, corpus.identity().unwrap());
+    assert_eq!(report.identity.text, corpus.identity().unwrap().text);
 
     // The digest the build published is the one a fresh verification arrives at.
     let published = stdout

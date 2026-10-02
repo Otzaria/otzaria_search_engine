@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! export_semantic_plan \
-//!   --index ./tantivy-index --library-version otzaria-library-2026-08 \
+//!   --index ./tantivy-index --library-version 30 --release-tag v30-20260930120000 \
 //!   --model model.json --chunking chunking.json --out ./plan
 //! ```
 //!
@@ -67,7 +67,16 @@ fn main() {
 
     let index_path = required("--index");
     let out = PathBuf::from(required("--out"));
-    let library_version = required("--library-version");
+    let library_version = match required("--library-version").parse::<u32>() {
+        Ok(version) if version > 0 => version,
+        _ => {
+            eprintln!(
+                "Error: --library-version is the library's db_version, a whole number from 1.\n\n{USAGE}"
+            );
+            process::exit(1);
+        }
+    };
+    let release_tag = flag("--release-tag").unwrap_or_default();
     let model: ModelIdentity =
         serde_json::from_value(read_json("model identity", &required("--model"))).unwrap_or_else(
             |error| {
@@ -85,29 +94,35 @@ fn main() {
     // Read-only, and literally so — the same door `build_semantic_artifact` uses. Going
     // through `SearchEngine` would create an index for a mistyped path and hold a writer
     // lock over a read that takes an hour.
-    let corpus =
-        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
-            .unwrap_or_else(|error| {
-                eprintln!("Could not read the corpus at {index_path}: {error:#}");
-                process::exit(1);
-            });
+    let corpus = TantivyCorpus::from_index_path(
+        Path::new(&index_path),
+        library_version,
+        release_tag,
+        chunking.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the corpus at {index_path}: {error:#}");
+        process::exit(1);
+    });
     let identity = corpus.identity().unwrap_or_else(|error| {
         eprintln!("The corpus has no identity: {error}");
         process::exit(1);
     });
     println!(
-        "Corpus: {} line(s) across {} book(s)\ncorpus_id: {}",
+        "Corpus: {} line(s) across {} book(s)\nLibrary: version {} ({:?}), line text version {}",
         corpus.line_count(),
         corpus.book_count(),
-        identity.corpus_id
+        identity.library_version,
+        identity.library_release_tag,
+        identity.text.line_text_version
     );
 
     std::fs::create_dir_all(&out).unwrap_or_else(|error| {
         eprintln!("Could not create {}: {error}", out.display());
         process::exit(1);
     });
-    // Written before the plan: the merge packs against this identity, and recomputing it
-    // there would mean scanning six million lines a second time to learn what is already
+    // Written before the plan: the merge packs against this identity, and reading it again
+    // there would mean opening six million lines a second time to learn what is already
     // known here.
     std::fs::write(
         out.join("corpus-identity.json"),
@@ -154,11 +169,12 @@ const USAGE: &str = "\
 Apply the embedding recipe to a Tantivy index and write the work out.
 
 Usage:
-  export_semantic_plan --index <dir> --library-version <version> \\
+  export_semantic_plan --index <dir> --library-version <N> \\
       --model <model.json> --chunking <chunking.json> --out <dir>
 
   --index            Tantivy index directory, opened read-only
-  --library-version  The library version the index was built from
+  --library-version  The library edition the index was built from: its db_version
+  --release-tag      The release that edition was published as (default: none)
   --model            JSON ModelIdentity; no model file is opened
   --chunking         JSON ChunkerConfig, whose hash must be the model's chunking_identity
   --out              Receives plan.jsonl, export-manifest.json, corpus-identity.json

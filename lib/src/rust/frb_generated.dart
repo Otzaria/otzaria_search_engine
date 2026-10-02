@@ -12641,16 +12641,16 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// | half | expected value, from | fixed by |
   /// | --- | --- | --- |
-  /// | corpus | the corpus stamp inside this index's directory, and the index's own segment set | installing the release's index with its artifact |
+  /// | text | the corpus stamp inside this index's directory: its line recipe and library edition, and the index's own segment set | installing the release's index with its artifact |
   /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
   /// | store | what this build can read | a build that reads the artifact's format |
   ///
-  /// The corpus identity is read from the index, never passed in: nothing on
-  /// a device can recompute `corpus_id`, which digests every stored line, so
-  /// the build machine writes it into the index directory beside the index it
-  /// describes (`build_semantic_artifact --stamp-index`), together with the
-  /// index's segment set at that moment. An index added to, deleted from or
-  /// merged since is refused here, and so is one stamped for another corpus.
+  /// The corpus is read from the index, never passed in: the build machine
+  /// writes it into the index directory beside the index it describes
+  /// (`build_semantic_artifact --stamp-index`), together with the index's
+  /// segment set at that moment. An index added to, deleted from or merged
+  /// since is refused here, and so is one stamped for another line recipe or
+  /// another edition of the library than the artifact was built from.
   ///
   /// A mismatch is an error naming every field that disagreed, and nothing is
   /// left open. On success the session is read-only: `semantic_index_books`,
