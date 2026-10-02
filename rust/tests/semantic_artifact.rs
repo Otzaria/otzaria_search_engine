@@ -1637,3 +1637,41 @@ fn coverage_counts_the_live_lines_the_set_holds() {
         (SemanticErrorKind::ArtifactMissing, Some("vectors_dir"))
     );
 }
+
+/// A set built from the index finds every record at its hint and covers every keyed line;
+/// after a line is inserted above, the records below it are counted as moved.
+#[test]
+fn the_validator_finds_every_record_at_its_hint_until_lines_move() {
+    use otzaria_semantic_search::semantic::segment_set::SegmentSet;
+    use search_engine::semantic_plan::validate;
+    let library = build_library();
+    let fresh = validate(&library.index, &SegmentSet::open(&library.vectors).unwrap()).unwrap();
+    let embedded = u64::from(EMBEDDED);
+    assert_eq!(
+        (
+            fresh.keyed_lines,
+            fresh.covered_lines,
+            fresh.records,
+            fresh.at_hint
+        ),
+        (embedded, embedded, embedded, embedded)
+    );
+
+    let mut engine = library.engine();
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("שורה חדשה בראש הספר לפני כל השאר\n{GENESIS_TEXT}"),
+        ),
+    );
+    drop(engine);
+    let moved = validate(&library.index, &SegmentSet::open(&library.vectors).unwrap()).unwrap();
+    assert_eq!(moved.records, embedded);
+    assert_eq!(moved.keyed_lines, embedded + 1);
+    assert!(moved.moved >= 1, "{moved:?}");
+    assert_eq!(moved.at_hint + moved.moved + moved.gone, moved.records);
+}
