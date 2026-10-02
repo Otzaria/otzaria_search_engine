@@ -867,12 +867,16 @@ impl LiveResolver<'_> {
         }
 
         let directory = self.directory()?;
-        let admitted: Vec<&Arc<str>> = directory
+        // In name order, not the directory's: an arrival is looked for in its books in this
+        // order, and when they hold more of its lines than a hit resolves to, the order is
+        // which of them come back.
+        let mut admitted: Vec<&Arc<str>> = directory
             .books
             .iter()
             .filter(|(name, info)| compiled.matches_book(name, &info.facets, info.is_pdf))
             .map(|(name, _)| name)
             .collect();
+        admitted.sort();
         let mut arrivals: HashMap<u64, Vec<Arc<str>>> = HashMap::new();
         for name in &admitted {
             if cancel.is_cancelled() {
