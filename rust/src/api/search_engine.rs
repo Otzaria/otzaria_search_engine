@@ -528,15 +528,13 @@ pub struct SemanticArtifactInput {
 ///
 /// | kind | means | the application should | reported by |
 /// | --- | --- | --- | --- |
-/// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the artifact; lexical search is unaffected | status, search fallback |
+/// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact` |
-/// | `ArtifactCorrupt` | the artifact is damaged: metadata that does not parse, a payload missing, truncated or failing its checksum, counts its payload does not hold, an identity field left unfilled | download this artifact again | `open_semantic_artifact` |
-/// | `ArtifactIncompatible` | a sound artifact built for something else: another corpus (a release of the library other than this index's, or lines made by another line recipe), another model, or a store format, metadata version or text recipe this build does not read; `field` names the first field that disagreed | install the artifact built for this release of the library, this model and this application | `open_semantic_artifact` |
-/// | `ArtifactNotPublished` | self-consistent, but its digest is not the one published for it | download the official artifact again | `open_semantic_artifact` |
-/// | `ArtifactStale` | the lexical index was committed to after the artifact was opened, so its line ids may name lines that moved | `disable_semantic`, then open the artifact built for this index | status, search fallback |
-/// | `IndexNotStamped` | the lexical index carries no corpus stamp this build reads (none, a damaged one, or another format), so nothing says which corpus it holds | install the release's index together with its artifact | `open_semantic_artifact` |
-/// | `IndexStampMismatch` | the index was added to, deleted from or merged after its stamp was written | as for `IndexNotStamped` | `open_semantic_artifact` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing |
+/// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed | install the vectors built for this application and this model | `open_semantic_artifact`, installing |
+/// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
+/// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
 /// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
 /// | `ModelInvalid` | the file at `model_path` is not a usable model (a truncated download, a placeholder), or its backend could not load it; or `model_path` names no ONNX graph, such as a GGUF, which no build serves since GGUF support was removed (`field` is `model_path` then) | download the model again; for a path that names no ONNX graph, install the ONNX model and point `model_path` at its graph | `open_semantic_artifact`, `semantic_index_books` |
@@ -557,20 +555,16 @@ pub enum SemanticErrorKind {
     NotConfigured,
     /// This library was built without semantic support.
     FeatureNotInBuild,
-    /// No artifact at the artifact directory.
+    /// No vector set at the vectors directory.
     ArtifactMissing,
-    /// The artifact is damaged.
+    /// The vectors are damaged.
     ArtifactCorrupt,
-    /// A sound artifact, built for another corpus, model or store format.
+    /// Sound vectors, built for another line recipe, model or store format.
     ArtifactIncompatible,
-    /// The artifact is not the one whose digest was published.
+    /// The release is not the one whose digest was published.
     ArtifactNotPublished,
-    /// The lexical index changed after the artifact was opened.
-    ArtifactStale,
-    /// The lexical index carries no corpus stamp this build reads.
-    IndexNotStamped,
-    /// The lexical index changed after its corpus stamp was written.
-    IndexStampMismatch,
+    /// Not enough free space to install or compact the vectors.
+    InsufficientDiskSpace,
     /// No model file at the model path.
     ModelMissing,
     /// An ONNX graph without its `tokenizer.json`.
@@ -702,9 +696,6 @@ pub enum SemanticState {
     /// A session built on this device is open and has nothing to serve yet: its model is not
     /// loaded or it holds no vectors. Indexing is what loads the model.
     Empty,
-    /// The opened artifact no longer describes the index, which was committed to after it
-    /// was opened. `error_kind` is `ArtifactStale`, and `last_error` says what changed.
-    Stale,
     /// A session built on this device holds vectors built under another configuration, and
     /// `needs_full_reindex` says which: reset it and index again.
     NeedsReindex,
@@ -840,7 +831,7 @@ pub struct SemanticSearchResponse {
     pub semantic_available: bool,
     pub fallback_reason: Option<String>,
     /// Why the semantic path did not serve this search, when it was asked to and did not:
-    /// `NotConfigured`, `FeatureNotInBuild`, `ArtifactStale` or `QueryFailed`. `None` when
+    /// `NotConfigured`, `FeatureNotInBuild` or `QueryFailed`. `None` when
     /// it served the search, and when it was not asked (`LexicalOnly`, or a quoted phrase
     /// the sidecar answers lexically). `fallback_reason` can still carry a note then, about
     /// stale records dropped or the candidate window capped, which has no kind:
@@ -4125,22 +4116,59 @@ impl SearchEngine {
                 .as_ref()
                 .map(|_| SemanticErrorKind::QueryFailed);
 
-            // Phase 1 — drop stale primaries across the whole window, keeping
-            // the hydrated document so the surviving page needs no second
-            // lookup. Only a `needs_hydration` item can be stale: a lexical
-            // candidate came from this same searcher in this same request, so it
-            // is live by construction and needs no existence check.
+            // Every line a vector set's hit was resolved to, by (book, id): where it is in
+            // the searcher the resolver read, and the key it was resolved by. Empty for a
+            // session built on this device, whose lines are hydrated by id.
+            let records = resolver.records();
+            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
+                SemanticError::new(
+                    SemanticErrorKind::Internal,
+                    format!("the index could not be read to check semantic results: {err}"),
+                )
+            };
+
+            // Phase 1 — hydrate and check the whole window, keeping the hydrated document
+            // so the surviving page needs no second lookup. Only a `needs_hydration` item
+            // can be stale: a lexical candidate came from this same index in this same
+            // request, so it is live by construction.
             //
-            // This has to precede pagination, or a dropped record would leave a
+            // A semantic match is shown only for a line that still holds the text its
+            // vector was embedded from, by all 128 bits of the key: a semantic-only item
+            // that fails is dropped, and one lexical search also found keeps its lexical
+            // half alone. This has to precede pagination, or a dropped item would leave a
             // hole on one page and shift the next.
             let mut surviving = Vec::with_capacity(result.results.len());
             let mut stale_primaries_dropped = 0u32;
-            for item in result.results {
+            let mut unverified = 0u32;
+            for mut item in result.results {
+                let record = records.get(&(item.file_path.clone(), item.id)).copied();
+                if let Some(record) = &record {
+                    if item.semantic_score.is_some()
+                        && !resolver
+                            .verify(&item.file_path, record)
+                            .map_err(unreadable)?
+                    {
+                        unverified = unverified.saturating_add(1);
+                        if item.lexical_score.is_none() {
+                            continue;
+                        }
+                        item.semantic_score = None;
+                        item.source = SidecarResultSource::Lexical;
+                    }
+                }
                 if !item.needs_hydration {
                     surviving.push((item, None));
                     continue;
                 }
-                match self.get_document_by_id(item.id)? {
+                let hydrated = match record {
+                    // By the address the line was resolved at, in the searcher that
+                    // resolved it: two books' lines can share an id, and an address cannot.
+                    Some(record) => {
+                        Some(self.document_at(resolver.searcher(), record.address, item.id)?)
+                    }
+                    None => self.get_document_by_id(item.id)?,
+                };
+                match hydrated {
                     Some(document) => surviving.push((item, Some(document))),
                     // A semantic record whose Tantivy document disappeared is
                     // stale. Never send its old metadata to Dart: a failed or
@@ -4179,7 +4207,15 @@ impl SearchEngine {
                 let mut page_stale_siblings = 0u32;
                 let mut merged = Vec::with_capacity(item.merged.len());
                 for sibling in item.merged {
-                    match self.get_document_by_id(sibling.id)? {
+                    let hydrated = match records.get(&(sibling.file_path.clone(), sibling.id)) {
+                        Some(record) => Some(self.document_at(
+                            resolver.searcher(),
+                            record.address,
+                            sibling.id,
+                        )?),
+                        None => self.get_document_by_id(sibling.id)?,
+                    };
+                    match hydrated {
                         Some(document) => merged.push(MergedSibling {
                             title: document.title,
                             reference: document.reference,
@@ -4275,6 +4311,16 @@ impl SearchEngine {
                 fallback_reason = Some(match fallback_reason {
                     Some(reason) => format!("{reason}; {stale_reason}"),
                     None => stale_reason,
+                });
+            }
+            if unverified > 0 {
+                let unverified_reason = format!(
+                    "{unverified} semantic match(es) were not shown as such: their line no \
+                     longer holds the text the vector was embedded from"
+                );
+                fallback_reason = Some(match fallback_reason {
+                    Some(reason) => format!("{reason}; {unverified_reason}"),
+                    None => unverified_reason,
                 });
             }
             if candidate_window_capped {
@@ -5595,8 +5641,18 @@ impl SearchEngine {
         let Some((_, addr)) = top_docs.into_iter().next() else {
             return Ok(None);
         };
+        self.document_at(&searcher, addr, id).map(Some)
+    }
 
-        let doc = searcher.doc::<TantivyDocument>(addr)?;
+    /// The stored fields of the document at `address` in `searcher`, as a result: what a
+    /// result is hydrated from. `id` is the document's, as the caller found it.
+    fn document_at(
+        &self,
+        searcher: &Searcher,
+        address: DocAddress,
+        id: u64,
+    ) -> Result<SearchResult> {
+        let doc = searcher.doc::<TantivyDocument>(address)?;
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
         let text_f = self.schema.get_field("text")?;
@@ -5604,7 +5660,7 @@ impl SearchEngine {
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
 
-        Ok(Some(SearchResult {
+        Ok(SearchResult {
             title: doc
                 .get_first(title_f)
                 .and_then(|v| v.as_str())
@@ -5636,7 +5692,7 @@ impl SearchEngine {
                 .to_string(),
             merged_count: 1,
             merged: Vec::new(),
-        }))
+        })
     }
 
     /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -20047,6 +20103,240 @@ mod tests {
                     "{mode:?}: the cancelled searches changed what the session serves"
                 );
             }
+        }
+    }
+
+    /// A displayed semantic result is checked against its vector by the full 128-bit key,
+    /// recomputed from the line's text: a line whose column agrees by 64 bits and whose
+    /// text does not is not shown as a semantic match.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
+    mod semantic_verification {
+        use super::*;
+        use crate::semantic_corpus::TantivyCorpus;
+        use crate::semantic_keys::production_chunking;
+        use otzaria_semantic_search::cancellation::CancellationToken;
+        use otzaria_semantic_search::distribution::builder::{
+            build, BuildRequest, RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME,
+        };
+        use otzaria_semantic_search::distribution::corpus::CorpusIndex;
+        use otzaria_semantic_search::semantic::embedding::mock;
+        use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
+        use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+        use otzaria_semantic_search::semantic::segment_set::{
+            install_package, InstallExpectation, InstallSource,
+        };
+        use otzaria_semantic_search::semantic::versioning::IndexVersion;
+
+        const BOOK: &str = "/books/genesis.txt";
+        const PROBE: &str = "ויאמר אלהים יהי אור ויהי אור";
+
+        /// An index of one book, a vector set built from it and installed, and the set open.
+        fn opened(dir: &TempDir) -> SearchEngine {
+            let index = dir.path().join("index");
+            fs::create_dir_all(&index).unwrap();
+            let mut engine = SearchEngine::new(index.to_str().unwrap());
+            engine
+                .add_text_book(
+                    "בראשית".to_string(),
+                    "/root".to_string(),
+                    BOOK.to_string(),
+                    0,
+                    0,
+                    format!("בראשית ברא אלהים את השמים ואת הארץ\n{PROBE}"),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+
+            let chunking = production_chunking();
+            let model_file = mock::write_stub_onnx_package(&dir.path().join("model"));
+            let model = ModelIdentity {
+                family_id: "test-mock@0000000".to_string(),
+                tokenizer_checksum: mock::stub_tokenizer_checksum(),
+                embedding_dim: 64,
+                pooling: "in-graph".to_string(),
+                max_tokens: 512,
+                embedding_text_version: chunking.embedding_text_version,
+                normalization_version: chunking.normalization_version,
+                chunking_identity: chunking.identity(),
+                query_packages: vec![ModelPackage {
+                    checksum: validate_onnx_package(&model_file)
+                        .unwrap()
+                        .checksum()
+                        .to_string(),
+                    quantization: "int8".to_string(),
+                }],
+            };
+            let corpus = TantivyCorpus::from_engine(&engine, 30, "", chunking.clone()).unwrap();
+            let package = dir.path().join("package");
+            let report = build(
+                BuildRequest {
+                    output_path: package.clone(),
+                    model_path: model_file.clone(),
+                    model: model.clone(),
+                    chunking,
+                    created_at: "2026-10-01T00:00:00Z".to_string(),
+                    batch_size: 2,
+                    clip_q: 1.0,
+                    allow_non_semantic_backend: true,
+                },
+                &corpus,
+            )
+            .unwrap();
+            let vectors = dir.path().join("vectors");
+            install_package(
+                &vectors,
+                &InstallSource {
+                    segment: &package.join(SEGMENT_FILENAME),
+                    manifest_json: &fs::read_to_string(package.join(RELEASE_MANIFEST_FILENAME))
+                        .unwrap(),
+                },
+                &InstallExpectation {
+                    identity: IndexVersion {
+                        text: corpus.identity().unwrap().text,
+                        model: model.clone(),
+                        store: readable_store_identity(),
+                    },
+                    published_manifest_sha256: Some(report.manifest_sha256),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            drop(corpus);
+            engine
+                .open_semantic_artifact(SemanticArtifactInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    model_path: model_file.to_string_lossy().into_owned(),
+                    model_identity_json: serde_json::to_string(&model).unwrap(),
+                    onnx_runtime_path: None,
+                    scan_threads: None,
+                })
+                .unwrap();
+            engine
+        }
+
+        /// The probe line's id and the value its `chunkKey` column holds.
+        fn probe(engine: &SearchEngine) -> (u64, u64) {
+            let searcher = engine.index_reader.searcher();
+            let text_f = engine.schema.get_field("text").unwrap();
+            for (ord, reader) in searcher.segment_readers().iter().enumerate() {
+                let ids = reader.fast_fields().u64("id").unwrap();
+                let keys = reader.fast_fields().u64(CHUNK_KEY_FIELD).unwrap();
+                for doc in reader.doc_ids_alive() {
+                    let stored: TantivyDocument =
+                        searcher.doc(DocAddress::new(ord as u32, doc)).unwrap();
+                    if stored.get_first(text_f).and_then(|v| v.as_str()) == Some(PROBE) {
+                        return (ids.first(doc).unwrap(), keys.first(doc).unwrap());
+                    }
+                }
+            }
+            panic!("the probe line is indexed")
+        }
+
+        /// The probe line replaced by `text`, with the probe's id, its section and — the
+        /// forgery — the probe's column value: a document the column cannot tell from the
+        /// line the vector was built from.
+        fn forge(engine: &mut SearchEngine, text: &str) {
+            let (id, column) = probe(engine);
+            let schema = engine.schema.clone();
+            let field = |name: &str| schema.get_field(name).unwrap();
+            let mut document = doc!(
+                field("title") => "בראשית",
+                field("reference") => "בראשית",
+                field("text") => text,
+                field("id") => id,
+                field("segment") => 1u64,
+                field("isPdf") => false,
+                field("filePath") => BOOK,
+                field("topics") => Facet::from_text("/root").unwrap(),
+                field("contentHash") => 0u64,
+                field("textHash") => 0u64,
+                field("sectionId") => id & !0xFFFF_FFFF,
+                field("generationSort") => 0u64,
+                field("lineHash") => 0u64
+            );
+            document.add_u64(field(CHUNK_KEY_FIELD), column);
+            let writer = engine.writer_mut().unwrap();
+            writer.delete_term(Term::from_field_u64(field("id"), id));
+            writer.add_document(document).unwrap();
+            engine.commit().unwrap();
+        }
+
+        fn search(engine: &SearchEngine, mode: SemanticRetrievalMode) -> SemanticSearchResponse {
+            engine
+                .search_semantic(
+                    PROBE.to_string(),
+                    Vec::new(),
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        }
+
+        #[test]
+        fn the_probe_line_is_a_semantic_match_before_anything_is_forged() {
+            let dir = TempDir::new().unwrap();
+            let engine = opened(&dir);
+            let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+            let top = response.results.first().expect("a semantic hit");
+            assert_eq!(top.snippet_html, PROBE);
+            assert_eq!(top.source, SemanticResultSource::Semantic);
+            assert!(response.fallback_reason.is_none());
+        }
+
+        #[test]
+        fn a_line_whose_text_is_not_the_vectors_is_not_shown_as_semantic() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, "שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+
+            let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+            assert!(
+                response
+                    .results
+                    .iter()
+                    .all(|result| result.file_path != BOOK || result.segment != 1),
+                "the forged line is not shown as the vector's: {:?}",
+                response
+                    .results
+                    .iter()
+                    .map(|result| &result.snippet_html)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                response
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("were not shown as such")),
+                "{:?}",
+                response.fallback_reason
+            );
+        }
+
+        /// One lexical search also found keeps its lexical half alone.
+        #[test]
+        fn a_line_lexical_search_also_found_keeps_its_lexical_half() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, &format!("{PROBE} ועוד מילים שלא היו בו"));
+
+            let response = search(&engine, SemanticRetrievalMode::Hybrid);
+            let forged = response
+                .results
+                .iter()
+                .find(|result| result.file_path == BOOK && result.segment == 1)
+                .expect("lexical search finds the forged line");
+            assert_eq!(forged.source, SemanticResultSource::Lexical);
+            assert_eq!(forged.semantic_score, None);
+            assert!(forged.lexical_score.is_some());
         }
     }
 }
