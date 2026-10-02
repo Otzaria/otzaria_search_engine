@@ -676,6 +676,7 @@ Future<void> main() async {
     late Directory root;
     late SearchEngine engine;
     late Map<String, Object> identity;
+    late SemanticVectorsInstallReport installed;
 
     SemanticArtifactInput input(
       Map<String, Object> modelIdentity, {
@@ -702,8 +703,7 @@ Future<void> main() async {
       await engine.commit();
 
       // The build machine's half: the model's identity, the recipe, and the
-      // base package built from this index, installed as a device installs a
-      // release.
+      // base package built from this index; then the device's, installing it.
       final model = writeStubOnnxPackage(Directory('${root.path}/model'));
       identity = {
         'family_id': 'test-mock@0000000',
@@ -745,8 +745,6 @@ Future<void> main() async {
         '${root.path}/chunking.json',
         '--out',
         '${root.path}/package',
-        '--install',
-        '${root.path}/vectors',
         '--created-at',
         '2026-10-01T00:00:00Z',
         '--allow-non-semantic',
@@ -755,6 +753,22 @@ Future<void> main() async {
         built.exitCode,
         0,
         reason: 'the build failed:\n${built.stdout}\n${built.stderr}',
+      );
+      // Published beside the release, as the build prints it.
+      final digest = RegExp(
+        r'Manifest SHA-256: ([0-9a-f]{64})',
+      ).firstMatch(built.stdout as String)!.group(1);
+      installed = await engine.installSemanticVectors(
+        input: SemanticVectorsInstallInput(
+          vectorsDir: '${root.path}/vectors',
+          segmentPath: '${root.path}/package/segment.oxv',
+          manifestJson: File(
+            '${root.path}/package/release.json',
+          ).readAsStringSync(),
+          publishedManifestSha256: digest,
+          modelIdentityJson: jsonEncode(identity),
+        ),
+        cancellation: SemanticCancellationToken(),
       );
     });
 
@@ -910,6 +924,113 @@ Future<void> main() async {
         final status = await engine.semanticStatus();
         expect(status.enabled, isFalse);
         expect(status.state, SemanticState.notConfigured);
+      },
+    );
+
+    test(
+      'the installed set reports itself, its coverage and its checks',
+      () async {
+        expect(installed.kind, SemanticVectorsPackageKind.base);
+        expect(installed.libraryVersion, 1);
+        expect(installed.slotsAdded, BigInt.from(2));
+        expect(installed.alreadyApplied, isFalse);
+
+        final vectorsDir = '${root.path}/vectors';
+        final info = await engine.semanticVectorsInfo(vectorsDir: vectorsDir);
+        expect(info.present, isTrue);
+        expect(info.generation, installed.generation);
+        expect(info.libraryReleaseTag, 'otzaria-library-ffi');
+        expect(info.identityDigest, hasLength(64));
+        expect(info.segments.single.kind, SemanticVectorsPackageKind.base);
+        expect(
+          (await engine.semanticVectorsInfo(
+            vectorsDir: '${root.path}/not-installed',
+          )).present,
+          isFalse,
+        );
+
+        final coverage = await engine.semanticCoverage(
+          vectorsDir: vectorsDir,
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(coverage.liveKeyedLines, BigInt.from(2));
+        expect(coverage.coveredLines, BigInt.from(2));
+        expect(coverage.booksCovered, 1);
+        expect(coverage.ratio, 1.0);
+
+        final verified = await engine.verifySemanticVectors(
+          vectorsDir: vectorsDir,
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(verified.segments, 1);
+        expect(verified.bytesChecked, greaterThan(BigInt.zero));
+      },
+    );
+
+    test(
+      'a compaction follows its policy, whose defaults are the engine\'s',
+      () async {
+        // The constructor's defaults are written in Dart, `defaults()` is read
+        // from the engine.
+        expect(
+          const SemanticCompactionPolicy(),
+          SemanticCompactionPolicy.defaults(),
+        );
+        final vectorsDir = '${root.path}/vectors';
+        await engine.openSemanticArtifact(config: input(identity));
+
+        final unforced = await engine.compactSemanticVectors(
+          vectorsDir: vectorsDir,
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(unforced.compacted, isFalse, reason: unforced.reason);
+        final forced = await engine.compactSemanticVectors(
+          vectorsDir: vectorsDir,
+          liveLibraryVersion: 1,
+          policy: const SemanticCompactionPolicy(force: true),
+          cancellation: SemanticCancellationToken(),
+        );
+        expect(forced.compacted, isTrue, reason: forced.reason);
+        expect(forced.generation, greaterThan(installed.generation));
+        final status = await engine.semanticStatus();
+        expect(status.state, SemanticState.ready);
+        expect(status.vectorsLibraryVersion, 1);
+        expect(status.vectorSegments, 1);
+
+        await expectLater(
+          engine.compactSemanticVectors(
+            vectorsDir: vectorsDir,
+            policy: const SemanticCompactionPolicy(minFreeSpaceFactor: 0.5),
+            cancellation: SemanticCancellationToken(),
+          ),
+          throwsA(
+            isSemanticError(
+              SemanticErrorKind.invalidInput,
+              field: 'policy.min_free_space_factor',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'a release that is not the published one is refused, by kind',
+      () async {
+        await expectLater(
+          engine.installSemanticVectors(
+            input: SemanticVectorsInstallInput(
+              vectorsDir: '${root.path}/vectors',
+              segmentPath: '${root.path}/package/segment.oxv',
+              manifestJson: File(
+                '${root.path}/package/release.json',
+              ).readAsStringSync(),
+              publishedManifestSha256: '0' * 64,
+              modelIdentityJson: jsonEncode(identity),
+            ),
+            cancellation: SemanticCancellationToken(),
+          ),
+          throwsA(isSemanticError(SemanticErrorKind.artifactNotPublished)),
+        );
       },
     );
 
