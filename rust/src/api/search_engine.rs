@@ -52,6 +52,8 @@ use otzaria_semantic_search::config::profiles::{
     FusionStrategy, QueryTypeAlphas, RankingProfile, SearchProfile,
 };
 #[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::errors::SemanticSearchError;
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::embedding::EmbeddingDeployment;
@@ -509,6 +511,178 @@ pub struct SemanticArtifactInput {
     pub scan_threads: Option<u32>,
 }
 
+/// A release of the library's vectors, as [`SearchEngine::install_semantic_vectors`]
+/// installs it: the segment and the release manifest published beside it.
+pub struct SemanticVectorsInstallInput {
+    /// The vector set to install into, `<root>/vectors`: created when it does not exist.
+    pub vectors_dir: String,
+    /// The release's segment, as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd.
+    /// Inside the set's `incoming/` folder it is moved into the set; anywhere else it is
+    /// read and left where it is.
+    pub segment_path: String,
+    /// The release manifest published beside the segment (`release.json`), as published:
+    /// its bytes are what the published digest names.
+    pub manifest_json: String,
+    /// The SHA-256 of `manifest_json` as the release publishes it outside the manifest.
+    /// Without it an install detects damage and the wrong release, not one deliberately
+    /// rebuilt to match.
+    pub published_manifest_sha256: Option<String>,
+    /// The model identity this installation queries with, as for
+    /// [`SemanticArtifactInput::model_identity_json`]: a release it would not open is not
+    /// installed.
+    pub model_identity_json: String,
+}
+
+/// What a segment is to the set it joins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticVectorsPackageKind {
+    /// Every vector of one library version; replaces whatever the set held.
+    Base,
+    /// What changed from one library version to the next.
+    Delta,
+    /// A device's own merge of its set into one segment.
+    Compacted,
+}
+
+/// What [`SearchEngine::install_semantic_vectors`] did.
+pub struct SemanticVectorsInstallReport {
+    pub kind: SemanticVectorsPackageKind,
+    /// The library version the set stands at afterwards.
+    pub library_version: u32,
+    /// The set's live generation afterwards.
+    pub generation: u64,
+    pub segments: u32,
+    pub slots_added: u64,
+    /// Older vectors the release's tombstones deleted.
+    pub tombstones_applied: u64,
+    /// Older vectors of texts the release shipped again, deleted in favour of its own.
+    pub duplicates_removed: u64,
+    /// Records of the release whose text no older segment holds live.
+    pub foreign_unresolved: u64,
+    pub bytes_on_disk: u64,
+    /// Whether [`SearchEngine::compact_semantic_vectors`] would compact the set now.
+    pub needs_compaction: bool,
+    /// A delta the set already stood at or past: nothing changed. A base always replaces
+    /// the set, so it is never already applied.
+    pub already_applied: bool,
+}
+
+/// When [`SearchEngine::compact_semantic_vectors`] compacts, and how. The defaults are the
+/// sidecar's.
+// `non_opaque` so Dart constructs it with these defaults, as `SemanticRankingOptions`.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticCompactionPolicy {
+    /// Compact once the deltas together are this fraction of the base or more.
+    #[frb(default = 0.2)]
+    pub max_delta_ratio: f64,
+    /// Compact once the set has more segments than this.
+    #[frb(default = 4)]
+    pub max_segments: u32,
+    /// Compact once this fraction of the vectors is dead.
+    #[frb(default = 0.05)]
+    pub max_dead_ratio: f64,
+    /// Refuse to start without this many times the output's size free.
+    #[frb(default = 1.15)]
+    pub min_free_space_factor: f64,
+    /// Re-anchor every record on the live index, when it holds the set's library version
+    /// and has the `chunkKey` column.
+    #[frb(default = true)]
+    pub refresh_hints: bool,
+    /// Compact whatever the thresholds say.
+    #[frb(default = false)]
+    pub force: bool,
+}
+
+impl SemanticCompactionPolicy {
+    /// The policy a compaction passed none runs under, read from the engine.
+    #[frb(sync)]
+    pub fn defaults() -> Self {
+        Self {
+            max_delta_ratio: 0.2,
+            max_segments: 4,
+            max_dead_ratio: 0.05,
+            min_free_space_factor: 1.15,
+            refresh_hints: true,
+            force: false,
+        }
+    }
+}
+
+/// What [`SearchEngine::compact_semantic_vectors`] did.
+pub struct SemanticCompactionReport {
+    /// Whether the set was compacted; `reason` says why, or why not.
+    pub compacted: bool,
+    pub reason: String,
+    /// The set's live generation afterwards.
+    pub generation: u64,
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    pub slots_before: u64,
+    pub slots_after: u64,
+    /// Records whose book no longer holds their text, dropped.
+    pub records_pruned: u64,
+    /// Records moved to the line that holds their text now.
+    pub hints_refreshed: u64,
+    pub elapsed_ms: u64,
+}
+
+/// One segment of an installed vector set.
+pub struct SemanticSegmentInfo {
+    pub id: String,
+    pub kind: SemanticVectorsPackageKind,
+    pub from_library_version: u32,
+    pub to_library_version: u32,
+    pub slots: u64,
+    pub slots_dead: u64,
+    pub foreign_unresolved: u64,
+    pub size: u64,
+}
+
+/// What a vector set's directory holds, as [`SearchEngine::semantic_vectors_info`] reads it.
+pub struct SemanticVectorsInfo {
+    /// Whether anything is installed there; every other field is empty when not.
+    pub present: bool,
+    /// The set's identity as 64 hex digits: what a release must name to be installed.
+    pub identity_digest: String,
+    pub library_version: u32,
+    pub library_release_tag: String,
+    pub generation: u64,
+    pub segments: Vec<SemanticSegmentInfo>,
+    pub slots_live: u64,
+    pub slots_dead: u64,
+    pub bytes_on_disk: u64,
+    pub needs_compaction: bool,
+    /// The live generation did not open and the one before it was opened instead.
+    pub recovered_from_previous: bool,
+}
+
+/// What [`SearchEngine::verify_semantic_vectors`] read: every block of every segment of the
+/// set's live generation, each against its checksum.
+pub struct SemanticVectorsVerification {
+    pub generation: u64,
+    pub segments: u32,
+    pub bytes_checked: u64,
+    pub elapsed_ms: u64,
+}
+
+/// How much of the live index a vector set covers, as [`SearchEngine::semantic_coverage`]
+/// counts it.
+pub struct SemanticCoverage {
+    /// Live lines the recipe embeds: the lines a vector could exist for.
+    pub live_keyed_lines: u64,
+    /// Those whose text the set holds a vector for.
+    pub covered_lines: u64,
+    /// Books with a line the recipe embeds.
+    pub books_live: u32,
+    /// Books with a covered line.
+    pub books_covered: u32,
+    /// The library version the set stands at.
+    pub vectors_library_version: u32,
+    /// `covered_lines / live_keyed_lines`, or 0 when no line is keyed.
+    pub ratio: f64,
+}
+
 /// What stopped the semantic path, as a value an application can switch on to choose a
 /// message and an action. A [`SemanticError`] carries one when a semantic call fails,
 /// [`SemanticStatus::error_kind`] when a session cannot serve, and
@@ -530,8 +704,8 @@ pub struct SemanticArtifactInput {
 /// | --- | --- | --- | --- |
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
-/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing |
+/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
 /// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed | install the vectors built for this application and this model | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
@@ -546,8 +720,8 @@ pub struct SemanticArtifactInput {
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
-/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters | `search_semantic` |
-/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic` |
+/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SemanticErrorKind {
@@ -606,11 +780,11 @@ pub enum SemanticErrorKind {
 ///
 /// | kind | `field` |
 /// | --- | --- |
-/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the artifact's `manifest.json`: `text.line_text_version`, `model.family_id`, `store.store_format_version`, `to_library_version`, or `metadata_version` |
-/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version` |
+/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
-/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say; for a compaction, `policy.` and the [`SemanticCompactionPolicy`] option |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
 #[frb(dart_code = r#"
@@ -726,6 +900,12 @@ pub struct SemanticStatus {
     /// device reports its own failures as text only, so they are `Internal` here; the call
     /// that failed, usually `semantic_index_books`, threw the precise kind.
     pub error_kind: Option<SemanticErrorKind>,
+    /// The library version an opened vector set stands at; `None` for any other session.
+    pub vectors_library_version: Option<u32>,
+    /// The segments of an opened vector set; 0 for any other session.
+    pub vector_segments: u32,
+    /// Whether an opened vector set would be compacted now.
+    pub needs_compaction: bool,
 }
 
 pub struct SemanticBookLineInput {
@@ -1197,6 +1377,266 @@ fn check_onnx_runtime_path(path: Option<&str>) -> Result<(), SemanticError> {
         .with_field("onnx_runtime_path"));
     }
     Ok(())
+}
+
+/// A sidecar failure on the vector set at `vectors_dir`, read as `message`; a cancel reads
+/// as `doing` cancelled, which is not a failure and left the set as it was.
+#[cfg(feature = "semantic-integration")]
+fn vector_set_error(
+    error: &SemanticSearchError,
+    vectors_dir: &Path,
+    message: String,
+    doing: &str,
+) -> SemanticError {
+    match semantic_errors::sidecar_error(error, SidecarCall::VectorSet { vectors_dir }, message) {
+        SemanticError {
+            kind: SemanticErrorKind::Cancelled,
+            ..
+        } => SemanticError::new(
+            SemanticErrorKind::Cancelled,
+            format!("{doing} was cancelled before it finished; the set is as it was"),
+        ),
+        error => error,
+    }
+}
+
+/// Whether two paths name one directory, as written or as resolved.
+#[cfg(feature = "semantic-integration")]
+fn same_directory(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (fs::canonicalize(a), fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// `policy` as the sidecar takes it, refused as input when a threshold is out of range.
+#[cfg(feature = "semantic-integration")]
+fn compaction_policy(
+    policy: SemanticCompactionPolicy,
+) -> Result<otzaria_semantic_search::semantic::segment_set::CompactionPolicy, SemanticError> {
+    let ratio = |name: &str, value: f64| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(value)
+        } else {
+            Err(SemanticError::new(
+                SemanticErrorKind::InvalidInput,
+                format!("{name} is {value}, and a ratio is a finite number from 0"),
+            )
+            .with_field(format!("policy.{name}")))
+        }
+    };
+    let min_free_space_factor = policy.min_free_space_factor;
+    if !(min_free_space_factor.is_finite() && min_free_space_factor >= 1.0) {
+        return Err(SemanticError::new(
+            SemanticErrorKind::InvalidInput,
+            format!(
+                "min_free_space_factor is {min_free_space_factor}, and a compaction needs at \
+                 least its output's size free: a finite number from 1"
+            ),
+        )
+        .with_field("policy.min_free_space_factor"));
+    }
+    Ok(
+        otzaria_semantic_search::semantic::segment_set::CompactionPolicy {
+            max_delta_ratio: ratio("max_delta_ratio", policy.max_delta_ratio)?,
+            max_segments: policy.max_segments,
+            max_dead_ratio: ratio("max_dead_ratio", policy.max_dead_ratio)?,
+            min_free_space_factor,
+            refresh_hints: policy.refresh_hints,
+            force: policy.force,
+        },
+    )
+}
+
+/// What [`otzaria_semantic_search::semantic::segment_set::info`] read, as the API says it.
+#[cfg(feature = "semantic-integration")]
+fn vectors_info(
+    info: Option<otzaria_semantic_search::semantic::segment_set::SetInfo>,
+) -> SemanticVectorsInfo {
+    let Some(info) = info else {
+        return SemanticVectorsInfo {
+            present: false,
+            identity_digest: String::new(),
+            library_version: 0,
+            library_release_tag: String::new(),
+            generation: 0,
+            segments: Vec::new(),
+            slots_live: 0,
+            slots_dead: 0,
+            bytes_on_disk: 0,
+            needs_compaction: false,
+            recovered_from_previous: false,
+        };
+    };
+    SemanticVectorsInfo {
+        present: true,
+        identity_digest: info.identity_digest,
+        library_version: info.library_version,
+        library_release_tag: info.library_release_tag,
+        generation: info.generation,
+        segments: info
+            .segments
+            .into_iter()
+            .map(|segment| SemanticSegmentInfo {
+                id: segment.id,
+                kind: package_kind(segment.kind),
+                from_library_version: segment.from_library_version,
+                to_library_version: segment.to_library_version,
+                slots: segment.slots,
+                slots_dead: segment.slots_dead,
+                foreign_unresolved: segment.foreign_unresolved,
+                size: segment.size,
+            })
+            .collect(),
+        slots_live: info.slots_live,
+        slots_dead: info.slots_dead,
+        bytes_on_disk: info.bytes_on_disk,
+        needs_compaction: info.needs_compaction,
+        recovered_from_previous: info.recovered_from_previous,
+    }
+}
+
+/// `model_identity_json` as the model family it describes, or a refusal of it as input.
+#[cfg(feature = "semantic-integration")]
+fn parse_model_identity(json: &str) -> Result<ModelIdentity, SemanticError> {
+    serde_json::from_str(json).map_err(|err| {
+        SemanticError::new(
+            SemanticErrorKind::InvalidInput,
+            format!(
+                "model_identity_json is not a model identity: {err}. It is the JSON the \
+                 vectors were built with, such as the sidecar's \
+                 config/models/meivin-round2-onnx/model.json"
+            ),
+        )
+        .with_field("model_identity_json")
+    })
+}
+
+/// Refuses vectors built under another chunking than the one this build keys the index's
+/// lines under, the one compiled in: none of their keys could resolve, so they are refused
+/// by name rather than opened, or installed, to answer nothing.
+#[cfg(feature = "semantic-integration")]
+fn ensure_keyed_chunking(
+    model: &ModelIdentity,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<(), SemanticError> {
+    let keyed_under = ChunkKeyRecipe::current().chunking_identity;
+    if model.chunking_identity == keyed_under {
+        return Ok(());
+    }
+    Err(SemanticError::new(
+        SemanticErrorKind::ArtifactIncompatible,
+        refused(&format!(
+            "model.chunking_identity is {}, and this build keys the index's lines under \
+             chunking {keyed_under}, so no line could be resolved",
+            model.chunking_identity
+        )),
+    )
+    .with_field("model.chunking_identity"))
+}
+
+/// What this installation is, as a vector set or a release must agree with it: the line
+/// recipe this build indexes with, the model family it queries with, and the store it reads.
+#[cfg(feature = "semantic-integration")]
+fn installation_identity(
+    model: ModelIdentity,
+) -> otzaria_semantic_search::semantic::versioning::IndexVersion {
+    otzaria_semantic_search::semantic::versioning::IndexVersion {
+        text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
+        model,
+        store: otzaria_semantic_search::semantic::official_index::readable_store_identity(),
+    }
+}
+
+/// The sidecar's segment kinds, as the API names them.
+#[cfg(feature = "semantic-integration")]
+fn package_kind(
+    kind: otzaria_semantic_search::distribution::package::PackageKind,
+) -> SemanticVectorsPackageKind {
+    use otzaria_semantic_search::distribution::package::PackageKind;
+    match kind {
+        PackageKind::Base => SemanticVectorsPackageKind::Base,
+        PackageKind::Delta => SemanticVectorsPackageKind::Delta,
+        PackageKind::Compacted => SemanticVectorsPackageKind::Compacted,
+    }
+}
+
+/// A zstd-compressed segment expanded into the set's `incoming/` folder, from which an
+/// install moves it into the set: the path of the expanded file. Looks at `cancel` between
+/// blocks of 1 MiB, and leaves nothing behind when it fails; `refused` words the failure.
+#[cfg(feature = "semantic-integration")]
+fn expand_segment(
+    compressed: &Path,
+    vectors_dir: &Path,
+    cancel: &SearchCancellation,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<PathBuf, SemanticError> {
+    use std::io::{Read, Write};
+    let incoming = otzaria_semantic_search::semantic::segment_set::incoming_dir(vectors_dir);
+    let name = compressed
+        .file_stem()
+        .map_or_else(|| "segment.oxv".into(), |stem| stem.to_os_string());
+    let expanded = incoming.join(name);
+    // Writing it is the one step here that a full disk stops.
+    let writing = |err: std::io::Error| {
+        let kind = match err.kind() {
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => {
+                SemanticErrorKind::InsufficientDiskSpace
+            }
+            _ => SemanticErrorKind::Internal,
+        };
+        SemanticError::new(
+            kind,
+            refused(&format!("expanding into {}: {err}", expanded.display())),
+        )
+    };
+    let result = (|| -> Result<(), SemanticError> {
+        fs::create_dir_all(&incoming).map_err(writing)?;
+        let source = fs::File::open(compressed).map_err(|err| {
+            SemanticError::new(
+                SemanticErrorKind::Internal,
+                refused(&format!("reading {}: {err}", compressed.display())),
+            )
+        })?;
+        let damaged = |err: std::io::Error| {
+            SemanticError::new(
+                SemanticErrorKind::ArtifactCorrupt,
+                refused(&format!(
+                    "{} does not expand as zstd: {err}",
+                    compressed.display()
+                )),
+            )
+        };
+        let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
+        let mut sink = std::io::BufWriter::new(fs::File::create(&expanded).map_err(writing)?);
+        let mut buffer = vec![0u8; 1 << 20];
+        loop {
+            if cancel.is_cancelled() {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::Cancelled,
+                    "installing the vectors was cancelled before it finished; the set is as \
+                     it was",
+                ));
+            }
+            let read = decoder.read(&mut buffer).map_err(damaged)?;
+            if read == 0 {
+                break;
+            }
+            sink.write_all(&buffer[..read]).map_err(writing)?;
+        }
+        sink.into_inner()
+            .map_err(|err| writing(err.into_error()))?
+            .sync_all()
+            .map_err(writing)
+    })();
+    match result {
+        Ok(()) => Ok(expanded),
+        Err(err) => {
+            let _ = fs::remove_file(&expanded);
+            Err(err)
+        }
+    }
 }
 
 /// The package of the family `model_identity_json` declares that the graph at `model_path` is,
@@ -3401,18 +3841,7 @@ impl SearchEngine {
     ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let model: ModelIdentity =
-                serde_json::from_str(&config.model_identity_json).map_err(|err| {
-                    SemanticError::new(
-                        SemanticErrorKind::InvalidInput,
-                        format!(
-                            "model_identity_json is not a model identity: {err}. It is the \
-                             JSON the artifact was built with, such as the sidecar's \
-                             config/models/meivin-round2-onnx/model.json"
-                        ),
-                    )
-                    .with_field("model_identity_json")
-                })?;
+            let model = parse_model_identity(&config.model_identity_json)?;
             check_onnx_runtime_path(config.onnx_runtime_path.as_deref())?;
             let scan_threads = match config.scan_threads {
                 Some(0) => {
@@ -3454,21 +3883,7 @@ impl SearchEngine {
             // runtime. None of them reads the package's precision, which is found next.
             let family = LocalModel::of_family(key.model_path.clone(), &key.model, "");
             semantic_errors::check_local_model(&family, |err| refused(err))?;
-            // This build keys the index's lines under one chunking, the one compiled in; a
-            // set built under another would resolve no line, so it is refused here, by name,
-            // rather than opened to answer nothing.
-            let keyed_under = ChunkKeyRecipe::current().chunking_identity;
-            if key.model.chunking_identity != keyed_under {
-                return Err(SemanticError::new(
-                    SemanticErrorKind::ArtifactIncompatible,
-                    refused(&format!(
-                        "model.chunking_identity is {}, and this build keys the index's \
-                         lines under chunking {keyed_under}, so no line could be resolved",
-                        key.model.chunking_identity
-                    )),
-                )
-                .with_field("model.chunking_identity"));
-            }
+            ensure_keyed_chunking(&key.model, &refused)?;
             let package = family_package(&key, call, &refused)?;
             let local = LocalModel {
                 model_quantization: package.quantization,
@@ -3659,7 +4074,11 @@ impl SearchEngine {
                     .as_ref()
                     .map(|_| SemanticErrorKind::Internal);
                 let last_error = status.last_error;
+                let set = session.coordinator.vector_set_info();
                 return SemanticStatus {
+                    vectors_library_version: set.as_ref().map(|set| set.library_version),
+                    vector_segments: set.as_ref().map_or(0, |set| set.segments.len() as u32),
+                    needs_compaction: set.as_ref().is_some_and(|set| set.needs_compaction),
                     state,
                     enabled: true,
                     available,
@@ -3683,6 +4102,406 @@ impl SearchEngine {
         {
             Self::semantic_disabled_status()
         }
+    }
+
+    /// Install a release of the library's vectors into the set at `vectors_dir`, creating
+    /// the set when there is none: a base replaces whatever the set holds, and a delta
+    /// brings it from the library version it stands at to the next. The release must be
+    /// of this installation — the line recipe this build indexes with, the model family
+    /// `model_identity_json` describes, chunked as this build keys lines, and the store
+    /// this build reads — and, given `published_manifest_sha256`, the one published.
+    ///
+    /// The set is locked throughout, and the new generation goes live in one flip: a
+    /// release that is refused, cancelled through `cancellation`, or cut off by a crash
+    /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
+    /// the set's `incoming/` folder first, so it needs its expanded size free besides what
+    /// the install needs. An open session on the same set is moved onto the new
+    /// generation before this returns.
+    ///
+    /// Refusals are [`SemanticError`]s of the kinds in the table on
+    /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
+    /// published one, `ArtifactIncompatible` for a release of another identity or a delta
+    /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
+    /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+    ///
+    /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
+    /// engine's write lock while it copies a segment of hundreds of megabytes.
+    pub fn install_semantic_vectors(
+        &self,
+        input: SemanticVectorsInstallInput,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticVectorsInstallReport, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            use otzaria_semantic_search::semantic::segment_set::{
+                self, InstallExpectation, InstallSource,
+            };
+            let vectors_dir = PathBuf::from(&input.vectors_dir);
+            let refused = |err: &dyn std::fmt::Display| {
+                format!(
+                    "failed to install the semantic vectors into {}: {err}",
+                    vectors_dir.display()
+                )
+            };
+            let model = parse_model_identity(&input.model_identity_json)?;
+            ensure_keyed_chunking(&model, &refused)?;
+            let downloaded = PathBuf::from(&input.segment_path);
+            if !downloaded.is_file() {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
+                    refused(&format!(
+                        "segment_path names no file: {}",
+                        downloaded.display()
+                    )),
+                )
+                .with_field("segment_path"));
+            }
+            // A manifest that does not read is a damaged release, whatever the set holds;
+            // the sidecar's refusal of it would read as a set missing or damaged.
+            if let Err(err) = serde_json::from_str::<
+                otzaria_semantic_search::semantic::segment_set::ReleaseManifest,
+            >(&input.manifest_json)
+            {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ArtifactCorrupt,
+                    refused(&format!("the release manifest does not read: {err}")),
+                )
+                .with_field("manifest_json"));
+            }
+            let cancel = &cancellation.flag;
+            let compressed = downloaded.extension().is_some_and(|ext| ext == "zst");
+            let segment = if compressed {
+                expand_segment(&downloaded, &vectors_dir, cancel, &refused)?
+            } else {
+                downloaded
+            };
+            let installed = segment_set::install_package(
+                &vectors_dir,
+                &InstallSource {
+                    segment: &segment,
+                    manifest_json: &input.manifest_json,
+                },
+                &InstallExpectation {
+                    identity: installation_identity(model),
+                    published_manifest_sha256: input.published_manifest_sha256,
+                },
+                cancel,
+            );
+            if compressed {
+                // An install moves it into the set; a refused one leaves it in `incoming/`.
+                let _ = fs::remove_file(&segment);
+            }
+            let report = installed.map_err(|err| {
+                vector_set_error(&err, &vectors_dir, refused(&err), "installing the vectors")
+            })?;
+            self.reload_open_vectors(&vectors_dir)?;
+            Ok(SemanticVectorsInstallReport {
+                kind: package_kind(report.kind),
+                library_version: report.library_version,
+                generation: report.generation,
+                segments: report.segments,
+                slots_added: report.slots_added,
+                tombstones_applied: report.tombstones_applied,
+                duplicates_removed: report.duplicates_removed,
+                foreign_unresolved: report.foreign_unresolved,
+                bytes_on_disk: report.bytes_on_disk,
+                needs_compaction: report.needs_compaction,
+                already_applied: report.already_applied,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (input, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Merge the set at `vectors_dir` into one segment, when `policy` (or, with `None`, the
+    /// sidecar's defaults, [`SemanticCompactionPolicy::defaults`]) asks for it; the report
+    /// says whether it did, and why. Deltas pile up as the library is updated, and each one
+    /// a search scans costs it time; the set wants compacting when
+    /// [`SemanticVectorsInfo::needs_compaction`] says so.
+    ///
+    /// `live_library_version` is the library version the open index holds, which the
+    /// application knows and the index does not. When it is the set's own, and the index
+    /// has the `chunkKey` column, every record is moved onto the live line that holds its
+    /// text, and records whose book no longer holds it are dropped; otherwise records are
+    /// kept as they are, which costs nothing but the space.
+    ///
+    /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
+    /// compaction leaves the set as it was. It refuses to start without
+    /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
+    /// An open session on the same set is moved onto the compacted generation.
+    pub fn compact_semantic_vectors(
+        &self,
+        vectors_dir: String,
+        live_library_version: Option<u32>,
+        policy: Option<SemanticCompactionPolicy>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticCompactionReport, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            use crate::semantic_resolver::{LiveKeys, LiveResolver};
+            use otzaria_semantic_search::semantic::resolve::LiveKeySource;
+            use otzaria_semantic_search::semantic::segment_set;
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let failed = |err: &SemanticSearchError| {
+                vector_set_error(
+                    err,
+                    &vectors_dir,
+                    format!(
+                        "failed to compact the semantic vectors at {}: {err}",
+                        vectors_dir.display()
+                    ),
+                    "compacting the vectors",
+                )
+            };
+            let policy =
+                compaction_policy(policy.unwrap_or_else(SemanticCompactionPolicy::defaults))?;
+            let resolver = LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .map_err(|err| failed(&err.into()))?;
+            let live = live_library_version.and_then(|version| LiveKeys::new(&resolver, version));
+            let report = segment_set::compact(
+                &vectors_dir,
+                &policy,
+                live.as_ref().map(|live| live as &dyn LiveKeySource),
+                &cancellation.flag,
+            )
+            .map_err(|err| failed(&err))?;
+            if report.compacted {
+                self.reload_open_vectors(&vectors_dir)?;
+            }
+            Ok(SemanticCompactionReport {
+                compacted: report.compacted,
+                reason: report.reason,
+                generation: report.generation,
+                bytes_before: report.bytes_before,
+                bytes_after: report.bytes_after,
+                slots_before: report.slots_before,
+                slots_after: report.slots_after,
+                records_pruned: report.records_pruned,
+                hints_refreshed: report.hints_refreshed,
+                elapsed_ms: report.elapsed_ms,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, live_library_version, policy, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// What is installed at `vectors_dir`, from its small files alone: nothing is opened,
+    /// mapped or cleaned up, so it is cheap enough to ask before every download. Nothing
+    /// installed is not an error: [`SemanticVectorsInfo::present`] is `false` then.
+    /// `ArtifactCorrupt` when what is there does not read.
+    pub fn semantic_vectors_info(
+        &self,
+        vectors_dir: String,
+    ) -> Result<SemanticVectorsInfo, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let info = otzaria_semantic_search::semantic::segment_set::info(&vectors_dir).map_err(
+                |err| {
+                    vector_set_error(
+                        &err,
+                        &vectors_dir,
+                        format!(
+                            "failed to read the semantic vectors at {}: {err}",
+                            vectors_dir.display()
+                        ),
+                        "reading the vectors",
+                    )
+                },
+            )?;
+            Ok(vectors_info(info))
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = vectors_dir;
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Read every block of every segment of the set at `vectors_dir` and check it against
+    /// its checksum: the check opening leaves out, to run on demand, such as after a crash
+    /// or before reporting a problem. It reads the whole set, so it takes the time a read of
+    /// that many bytes takes, and stops at a cancel.
+    ///
+    /// A damaged segment is marked so that every later open refuses it, and this returns
+    /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
+    /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+    pub fn verify_semantic_vectors(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticVectorsVerification, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let report = otzaria_semantic_search::semantic::segment_set::scrub(
+                &vectors_dir,
+                &cancellation.flag,
+            )
+            .map_err(|err| {
+                vector_set_error(
+                    &err,
+                    &vectors_dir,
+                    format!(
+                        "the semantic vectors at {} did not verify: {err}",
+                        vectors_dir.display()
+                    ),
+                    "verifying the vectors",
+                )
+            })?;
+            Ok(SemanticVectorsVerification {
+                generation: report.generation,
+                segments: report.segments,
+                bytes_checked: report.bytes_checked,
+                elapsed_ms: report.elapsed_ms,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// How much of the open index the set at `vectors_dir` covers: the live lines the
+    /// recipe embeds, and how many of them the set holds a vector for. From the `chunkKey`
+    /// column, one pass over it; on an index without the column, every book's keys are
+    /// recomputed from its stored text, which reads the whole store. Cancellable.
+    ///
+    /// A line is covered when any slot of the set holds its text's key, including a slot a
+    /// later delta deleted; a release deletes only texts no line of its library holds, so
+    /// that counts a line of an index older than the set at most.
+    pub fn semantic_coverage(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticCoverage, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::oxv::reader::Segment;
+            use otzaria_semantic_search::semantic::segment_set;
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let cancel = &cancellation.flag;
+            let failed = |err: &SemanticSearchError| {
+                vector_set_error(
+                    err,
+                    &vectors_dir,
+                    format!(
+                        "failed to count what the semantic vectors at {} cover: {err}",
+                        vectors_dir.display()
+                    ),
+                    "counting the coverage",
+                )
+            };
+            let Some(info) = segment_set::info(&vectors_dir).map_err(|err| failed(&err))? else {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ArtifactMissing,
+                    format!(
+                        "no semantic vectors are installed at {}",
+                        vectors_dir.display()
+                    ),
+                )
+                .with_field("vectors_dir"));
+            };
+            let mut keys = Vec::new();
+            for segment in &info.segments {
+                if cancel.is_cancelled() {
+                    return Err(failed(&SemanticSearchError::Cancelled));
+                }
+                // Where the set keeps its segments, as the sidecar lays it out.
+                let path = vectors_dir
+                    .join("segments")
+                    .join(format!("{}.oxv", segment.id));
+                let opened = Segment::open(&path).map_err(|err| failed(&err.into()))?;
+                keys.extend((0..opened.slot_count()).map(|slot| opened.key(slot).column_value()));
+            }
+            keys.sort_unstable();
+            keys.dedup();
+            let coverage = LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .and_then(|resolver| resolver.coverage(&keys, cancel))
+            .map_err(|err| failed(&err.into()))?;
+            Ok(SemanticCoverage {
+                live_keyed_lines: coverage.keyed_lines,
+                covered_lines: coverage.covered_lines,
+                books_live: coverage.books_live,
+                books_covered: coverage.books_covered,
+                vectors_library_version: info.library_version,
+                ratio: if coverage.keyed_lines == 0 {
+                    0.0
+                } else {
+                    coverage.covered_lines as f64 / coverage.keyed_lines as f64
+                },
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Move the open session onto the generation an install or a compaction made live, when
+    /// it serves the set at `vectors_dir`; nothing otherwise.
+    #[cfg(feature = "semantic-integration")]
+    fn reload_open_vectors(&self, vectors_dir: &Path) -> Result<(), SemanticError> {
+        let coordinator = {
+            let active = self
+                .semantic_runtime
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            match active.as_ref() {
+                Some(ConfiguredSemantic {
+                    coordinator,
+                    source: SemanticSource::Artifact(opened),
+                }) if same_directory(&opened.key.vectors_dir, vectors_dir) => {
+                    Arc::clone(coordinator)
+                }
+                _ => return Ok(()),
+            }
+        };
+        coordinator
+            .reload_semantic_vectors()
+            .map(drop)
+            .map_err(|err| {
+                vector_set_error(
+                    &err,
+                    vectors_dir,
+                    format!(
+                        "the semantic vectors at {} changed, and the open session could not move \
+                     onto them, so it serves the generation it had: {err}",
+                        vectors_dir.display()
+                    ),
+                    "reloading the vectors",
+                )
+            })
+    }
+
+    #[cfg(not(feature = "semantic-integration"))]
+    fn semantic_not_in_build() -> SemanticError {
+        SemanticError::new(
+            SemanticErrorKind::FeatureNotInBuild,
+            "semantic support is not compiled into this build",
+        )
     }
 
     /// Index or replace semantic vectors for complete books. The caller should
@@ -4421,6 +5240,9 @@ impl SearchEngine {
             needs_full_reindex: None,
             last_error: Some(why.message),
             error_kind: Some(why.kind),
+            vectors_library_version: None,
+            vector_segments: 0,
+            needs_compaction: false,
         }
     }
 
