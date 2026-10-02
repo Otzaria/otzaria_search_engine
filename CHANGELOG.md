@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.9.0 – 2026-10-02
+
+### Changed (breaking — the index must be rebuilt)
+
+- **Official books keep their line text in the library database, not in the
+  index.** `addTextBook`/`addTextBookBytes` take a required `textStorage`, and
+  `DocumentInput` an optional one. With `TextStorage.libraryDb` (only for the
+  rows of an official book read from `seforim.db`, `filePath` `id:<bookId>`) the
+  text is indexed but not stored; results read each line back from the
+  database and prepare it exactly as indexing did — BOM handling, `data:` URI
+  removal, normalization, the vocalized rendering — so snippets, highlights and
+  `SearchResult` are unchanged. On the full library the index shrinks from
+  ~4.4 GB to ~2 GB. `TextStorage.inIndex` (PDF, file-backed, personal and
+  attached books, empty-book markers, and the default) stores text as before.
+- **Schema 5.** `text` and `textVocalized` are no longer stored; their display
+  copies moved to the stored-only `textStored`/`textVocalizedStored`, written
+  for `inIndex` documents only. Indexing options, tokenizers and positions are
+  unchanged. `checkIndexCompatibility` reports `rebuild_required` for schema 4.
+- **App builds share Dart's SQLite.** The crate has two exclusive features:
+  `sqlite-bundled` (the default: tests, CLI and semantic build tools) and
+  `sqlite-host` (the app: no SQLite inside; calls go through the API table of the
+  library Dart loaded). `cargokit.yaml` builds with
+  `--no-default-features --features semantic,sqlite-host`. Dart must register
+  `sqliteHostEntryAddress()` with `sqlite3_auto_extension` and open a connection
+  before the engine uses SQLite; until then every SQLite use (the line source and
+  the lexical dictionary) fails with a defined error instead of panicking.
+
+### Added
+
+- `configureLineSource`, `suspendLineSource`, `resumeLineSource`,
+  `lineSourceStatus` and the synchronous `sqliteHostEntryAddress`. The source
+  opens lazily, read-only (`mode=ro`, `query_only`); every result window reads
+  its rows in one read transaction and nothing holds a transaction between
+  windows. `suspendLineSource` waits for a running window and returns once the
+  file is closed, so the database can be replaced.
+- `TextStatus` on `SearchResult` and `SemanticSearchResult`: `ok`; `stale` when
+  the database no longer holds the indexed line (checked per row against
+  `lineHash`, or per book by row count for lines too short to sign) — the text
+  is then the current line, escaped and unhighlighted; `unavailable` when the
+  source is unconfigured, suspended or unreadable — the text is empty.
+- Rows stored as zstd frames (`line_content` BLOBs with a `zstd_dict` table,
+  Otzaria/otzaria#1699) are decoded; TEXT rows are read as they are. Books whose
+  `lineIndex` has gaps are mapped through their sorted row order.
+- The semantic build tools take `--seforim-db <path>` and read library text from
+  it, verified against the index, so `CorpusLine.text` and `corpus_id` are
+  identical to a build over an index that stored the text.
+
 ## 0.8.7 – 2026-09-29
 
 ### Fixed

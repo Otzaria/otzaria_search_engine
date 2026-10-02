@@ -8,6 +8,7 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
    - [SearchEngine](#searchengine)
 2. [Top-Level Functions](#top-level-functions)
   - [checkIndexCompatibility](#checkindexcompatibility)
+  - [Library line source](#library-line-source)
 3. [Data Models](#data-models)
    - [SearchResult](#searchresult)
   - [IndexCompatibility](#indexcompatibility)
@@ -253,6 +254,39 @@ Common `status` values:
 - `missing_index`: The index directory does not exist
 - `invalid_index_path`: The given path is not a valid directory path
 
+### Library line source
+
+Since schema 5 the index does not have to store the text of official books. A book
+indexed with `textStorage: TextStorage.libraryDb` keeps its lines in the inverted index
+only; when results are built, the engine reads each line back from the library database
+(`seforim.db`) and prepares it exactly as indexing did, so `SearchResult.text` is
+unchanged. Everything else (`TextStorage.inIndex`, the default) is stored as before.
+
+```dart
+// Once, before the engine touches SQLite (app builds share Dart's SQLite):
+final entry = sqliteHostEntryAddress();          // BigInt; 0 = SQLite is bundled
+// if (entry != BigInt.zero) register Pointer.fromAddress(entry.toInt()) with
+// sqlite3_auto_extension, then open any connection.
+
+Future<void> configureLineSource({required String dbPath}); // lazy; new path drops caches
+Future<void> suspendLineSource();  // closes the file; waits for a running window
+Future<void> resumeLineSource();   // undoes one suspend; the last drops all caches
+Future<LineSourceStatus> lineSourceStatus();
+```
+
+- `addTextBook` / `addTextBookBytes` take `required TextStorage textStorage`. Pass
+  `TextStorage.libraryDb` only when the text is the `\n`-joined rows of an official book
+  read from the library database; `filePath` must then be `id:<bookId>`. A document's
+  `segment` is its row's 0-based position in the book's `lineIndex` order.
+- `DocumentInput.textStorage` (optional, `null` = `inIndex`) does the same for
+  `addDocumentsBatch` / `upsertDocumentsBatch`. `addPdfBook` always stores its text.
+- Every library row of one result window is read in a single read transaction. A row
+  is verified against the index (`lineHash`, or the book's row count for lines too short
+  to sign); see `TextStatus` below.
+- `suspendLineSource` must be called before the database file is renamed or replaced
+  (Windows cannot replace an open file); while suspended, library results are
+  `TextStatus.unavailable`.
+
 ---
 
 ## Data Models
@@ -271,8 +305,16 @@ class SearchResult {
   int segment;         // Segment number (u64)
   bool isPdf;          // Whether document is PDF
   String filePath;     // Path to document file
+  TextStatus textStatus; // ok | stale | unavailable
 }
 ```
+
+`textStatus` is always `ok` for text stored in the index. For `TextStorage.libraryDb`
+documents: `stale` — the database no longer holds the indexed line (changed, moved or
+deleted); `text` is the database's current line, HTML-escaped and unhighlighted (empty
+when the row is gone), and reindexing the book fixes it. `unavailable` — the line source
+is unconfigured, suspended or unreadable; `text` is empty. `SemanticSearchResult` carries
+the same field.
 
 **Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags by default (configurable via `HighlightConfig`). If no snippet is generated, it contains the full document text.
 
