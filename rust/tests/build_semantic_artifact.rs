@@ -1,4 +1,4 @@
-//! S4b's production path, exercised as a production path.
+//! The build's production path, exercised as a production path.
 //!
 //! Everything else about the corpus adapter is a unit test holding a `TantivyCorpus` it
 //! constructed in-process. This runs the actual build binary against an index that exists on
@@ -13,12 +13,17 @@
 
 #![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
+use otzaria_semantic_search::cancellation::CancellationToken;
+use otzaria_semantic_search::distribution::builder::{RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME};
 use otzaria_semantic_search::distribution::corpus::CorpusIndex;
-use otzaria_semantic_search::distribution::packer::validate_artifact;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::mock;
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
-use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
+use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+use otzaria_semantic_search::semantic::segment_set::{
+    install_package, InstallExpectation, InstallSource,
+};
+use otzaria_semantic_search::semantic::versioning::{IndexVersion, ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::SearchEngine;
 use search_engine::semantic_corpus::TantivyCorpus;
 use std::path::Path;
@@ -159,12 +164,15 @@ fn run(fixture: &Fixture, out: &Path, extra: &[&str]) -> std::process::Output {
     command.output().expect("the build binary runs")
 }
 
-/// The stage's claim, as a command: an index directory and a model in, a verified artifact
-/// out — and what it wrote verifies again against the same index, from a separate process.
+/// The stage's claim, as a command: an index directory and a model in, a base package out —
+/// and what it wrote installs into a vector set against the digest it announced, from a
+/// separate process.
 #[test]
-fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
+fn the_build_binary_turns_an_index_and_a_model_into_a_package_that_installs() {
+    use sha2::Digest;
+
     let fixture = fixture();
-    let out = fixture.work.path().join("artifact");
+    let out = fixture.work.path().join("package");
 
     let built = run(&fixture, &out, &["--allow-non-semantic"]);
     assert!(
@@ -175,12 +183,23 @@ fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
     );
     let stdout = String::from_utf8_lossy(&built.stdout);
     assert!(
-        stdout.contains(&format!("Vectors:       {EMBEDDED}")),
+        stdout.contains(&format!("Vectors:          {EMBEDDED}")),
         "the line below min_embeddable_chars must not get a vector:\n{stdout}"
     );
 
-    // Verified independently, against the index the artifact names — a second open of the
-    // same directory, in this process, with nothing carried over from the build.
+    // The digest the build announced is the manifest's, and the package installs against
+    // it, as a device installs a release.
+    let published = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Manifest SHA-256:"))
+        .expect("the binary reports the manifest's digest")
+        .trim()
+        .to_string();
+    let manifest_json = std::fs::read_to_string(out.join(RELEASE_MANIFEST_FILENAME)).unwrap();
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(manifest_json.as_bytes())),
+        published
+    );
     let engine = SearchEngine::new(fixture.index.path().to_str().unwrap());
     let corpus = TantivyCorpus::from_engine(
         &engine,
@@ -189,17 +208,25 @@ fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
         fixture.chunking.clone(),
     )
     .unwrap();
-    let report = validate_artifact(&out, &fixture.model, &corpus).unwrap();
-    assert_eq!(report.vector_count, EMBEDDED);
-    assert_eq!(report.identity.text, corpus.identity().unwrap().text);
-
-    // The digest the build published is the one a fresh verification arrives at.
-    let published = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("Digest:"))
-        .expect("the binary reports a digest")
-        .trim();
-    assert_eq!(report.digest, published);
+    let applied = install_package(
+        &fixture.work.path().join("vectors"),
+        &InstallSource {
+            segment: &out.join(SEGMENT_FILENAME),
+            manifest_json: &manifest_json,
+        },
+        &InstallExpectation {
+            identity: IndexVersion {
+                text: corpus.identity().unwrap().text,
+                model: fixture.model.clone(),
+                store: readable_store_identity(),
+            },
+            published_manifest_sha256: Some(published),
+        },
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(applied.slots_added, u64::from(EMBEDDED));
+    assert_eq!(applied.library_version, 30);
 }
 
 /// The stand-in's vectors carry no meaning, and an artifact built from them passes every
@@ -262,7 +289,7 @@ fn the_build_leaves_the_index_byte_for_byte_untouched() {
 
     let ok = run(
         &fixture,
-        &fixture.work.path().join("artifact"),
+        &fixture.work.path().join("package"),
         &["--allow-non-semantic"],
     );
     assert!(ok.status.success());

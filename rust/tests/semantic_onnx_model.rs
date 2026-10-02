@@ -34,7 +34,7 @@
 //! its own identity.
 //!
 //! Two tests are the application's own path rather than the scaffolding's: the build binary
-//! embeds the lines into an artifact and stamps the index, and `open_semantic_artifact`
+//! embeds the lines into a base package and installs it, and `open_semantic_artifact`
 //! opens it and serves the queries, embedding nothing but them; the second opens it with the
 //! runtime passed as `onnx_runtime_path`, in a child process of its own from which
 //! `OTZARIA_ONNX_RUNTIME` is removed. They also need the model's published identity files,
@@ -406,8 +406,8 @@ fn recipe_two_scores_exactly_like_the_role_prefixed_text_it_is_defined_as() {
     }
 }
 
-/// The library as a release builds it, closed before the build reads it, and the artifact the
-/// build binary embeds it into, stamping the index: the index's directory and the artifact's.
+/// The library as a release builds it, closed before the build reads it, and the vector set
+/// the build binary embeds it into and installs: the index's directory and the set's.
 /// One book, so the ids are the ones `add_text_book` composes; every line is long enough to
 /// embed on its own, so none borrows a neighbour's text.
 ///
@@ -438,7 +438,7 @@ fn build_artifact(
         engine.commit().unwrap();
     }
 
-    let artifact = root.path().join("artifact");
+    let vectors = root.path().join("vectors");
     let mut command = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"));
     command.args([
         "--index",
@@ -454,8 +454,9 @@ fn build_artifact(
         "--chunking",
         identity.join("chunking.json").to_str().unwrap(),
         "--out",
-        artifact.to_str().unwrap(),
-        "--stamp-index",
+        root.path().join("package").to_str().unwrap(),
+        "--install",
+        vectors.to_str().unwrap(),
     ]);
     if let Some(runtime) = runtime {
         command.env(RUNTIME_ENV, runtime);
@@ -467,10 +468,10 @@ fn build_artifact(
         String::from_utf8_lossy(&built.stdout),
         String::from_utf8_lossy(&built.stderr)
     );
-    (index, artifact)
+    (index, vectors)
 }
 
-/// How the device opens the artifact: the model's published identity file, and the runtime
+/// How the device opens the vector set: the model's published identity file, and the runtime
 /// the application passes, if it passes one.
 fn artifact_input(
     artifact: &Path,
@@ -479,11 +480,11 @@ fn artifact_input(
     runtime: Option<&Path>,
 ) -> SemanticArtifactInput {
     SemanticArtifactInput {
-        artifact_dir: artifact.to_string_lossy().into_owned(),
+        vectors_dir: artifact.to_string_lossy().into_owned(),
         model_path: model.to_string_lossy().into_owned(),
         model_identity_json: std::fs::read_to_string(identity.join("model.json")).unwrap(),
-        published_digest: None,
         onnx_runtime_path: runtime.map(|runtime| runtime.to_string_lossy().into_owned()),
+        scan_threads: None,
     }
 }
 

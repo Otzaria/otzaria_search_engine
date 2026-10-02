@@ -56,7 +56,8 @@ path = "src/bin/build_semantic_artifact.rs"
 name = "export_semantic_plan"
 path = "src/bin/export_semantic_plan.rs"
 
-# The last step of a sharded build: ready-made vectors joined to the live index.
+# Retired with the v1 artifact; it says so and exits. The sharded build's last step is
+# the sidecar's `assemble`.
 [[bin]]
 name = "pack_semantic_artifact"
 path = "src/bin/pack_semantic_artifact.rs"
@@ -102,7 +103,7 @@ sha2 = "0.10"
 # the inference crates come only with `onnx-backend`, which `semantic-onnx` turns
 # on and the sidecar declares for desktop targets only. The `semantic*` features
 # gate the code that talks to it.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "f42deec0a063814db287ee238005e90e51106c2a", default-features = false }
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "71d83263a11044610d3f46bdae1bfccc50156539", default-features = false }
 
 [dev-dependencies]
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),

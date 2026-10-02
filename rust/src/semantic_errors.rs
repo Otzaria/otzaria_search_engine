@@ -36,8 +36,6 @@
 //! `Internal` for faults in the engine or its files.
 
 use crate::api::search_engine::{SemanticError, SemanticErrorKind};
-use crate::semantic_corpus::CorpusStampError;
-use otzaria_semantic_search::distribution::package::MANIFEST_FILENAME;
 use otzaria_semantic_search::errors::{
     ArtifactError, EmbeddingError, SemanticSearchError, VectorStoreError,
 };
@@ -49,6 +47,12 @@ use otzaria_semantic_search::semantic::recipe::{EmbeddingTextRecipe, TextNormali
 use otzaria_semantic_search::semantic::versioning::IdentityField;
 use std::ffi::OsString;
 use std::path::Path;
+
+/// The pointers a vector set's directory holds once something was installed in it: the live
+/// generation and the one before it. The sidecar's `segment_set` layout
+/// (`docs/ARTIFACT_CONTRACT.md`), private to it and repeated here because telling a set that
+/// is missing from one that is damaged means looking where it looks.
+const SET_POINTERS: [&str; 2] = ["CURRENT", "PREVIOUS"];
 
 /// The variable the sidecar takes the ONNX Runtime library's path from when the application
 /// passes none, and the file it looks for beside the graph when neither names one. Both are
@@ -77,7 +81,7 @@ pub(crate) enum SidecarCall<'a> {
     /// [`check_local_model`] has passed the installation's own values: what it refuses is
     /// then the artifact, the model or the runtime.
     OpenArtifact {
-        artifact_dir: &'a Path,
+        vectors_dir: &'a Path,
         model_path: &'a Path,
         /// The ONNX Runtime the application passed, the first place the sidecar looks.
         onnx_runtime: Option<&'a Path>,
@@ -160,22 +164,6 @@ fn ranking_field(parameter: &str) -> String {
         other => other,
     }
     .to_string()
-}
-
-/// A corpus stamp that cannot vouch for the open index, as a [`SemanticError`].
-///
-/// A stamp this build cannot read is no stamp to it, so it is `IndexNotStamped` as a
-/// missing one is; an I/O failure reading it says nothing about the index, and is
-/// `Internal`.
-pub(crate) fn stamp_error(error: &CorpusStampError) -> SemanticError {
-    let kind = match error {
-        CorpusStampError::Missing { .. } | CorpusStampError::Unrecognized(_) => {
-            SemanticErrorKind::IndexNotStamped
-        }
-        CorpusStampError::Outdated { .. } => SemanticErrorKind::IndexStampMismatch,
-        CorpusStampError::Unreadable(_) => SemanticErrorKind::Internal,
-    };
-    SemanticError::new(kind, error.to_string())
 }
 
 /// The checks `OfficialSemanticIndex::open` makes of the installation's own half of the
@@ -265,7 +253,7 @@ fn classify(
     match error {
         SemanticSearchError::EmbeddingRuntime(error) => embedding_kind(error, call),
         SemanticSearchError::Artifact(error) => match call {
-            SidecarCall::OpenArtifact { artifact_dir, .. } => artifact_kind(error, artifact_dir),
+            SidecarCall::OpenArtifact { vectors_dir, .. } => artifact_kind(error, vectors_dir),
             // Opening a session built on this device reads no artifact. The one artifact
             // error it raises is a recipe version the configuration names and this build has
             // no code for.
@@ -421,17 +409,17 @@ fn runtime_kind(
 }
 
 /// The kind of an artifact the sidecar refused at open, and the field it names.
-fn artifact_kind(
-    error: &ArtifactError,
-    artifact_dir: &Path,
-) -> (SemanticErrorKind, Option<String>) {
+fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKind, Option<String>) {
     use SemanticErrorKind as K;
     match error {
         // Absent, unreadable or not JSON: the variant does not say which, and the file
-        // system does. Without a `manifest.json` nothing is installed there; with one,
-        // what is installed is damaged — a `payloads.json` missing beside it included.
+        // system does. Without a `CURRENT` or a `PREVIOUS` pointer nothing was ever
+        // installed there; with one, what is installed is damaged.
         ArtifactError::MetadataUnusable { .. } => {
-            if artifact_dir.join(MANIFEST_FILENAME).exists() {
+            if SET_POINTERS
+                .iter()
+                .any(|pointer| vectors_dir.join(pointer).exists())
+            {
                 (K::ArtifactCorrupt, None)
             } else {
                 (K::ArtifactMissing, None)
@@ -469,9 +457,9 @@ fn artifact_kind(
         | ArtifactError::PayloadNotRegularFile { .. }
         | ArtifactError::PayloadChecksumFailed { .. }
         | ArtifactError::ManifestDisagreesWithPayload { .. } => (K::ArtifactCorrupt, None),
-        // A path that cannot hold an artifact at all, such as `/` or `..`.
+        // A path that cannot hold a vector set at all, such as `/` or `..`.
         ArtifactError::InvalidInstallTarget { .. } => {
-            (K::InvalidInput, Some("artifact_dir".to_string()))
+            (K::InvalidInput, Some("vectors_dir".to_string()))
         }
         // A delta that is not the next step for the vectors installed: a sound package,
         // built for another chain position or codec epoch. Only installing a vector set
@@ -622,7 +610,7 @@ mod tests {
             for call in [
                 session(),
                 SidecarCall::OpenArtifact {
-                    artifact_dir: Path::new("/artifact"),
+                    vectors_dir: Path::new("/vectors"),
                     model_path: Path::new(MODEL),
                     onnx_runtime: None,
                 },
@@ -799,7 +787,7 @@ mod tests {
                     onnx_runtime: Some(runtime),
                 },
                 SidecarCall::OpenArtifact {
-                    artifact_dir: Path::new("/artifact"),
+                    vectors_dir: Path::new("/vectors"),
                     model_path: Path::new(MODEL),
                     onnx_runtime: Some(runtime),
                 },
@@ -824,7 +812,7 @@ mod tests {
         use SemanticErrorKind as K;
         let empty = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
-        std::fs::write(installed.path().join(MANIFEST_FILENAME), b"{").unwrap();
+        std::fs::write(installed.path().join("CURRENT"), b"{").unwrap();
         let absent = empty.path().join("absent");
         let payload = || "vectors.bin".to_string();
         let unusable = || ArtifactError::MetadataUnusable {
@@ -973,7 +961,7 @@ mod tests {
                 ArtifactError::InvalidInstallTarget { reason: "r".into() },
                 installed.path(),
                 K::InvalidInput,
-                Some("artifact_dir"),
+                Some("vectors_dir"),
             ),
             (
                 ArtifactError::DeltaDoesNotApply {
@@ -1009,12 +997,12 @@ mod tests {
                 None,
             ),
         ];
-        for (error, artifact_dir, expected, field) in cases {
-            let described = format!("{error:?} in {}", artifact_dir.display());
+        for (error, vectors_dir, expected, field) in cases {
+            let described = format!("{error:?} in {}", vectors_dir.display());
             let (kind, named) = classify(
                 &SemanticSearchError::Artifact(error),
                 SidecarCall::OpenArtifact {
-                    artifact_dir,
+                    vectors_dir,
                     model_path: Path::new(MODEL),
                     onnx_runtime: None,
                 },
@@ -1028,9 +1016,9 @@ mod tests {
     #[test]
     fn a_configuration_refusal_is_invalid_input_and_a_later_one_is_internal() {
         use SemanticErrorKind as K;
-        let artifact_dir = PathBuf::from("/artifact");
+        let vectors_dir = PathBuf::from("/vectors");
         let open = SidecarCall::OpenArtifact {
-            artifact_dir: &artifact_dir,
+            vectors_dir: &vectors_dir,
             model_path: Path::new(MODEL),
             onnx_runtime: None,
         };
@@ -1079,7 +1067,7 @@ mod tests {
     fn each_store_failure_has_its_kind() {
         use SemanticErrorKind as K;
         let open = SidecarCall::OpenArtifact {
-            artifact_dir: Path::new("/artifact"),
+            vectors_dir: Path::new("/vectors"),
             model_path: Path::new(MODEL),
             onnx_runtime: None,
         };
@@ -1262,41 +1250,5 @@ mod tests {
             "{}",
             error.message
         );
-    }
-
-    /// The stamp's own failures, by variant, with their messages unchanged.
-    #[test]
-    fn each_stamp_failure_has_its_kind() {
-        use SemanticErrorKind as K;
-        let index_path = PathBuf::from("/index");
-        for (error, expected) in [
-            (
-                CorpusStampError::Missing {
-                    index_path: index_path.clone(),
-                },
-                K::IndexNotStamped,
-            ),
-            (
-                CorpusStampError::Unrecognized(anyhow::anyhow!("not a corpus stamp")),
-                K::IndexNotStamped,
-            ),
-            (
-                CorpusStampError::Outdated {
-                    index_path: index_path.clone(),
-                    stamped: "a".into(),
-                    current: "b".into(),
-                },
-                K::IndexStampMismatch,
-            ),
-            (
-                CorpusStampError::Unreadable(anyhow::anyhow!("permission denied")),
-                K::Internal,
-            ),
-        ] {
-            let classified = stamp_error(&error);
-            assert_eq!(classified.kind, expected, "{error:?}");
-            assert_eq!(classified.message, error.to_string());
-            assert_eq!(classified.field, None);
-        }
     }
 }

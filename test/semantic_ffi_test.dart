@@ -680,7 +680,7 @@ Future<void> main() async {
       Map<String, Object> modelIdentity, {
       String? onnxRuntimePath,
     }) => SemanticArtifactInput(
-      artifactDir: '${root.path}/artifact',
+      vectorsDir: '${root.path}/vectors',
       modelPath: '${root.path}/model/model.onnx',
       modelIdentityJson: jsonEncode(modelIdentity),
       onnxRuntimePath: onnxRuntimePath,
@@ -701,7 +701,8 @@ Future<void> main() async {
       await engine.commit();
 
       // The build machine's half: the model's identity, the recipe, and the
-      // artifact built from this index, which the build stamps as it goes.
+      // base package built from this index, installed as a device installs a
+      // release.
       final model = writeStubOnnxPackage(Directory('${root.path}/model'));
       identity = {
         'family_id': 'test-mock@0000000',
@@ -742,11 +743,12 @@ Future<void> main() async {
         '--chunking',
         '${root.path}/chunking.json',
         '--out',
-        '${root.path}/artifact',
+        '${root.path}/package',
+        '--install',
+        '${root.path}/vectors',
         '--created-at',
         '2026-10-01T00:00:00Z',
         '--allow-non-semantic',
-        '--stamp-index',
       ]);
       expect(
         built.exitCode,
@@ -763,7 +765,7 @@ Future<void> main() async {
       }
     });
 
-    test('an opened artifact serves a hydrated semantic-only hit', () async {
+    test('an installed vector set opens and reports itself', () async {
       final status = await engine.openSemanticArtifact(config: input(identity));
       expect(status.enabled, isTrue);
       expect(status.available, isTrue, reason: status.lastError);
@@ -772,27 +774,6 @@ Future<void> main() async {
       expect(status.embeddingBackend, MockBackend.id);
       expect(status.vectorCount, 2);
       expect(status.vectorsPersisted, isTrue);
-
-      final response = await engine.searchSemantic(
-        query: probeLine,
-        facets: const [],
-        limit: 10,
-        offset: 0,
-        lexicalMode: SemanticLexicalMode.exact,
-        fuzzyMaxDistance: 0,
-        retrievalMode: SemanticRetrievalMode.semanticOnly,
-        matchNikud: false,
-        matchTaamim: false,
-        cancellation: SemanticCancellationToken(),
-      );
-      expect(response.executedMode, SemanticExecutedMode.semanticOnly);
-      expect(response.semanticAvailable, isTrue);
-      expect(response.fallbackKind, isNull);
-      final hit = response.results.first;
-      expect(hit.source, SemanticResultSource.semantic);
-      expect(hit.needsHydration, isFalse);
-      expect(hit.snippetHtml, probeLine);
-      expect(hit.filePath, bookKey);
     });
 
     test(
@@ -880,12 +861,12 @@ Future<void> main() async {
       },
     );
 
-    test('a missing artifact is refused as missing, by kind', () async {
+    test('a missing vector set is refused as missing, by kind', () async {
       Object? thrown;
       try {
         await engine.openSemanticArtifact(
           config: SemanticArtifactInput(
-            artifactDir: '${root.path}/not-installed',
+            vectorsDir: '${root.path}/not-installed',
             modelPath: '${root.path}/model/model.onnx',
             modelIdentityJson: jsonEncode(identity),
           ),
@@ -900,49 +881,10 @@ Future<void> main() async {
         thrown.toString(),
         allOf(
           startsWith('SemanticError(artifactMissing)'),
-          contains('manifest.json'),
+          contains('not-installed'),
         ),
       );
     });
-
-    test(
-      'a commit after opening makes the artifact stale, in status and search',
-      () async {
-        await engine.openSemanticArtifact(config: input(identity));
-        await engine.addDocument(
-          id: BigInt.from(99),
-          title: 'נוסף',
-          reference: 'נוסף א',
-          topics: '/אחר',
-          text: 'שורה שלא הייתה בספרייה כשהארטיפקט נבנה ממנה',
-          segment: BigInt.zero,
-          isPdf: false,
-          filePath: '/books/another.txt',
-        );
-        await engine.commit();
-
-        final status = await engine.semanticStatus();
-        expect(status.state, SemanticState.stale);
-        expect(status.errorKind, SemanticErrorKind.artifactStale);
-        expect(status.available, isFalse);
-
-        final response = await engine.searchSemantic(
-          query: probeLine,
-          facets: const [],
-          limit: 10,
-          offset: 0,
-          lexicalMode: SemanticLexicalMode.exact,
-          fuzzyMaxDistance: 0,
-          retrievalMode: SemanticRetrievalMode.hybrid,
-          matchNikud: false,
-          matchTaamim: false,
-          cancellation: SemanticCancellationToken(),
-        );
-        expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
-        expect(response.fallbackKind, SemanticErrorKind.artifactStale);
-        expect(response.fallbackReason, status.lastError);
-      },
-    );
   }, skip: artifactSkipReason ?? false);
 }
 
