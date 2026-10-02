@@ -265,7 +265,7 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at its `store-v2` branch (71d8326), which keys a vector by the text it was
+  at its `store-v2` branch (bc4c854), which keys a vector by the text it was
   embedded from, so a set's identity is a line recipe and a model family, with
   nothing positional in it:
   - The text half is the line recipe of the index, which this plugin declares
@@ -375,6 +375,29 @@ are now documented as development and testing scaffolding, not for the library.
   `OTZARIA_ONNX_RUNTIME` and, for the third, `OTZARIA_TEST_ONNX_IDENTITY` name
   what they need; with `OTZARIA_REQUIRE_ONNX_MODEL` set, as the Dart suites
   have `OTZARIA_REQUIRE_NATIVE`, each skip is a failure instead.
+- **`export_semantic_plan` writes the sidecar's plan of a vector build**, in one
+  step from the release index: `records.bin`, `books.json`, `embed.jsonl` and
+  `embed-manifest.json`, `tombstones.bin` and `plan-manifest.json`, each by the
+  sidecar's own writer, for its `embed-shard`, `warehouse-add` and `assemble`.
+  `--warehouse` leaves out of `embed.jsonl` every text the warehouse holds a
+  vector for, refusing a warehouse of another model or package, and
+  `--previous-ledger` splits the plan against the release before it, which
+  writes its tombstones. Lines are keyed from the text the index stores, under
+  the chunking compiled in, so a version 4 index plans as a version 5 one does;
+  a version 5 index's `chunkKey` column is held to that text line by line, and
+  a plan whose column disagrees fails the manifest's parity gate and the export.
+  A PDF's lines are not planned, since the index keys them 0 and a device never
+  resolves to one. On the v30 release index (6,042,284 lines in 7,376 books,
+  version 4) it plans 5,753,225 records and 5,510,809 distinct texts, leaving
+  out 132,076 PDF lines, in 60 s and 3.6 GB on an Apple M4. That index holds
+  53,493 line ids that two books share, which the build binary's corpus
+  refuses; the plan keys a line by its book and position and is not affected.
+  `validate_semantic_vectors` reports how an installed set lands on an index:
+  the keyed lines its records cover in their book, and how many records are at
+  their hint, moved within their book, or gone; with `--plan`, how many of the
+  plan's records a scan reaches. Tested over a small library, where the plan is
+  byte for byte what the sidecar's `plan_from_corpus` writes, from a version 5
+  and a version 4 index alike.
 - **Tests of the vector-set path with the stand-in**, `rust/tests/semantic_artifact.rs`:
   a base package built by the binary from a small index, installed by the
   binary and through the API, plain and compressed, opened, searched both ways
@@ -412,11 +435,10 @@ are now documented as development and testing scaffolding, not for the library.
   and its release manifest, whose SHA-256 it prints for the release to publish,
   and installs it into a set with `--install`. It takes the library version
   (`db_version`) and `--release-tag`, writes nothing into the lexical index,
-  and `--clip-q` sets the codec's clipping quantile. `pack_semantic_artifact`,
+  and writes the sidecar's default codec (`i8-sym-vec`). `pack_semantic_artifact`,
   which assembled the shards of the old artifact, says it is retired and exits
-  with status 2 until the sidecar's sharded build of a segment lands;
-  `export_semantic_plan` takes the library version as a number and
-  `--release-tag`.
+  with status 2: the sidecar's `assemble` builds a release from a plan and its
+  vectors.
 - **The calls that build vectors on the device are documented as development
   and testing scaffolding**: `configureSemantic`, `semanticIndexBooks`,
   `semanticIndexDiff`, `removeSemanticBooks` and `resetSemanticIndex`, in their
