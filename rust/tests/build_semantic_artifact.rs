@@ -16,7 +16,7 @@ use otzaria_semantic_search::distribution::packer::validate_artifact;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};
 use otzaria_semantic_search::semantic::versioning::ModelIdentity;
-use search_engine::api::search_engine::SearchEngine;
+use search_engine::api::search_engine::{SearchEngine, TextStorage};
 use search_engine::semantic_corpus::TantivyCorpus;
 use std::path::Path;
 use std::process::Command;
@@ -50,6 +50,7 @@ fn write_index(dir: &Path) {
             0,
             GENESIS_TEXT.to_string(),
             Some(vec!["/era/תנך".to_string()]),
+            TextStorage::InIndex,
         )
         .unwrap();
     engine
@@ -61,6 +62,7 @@ fn write_index(dir: &Path) {
             0,
             BERACHOT_TEXT.to_string(),
             None,
+            TextStorage::InIndex,
         )
         .unwrap();
     engine.commit().unwrap();
@@ -167,7 +169,8 @@ fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
     // same directory, in this process, with nothing carried over from the build.
     let engine = SearchEngine::new(fixture.index.path().to_str().unwrap());
     let corpus =
-        TantivyCorpus::from_engine(&engine, LIBRARY_VERSION, fixture.chunking.clone()).unwrap();
+        TantivyCorpus::from_engine(&engine, None, LIBRARY_VERSION, fixture.chunking.clone())
+            .unwrap();
     let report = validate_artifact(&out, &fixture.model, &corpus).unwrap();
     assert_eq!(report.vector_count, EMBEDDED);
     assert_eq!(report.identity.corpus, corpus.identity().unwrap());

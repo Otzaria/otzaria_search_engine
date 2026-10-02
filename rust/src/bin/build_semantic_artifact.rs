@@ -70,6 +70,7 @@ fn main() {
     };
 
     let index_path = required("--index");
+    let seforim_db = flag("--seforim-db");
     let out = required("--out");
     let library_version = required("--library-version");
     let model: ModelIdentity =
@@ -91,12 +92,16 @@ fn main() {
     // `SearchEngine` here would create an index for a mistyped path, re-stamp metadata on
     // a legacy-compatible one, hold the writer lock for the whole build, and panic on an
     // incompatible schema instead of reporting it.
-    let corpus =
-        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
-            .unwrap_or_else(|error| {
-                eprintln!("Could not read the corpus at {index_path}: {error:#}");
-                process::exit(1);
-            });
+    let corpus = TantivyCorpus::from_index_path(
+        Path::new(&index_path),
+        seforim_db.as_deref().map(Path::new),
+        library_version,
+        chunking.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the corpus at {index_path}: {error:#}");
+        process::exit(1);
+    });
     println!(
         "Corpus: {} line(s) across {} book(s)\ncorpus_id: {}",
         corpus.line_count(),
@@ -152,6 +157,9 @@ Required:
   --out <dir>                Output directory; must not exist, or be empty
 
 Optional:
+  --seforim-db <path>        The library database official books' line text is read from,
+                             read-only. Required when the index keeps that text there
+                             (schema 5), and must be the database the index was built from
   --batch <N>                Texts per inference call (default: 32)
   --collection <name>        Collection name in the payload header (default: \"chunks\")
   --created-at <timestamp>   Manifest timestamp (default: now, UTC)

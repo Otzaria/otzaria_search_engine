@@ -78,6 +78,9 @@ pub struct SearchResult {
     /// בלבד, בלי snippet, כדי שהאפליקציה תוכל להציג "הרחב" ולקפוץ אליהן.
     /// `merged_count` עשוי לעלות על `merged.len() + 1` כשהקבוצה גדולה מהתקרה.
     pub merged: Vec<MergedSibling>,
+    /// Whether `text` is the line this document was indexed from. Always
+    /// [`TextStatus::Ok`] for text stored in the index; see [`TextStorage`].
+    pub text_status: TextStatus,
 }
 
 /// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
@@ -106,6 +109,55 @@ pub struct MergedSibling {
 pub enum ResultGrouping {
     SameSection,
     IdenticalText,
+}
+
+/// Where a document's display text is kept.
+///
+/// - `InIndex` — in the index's doc store (PDF, file-backed and personal books,
+///   attached databases, empty-book markers). The default everywhere. (Not
+///   `Index`: Dart enums already have an `index` member.)
+/// - `LibraryDb` — only in the inverted index; the display text is read from the
+///   library database configured with [`configure_line_source`] when a result is
+///   built. Only for an official book whose text came from that database's rows:
+///   `file_path` must be `id:<bookId>`, and a document's `segment` is the 0-based
+///   position of its row among the book's rows ordered by `lineIndex` (what
+///   [`SearchEngine::add_text_book`] assigns).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextStorage {
+    LibraryDb,
+    InIndex,
+}
+
+/// Whether a result's text is the line its document was indexed from.
+///
+/// - `Ok` — it is (always, for text stored in the index).
+/// - `Stale` — the library database no longer matches the index (the row changed,
+///   moved or disappeared). `text` is the database's current line, HTML-escaped
+///   and unhighlighted (empty when the row is gone). Reindexing the book fixes it.
+/// - `Unavailable` — the line source is unconfigured, suspended or unreadable.
+///   `text` is empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextStatus {
+    Ok,
+    Stale,
+    Unavailable,
+}
+
+/// State of the process-wide line source ([`configure_line_source`]).
+pub struct LineSourceStatus {
+    /// A database path has been configured.
+    pub configured: bool,
+    /// A connection is currently open (opened lazily by the first result window).
+    pub open: bool,
+    /// Outstanding [`suspend_line_source`] calls.
+    pub suspend_depth: u32,
+    /// Whether this build can call SQLite: always true when SQLite is bundled; in
+    /// the app build, true once Dart has run [`sqlite_host_entry_address`] through
+    /// `sqlite3_auto_extension` and opened a connection.
+    pub host_api_ready: bool,
+    /// Bumped whenever cached knowledge of the database is discarded (a new path,
+    /// or the last [`resume_line_source`]).
+    pub generation: u64,
 }
 
 pub struct DocumentInput {
@@ -149,6 +201,10 @@ pub struct DocumentInput {
     /// [`FACET_DIMENSION_ROOTS`] לסמנטיקת הסינון (OR בתוך ממד, AND בין
     /// ממדים). `None` = אין.
     pub extra_facets: Option<Vec<String>>,
+    /// Where the display text is kept; `None` = [`TextStorage::InIndex`]. With
+    /// `LibraryDb`, `file_path` must be `id:<bookId>` and `segment` the row's
+    /// ordinal in the book.
+    pub text_storage: Option<TextStorage>,
 }
 
 /// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
@@ -417,6 +473,9 @@ pub struct SemanticSearchResult {
     pub source: SemanticResultSource,
     /// False after successful Tantivy hydration of a semantic-only item.
     pub needs_hydration: bool,
+    /// As [`SearchResult::text_status`]: anything but `Ok` leaves `snippet_html`
+    /// unpainted (`Stale`) or empty (`Unavailable`).
+    pub text_status: TextStatus,
 }
 
 /// Result envelope for semantic/hybrid searches. `lexical_total_count` is the
@@ -511,6 +570,8 @@ struct SemanticLexicalPhase {
     /// `None` in `SemanticOnly`, where no lexical query is executed and every
     /// result therefore gets an unhighlighted (but still bounded) snippet.
     highlight: Option<SemanticHighlight>,
+    /// Candidates whose text is not the indexed line, by id (absent = `Ok`).
+    text_status: HashMap<u64, TextStatus>,
 }
 
 /// A lexical query kept alive past its own execution so snippets can be built
@@ -943,7 +1004,11 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 //
 // v4: נוסף השדה `textHash` (FAST) — חתימת טקסט-בלבד לצד החתימה הקנונית,
 // כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 4;
+//
+// v5: `text`/`textVocalized` are no longer stored; the display copies moved to
+// `textStored`/`textVocalizedStored`, written only for `TextStorage::InIndex`
+// documents. Official books read their text from the library database.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
@@ -1045,6 +1110,48 @@ struct IndexMetadata {
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
 pub fn check_index_compatibility(path: String) -> IndexCompatibility {
     check_index_compatibility_path(Path::new(&path))
+}
+
+/// Points the line source at the library database (`seforim.db`) that
+/// [`TextStorage::LibraryDb`] documents read their text from. Nothing is opened
+/// here — the first result window opens it, read-only. A different path discards
+/// the open connection and every cache.
+pub fn configure_line_source(db_path: String) -> Result<()> {
+    crate::line_source::configure(&db_path)
+}
+
+/// Closes the library database so it can be renamed or replaced, waiting for a
+/// window that is reading it (milliseconds). Returns once the file handle is
+/// released. Calls nest; while suspended, `LibraryDb` results come back
+/// [`TextStatus::Unavailable`].
+pub fn suspend_line_source() -> Result<()> {
+    crate::line_source::suspend();
+    Ok(())
+}
+
+/// Undoes one [`suspend_line_source`]. The last one discards every cache, since
+/// the file may have been replaced; the next window reopens it.
+pub fn resume_line_source() -> Result<()> {
+    crate::line_source::resume()
+}
+
+pub fn line_source_status() -> LineSourceStatus {
+    let status = crate::line_source::status();
+    LineSourceStatus {
+        configured: status.configured,
+        open: status.open,
+        suspend_depth: status.suspend_depth,
+        host_api_ready: crate::sqlite_host::is_ready(),
+        generation: status.generation,
+    }
+}
+
+/// The entry point to hand to `sqlite3_auto_extension` (as a function pointer)
+/// before the engine uses SQLite, followed by opening any connection; 0 when
+/// this build bundles its own SQLite and needs nothing from the host.
+#[frb(sync)]
+pub fn sqlite_host_entry_address() -> usize {
+    crate::sqlite_host::entry_address()
 }
 
 /// Builds display-highlight regex patterns for a search query, so the app can
@@ -1408,7 +1515,7 @@ const LINE_DEDUP_MIN_LETTERS: usize = 12;
 ///
 /// 0 שמור ל"אין חתימה" — פחות מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות
 /// *עבריות* (אלפאנומרי משתתף בחתימה אך אינו נספר לסף).
-fn line_dedup_hash(normalized_text: &str) -> u64 {
+pub(crate) fn line_dedup_hash(normalized_text: &str) -> u64 {
     let mut fnv = Fnv::new();
     let mut letters = 0usize;
     let mut buf = [0u8; 4];
@@ -1426,6 +1533,34 @@ fn line_dedup_hash(normalized_text: &str) -> u64 {
         return 0;
     }
     fnv.finish()
+}
+
+/// The display copies of a [`TextStorage::InIndex`] document. `textStored` is
+/// written even when empty: its absence is what marks a library-database document.
+fn add_stored_text(
+    document: &mut TantivyDocument,
+    (text_stored_f, vocalized_stored_f): (Field, Field),
+    plain: &str,
+    vocalized: Option<&str>,
+) {
+    document.add_text(text_stored_f, plain);
+    if let Some(vocalized) = vocalized {
+        document.add_text(vocalized_stored_f, vocalized);
+    }
+}
+
+/// The library book id of an official book's `file_path` (`id:<bookId>`).
+pub(crate) fn library_book_id(file_path: &str) -> Option<i64> {
+    let id: i64 = file_path.strip_prefix("id:")?.parse().ok()?;
+    (id >= 0 && format!("id:{id}") == file_path).then_some(id)
+}
+
+fn require_library_book_id(file_path: &str) -> Result<i64> {
+    library_book_id(file_path).with_context(|| {
+        format!(
+            "TextStorage::LibraryDb needs a file_path of the form id:<bookId>, got {file_path:?}"
+        )
+    })
 }
 
 /// Mirrors the Dart `IndexingDocumentBuilder._updateReferenceTrail`: a new
@@ -1728,29 +1863,28 @@ fn current_schema() -> Schema {
     // Deliberately NOT fast: a text fast field stores every raw line in a
     // columnar dictionary — a second full copy of the corpus — and nothing
     // reads it (collectors use only the filePath/contentHash/id columns).
+    // Not stored either: Tantivy stores per field, so the display copy lives in
+    // `textStored`, written only for documents whose text is not read from the
+    // library database (see `TextStorage`).
     schema_builder.add_text_field(
         "text",
-        TextOptions::default()
-            .set_indexing_options(
-                TextFieldIndexing::default()
-                    .set_tokenizer("hebrew")
-                    .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-            )
-            .set_stored(),
+        TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer("hebrew")
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        ),
     );
     // השדה המנוקד: מאוכלס רק בשורות שנושאות ניקוד/טעמים (שאר השורות פשוט
     // אינן קיימות בו — tantivy מטפל בשדה חסר בחינם). מאונדקס בטוקנייזר
-    // ששומר את הסימנים, ומאוחסן כדי שתוצאות חיפוש מנוקד יציגו את הטקסט
-    // המנוקד. חיפוש רגיל אינו נוגע בשדה הזה כלל.
+    // ששומר את הסימנים; העותק המוצג בתוצאות חיפוש מנוקד הוא
+    // `textVocalizedStored`. חיפוש רגיל אינו נוגע בשדה הזה כלל.
     schema_builder.add_text_field(
         "textVocalized",
-        TextOptions::default()
-            .set_indexing_options(
-                TextFieldIndexing::default()
-                    .set_tokenizer("hebrew_vocalized")
-                    .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-            )
-            .set_stored(),
+        TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer("hebrew_vocalized")
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        ),
     );
     schema_builder.add_text_field("reference", STORED);
     schema_builder.add_text_field(
@@ -1786,8 +1920,17 @@ fn current_schema() -> Schema {
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
+    // Display copies of `text`/`textVocalized`, stored only (never indexed) and
+    // written only for `TextStorage::InIndex` documents. `textStored` is present on
+    // every such document, even when empty, so its absence marks a document whose
+    // text is in the library database.
+    schema_builder.add_text_field(TEXT_STORED_FIELD, STORED);
+    schema_builder.add_text_field(TEXT_VOCALIZED_STORED_FIELD, STORED);
     schema_builder.build()
 }
+
+pub(crate) const TEXT_STORED_FIELD: &str = "textStored";
+const TEXT_VOCALIZED_STORED_FIELD: &str = "textVocalizedStored";
 
 /// Cache key for materialized single-word term sets. The searcher
 /// `generation_id` changes on every reader reload (i.e. after each commit),
@@ -2473,6 +2616,7 @@ impl SearchEngine {
                 total_count: lexical_total_count,
                 truncated,
                 highlight,
+                text_status: candidate_text_status,
             } = if matches!(retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
                 // Semantic-only discards BM25 candidates in the coordinator.
                 // Count lexically for the response envelope, but do not pay
@@ -2497,6 +2641,7 @@ impl SearchEngine {
                     total_count: count.count,
                     truncated: count.truncated,
                     highlight: None,
+                    text_status: HashMap::new(),
                 }
             } else {
                 match lexical_mode {
@@ -2553,6 +2698,19 @@ impl SearchEngine {
             //
             // This has to precede pagination, or a dropped record would leave a
             // hole on one page and shift the next.
+            //
+            // Existence and metadata only: the text is read after pagination, for
+            // the page alone, in one library-database transaction.
+            let searcher = self.index_reader.searcher();
+            let hydration_ids: Vec<u64> = result
+                .results
+                .iter()
+                .filter(|item| item.needs_hydration)
+                .map(|item| item.id)
+                .collect();
+            let mut hydrated_meta = self
+                .documents_by_ids(&searcher, &hydration_ids, false)?
+                .into_iter();
             let mut surviving = Vec::with_capacity(result.results.len());
             let mut stale_primaries_dropped = 0u32;
             for item in result.results {
@@ -2560,7 +2718,7 @@ impl SearchEngine {
                     surviving.push((item, None));
                     continue;
                 }
-                match self.get_document_by_id(item.id)? {
+                match hydrated_meta.next().flatten() {
                     Some(document) => surviving.push((item, Some(document))),
                     // A semantic record whose Tantivy document disappeared is
                     // stale. Never send its old metadata to Dart: a failed or
@@ -2580,6 +2738,17 @@ impl SearchEngine {
                 .skip(offset as usize)
                 .take(limit as usize)
                 .collect();
+            let page_hydrated_ids: Vec<u64> = page
+                .iter()
+                .filter(|(_, hydrated)| hydrated.is_some())
+                .map(|(item, _)| item.id)
+                .collect();
+            let mut page_texts: HashMap<u64, (String, TextStatus)> = self
+                .documents_by_ids(&searcher, &page_hydrated_ids, true)?
+                .into_iter()
+                .flatten()
+                .map(|document| (document.id, (document.text, document.text_status)))
+                .collect();
 
             let painter = match highlight {
                 Some(highlight) if !page.is_empty() => {
@@ -2597,8 +2766,9 @@ impl SearchEngine {
                 let original_merged_count = item.merged_count;
                 let mut page_stale_siblings = 0u32;
                 let mut merged = Vec::with_capacity(item.merged.len());
-                for sibling in item.merged {
-                    match self.get_document_by_id(sibling.id)? {
+                let sibling_ids: Vec<u64> = item.merged.iter().map(|sibling| sibling.id).collect();
+                for sibling in self.documents_by_ids(&searcher, &sibling_ids, false)? {
+                    match sibling {
                         Some(document) => merged.push(MergedSibling {
                             title: document.title,
                             reference: document.reference,
@@ -2614,32 +2784,47 @@ impl SearchEngine {
 
                 // Prefer Tantivy's copy for a hydrated item and move the fields
                 // out of whichever record wins, rather than cloning them.
-                let (title, reference, text, segment, is_pdf, file_path) = match hydrated {
-                    Some(document) => (
-                        document.title,
-                        document.reference,
-                        document.text,
-                        document.segment,
-                        document.is_pdf,
-                        document.file_path,
-                    ),
-                    None => (
-                        item.title,
-                        item.reference,
-                        item.text,
-                        item.segment,
-                        item.is_pdf,
-                        item.file_path,
-                    ),
-                };
-                let (snippet_html, is_highlighted) = match painter.as_ref() {
+                let (title, reference, text, segment, is_pdf, file_path, text_status) =
+                    match hydrated {
+                        Some(document) => {
+                            let (text, status) = page_texts
+                                .remove(&item.id)
+                                .unwrap_or((String::new(), TextStatus::Unavailable));
+                            (
+                                document.title,
+                                document.reference,
+                                text,
+                                document.segment,
+                                document.is_pdf,
+                                document.file_path,
+                                status,
+                            )
+                        }
+                        None => (
+                            item.title,
+                            item.reference,
+                            item.text,
+                            item.segment,
+                            item.is_pdf,
+                            item.file_path,
+                            candidate_text_status
+                                .get(&item.id)
+                                .copied()
+                                .unwrap_or(TextStatus::Ok),
+                        ),
+                    };
+                let (snippet_html, is_highlighted) = match (painter.as_ref(), text_status) {
                     // A BM25 score is present exactly when Tantivy returned this
                     // line for the lexical query, which is what licenses the
                     // phrase-fallback term painting inside `paint`.
-                    Some(painter) => painter.paint(&text, item.lexical_score.is_some()),
+                    (Some(painter), TextStatus::Ok) => {
+                        painter.paint(&text, item.lexical_score.is_some())
+                    }
+                    (_, TextStatus::Unavailable) => (String::new(), false),
                     // `SemanticOnly` runs no lexical query, so there is nothing
-                    // to paint with — the line still crosses FFI bounded.
-                    None => (bounded_plain_snippet(&text, snippet_budget), false),
+                    // to paint with — the line still crosses FFI bounded. A stale
+                    // line is never painted.
+                    _ => (bounded_plain_snippet(&text, snippet_budget), false),
                 };
 
                 results.push(SemanticSearchResult {
@@ -2667,6 +2852,7 @@ impl SearchEngine {
                         SidecarResultSource::Both => SemanticResultSource::Both,
                     },
                     needs_hydration: false,
+                    text_status,
                 });
             }
             let mut fallback_reason = result.fallback_reason;
@@ -2888,8 +3074,10 @@ impl SearchEngine {
                 // can only be real markup — and a corpus line that happens to
                 // contain it verbatim is passed through exactly as the existing
                 // lexical API already passes it through.
-                let is_highlighted = item.text.contains(&hl.highlight_prefix);
-                let snippet_html = if is_highlighted {
+                let is_highlighted =
+                    item.text_status == TextStatus::Ok && item.text.contains(&hl.highlight_prefix);
+                let snippet_html = if is_highlighted || item.text_status != TextStatus::Ok {
+                    // A stale line arrives already escaped and bounded.
                     item.text
                 } else {
                     bounded_plain_snippet(&item.text, hl.max_chars)
@@ -2913,6 +3101,7 @@ impl SearchEngine {
                     fused_score: 1.0 / (rank.saturating_add(1) as f32),
                     source: SemanticResultSource::Lexical,
                     needs_hydration: false,
+                    text_status: item.text_status,
                 }
             })
             .collect();
@@ -2997,12 +3186,17 @@ impl SearchEngine {
         }
         // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; הבדיקה על הקלט הגולמי
         // (הנרמול הרגיל מסיר את הסימנים) והעותק המנוקד מנורמל בנפרד.
-        if hebrew_query::contains_attached_marks(_text) {
-            document.add_text(
-                text_vocalized_f,
-                hebrew_query::normalize_vocalized_text_for_indexing(_text),
-            );
+        let vocalized = hebrew_query::contains_attached_marks(_text)
+            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(_text));
+        if let Some(vocalized) = &vocalized {
+            document.add_text(text_vocalized_f, vocalized);
         }
+        add_stored_text(
+            &mut document,
+            self.stored_text_fields()?,
+            &normalized_text,
+            vocalized.as_deref(),
+        );
         self.writer_mut()?.add_document(document)?;
         Ok(())
     }
@@ -3032,15 +3226,24 @@ impl SearchEngine {
             generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let stored_fields = self.stored_text_fields()?;
+        // Validated before anything is written, so a bad document cannot leave half
+        // a batch in the writer.
+        for doc in &docs {
+            if doc.text_storage == Some(TextStorage::LibraryDb) {
+                require_library_book_id(&doc.file_path)?;
+            }
+        }
         let writer = self.writer_mut()?;
         for doc in docs {
+            let storage = doc.text_storage.unwrap_or(TextStorage::InIndex);
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
             let line_hash = line_dedup_hash(&normalized_text);
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
-                text_f         => normalized_text,
+                text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
                 segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
@@ -3058,13 +3261,20 @@ impl SearchEngine {
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
-            if let Some(vocalized) = doc.text_vocalized {
-                if !vocalized.is_empty() {
-                    document.add_text(
-                        text_vocalized_f,
-                        hebrew_query::normalize_vocalized_text_for_indexing(&vocalized),
-                    );
-                }
+            let vocalized = doc
+                .text_vocalized
+                .filter(|vocalized| !vocalized.is_empty())
+                .map(|vocalized| hebrew_query::normalize_vocalized_text_for_indexing(&vocalized));
+            if let Some(vocalized) = &vocalized {
+                document.add_text(text_vocalized_f, vocalized);
+            }
+            if storage == TextStorage::InIndex {
+                add_stored_text(
+                    &mut document,
+                    stored_fields,
+                    &normalized_text,
+                    vocalized.as_deref(),
+                );
             }
             writer.add_document(document)?;
         }
@@ -3084,6 +3294,11 @@ impl SearchEngine {
     /// the raw text crosses the bridge exactly once and only a count comes
     /// back. Document ids encode catalogue order exactly like the Dart
     /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+    ///
+    /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
+    /// newline-joined rows of an official book read from the library database
+    /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
+    /// the index and results read them back from that database.
     pub fn add_text_book(
         &mut self,
         title: String,
@@ -3093,6 +3308,7 @@ impl SearchEngine {
         generation_order: u32,
         text: String,
         extra_facets: Option<Vec<String>>,
+        text_storage: TextStorage,
     ) -> Result<u32> {
         self.add_text_book_impl(
             title,
@@ -3102,6 +3318,7 @@ impl SearchEngine {
             generation_order,
             &text,
             extra_facets.unwrap_or_default(),
+            text_storage,
         )
     }
 
@@ -3120,6 +3337,7 @@ impl SearchEngine {
         generation_order: u32,
         text: Vec<u8>,
         extra_facets: Option<Vec<String>>,
+        text_storage: TextStorage,
     ) -> Result<u32> {
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
@@ -3136,6 +3354,7 @@ impl SearchEngine {
             generation_order,
             &text,
             extra_facets.unwrap_or_default(),
+            text_storage,
         )
     }
 
@@ -3149,7 +3368,11 @@ impl SearchEngine {
         generation_order: u32,
         text: &str,
         extra_facets: Vec<String>,
+        text_storage: TextStorage,
     ) -> Result<u32> {
+        if text_storage == TextStorage::LibraryDb {
+            require_library_book_id(&file_path)?;
+        }
         if text.is_empty() {
             return Ok(0);
         }
@@ -3188,6 +3411,9 @@ impl SearchEngine {
         );
         let text_hash = content_fingerprint(text);
         let id_base = catalogue_id_base(catalogue_order)?;
+        let stored_fields = (text_storage == TextStorage::InIndex)
+            .then(|| self.stored_text_fields())
+            .transpose()?;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
@@ -3249,7 +3475,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => reference,
-                text_f         => normalized_line,
+                text_f         => normalized_line.as_str(),
                 id_f           => id,
                 segment_f      => segment as u64,
                 is_pdf_f       => false,
@@ -3266,8 +3492,16 @@ impl SearchEngine {
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
-            if let Some(vocalized) = vocalized_line {
+            if let Some(vocalized) = &vocalized_line {
                 document.add_text(text_vocalized_f, vocalized);
+            }
+            if let Some(fields) = stored_fields {
+                add_stored_text(
+                    &mut document,
+                    fields,
+                    &normalized_line,
+                    vocalized_line.as_deref(),
+                );
             }
             writer.add_document(document)?;
             ordinal += 1;
@@ -3340,6 +3574,7 @@ impl SearchEngine {
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
         let id_base = catalogue_id_base(catalogue_order)?;
+        let stored_fields = self.stored_text_fields()?;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -3375,7 +3610,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => page.reference.as_str(),
-                text_f         => normalized,
+                text_f         => normalized.as_str(),
                 id_f           => id,
                 segment_f      => u64::from(page.page_index),
                 is_pdf_f       => true,
@@ -3391,6 +3626,7 @@ impl SearchEngine {
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
+            add_stored_text(&mut document, stored_fields, &normalized, None);
             writer.add_document(document)?;
             ordinal += 1;
         }
@@ -3456,8 +3692,17 @@ impl SearchEngine {
             generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let stored_fields = self.stored_text_fields()?;
+        // Validated before anything is written, so a bad document cannot leave half
+        // a batch in the writer.
+        for doc in &docs {
+            if doc.text_storage == Some(TextStorage::LibraryDb) {
+                require_library_book_id(&doc.file_path)?;
+            }
+        }
         let writer = self.writer_mut()?;
         for doc in docs {
+            let storage = doc.text_storage.unwrap_or(TextStorage::InIndex);
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
@@ -3465,7 +3710,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
-                text_f         => normalized_text,
+                text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
                 segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
@@ -3483,13 +3728,20 @@ impl SearchEngine {
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
-            if let Some(vocalized) = doc.text_vocalized {
-                if !vocalized.is_empty() {
-                    document.add_text(
-                        text_vocalized_f,
-                        hebrew_query::normalize_vocalized_text_for_indexing(&vocalized),
-                    );
-                }
+            let vocalized = doc
+                .text_vocalized
+                .filter(|vocalized| !vocalized.is_empty())
+                .map(|vocalized| hebrew_query::normalize_vocalized_text_for_indexing(&vocalized));
+            if let Some(vocalized) = &vocalized {
+                document.add_text(text_vocalized_f, vocalized);
+            }
+            if storage == TextStorage::InIndex {
+                add_stored_text(
+                    &mut document,
+                    stored_fields,
+                    &normalized_text,
+                    vocalized.as_deref(),
+                );
             }
             writer.add_document(document)?;
         }
@@ -3514,7 +3766,7 @@ impl SearchEngine {
     /// call is one snapshot — see [`TantivyCorpus`](crate::semantic_corpus::TantivyCorpus),
     /// which holds it for a whole build precisely so a reload cannot move the corpus
     /// underneath one.
-    #[cfg(feature = "semantic-integration")]
+    #[cfg(any(test, feature = "semantic-integration"))]
     pub(crate) fn corpus_searcher(&self) -> Searcher {
         self.index_reader.searcher()
     }
@@ -3946,59 +4198,87 @@ impl SearchEngine {
     }
 
     /// Fetch a single document by its numeric id. Returns None if not found.
-    /// The `text` field contains the raw stored text (no snippet/highlight).
+    /// The `text` field contains the raw text (no snippet/highlight) — for a
+    /// [`TextStorage::LibraryDb`] document, the library row; see `text_status`.
     pub fn get_document_by_id(&self, id: u64) -> Result<Option<SearchResult>> {
-        let id_f = self.schema.get_field("id")?;
-        let term = Term::from_field_u64(id_f, id);
-        let query = TermQuery::new(term, IndexRecordOption::Basic);
         let searcher = self.index_reader.searcher();
+        let mut found = self.documents_by_ids(&searcher, &[id], true)?;
+        Ok(found.pop().flatten())
+    }
 
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
-        let Some((_, addr)) = top_docs.into_iter().next() else {
-            return Ok(None);
+    /// [`Self::get_document_by_id`] for many ids against one snapshot, reading every
+    /// library row in one transaction. `with_text: false` skips the text entirely
+    /// (`text` empty, `text_status` Ok) for callers that need only the location.
+    fn documents_by_ids(
+        &self,
+        searcher: &Searcher,
+        ids: &[u64],
+        with_text: bool,
+    ) -> Result<Vec<Option<SearchResult>>> {
+        let id_f = self.schema.get_field("id")?;
+        let mut documents = Vec::new();
+        let mut slots = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let query = TermQuery::new(Term::from_field_u64(id_f, id), IndexRecordOption::Basic);
+            let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
+            match top_docs.into_iter().next() {
+                Some((_, addr)) => {
+                    slots.push(Some(documents.len()));
+                    documents.push((addr, searcher.doc::<TantivyDocument>(addr)?));
+                }
+                None => slots.push(None),
+            }
+        }
+        let mut texts: Vec<Option<HitText>> = if with_text {
+            Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?
+                .into_iter()
+                .map(Some)
+                .collect()
+        } else {
+            documents.iter().map(|_| None).collect()
         };
 
-        let doc = searcher.doc::<TantivyDocument>(addr)?;
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
-        let text_f = self.schema.get_field("text")?;
         let segment_f = self.schema.get_field("segment")?;
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
-
-        Ok(Some(SearchResult {
-            title: doc
-                .get_first(title_f)
+        let str_field = |doc: &TantivyDocument, field: Field| {
+            doc.get_first(field)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
-                .to_string(),
-            reference: doc
-                .get_first(reference_f)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            text: doc
-                .get_first(text_f)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            id,
-            segment: doc
-                .get_first(segment_f)
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default(),
-            is_pdf: doc
-                .get_first(is_pdf_f)
-                .and_then(|v| v.as_bool())
-                .unwrap_or_default(),
-            file_path: doc
-                .get_first(file_path_f)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            merged_count: 1,
-            merged: Vec::new(),
-        }))
+                .to_string()
+        };
+        Ok(ids
+            .iter()
+            .zip(slots)
+            .map(|(&id, slot)| {
+                let slot = slot?;
+                let doc = &documents[slot].1;
+                let (text, text_status) = match texts[slot].take() {
+                    Some(hit) => (hit.plain, hit.status),
+                    None => (String::new(), TextStatus::Ok),
+                };
+                Some(SearchResult {
+                    title: str_field(doc, title_f),
+                    reference: str_field(doc, reference_f),
+                    text,
+                    id,
+                    segment: doc
+                        .get_first(segment_f)
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default(),
+                    is_pdf: doc
+                        .get_first(is_pdf_f)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or_default(),
+                    file_path: str_field(doc, file_path_f),
+                    merged_count: 1,
+                    merged: Vec::new(),
+                    text_status,
+                })
+            })
+            .collect())
     }
 
     /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -4250,15 +4530,21 @@ impl SearchEngine {
 
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
-        let text_f = self.schema.get_field("text")?;
         let id_f = self.schema.get_field("id")?;
         let segment_f = self.schema.get_field("segment")?;
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
 
+        let documents = hits
+            .iter()
+            .map(|&(_, address)| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .collect::<Result<Vec<_>>>()?;
+        // The whole candidate window's library rows in one transaction.
+        let texts = Self::resolve_hit_texts(&self.schema, &searcher, &documents, false)?;
+
         let mut candidates = Vec::with_capacity(hits.len());
-        for (score, address) in hits {
-            let document = searcher.doc::<TantivyDocument>(address)?;
+        let mut text_status = HashMap::new();
+        for (((score, _), (address, document)), text) in hits.iter().zip(&documents).zip(texts) {
             let reader = searcher.segment_reader(address.segment_ord);
             let fast = reader.fast_fields();
             let section_id = fast
@@ -4269,6 +4555,13 @@ impl SearchEngine {
                 .u64("lineHash")?
                 .first(address.doc_id)
                 .unwrap_or_default();
+            let line_id = document
+                .get_first(id_f)
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            if text.status != TextStatus::Ok {
+                text_status.insert(line_id, text.status);
+            }
             candidates.push(SidecarLexicalCandidate {
                 title: document
                     .get_first(title_f)
@@ -4280,15 +4573,8 @@ impl SearchEngine {
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                text: document
-                    .get_first(text_f)
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                line_id: document
-                    .get_first(id_f)
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or_default(),
+                text: text.plain,
+                line_id,
                 section_id,
                 line_hash,
                 segment: document
@@ -4304,7 +4590,7 @@ impl SearchEngine {
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                bm25_score: score,
+                bm25_score: *score,
             });
         }
         Ok(SemanticLexicalPhase {
@@ -4312,6 +4598,7 @@ impl SearchEngine {
             total_count: total_count as u32,
             truncated,
             highlight,
+            text_status,
         })
     }
 
@@ -5440,6 +5727,15 @@ impl SearchEngine {
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
+
+    /// `(textStored, textVocalizedStored)` — the display copies of
+    /// [`TextStorage::InIndex`] documents.
+    fn stored_text_fields(&self) -> Result<(Field, Field)> {
+        Ok((
+            self.schema.get_field(TEXT_STORED_FIELD)?,
+            self.schema.get_field(TEXT_VOCALIZED_STORED_FIELD)?,
+        ))
+    }
 
     fn all_fields(&self) -> Result<SchemaFields> {
         Ok((
@@ -8744,19 +9040,17 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
-        // המסלול המנוקד מציג את העותק המנוקד השמור; שדה `text` הרגיל נשאר
-        // fallback הגנתי (לא אמור לקרות — כל מסמך שנמצא דרך השדה המנוקד
-        // נכתב עם עותק שמור).
-        let plain_text_field = schema.get_field("text")?;
+        // המסלול המנוקד מציג את העותק המנוקד; לשורה בלי עותק כזה — הטקסט הרגיל.
+        let vocalized_field = text_field == schema.get_field("textVocalized")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
         let file_path_field = schema.get_field("filePath")?;
 
-        let mut results = Vec::with_capacity(addresses.len());
+        let mut documents = Vec::with_capacity(addresses.len());
         for doc_address in addresses {
-            let retrieved_doc = match searcher.doc::<TantivyDocument>(doc_address) {
-                Ok(d) => d,
+            match searcher.doc::<TantivyDocument>(doc_address) {
+                Ok(d) => documents.push((doc_address, d)),
                 Err(e) => {
                     // A hit the collectors counted but the doc store cannot
                     // materialize (e.g. a corrupt store block). Skipping it
@@ -8768,10 +9062,13 @@ impl SearchEngine {
                         doc_address.segment_ord,
                         doc_address.doc_id
                     );
-                    continue;
                 }
-            };
+            }
+        }
+        let texts = Self::resolve_hit_texts(schema, searcher, &documents, vocalized_field)?;
 
+        let mut results = Vec::with_capacity(documents.len());
+        for ((_, retrieved_doc), hit_text) in documents.iter().zip(texts) {
             let title = retrieved_doc
                 .get_first(title_field)
                 .and_then(|v| v.as_str())
@@ -8780,16 +9077,6 @@ impl SearchEngine {
             let reference = retrieved_doc
                 .get_first(reference_field)
                 .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let text = retrieved_doc
-                .get_first(text_field)
-                .and_then(|v| v.as_str())
-                .or_else(|| {
-                    retrieved_doc
-                        .get_first(plain_text_field)
-                        .and_then(|v| v.as_str())
-                })
                 .unwrap_or_default()
                 .to_string();
             let id = retrieved_doc
@@ -8810,39 +9097,17 @@ impl SearchEngine {
                 .unwrap_or_default()
                 .to_string();
 
-            let mut snippet = snippet_generator.snippet(&text);
-            snippet.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
-            // For multi-word phrase queries, tantivy's term-based highlighter
-            // paints every occurrence of every query term; re-derive the
-            // highlights so only in-order, within-gap phrase occurrences stay
-            // painted. Falls back to the plain term highlight when the chosen
-            // fragment holds no complete phrase occurrence (never paints less
-            // context than before).
-            let (lead, tail) = glued_punctuation(&text, snippet.fragment_range());
-            let fragment = [lead, snippet.fragment(), tail].concat();
-            let term_html = || {
-                htmlescape::encode_minimal(lead)
-                    + &snippet.to_html()
-                    + &htmlescape::encode_minimal(tail)
-            };
-            let snippet_html = match phrase {
-                Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
-                    .or_else(|| {
-                        Self::phrase_filtered_snippet_html(
-                            searcher,
-                            &text,
-                            pf,
-                            hl,
-                            Some(hl.max_chars as usize),
-                        )
-                    })
-                    .unwrap_or_else(term_html),
-                None => term_html(),
-            };
-            let result_text = if snippet_html.is_empty() {
-                text
-            } else {
-                snippet_html
+            let text_status = hit_text.status;
+            let text = hit_text.display(vocalized_field);
+            let result_text = match text_status {
+                TextStatus::Ok => {
+                    Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
+                        .unwrap_or(text)
+                }
+                // The line no longer matches what was indexed: painting the query's
+                // terms into it would claim a match the index never saw.
+                TextStatus::Stale => bounded_plain_snippet(&text, hl.max_chars),
+                TextStatus::Unavailable => String::new(),
             };
 
             results.push(SearchResult {
@@ -8855,9 +9120,210 @@ impl SearchEngine {
                 file_path,
                 merged_count: 1,
                 merged: Vec::new(),
+                text_status,
             });
         }
         Ok(results)
+    }
+
+    /// The highlighted snippet of `text`, or `None` when the generator found nothing
+    /// to show (the caller then shows the line as is).
+    fn snippet_html(
+        searcher: &Searcher,
+        snippet_generator: &SnippetGenerator,
+        text: &str,
+        hl: &HighlightConfig,
+        phrase: Option<&PhraseHighlight>,
+    ) -> Option<String> {
+        let mut snippet = snippet_generator.snippet(text);
+        snippet.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
+        // For multi-word phrase queries, tantivy's term-based highlighter
+        // paints every occurrence of every query term; re-derive the
+        // highlights so only in-order, within-gap phrase occurrences stay
+        // painted. Falls back to the plain term highlight when the chosen
+        // fragment holds no complete phrase occurrence (never paints less
+        // context than before).
+        let (lead, tail) = glued_punctuation(text, snippet.fragment_range());
+        let fragment = [lead, snippet.fragment(), tail].concat();
+        let term_html = || {
+            htmlescape::encode_minimal(lead)
+                + &snippet.to_html()
+                + &htmlescape::encode_minimal(tail)
+        };
+        let snippet_html = match phrase {
+            Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
+                .or_else(|| {
+                    Self::phrase_filtered_snippet_html(
+                        searcher,
+                        text,
+                        pf,
+                        hl,
+                        Some(hl.max_chars as usize),
+                    )
+                })
+                .unwrap_or_else(term_html),
+            None => term_html(),
+        };
+        (!snippet_html.is_empty()).then_some(snippet_html)
+    }
+
+    /// The display text of each document, in order: the stored copy for
+    /// [`TextStorage::InIndex`] documents, the library-database row for the rest.
+    /// Every library row of the call is read in one transaction.
+    ///
+    /// `vocalized`: also derive the vocalized rendering of library rows (what the
+    /// `textVocalized` field was indexed from).
+    fn resolve_hit_texts(
+        schema: &Schema,
+        searcher: &Searcher,
+        documents: &[(DocAddress, TantivyDocument)],
+        vocalized: bool,
+    ) -> Result<Vec<HitText>> {
+        let text_stored_f = schema.get_field(TEXT_STORED_FIELD)?;
+        let vocalized_stored_f = schema.get_field(TEXT_VOCALIZED_STORED_FIELD)?;
+        let file_path_f = schema.get_field("filePath")?;
+        let segment_f = schema.get_field("segment")?;
+
+        struct Pending<'a> {
+            slot: usize,
+            key: crate::line_source::LineKey,
+            line_hash: u64,
+            file_path: &'a str,
+        }
+        let mut out = Vec::with_capacity(documents.len());
+        let mut pending: Vec<Pending> = Vec::new();
+        for (slot, (address, document)) in documents.iter().enumerate() {
+            if let Some(stored) = document.get_first(text_stored_f).and_then(|v| v.as_str()) {
+                out.push(HitText {
+                    plain: stored.to_string(),
+                    vocalized: document
+                        .get_first(vocalized_stored_f)
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    status: TextStatus::Ok,
+                });
+                continue;
+            }
+            out.push(HitText::unavailable());
+            let file_path = document
+                .get_first(file_path_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let Some(book_id) = library_book_id(file_path) else {
+                log::warn!("document without stored text has no library book id: {file_path:?}");
+                continue;
+            };
+            let ordinal = document
+                .get_first(segment_f)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            let line_hash = searcher
+                .segment_reader(address.segment_ord)
+                .fast_fields()
+                .u64("lineHash")?
+                .first(address.doc_id)
+                .unwrap_or_default();
+            pending.push(Pending {
+                slot,
+                key: crate::line_source::LineKey { book_id, ordinal },
+                line_hash,
+                file_path,
+            });
+        }
+        if pending.is_empty() {
+            return Ok(out);
+        }
+
+        let keys: Vec<_> = pending.iter().map(|p| p.key).collect();
+        let window = match crate::line_source::with_store(|store| store.fetch_window(&keys)) {
+            Ok(window) => window,
+            Err(reason) => {
+                debug!(
+                    "library text unavailable for {} hit(s): {reason:?}",
+                    keys.len()
+                );
+                return Ok(out);
+            }
+        };
+        let mut live_docs: HashMap<&str, u64> = HashMap::new();
+        for (p, row) in pending.iter().zip(window.rows) {
+            use crate::line_source::RowText;
+            out[p.slot] = match row {
+                RowText::Found(raw) => {
+                    let mut hit = HitText::from_library_row(&raw, vocalized);
+                    let verified = if p.line_hash != 0 {
+                        line_dedup_hash(&hit.plain) == p.line_hash
+                    } else {
+                        // Too short to sign: compare the book's row count with the
+                        // index's live documents of the book instead.
+                        let indexed = match live_docs.get(p.file_path) {
+                            Some(&n) => n,
+                            None => {
+                                let n = Self::live_doc_count(searcher, file_path_f, p.file_path)?;
+                                live_docs.insert(p.file_path, n);
+                                n
+                            }
+                        };
+                        window.book_rows.get(&p.key.book_id) == Some(&indexed)
+                    };
+                    if !verified {
+                        hit.status = TextStatus::Stale;
+                    }
+                    hit
+                }
+                RowText::Missing => HitText {
+                    plain: String::new(),
+                    vocalized: None,
+                    status: TextStatus::Stale,
+                },
+                RowText::Unreadable => HitText::unavailable(),
+            };
+        }
+        Ok(out)
+    }
+
+    fn live_doc_count(searcher: &Searcher, file_path_f: Field, file_path: &str) -> Result<u64> {
+        let query = TermQuery::new(
+            Term::from_field_text(file_path_f, file_path),
+            IndexRecordOption::Basic,
+        );
+        Ok(searcher.search(&query, &Count)? as u64)
+    }
+}
+
+/// One hit's display text before snippeting — see [`SearchEngine::resolve_hit_texts`].
+struct HitText {
+    plain: String,
+    /// The vocalized rendering, for documents that have one.
+    vocalized: Option<String>,
+    status: TextStatus,
+}
+
+impl HitText {
+    fn unavailable() -> Self {
+        HitText {
+            plain: String::new(),
+            vocalized: None,
+            status: TextStatus::Unavailable,
+        }
+    }
+
+    /// The texts `add_text_book` indexed this row as.
+    fn from_library_row(raw: &str, vocalized: bool) -> Self {
+        HitText {
+            plain: hebrew_query::normalize_text_for_indexing(raw),
+            vocalized: (vocalized && hebrew_query::contains_attached_marks(raw))
+                .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw))
+                .filter(|v| !v.is_empty()),
+            status: TextStatus::Ok,
+        }
+    }
+
+    fn display(self, vocalized: bool) -> String {
+        match self.vocalized {
+            Some(text) if vocalized => text,
+            _ => self.plain,
+        }
     }
 }
 
@@ -10373,6 +10839,7 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 text.to_string(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -10499,6 +10966,7 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 "יותר בכבוד המורים<br>כי אב הביאו לעולם".to_string(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -11168,6 +11636,7 @@ mod tests {
                 section_id: None,
                 generation_order: None,
                 extra_facets: None,
+                text_storage: None,
             }])
             .unwrap();
         engine
@@ -11186,6 +11655,7 @@ mod tests {
                 section_id: None,
                 generation_order: None,
                 extra_facets: None,
+                text_storage: None,
             }])
             .unwrap();
         engine.commit().unwrap();
@@ -11277,6 +11747,7 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 text.as_bytes().to_vec(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -11329,6 +11800,7 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 String::new(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         assert_eq!(added, 0);
@@ -13322,6 +13794,7 @@ mod tests {
             section_id: None,
             generation_order: None,
             extra_facets: None,
+            text_storage: None,
         }
     }
 
@@ -13436,6 +13909,7 @@ mod tests {
                     DEFAULT_GENERATION_ORDER,
                     text.to_string(),
                     None,
+                    TextStorage::InIndex,
                 )
                 .unwrap();
         }
@@ -13502,6 +13976,7 @@ mod tests {
                     DEFAULT_GENERATION_ORDER,
                     text.to_string(),
                     None,
+                    TextStorage::InIndex,
                 )
                 .unwrap();
             engine.commit().unwrap();
@@ -15876,6 +16351,7 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 text.to_string(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -16179,6 +16655,7 @@ mod tests {
                 0,
                 text.to_string(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -16638,6 +17115,7 @@ mod tests {
                 0,
                 lines.join("\n"),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -16940,6 +17418,7 @@ mod tests {
                 0,
                 text,
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();

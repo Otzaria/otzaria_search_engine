@@ -66,6 +66,7 @@ fn main() {
     };
 
     let index_path = required("--index");
+    let seforim_db = flag("--seforim-db");
     let out = PathBuf::from(required("--out"));
     let library_version = required("--library-version");
     let model: ModelIdentity =
@@ -85,12 +86,16 @@ fn main() {
     // Read-only, and literally so — the same door `build_semantic_artifact` uses. Going
     // through `SearchEngine` would create an index for a mistyped path and hold a writer
     // lock over a read that takes an hour.
-    let corpus =
-        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
-            .unwrap_or_else(|error| {
-                eprintln!("Could not read the corpus at {index_path}: {error:#}");
-                process::exit(1);
-            });
+    let corpus = TantivyCorpus::from_index_path(
+        Path::new(&index_path),
+        seforim_db.as_deref().map(Path::new),
+        library_version,
+        chunking.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the corpus at {index_path}: {error:#}");
+        process::exit(1);
+    });
     let identity = corpus.identity().unwrap_or_else(|error| {
         eprintln!("The corpus has no identity: {error}");
         process::exit(1);
@@ -162,6 +167,8 @@ Usage:
   --model            JSON ModelIdentity; no model file is opened
   --chunking         JSON ChunkerConfig, whose hash must be the model's chunking_identity
   --out              Receives plan.jsonl, export-manifest.json, corpus-identity.json
+  --seforim-db       Optional: the library database official books' line text is read
+                     from (read-only); required when the index keeps that text there
 
 Split plan.jsonl by record with `otzaria-semantic-search embed-shard --skip/--take`, on a
 machine with a GPU. Every record must fall in exactly one window; the merge refuses a hole
