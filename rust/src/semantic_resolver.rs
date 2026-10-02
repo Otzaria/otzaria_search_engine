@@ -30,8 +30,12 @@
 //! [`MAX_LINES_PER_HIT`] per hit, each line once in a search. Without grouping every one is
 //! a result; grouping folds them as it folds any lines, by section or by text.
 //!
-//! Either way a resolved line's key is its 64-bit column value or its full key; a result is
-//! checked against the full 128 bits again before it is shown.
+//! A line is returned only once it holds the hit's key by all 128 bits. A column value is
+//! the key's first 64, so a line found by its column is checked against the key recomputed
+//! from its text and its neighbours' before it is returned, and one that fails — a column
+//! left stale by whatever wrote the index — is dropped and counted
+//! ([`LiveResolver::unverified`]). Nothing a scan returns reaches fusion, grouping, a page
+//! or a group's siblings on 64 bits alone.
 //!
 //! # What is cached
 //!
@@ -67,14 +71,11 @@ pub(crate) const RECOMPUTE_REACH: usize = 16;
 /// times, lexical search still finds every one, and a semantic result needs a handful.
 pub(crate) const MAX_LINES_PER_HIT: usize = MAX_RECORDS_PER_HIT;
 
-/// Where a resolved line is, and the key it was resolved by: what the page a search shows
-/// is hydrated from and checked against.
+/// Where a resolved line is: what the page a search shows is hydrated from. The line was
+/// held to its hit's whole key before it was resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResolvedRecord {
     pub(crate) address: DocAddress,
-    pub(crate) key: ChunkKey,
-    /// The line's ordinal in its book.
-    pub(crate) ordinal: u32,
 }
 
 /// What a resolver remembers from one search to the next, for one generation of the index.
@@ -170,6 +171,8 @@ pub(crate) struct LiveResolver<'a> {
     cache: &'a Mutex<ResolverCache>,
     /// Every line this search resolved, by `(file_path, line_id)`, for its page.
     records: Mutex<HashMap<(String, u64), ResolvedRecord>>,
+    /// Lines whose column held a hit's key and whose text did not: dropped, and counted.
+    rejected: Mutex<HashSet<DocAddress>>,
 }
 
 fn index_error(reason: impl std::fmt::Display) -> ResolveError {
@@ -212,6 +215,7 @@ impl<'a> LiveResolver<'a> {
             columns,
             cache,
             records: Mutex::new(HashMap::new()),
+            rejected: Mutex::new(HashSet::new()),
         })
     }
 
@@ -230,24 +234,11 @@ impl<'a> LiveResolver<'a> {
         std::mem::take(&mut *self.records.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// Whether the line `record` names holds its key by the full 128 bits, recomputed from
-    /// the text this searcher reads: what a result is checked against before it is shown.
-    /// A line resolved by recomputing was held to all 128 already; one resolved by the
-    /// column, to its 64.
-    pub(crate) fn verify(&self, book: &str, record: &ResolvedRecord) -> Result<bool, ResolveError> {
-        if !self.column {
-            return Ok(true);
-        }
-        let Some(lines) = self.book(book)? else {
-            return Ok(false);
-        };
-        let Some(position) = lines
-            .position(record.ordinal)
-            .filter(|&position| lines.docs[position] == record.address)
-        else {
-            return Ok(false);
-        };
-        self.holds(&lines, position, record.key)
+    /// How many lines this search dropped because their column held a hit's key and their
+    /// text, recomputed, did not: each line once, however many hits found it.
+    pub(crate) fn unverified(&self) -> u32 {
+        let rejected = self.rejected.lock().unwrap_or_else(PoisonError::into_inner);
+        rejected.len().min(u32::MAX as usize) as u32
     }
 
     /// Whether the line at `position` of `book` holds `key` by all 128 bits, recomputed from
@@ -263,6 +254,39 @@ impl<'a> LiveResolver<'a> {
             .pop()
             .flatten();
         Ok(found == Some(key))
+    }
+
+    /// Whether the line at `position` of `book`, whose column holds `key`'s value, holds
+    /// `key` itself: checked once per line and search, and remembered when it does not.
+    fn verified(
+        &self,
+        book: &BookLines,
+        position: usize,
+        key: ChunkKey,
+    ) -> Result<bool, ResolveError> {
+        let address = book.docs[position];
+        if self
+            .rejected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&address)
+        {
+            return Ok(false);
+        }
+        if self.holds(book, position, key)? {
+            return Ok(true);
+        }
+        log::debug!(
+            "The chunkKey column of line {} of {} holds the value of a key its text does not \
+             have; the line is not shown for that vector",
+            book.ordinals[position],
+            book.name
+        );
+        self.rejected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(address);
+        Ok(false)
     }
 
     /// The live books, built once per generation.
@@ -414,7 +438,6 @@ impl<'a> LiveResolver<'a> {
     fn describe(
         &self,
         hit: usize,
-        key: ChunkKey,
         book: &BookLines,
         position: usize,
     ) -> Result<ResolvedLine, ResolveError> {
@@ -427,14 +450,7 @@ impl<'a> LiveResolver<'a> {
         self.records
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                (book.name.to_string(), line_id),
-                ResolvedRecord {
-                    address,
-                    key,
-                    ordinal: book.ordinals[position],
-                },
-            );
+            .insert((book.name.to_string(), line_id), ResolvedRecord { address });
         Ok(ResolvedLine {
             hit: hit as u32,
             line_id,
@@ -452,8 +468,8 @@ impl<'a> LiveResolver<'a> {
     /// The value a line's repeats in its book are found by: its `chunkKey` column value with
     /// the column, the key's own first 64 bits; without one its `lineHash`, which every line
     /// of one text shares once the text has letters enough to have one. `None` for a line
-    /// with neither. Only a candidate without the column: a repeat is held to the whole key
-    /// before it is a line of the hit's.
+    /// with neither. Only a candidate either way: a repeat is held to the whole key before
+    /// it is a line of the hit's.
     fn repeat_value(&self, address: DocAddress) -> Option<u64> {
         let columns = &self.columns[address.segment_ord as usize];
         let value = if self.column {
@@ -517,7 +533,11 @@ impl<'a> LiveResolver<'a> {
             if other == position || taken.contains(&book.docs[other]) {
                 continue;
             }
-            let holds = self.column || self.holds(book, other, key)?;
+            let holds = if self.column {
+                self.verified(book, other, key)?
+            } else {
+                self.holds(book, other, key)?
+            };
             if holds {
                 found.push(other);
             }
@@ -525,9 +545,9 @@ impl<'a> LiveResolver<'a> {
         Ok(found)
     }
 
-    /// The position of `book` the record at `hint` names, when that line holds `key`: the
-    /// first look for every record, which a line that has not moved passes at the cost of
-    /// one key.
+    /// The position of `book` the record at `hint` names, when that line holds `key` by
+    /// all 128 bits: the first look for every record, which a line that has not moved
+    /// passes at the cost of one key.
     fn at_hint(
         &self,
         book: &BookLines,
@@ -539,14 +559,15 @@ impl<'a> LiveResolver<'a> {
         };
         let holds = if self.column {
             self.column_value(book.docs[position]) == Some(key.column_value())
+                && self.verified(book, position, key)?
         } else {
             self.holds(book, position, key)?
         };
         Ok(holds.then_some(position))
     }
 
-    /// The positions of `book` that hold `key` and are not `taken`, the nearest to `hint`
-    /// first and at most `limit`: every line of the book whose column
+    /// The positions of `book` that hold `key` by all 128 bits and are not `taken`, the
+    /// nearest to `hint` first and at most `limit`: every line of the book whose column
     /// holds it, or, recomputing, those within [`RECOMPUTE_REACH`] of the hint. What a
     /// record whose line is not at its hint is looked for by.
     fn search_book(
@@ -573,7 +594,10 @@ impl<'a> LiveResolver<'a> {
                     break;
                 }
                 let address = book.docs[position];
-                if !taken.contains(&address) && self.column_value(address) == Some(wanted) {
+                if !taken.contains(&address)
+                    && self.column_value(address) == Some(wanted)
+                    && self.verified(book, position, key)?
+                {
                     found.push(position);
                 }
             }
@@ -850,12 +874,12 @@ impl CandidateResolver for LiveResolver<'_> {
                 if !taken.insert(book.docs[position]) {
                     continue;
                 }
-                lines.push(self.describe(hit_index, hit.key, &book, position)?);
+                lines.push(self.describe(hit_index, &book, position)?);
                 emitted += 1;
                 let limit = MAX_LINES_PER_HIT - emitted;
                 for other in self.repeats_of(&book, position, hit.key, limit, &taken)? {
                     taken.insert(book.docs[other]);
-                    lines.push(self.describe(hit_index, hit.key, &book, other)?);
+                    lines.push(self.describe(hit_index, &book, other)?);
                     emitted += 1;
                 }
             }
@@ -875,13 +899,13 @@ impl CandidateResolver for LiveResolver<'_> {
                     if emitted == MAX_LINES_PER_HIT || !taken.insert(book.docs[position]) {
                         continue;
                     }
-                    lines.push(self.describe(hit_index, hit.key, book, position)?);
+                    lines.push(self.describe(hit_index, book, position)?);
                     emitted += 1;
                     if !self.column {
                         let limit = MAX_LINES_PER_HIT - emitted;
                         for other in self.repeats_of(book, position, hit.key, limit, &taken)? {
                             taken.insert(book.docs[other]);
-                            lines.push(self.describe(hit_index, hit.key, book, other)?);
+                            lines.push(self.describe(hit_index, book, other)?);
                             emitted += 1;
                         }
                     }
@@ -940,8 +964,10 @@ impl CandidateResolver for LiveResolver<'_> {
                         else {
                             continue;
                         };
-                        if taken.insert(address) {
-                            lines.push(self.describe(hit_index, key, &book, position)?);
+                        // Found by its column value, so held to the whole key like any.
+                        if !taken.contains(&address) && self.verified(&book, position, key)? {
+                            taken.insert(address);
+                            lines.push(self.describe(hit_index, &book, position)?);
                             emitted += 1;
                         }
                     }
