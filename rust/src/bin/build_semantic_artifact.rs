@@ -131,27 +131,19 @@ fn main() {
         identity.text.line_text_version
     );
 
-    let clip_q = flag("--clip-q").map_or(1.0, |value| {
-        value
-            .parse::<f32>()
-            .ok()
-            .filter(|q| *q > 0.0 && *q <= 1.0)
-            .unwrap_or_else(|| {
-                eprintln!("Error: --clip-q is a quantile above 0 and at most 1, not {value:?}");
-                process::exit(1);
-            })
-    });
     let report = build(
         BuildRequest {
             output_path: PathBuf::from(&out),
             model_path: PathBuf::from(required("--model-file")),
             model: model.clone(),
             chunking,
-            created_at: flag("--created-at").unwrap_or_else(utc_timestamp),
+            created_at: flag("--created-at")
+                .unwrap_or_else(search_engine::semantic_plan::utc_timestamp),
             batch_size: flag("--batch")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(32),
-            clip_q,
+            // The codec the application reads, whichever the sidecar makes its default.
+            codec: Default::default(),
             allow_non_semantic_backend: args.iter().any(|arg| arg == "--allow-non-semantic"),
         },
         &corpus,
@@ -226,8 +218,6 @@ Required:
 Optional:
   --release-tag <tag>        The release that edition was published as (default: none)
   --batch <N>                Texts per inference call (default: 32)
-  --clip-q <q>               The quantile each dimension's int8 scale is calibrated at
-                             (default: 1, which clips nothing)
   --created-at <timestamp>   Manifest timestamp (default: now, UTC)
   --allow-non-semantic       Permit a backend whose vectors carry no meaning. For tests
                              only: such a package passes every check and answers nonsense.
@@ -251,37 +241,4 @@ fn library_version(value: &str) -> u32 {
             std::process::exit(1);
         }
     }
-}
-
-/// `YYYY-MM-DDTHH:MM:SSZ` for the manifest, without pulling in a date crate for one string.
-#[cfg(feature = "semantic-integration")]
-fn utc_timestamp() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs() as i64);
-    let days = seconds.div_euclid(86_400);
-    let second_of_day = seconds.rem_euclid(86_400);
-
-    // Howard Hinnant's civil_from_days: exact over the proleptic Gregorian calendar.
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_position = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_position + 2) / 5 + 1) as u32;
-    let month = if month_position < 10 {
-        month_position + 3
-    } else {
-        month_position - 9
-    } as u32;
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        second_of_day / 3600,
-        (second_of_day % 3600) / 60,
-        second_of_day % 60
-    )
 }

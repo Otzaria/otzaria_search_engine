@@ -511,7 +511,9 @@ fn ensure_every_line_reads(corpus: &TantivyCorpus) -> Result<()> {
 }
 
 /// Refuse an index this build does not read, before anything opens it.
-fn ensure_compatible(compatibility: &crate::api::search_engine::IndexCompatibility) -> Result<()> {
+pub(crate) fn ensure_compatible(
+    compatibility: &crate::api::search_engine::IndexCompatibility,
+) -> Result<()> {
     if compatibility.compatible {
         return Ok(());
     }
@@ -1188,7 +1190,7 @@ mod tests {
                 chunking,
                 created_at: "2026-08-09T00:00:00Z".to_string(),
                 batch_size: 2,
-                clip_q: 1.0,
+                codec: Default::default(),
                 // The stand-in's vectors carry no meaning; saying so is what keeps the
                 // refusal the default for everything that ships.
                 allow_non_semantic_backend: true,
