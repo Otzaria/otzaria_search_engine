@@ -4936,45 +4936,24 @@ impl SearchEngine {
                 .map(|_| SemanticErrorKind::QueryFailed);
 
             // Every line a vector set's hit was resolved to, by (book, id): where it is in
-            // the searcher the resolver read, and the key it was resolved by. Empty for a
-            // session built on this device, whose lines are hydrated by id.
+            // the searcher the resolver read. Empty for a session built on this device, whose
+            // lines are hydrated by id.
             let records = resolver.records();
-            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
-                SemanticError::new(
-                    SemanticErrorKind::Internal,
-                    format!("the index could not be read to check semantic results: {err}"),
-                )
-            };
+            // A semantic match is a line that holds the text its vector was embedded from by
+            // all 128 bits of the key: the resolver checks every line it returns, primaries
+            // and grouped siblings alike, before fusion sees any, and counts those it drops.
+            // One lexical search also found is still a lexical result.
+            let unverified = resolver.unverified();
 
-            // Phase 1 — hydrate and check the whole window, keeping the hydrated document
-            // so the surviving page needs no second lookup. Only a `needs_hydration` item
-            // can be stale: a lexical candidate came from this same index in this same
-            // request, so it is live by construction.
-            //
-            // A semantic match is shown only for a line that still holds the text its
-            // vector was embedded from, by all 128 bits of the key: a semantic-only item
-            // that fails is dropped, and one lexical search also found keeps its lexical
-            // half alone. This has to precede pagination, or a dropped item would leave a
-            // hole on one page and shift the next.
+            // Phase 1 — hydrate the whole window, keeping the hydrated document so the
+            // surviving page needs no second lookup. Only a `needs_hydration` item can be
+            // stale: a lexical candidate came from this same index in this same request, so
+            // it is live by construction. This has to precede pagination, or a dropped item
+            // would leave a hole on one page and shift the next.
             let mut surviving = Vec::with_capacity(result.results.len());
             let mut stale_primaries_dropped = 0u32;
-            let mut unverified = 0u32;
-            for mut item in result.results {
+            for item in result.results {
                 let record = records.get(&(item.file_path.clone(), item.id)).copied();
-                if let Some(record) = &record {
-                    if item.semantic_score.is_some()
-                        && !resolver
-                            .verify(&item.file_path, record)
-                            .map_err(unreadable)?
-                    {
-                        unverified = unverified.saturating_add(1);
-                        if item.lexical_score.is_none() {
-                            continue;
-                        }
-                        item.semantic_score = None;
-                        item.source = SidecarResultSource::Lexical;
-                    }
-                }
                 if !item.needs_hydration {
                     surviving.push((item, None));
                     continue;
