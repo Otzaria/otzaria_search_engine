@@ -94,9 +94,21 @@ pub fn recompute_chunk_key(
     book: &[DocAddress],
     ordinal: usize,
 ) -> Result<Option<ChunkKey>> {
+    let mut keys = recompute_chunk_keys(searcher, book, ordinal..ordinal + 1)?;
+    Ok(keys.pop().flatten())
+}
+
+/// [`recompute_chunk_key`] for every line of `lines`, a range of positions in `book`,
+/// reading the stretch they and their windows span once: what re-anchoring a hit around
+/// its hint, or checking a page of results from one book, asks.
+pub fn recompute_chunk_keys(
+    searcher: &Searcher,
+    book: &[DocAddress],
+    lines: std::ops::Range<usize>,
+) -> Result<Vec<Option<ChunkKey>>> {
     anyhow::ensure!(
-        ordinal < book.len(),
-        "line {ordinal} is not in a book of {} line(s)",
+        lines.start < lines.end && lines.end <= book.len(),
+        "lines {lines:?} are not in a book of {} line(s)",
         book.len()
     );
     let schema = searcher.schema();
@@ -104,45 +116,54 @@ pub fn recompute_chunk_key(
     let is_pdf_field = schema.get_field("isPdf")?;
 
     let reach = production_chunking().context_window_lines;
-    let start = ordinal.saturating_sub(reach);
-    let end = ordinal.saturating_add(reach).min(book.len() - 1);
+    let start = lines.start.saturating_sub(reach);
+    let end = (lines.end - 1).saturating_add(reach).min(book.len() - 1);
     let mut texts = Vec::with_capacity(end - start + 1);
     let mut sections = Vec::with_capacity(end - start + 1);
-    for (index, &address) in book.iter().enumerate().take(end + 1).skip(start) {
+    let mut pdf = Vec::with_capacity(end - start + 1);
+    for &address in &book[start..=end] {
         let document: TantivyDocument = searcher
             .doc(address)
             .with_context(|| format!("reading the document at {address:?}"))?;
-        if index == ordinal
-            && document
+        pdf.push(
+            document
                 .get_first(is_pdf_field)
                 .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-        {
-            return Ok(None);
-        }
-        let text = document
-            .get_first(text_field)
-            .and_then(|value| value.as_str())
-            .with_context(|| format!("the document at {address:?} stores no text"))?
-            .to_string();
+                .unwrap_or(false),
+        );
+        texts.push(
+            document
+                .get_first(text_field)
+                .and_then(|value| value.as_str())
+                .with_context(|| format!("the document at {address:?} stores no text"))?
+                .to_string(),
+        );
         // FAST and not stored, so read from its column.
-        let section = searcher
-            .segment_reader(address.segment_ord)
-            .fast_fields()
-            .u64("sectionId")?
-            .first(address.doc_id)
-            .with_context(|| format!("the document at {address:?} has no sectionId"))?;
-        texts.push(text);
-        sections.push(section);
+        sections.push(
+            searcher
+                .segment_reader(address.segment_ord)
+                .fast_fields()
+                .u64("sectionId")?
+                .first(address.doc_id)
+                .with_context(|| format!("the document at {address:?} has no sectionId"))?,
+        );
     }
-    let lines: Vec<LineRef<'_>> = texts
+    let window: Vec<LineRef<'_>> = texts
         .iter()
         .zip(&sections)
         .map(|(text, &section)| LineRef { text, section })
         .collect();
-    Ok(PRODUCTION_CHUNKER
-        .embedded_text(&lines, ordinal - start)
-        .map(|text| ChunkKey::of(&text)))
+    Ok(lines
+        .map(|line| {
+            let index = line - start;
+            if pdf[index] {
+                return None;
+            }
+            PRODUCTION_CHUNKER
+                .embedded_text(&window, index)
+                .map(|text| ChunkKey::of(&text))
+        })
+        .collect())
 }
 
 /// What a `chunkKey` column was computed under, as an index's metadata records it.

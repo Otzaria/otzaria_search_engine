@@ -668,9 +668,10 @@ Future<void> main() async {
   group('semantic FFI with a prebuilt artifact', () {
     const bookKey = '/books/genesis.txt';
     const probeLine = 'ויאמר אלהים יהי אור ויהי אור';
-    // `ChunkerConfig::default().identity()`: the recipe below, which the
-    // artifact's model identity has to name.
-    const chunkingIdentity = 6636791861761206090;
+    // The chunking this build keys the index's lines under, Meivin Round 2's,
+    // which the vector set's model identity has to name: `chunking.json` below,
+    // and its `ChunkerConfig::identity()`.
+    const chunkingIdentity = 2685558872390372738;
 
     late Directory root;
     late SearchEngine engine;
@@ -710,7 +711,7 @@ Future<void> main() async {
         'embedding_dim': 64,
         'pooling': 'in-graph',
         'max_tokens': 512,
-        'embedding_text_version': 1,
+        'embedding_text_version': 2,
         'normalization_version': 1,
         'chunking_identity': chunkingIdentity,
         'query_packages': [
@@ -725,7 +726,7 @@ Future<void> main() async {
           'max_chunk_chars': 512,
           'min_embeddable_chars': 5,
           'chunking_version': 1,
-          'embedding_text_version': 1,
+          'embedding_text_version': 2,
           'normalization_version': 1,
         }),
       );
@@ -765,7 +766,7 @@ Future<void> main() async {
       }
     });
 
-    test('an installed vector set opens and reports itself', () async {
+    test('an opened vector set serves a hydrated semantic-only hit', () async {
       final status = await engine.openSemanticArtifact(config: input(identity));
       expect(status.enabled, isTrue);
       expect(status.available, isTrue, reason: status.lastError);
@@ -774,6 +775,57 @@ Future<void> main() async {
       expect(status.embeddingBackend, MockBackend.id);
       expect(status.vectorCount, 2);
       expect(status.vectorsPersisted, isTrue);
+
+      final response = await engine.searchSemantic(
+        query: probeLine,
+        facets: const [],
+        limit: 10,
+        offset: 0,
+        lexicalMode: SemanticLexicalMode.exact,
+        fuzzyMaxDistance: 0,
+        retrievalMode: SemanticRetrievalMode.semanticOnly,
+        matchNikud: false,
+        matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
+      );
+      expect(response.executedMode, SemanticExecutedMode.semanticOnly);
+      expect(response.semanticAvailable, isTrue);
+      expect(response.fallbackKind, isNull);
+      final hit = response.results.first;
+      expect(hit.source, SemanticResultSource.semantic);
+      expect(hit.needsHydration, isFalse);
+      expect(hit.snippetHtml, probeLine);
+      expect(hit.filePath, bookKey);
+    });
+
+    test('a commit after opening leaves the vector set serving', () async {
+      await engine.openSemanticArtifact(config: input(identity));
+      await engine.addTextBook(
+        title: 'נוסף',
+        topics: '/אחר',
+        filePath: '/books/another.txt',
+        catalogueOrder: 1,
+        generationOrder: 0,
+        text: 'שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה',
+      );
+      await engine.commit();
+
+      final status = await engine.semanticStatus();
+      expect(status.state, SemanticState.ready);
+      final response = await engine.searchSemantic(
+        query: probeLine,
+        facets: const [],
+        limit: 10,
+        offset: 0,
+        lexicalMode: SemanticLexicalMode.exact,
+        fuzzyMaxDistance: 0,
+        retrievalMode: SemanticRetrievalMode.semanticOnly,
+        matchNikud: false,
+        matchTaamim: false,
+        cancellation: SemanticCancellationToken(),
+      );
+      expect(response.semanticAvailable, isTrue);
+      expect(response.results.first.snippetHtml, probeLine);
     });
 
     test(
