@@ -7974,14 +7974,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   LineSourceStatus dco_decode_line_source_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return LineSourceStatus(
       configured: dco_decode_bool(arr[0]),
       open: dco_decode_bool(arr[1]),
       suspendDepth: dco_decode_u_32(arr[2]),
       hostApiReady: dco_decode_bool(arr[3]),
       generation: dco_decode_u_64(arr[4]),
+      libraryFallbacks: dco_decode_u_64(arr[5]),
     );
   }
 
@@ -9600,12 +9601,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_suspendDepth = sse_decode_u_32(deserializer);
     var var_hostApiReady = sse_decode_bool(deserializer);
     var var_generation = sse_decode_u_64(deserializer);
+    var var_libraryFallbacks = sse_decode_u_64(deserializer);
     return LineSourceStatus(
       configured: var_configured,
       open: var_open,
       suspendDepth: var_suspendDepth,
       hostApiReady: var_hostApiReady,
       generation: var_generation,
+      libraryFallbacks: var_libraryFallbacks,
     );
   }
 
@@ -11688,6 +11691,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.suspendDepth, serializer);
     sse_encode_bool(self.hostApiReady, serializer);
     sse_encode_u_64(self.generation, serializer);
+    sse_encode_u_64(self.libraryFallbacks, serializer);
   }
 
   @protected

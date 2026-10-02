@@ -6988,12 +6988,14 @@ impl SseDecode for crate::api::search_engine::LineSourceStatus {
         let mut var_suspendDepth = <u32>::sse_decode(deserializer);
         let mut var_hostApiReady = <bool>::sse_decode(deserializer);
         let mut var_generation = <u64>::sse_decode(deserializer);
+        let mut var_libraryFallbacks = <u64>::sse_decode(deserializer);
         return crate::api::search_engine::LineSourceStatus {
             configured: var_configured,
             open: var_open,
             suspend_depth: var_suspendDepth,
             host_api_ready: var_hostApiReady,
             generation: var_generation,
+            library_fallbacks: var_libraryFallbacks,
         };
     }
 }
@@ -9120,6 +9122,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::LineSourceStat
             self.suspend_depth.into_into_dart().into_dart(),
             self.host_api_ready.into_into_dart().into_dart(),
             self.generation.into_into_dart().into_dart(),
+            self.library_fallbacks.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -10601,6 +10604,7 @@ impl SseEncode for crate::api::search_engine::LineSourceStatus {
         <u32>::sse_encode(self.suspend_depth, serializer);
         <bool>::sse_encode(self.host_api_ready, serializer);
         <u64>::sse_encode(self.generation, serializer);
+        <u64>::sse_encode(self.library_fallbacks, serializer);
     }
 }
 
