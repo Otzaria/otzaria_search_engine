@@ -25,7 +25,9 @@
   `--no-default-features --features semantic,sqlite-host`. Dart must register
   `sqliteHostEntryAddress()` with `sqlite3_auto_extension` and open a connection
   before the engine uses SQLite; until then every SQLite use (the line source and
-  the lexical dictionary) fails with a defined error instead of panicking.
+  the lexical dictionary) fails with a defined error instead of panicking. The
+  entry never unregisters itself (that would make the open in progress skip the
+  next registered extension); the app may cancel it after its first open.
 
 ### Added
 
