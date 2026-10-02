@@ -30,6 +30,11 @@ pub mod semantic_corpus;
 // `crate::api`, where Dart gets them.
 #[cfg(feature = "semantic-integration")]
 mod semantic_errors;
+// The live index as a vector set's resolver: which books a filter admits, and which live
+// lines hold the keys a scan returned. At the crate root for the reason `semantic_errors` is:
+// it implements the sidecar's port, which Dart never sees.
+#[cfg(feature = "semantic-integration")]
+mod semantic_resolver;
 // What a semantic search's cancellation token holds, and where a search looks at it. At the
 // crate root for the same reason: Dart gets the token, in `crate::api`, and nothing here. In
 // every build, since the token is part of the API whether or not the sidecar is.

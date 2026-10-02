@@ -14,14 +14,16 @@
 
 #![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
-use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::embedding::mock;
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticConfigInput, SemanticError, SemanticErrorKind, SemanticState,
+    SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
+    SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
+    SemanticSearchResponse, SemanticState,
 };
+use search_engine::semantic_keys::production_chunking;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,6 +43,26 @@ const GENESIS_TEXT: &str = "בראשית ברא אלהים את השמים וא�
                             ויאמר אלהים יהי אור ויהי אור";
 const BERACHOT_TEXT: &str = "מאימתי קורין את שמע בערבית משעה שהכהנים נכנסין לאכול בתרומתן";
 const EMBEDDED: u32 = 4;
+
+/// A line whose exact text a query repeats, so the stand-in must rank it first.
+const PROBE_LINE: &str = "ויאמר אלהים יהי אור ויהי אור";
+
+/// One book as `add_text_book` takes it: title, topics, key, catalogue order, text.
+type Book = (&'static str, &'static str, &'static str, u32, String);
+
+/// The two books every library here starts from.
+fn default_books() -> Vec<Book> {
+    vec![
+        ("בראשית", "/מקרא/תורה", GENESIS, 0, GENESIS_TEXT.to_string()),
+        (
+            "משנה ברכות",
+            "/משנה/זרעים",
+            BERACHOT,
+            1,
+            BERACHOT_TEXT.to_string(),
+        ),
+    ]
+}
 
 /// What the build machine produced, and where.
 struct Library {
@@ -77,30 +99,54 @@ impl Library {
     }
 }
 
-fn add_books(engine: &mut SearchEngine) {
-    engine
-        .add_text_book(
-            "בראשית".to_string(),
-            "/מקרא/תורה".to_string(),
-            GENESIS.to_string(),
-            0,
-            0,
-            GENESIS_TEXT.to_string(),
-            None,
-        )
-        .unwrap();
-    engine
-        .add_text_book(
-            "משנה ברכות".to_string(),
-            "/משנה/זרעים".to_string(),
-            BERACHOT.to_string(),
-            1,
-            0,
-            BERACHOT_TEXT.to_string(),
-            None,
-        )
-        .unwrap();
+fn add_books(engine: &mut SearchEngine, books: &[Book]) {
+    for (title, topics, key, order, text) in books {
+        engine
+            .add_text_book(
+                title.to_string(),
+                topics.to_string(),
+                key.to_string(),
+                *order,
+                0,
+                text.clone(),
+                None,
+            )
+            .unwrap();
+    }
     engine.commit().unwrap();
+}
+
+/// Replace one book, as the application reindexes a book that changed.
+fn replace_book(engine: &mut SearchEngine, book: Book) {
+    engine.delete_documents_by_file_path(book.2).unwrap();
+    add_books(engine, &[book]);
+}
+
+/// An empty index of schema version 4, as the engine before the `chunkKey` column made
+/// one: this engine's schema without that field, and version 4's metadata.
+fn version_4_index(dir: &Path) {
+    let probe = TempDir::new().unwrap();
+    drop(SearchEngine::new(probe.path().to_str().unwrap()));
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(probe.path().join("meta.json")).unwrap())
+            .unwrap();
+    let mut fields = meta["schema"].as_array().unwrap().clone();
+    fields.retain(|field| field["name"] != "chunkKey");
+    let schema: tantivy::schema::Schema =
+        serde_json::from_value(serde_json::Value::Array(fields)).unwrap();
+    tantivy::Index::create_in_dir(dir, schema).unwrap();
+    std::fs::write(
+        dir.join("otzaria_index_meta.json"),
+        serde_json::json!({
+            "format": "otzaria-search-index",
+            "schema_version": 4,
+            "engine_version": "0.8.7",
+            "tantivy_version": "0.26.2",
+            "created_at_unix_seconds": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
 }
 
 /// Bookkeeping files of a directory: what a tool that writes into it would add.
@@ -115,15 +161,26 @@ fn bookkeeping(dir: &Path) -> BTreeSet<String> {
 /// Build the library the way a release does — the lexical index, closed, then a base
 /// package built from it — and install it as a device installs a release.
 fn build_library() -> Library {
+    build_library_of(&default_books(), false)
+}
+
+/// [`build_library`] of `books`, into an index of schema version 4 when `version_4` asks.
+fn build_library_of(books: &[Book], version_4: bool) -> Library {
     let root = TempDir::new().unwrap();
     let index = root.path().join("tantivy");
     let work = root.path().join("work");
     std::fs::create_dir_all(&index).unwrap();
     std::fs::create_dir_all(&work).unwrap();
-    add_books(&mut SearchEngine::new(index.to_str().unwrap()));
+    if version_4 {
+        version_4_index(&index);
+    }
+    add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
 
     let model_file = mock::write_stub_onnx_package(&work.join("model"));
-    let chunking = ChunkerConfig::default();
+    // The chunking this build keys the index's lines under, as the library's vectors are
+    // built with it. The stand-in embeds a bag of words, so a query still ranks first the
+    // line whose words it repeats, role prefixes aside.
+    let chunking = production_chunking();
     let model = ModelIdentity {
         family_id: "test-mock@0000000".to_string(),
         tokenizer_checksum: mock::stub_tokenizer_checksum(),
@@ -198,6 +255,49 @@ fn build_library() -> Library {
         model_file,
         model,
     }
+}
+
+fn search(
+    engine: &SearchEngine,
+    query: &str,
+    facets: &[&str],
+    mode: SemanticRetrievalMode,
+) -> SemanticSearchResponse {
+    engine
+        .search_semantic(
+            query.to_string(),
+            facets.iter().map(|facet| facet.to_string()).collect(),
+            10,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            mode,
+            None,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap()
+}
+
+/// The semantic-only results of `query`, as (book, line text, ordinal).
+fn semantic_lines(
+    engine: &SearchEngine,
+    query: &str,
+    facets: &[&str],
+) -> Vec<(String, String, u64)> {
+    let response = search(engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+    assert!(
+        response.semantic_available,
+        "{:?}",
+        response.fallback_reason
+    );
+    response
+        .results
+        .into_iter()
+        .map(|result| (result.file_path, result.snippet_html, result.segment))
+        .collect()
 }
 
 fn open_refusal(engine: &SearchEngine, input: SemanticArtifactInput) -> SemanticError {
@@ -682,4 +782,285 @@ fn an_identity_value_no_build_serves_is_invalid_input() {
         );
         assert_refused(&engine, &error, SemanticErrorKind::InvalidInput, field);
     }
+}
+
+/// The whole path: installed, opened, searched both ways, and every result a line of this
+/// index, hydrated from it.
+#[test]
+fn an_opened_set_answers_with_live_lines() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    // Semantic-only: the one line the query repeats comes back first, hydrated from this
+    // index.
+    let response = search(
+        &engine,
+        PROBE_LINE,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert_eq!(response.executed_mode, SemanticExecutedMode::SemanticOnly);
+    assert!(
+        response.semantic_available,
+        "{:?}",
+        response.fallback_reason
+    );
+    assert_eq!(response.fallback_kind, None);
+    let top = response.results.first().expect("a semantic hit");
+    assert_eq!(top.source, SemanticResultSource::Semantic);
+    assert!(!top.needs_hydration);
+    assert_eq!(top.snippet_html, PROBE_LINE);
+    assert_eq!(top.file_path, GENESIS);
+    assert_eq!(top.segment, 3);
+    let stored = engine
+        .get_document_by_id(top.id)
+        .unwrap()
+        .expect("the hit's id names a line of this index");
+    assert_eq!(stored.text, PROBE_LINE);
+
+    // Hybrid: both halves reach fusion, and the line both found is marked as such.
+    let response = search(&engine, PROBE_LINE, &[], SemanticRetrievalMode::Hybrid);
+    assert_eq!(response.executed_mode, SemanticExecutedMode::Hybrid);
+    assert!(
+        response.fallback_reason.is_none(),
+        "{:?}",
+        response.fallback_reason
+    );
+    let top = response.results.first().expect("a fused hit");
+    assert_eq!(top.id, stored.id);
+    assert_eq!(top.source, SemanticResultSource::Both);
+}
+
+/// Nothing goes stale: a commit after opening leaves the set serving, and its lines are
+/// the index's as they are now.
+#[test]
+fn a_commit_after_opening_leaves_the_set_serving() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    add_books(
+        &mut engine,
+        &[(
+            "ספר נוסף",
+            "/אחר",
+            "/books/another.txt",
+            2,
+            "שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה".to_string(),
+        )],
+    );
+
+    let status = engine.semantic_status();
+    assert_eq!(status.state, SemanticState::Ready);
+    assert!(status.available);
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
+/// A line pushed down by one inserted above it is found where it moved, by its key.
+#[test]
+fn a_line_inserted_above_is_found_where_it_moved() {
+    for version_4 in [false, true] {
+        let library = build_library_of(&default_books(), version_4);
+        let mut engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        replace_book(
+            &mut engine,
+            (
+                "בראשית",
+                "/מקרא/תורה",
+                GENESIS,
+                0,
+                format!("שורה חדשה בראש הספר שלא הייתה בו קודם\n{GENESIS_TEXT}"),
+            ),
+        );
+
+        assert_eq!(
+            semantic_lines(&engine, PROBE_LINE, &[]).first(),
+            Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
+            "schema version 4: {version_4}"
+        );
+    }
+}
+
+/// A text that left its book for another is found in the other one: the column is passed
+/// over once for every hit its own books no longer hold.
+#[test]
+fn a_text_moved_to_another_book_is_found_there() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    engine.delete_documents_by_file_path(BERACHOT).unwrap();
+    add_books(
+        &mut engine,
+        &[(
+            "משנה ברכות, מהדורה אחרת",
+            "/משנה/זרעים",
+            "/books/berachot-2.txt",
+            5,
+            format!("פתיחה למהדורה האחרת ארוכה דיה\n{BERACHOT_TEXT}"),
+        )],
+    );
+
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &[]).first(),
+        Some(&(
+            "/books/berachot-2.txt".to_string(),
+            BERACHOT_TEXT.to_string(),
+            1
+        ))
+    );
+}
+
+/// A line that is gone, and a short line whose neighbour changed, are not shown for the
+/// vector of what they were: neither text is in the index any more.
+#[test]
+fn a_line_that_is_gone_or_whose_context_changed_is_not_shown() {
+    // The middle line is short, so its vector is of it and its neighbours.
+    let short = "ויהי ערב ויהי";
+    let first = "שורה ראשונה ארוכה דיה לעמוד לבדה";
+    let third = "שורה שלישית ארוכה דיה לעמוד לבדה";
+    let embedded = format!("{first} {short} {third}");
+    let book: Book = (
+        "ספר קצרות",
+        "/בדיקה",
+        "/books/short.txt",
+        2,
+        format!("{first}\n{short}\n{third}"),
+    );
+    let mut books = default_books();
+    books.push(book.clone());
+    let library = build_library_of(&books, false);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        semantic_lines(&engine, &embedded, &[]).first(),
+        Some(&("/books/short.txt".to_string(), short.to_string(), 1)),
+        "the short line is found by its text and its neighbours'"
+    );
+
+    replace_book(
+        &mut engine,
+        (
+            book.0,
+            book.1,
+            book.2,
+            book.3,
+            format!("{first}\n{short}\nשורה שלישית אחרת לגמרי מזו שהייתה"),
+        ),
+    );
+    assert!(
+        !semantic_lines(&engine, &embedded, &[])
+            .iter()
+            .any(|(_, text, _)| text == short),
+        "the short line's text is now of other neighbours"
+    );
+
+    engine.delete_documents_by_file_path(GENESIS).unwrap();
+    engine.commit().unwrap();
+    assert!(
+        !semantic_lines(&engine, PROBE_LINE, &[])
+            .iter()
+            .any(|(_, text, _)| text == PROBE_LINE),
+        "a deleted line is not shown"
+    );
+}
+
+/// One text in two books is one vector, resolved in both books, each line once.
+#[test]
+fn a_text_in_two_books_resolves_in_both() {
+    let mut books = default_books();
+    books.push((
+        "בראשית, עותק",
+        "/מקרא/תורה",
+        "/books/genesis-copy.txt",
+        2,
+        GENESIS_TEXT.to_string(),
+    ));
+    let library = build_library_of(&books, false);
+    let engine = library.engine();
+    let status = engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        status.vector_count, EMBEDDED,
+        "a repeated text is one vector"
+    );
+
+    let lines = semantic_lines(&engine, PROBE_LINE, &[]);
+    let found: BTreeSet<&str> = lines
+        .iter()
+        .filter(|(_, text, _)| text == PROBE_LINE)
+        .map(|(book, _, _)| book.as_str())
+        .collect();
+    assert_eq!(found, BTreeSet::from([GENESIS, "/books/genesis-copy.txt"]));
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|(_, text, _)| text == PROBE_LINE)
+            .count(),
+        2,
+        "each line once"
+    );
+}
+
+/// A filter admits books by what the live index says of them: a book moved to another
+/// category is found under that one, and not under the one it left.
+#[test]
+fn a_book_moved_to_another_category_is_filtered_by_its_new_one() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert!(semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+        .iter()
+        .any(|(book, _, _)| book == GENESIS));
+
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/אחר/קטגוריה",
+            GENESIS,
+            0,
+            GENESIS_TEXT.to_string(),
+        ),
+    );
+    assert!(!semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+        .iter()
+        .any(|(book, _, _)| book == GENESIS));
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &["/אחר/קטגוריה"]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
+/// A query with nothing to embed fails the semantic half of that one search: the lexical
+/// half is served and the session goes on serving.
+#[test]
+fn a_query_with_nothing_to_embed_falls_back_for_that_query_only() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let response = search(&engine, " ", &[], SemanticRetrievalMode::SemanticOnly);
+    assert!(!response.semantic_available);
+    assert!(
+        response
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("nothing to embed")),
+        "{:?}",
+        response.fallback_reason
+    );
+    assert_eq!(response.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
+    let next = search(
+        &engine,
+        PROBE_LINE,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(next.semantic_available);
+    assert_eq!(next.fallback_kind, None);
 }
