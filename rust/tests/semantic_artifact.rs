@@ -1170,6 +1170,117 @@ fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
     }
 }
 
+/// A line whose `chunkKey` column holds a vector's key and whose text is another is no line
+/// of that vector's, whatever card it would be on: not a result, not a grouped sibling,
+/// under any grouping and in either mode that searches semantically. The index is edited
+/// below the engine, as a writer that kept a column it should have recomputed leaves it.
+#[test]
+fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
+    use tantivy::schema::{Facet, Value};
+    use tantivy::{doc, DocAddress, Index, TantivyDocument, Term};
+
+    let library = build_library();
+    // Genesis's second line, replaced by a text of no vector's, its columns kept.
+    let replaced = "והארץ היתה תהו ובהו וחשך על פני תהום רבה";
+    let forged_id = {
+        let index = Index::open_in_dir(&library.index).unwrap();
+        for name in ["hebrew", "hebrew_vocalized"] {
+            index.tokenizers().register(
+                name,
+                tantivy::tokenizer::TextAnalyzer::from(
+                    tantivy::tokenizer::SimpleTokenizer::default(),
+                ),
+            );
+        }
+        let searcher = index.reader().unwrap().searcher();
+        let schema = index.schema();
+        let field = |name: &str| schema.get_field(name).unwrap();
+        let address = searcher
+            .segment_readers()
+            .iter()
+            .enumerate()
+            .find_map(|(segment, reader)| {
+                reader.doc_ids_alive().find_map(|doc| {
+                    let address = DocAddress::new(segment as u32, doc);
+                    let stored: TantivyDocument = searcher.doc(address).unwrap();
+                    (stored
+                        .get_first(field("text"))
+                        .and_then(|value| value.as_str())
+                        == Some(replaced))
+                    .then_some(address)
+                })
+            })
+            .expect("the line to replace");
+        let columns = searcher.segment_reader(address.segment_ord).fast_fields();
+        let column = |name: &str| columns.u64(name).unwrap().first(address.doc_id).unwrap();
+        let id = column("id");
+        let mut forged = doc!(
+            field("title") => "בראשית",
+            field("reference") => "",
+            field("text") => "שורה זרה שאינה הטקסט שהווקטור נבנה ממנו",
+            field("id") => id,
+            field("segment") => 1u64,
+            field("isPdf") => false,
+            field("filePath") => GENESIS,
+            field("topics") => Facet::from_text("/מקרא/תורה").unwrap(),
+            field("contentHash") => 0u64,
+            field("textHash") => 0u64,
+            field("sectionId") => column("sectionId"),
+            field("generationSort") => 0u64,
+            field("lineHash") => column("lineHash"),
+        );
+        forged.add_u64(field("chunkKey"), column("chunkKey"));
+        let mut writer = index.writer(15_000_000).unwrap();
+        writer.delete_term(Term::from_field_u64(field("id"), id));
+        writer.add_document(forged).unwrap();
+        writer.commit().unwrap();
+        id
+    };
+
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    for mode in [
+        SemanticRetrievalMode::SemanticOnly,
+        SemanticRetrievalMode::Hybrid,
+    ] {
+        for grouping in [
+            None,
+            Some(SemanticGroupingMode::SameSection),
+            Some(SemanticGroupingMode::IdenticalText),
+        ] {
+            let response = search_page(&engine, PROBE_LINE, 10, 0, mode, grouping);
+            let shown: Vec<(u64, Vec<u64>)> = response
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.id,
+                        hit.merged.iter().map(|sibling| sibling.id).collect(),
+                    )
+                })
+                .collect();
+            assert!(
+                shown
+                    .iter()
+                    .all(|(id, siblings)| *id != forged_id && !siblings.contains(&forged_id)),
+                "{mode:?}, {grouping:?}: {shown:?}"
+            );
+            assert!(
+                response
+                    .results
+                    .iter()
+                    .any(|hit| hit.file_path == GENESIS && hit.segment == 3),
+                "the query's own line is still found: {mode:?}, {grouping:?}"
+            );
+            let reason = response.fallback_reason.unwrap_or_default();
+            assert!(
+                reason.contains("1 semantic match(es) were not shown"),
+                "{mode:?}, {grouping:?}: {reason}"
+            );
+        }
+    }
+}
+
 /// A filter admits books by what the live index says of them: a book moved to another
 /// category is found under that one, and not under the one it left.
 #[test]
