@@ -11950,6 +11950,359 @@ mod tests {
             .unwrap();
     }
 
+    // ── The chunkKey column, and version 4 indexes beside it ───────────────
+
+    /// The schema of a real version 4 index, as the `meta.json` of the library's release
+    /// index (6,042,284 lines, built by the engine before the `chunkKey` column) holds it.
+    const RELEASED_VERSION_4_SCHEMA: &str = r#"[
+        {"name": "text", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew"}, "stored": true, "fast": false}},
+        {"name": "textVocalized", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew_vocalized"}, "stored": true, "fast": false}},
+        {"name": "reference", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "title", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": true, "fast": false}},
+        {"name": "id", "type": "u64", "options": {"indexed": true, "fieldnorms": true, "fast": true, "stored": true}},
+        {"name": "segment", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "isPdf", "type": "bool", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "filePath", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": true, "tokenizer": "raw"}, "stored": true, "fast": true}},
+        {"name": "contentHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "textHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "sectionId", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "generationSort", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "topics", "type": "facet", "options": {"stored": false}}
+    ]"#;
+
+    /// Version 4's schema is the one version 4 indexes have, and version 5's is that and
+    /// `chunkKey` after it, so every other field keeps its number.
+    #[test]
+    fn version_5_is_version_4_and_a_chunk_key_column_after_it() {
+        let released: Schema = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
+        assert_eq!(schema_of_version(4), Some(released.clone()));
+
+        let current = current_schema();
+        assert_eq!(
+            schema_of_version(INDEX_SCHEMA_VERSION),
+            Some(current.clone())
+        );
+        let fields: Vec<_> = current.fields().map(|(_, entry)| entry.clone()).collect();
+        let released_fields: Vec<_> = released.fields().map(|(_, entry)| entry.clone()).collect();
+        assert_eq!(fields[..fields.len() - 1], released_fields[..]);
+
+        let chunk_key = fields.last().unwrap();
+        assert_eq!(chunk_key.name(), CHUNK_KEY_FIELD);
+        assert!(chunk_key.is_fast());
+        assert!(!chunk_key.is_indexed());
+        assert!(!chunk_key.is_stored());
+        assert_eq!(chunk_key.field_type().value_type(), Type::U64);
+
+        for version in [MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
+            assert_eq!(schema_of_version(version), None, "{version}");
+        }
+    }
+
+    /// The metadata a test writes into an index directory it made by other means.
+    fn write_metadata(dir: &TempDir, metadata: &IndexMetadata) {
+        write_index_metadata(dir.path(), metadata).unwrap();
+    }
+
+    fn read_metadata(dir: &TempDir) -> JsonValue {
+        serde_json::from_str(&fs::read_to_string(index_metadata_path(dir.path())).unwrap()).unwrap()
+    }
+
+    /// An index the engine before the column left: version 4's schema, version 4's
+    /// metadata, and a book.
+    fn version_4_index() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Index::create_in_dir(dir.path(), schema_of_version(4).unwrap()).unwrap();
+        write_metadata(&dir, &index_metadata(4, None));
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        engine
+            .add_text_book(
+                "בראשית".to_string(),
+                "/root".to_string(),
+                "/books/genesis.txt".to_string(),
+                0,
+                0,
+                "בראשית ברא אלהים את השמים ואת הארץ\nוהארץ היתה תהו ובהו".to_string(),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        dir
+    }
+
+    /// What the `chunkKey` column holds for each live document, by id: `None` for a
+    /// document with no value, and for every document of an index without the column.
+    fn chunk_key_values(engine: &SearchEngine) -> Vec<Option<u64>> {
+        let searcher = engine.index_reader.searcher();
+        let mut values = Vec::new();
+        for reader in searcher.segment_readers() {
+            let ids = reader.fast_fields().u64("id").unwrap();
+            let column = reader
+                .fast_fields()
+                .column_opt::<u64>(CHUNK_KEY_FIELD)
+                .unwrap();
+            for doc in reader.doc_ids_alive() {
+                let value = column.as_ref().and_then(|column| column.first(doc));
+                values.push((ids.first(doc).unwrap(), value));
+            }
+        }
+        values.sort_unstable();
+        values.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// **An index built before the column is not rebuilt.** It opens compatible, under its
+    /// own schema; it is searched as it was; it takes new books, which get no field; and it
+    /// stays version 4, with no recipe recorded.
+    #[test]
+    fn a_version_4_index_opens_searches_and_takes_books_as_it_is() {
+        let dir = version_4_index();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible, "{:?}", compatibility.reason);
+        assert_eq!(compatibility.status, "compatible");
+        assert_eq!(compatibility.found_schema_version, Some(4));
+
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        assert_eq!(engine.schema, schema_of_version(4).unwrap());
+        assert!(engine.schema.get_field(CHUNK_KEY_FIELD).is_err());
+        assert_eq!(engine.chunk_key_field, None);
+        assert_eq!(
+            engine.count(vec!["ברא".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+
+        engine
+            .add_text_book(
+                "שמות".to_string(),
+                "/root".to_string(),
+                "/books/exodus.txt".to_string(),
+                1,
+                0,
+                "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
+                None,
+            )
+            .unwrap();
+        engine
+            .add_pdf_book(
+                "סרוק".to_string(),
+                "/root".to_string(),
+                "/books/scan.pdf".to_string(),
+                2,
+                0,
+                vec![PdfPageInput {
+                    page_index: 0,
+                    reference: "עמוד 1".to_string(),
+                    text: "ויאמר משה אל העם אל תיראו".to_string(),
+                }],
+                None,
+            )
+            .unwrap();
+        add(&mut engine, 99, "שורה שנוספה לבדה", "/books/loose.txt");
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(
+            engine.count(vec!["שמות".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+        assert_eq!(
+            engine.count(vec!["משה".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+        assert_eq!(
+            engine.count(vec!["ברא".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+        assert_eq!(chunk_key_values(&engine), vec![None; 5]);
+        drop(engine);
+
+        let metadata = read_metadata(&dir);
+        assert_eq!(metadata["schema_version"], 4);
+        for field in [
+            "line_text_version",
+            "chunk_key_version",
+            "chunk_key_chunking_identity",
+        ] {
+            assert!(metadata.get(field).is_none(), "{field}");
+        }
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible);
+        assert_eq!(compatibility.found_schema_version, Some(4));
+    }
+
+    /// A version 4 index whose metadata is missing is found by its Tantivy schema, and given
+    /// version 4's metadata back: no column, so no recipe.
+    #[test]
+    fn a_version_4_index_without_metadata_gets_version_4_metadata() {
+        let dir = version_4_index();
+        fs::remove_file(index_metadata_path(dir.path())).unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible);
+        assert_eq!(compatibility.status, "legacy_compatible");
+        assert_eq!(compatibility.found_schema_version, Some(4));
+
+        let engine = SearchEngine::new(dir.path().to_str().unwrap());
+        assert_eq!(engine.chunk_key_field, None);
+        drop(engine);
+        let metadata = read_metadata(&dir);
+        assert_eq!(metadata["schema_version"], 4);
+        assert!(metadata.get("line_text_version").is_none());
+        assert_eq!(
+            check_index_compatibility(dir_path_string(&dir)).status,
+            "compatible"
+        );
+    }
+
+    /// A new index is version 5: it has the column, its metadata records the recipe the
+    /// column is written under, and the engine writes to it.
+    #[test]
+    fn a_new_index_has_the_column_and_records_its_recipe() {
+        let (mut engine, dir) = make_engine();
+        let field = engine.schema.get_field(CHUNK_KEY_FIELD).unwrap();
+        assert_eq!(engine.chunk_key_field, Some(field));
+
+        let metadata = read_metadata(&dir);
+        assert_eq!(metadata["schema_version"], INDEX_SCHEMA_VERSION);
+        let recipe = ChunkKeyRecipe::current();
+        assert_eq!(metadata["line_text_version"], recipe.line_text_version);
+        assert_eq!(metadata["line_text_version"], LINE_TEXT_VERSION);
+        assert_eq!(metadata["chunk_key_version"], recipe.key_version);
+        assert_eq!(
+            metadata["chunk_key_chunking_identity"].as_u64(),
+            Some(recipe.chunking_identity)
+        );
+
+        engine
+            .add_text_book(
+                "בראשית".to_string(),
+                "/root".to_string(),
+                "/books/genesis.txt".to_string(),
+                0,
+                0,
+                "בראשית ברא אלהים את השמים ואת הארץ\nאו".to_string(),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        let values = chunk_key_values(&engine);
+        assert_eq!(values.len(), 2);
+        assert!(values[0].is_some_and(|key| key != 0), "{values:?}");
+        assert_eq!(values[1], Some(0), "two characters are not embedded");
+    }
+
+    /// Every path but `add_text_book` adds lines that are not a book's, so nothing knows
+    /// their neighbours: they are written 0, "not embedded".
+    #[test]
+    fn every_other_add_path_writes_zero() {
+        let (mut engine, _dir) = make_engine();
+        let line = "שורה ארוכה דיה כדי לעמוד בפני עצמה";
+        let input = |id: u64| DocumentInput {
+            id,
+            title: "t".to_string(),
+            reference: "r".to_string(),
+            topics: "/root".to_string(),
+            text: line.to_string(),
+            segment: 0,
+            is_pdf: false,
+            file_path: "/books/loose.txt".to_string(),
+            content_hash: None,
+            text_hash: None,
+            section_id: None,
+            generation_order: None,
+            text_vocalized: None,
+            extra_facets: None,
+        };
+        add(&mut engine, 1, line, "/books/loose.txt");
+        engine.add_documents_batch(vec![input(2)]).unwrap();
+        engine.upsert_documents_batch(vec![input(3)]).unwrap();
+        engine
+            .upsert_document(
+                4,
+                "t",
+                "r",
+                "/root",
+                line,
+                0,
+                false,
+                "/books/loose.txt",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(chunk_key_values(&engine), vec![Some(0); 4]);
+    }
+
+    /// **A column written under another recipe is not a rebuild.** The index stays
+    /// compatible, its column counts as absent — nothing is written to it — and a metadata
+    /// value that does not parse is a recipe not known rather than unreadable metadata.
+    #[test]
+    fn a_column_written_under_another_recipe_counts_as_absent() {
+        let other_recipes: [(&str, JsonValue); 4] = [
+            ("line_text_version", json!(LINE_TEXT_VERSION + 1)),
+            ("chunk_key_version", json!(99)),
+            ("chunk_key_chunking_identity", json!(1)),
+            ("line_text_version", json!("one")),
+        ];
+        for (field, value) in other_recipes {
+            let (mut engine, dir) = make_engine();
+            engine
+                .add_text_book(
+                    "בראשית".to_string(),
+                    "/root".to_string(),
+                    "/books/genesis.txt".to_string(),
+                    0,
+                    0,
+                    "בראשית ברא אלהים את השמים ואת הארץ".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            drop(engine);
+
+            let mut metadata = read_metadata(&dir);
+            metadata[field] = value.clone();
+            fs::write(index_metadata_path(dir.path()), metadata.to_string()).unwrap();
+
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(compatibility.compatible, "{field}={value}");
+            assert_eq!(compatibility.status, "compatible", "{field}={value}");
+            assert_eq!(
+                compatibility.found_schema_version,
+                Some(INDEX_SCHEMA_VERSION)
+            );
+
+            let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+            assert_eq!(engine.chunk_key_field, None, "{field}={value}");
+            engine
+                .add_text_book(
+                    "שמות".to_string(),
+                    "/root".to_string(),
+                    "/books/exodus.txt".to_string(),
+                    1,
+                    0,
+                    "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            engine.index_reader.reload().unwrap();
+            assert_eq!(
+                engine.count(vec!["שמות".to_string()], &[], 0, 100).unwrap(),
+                1
+            );
+            let values = chunk_key_values(&engine);
+            assert_eq!(values.len(), 2);
+            assert!(values[0].is_some(), "the first book's keys stay");
+            assert_eq!(values[1], None, "{field}={value}: nothing writes to it");
+            // The metadata is left as it was found: only a new index records a recipe.
+            assert_eq!(read_metadata(&dir)[field], value);
+        }
+    }
+
     /// What a build reports when no session is open: no session, or no semantic support at
     /// all, each as a state and as the kind of `last_error`.
     #[cfg(feature = "semantic-integration")]
