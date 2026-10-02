@@ -48,7 +48,7 @@ into the same Flutter Rust Bridge library as Tantivy:
   is the only model format there is a backend for.
 - GGUF models and `llama.cpp` are not supported. No feature compiles
   `llama.cpp` or ggml, and a model path that does not end in `.onnx`, a GGUF
-  included, is refused by its name rather than served: opening an artifact
+  included, is refused by its name rather than served: opening a vector set
   with it, or loading it on the development path, fails with `modelInvalid`,
   whose `field` is `model_path`.
 - The sidecar builds the ONNX backend for desktop targets only (Windows, Linux
@@ -63,23 +63,37 @@ into the same Flutter Rust Bridge library as Tantivy:
   exact implementation.
 
 **The application never builds the library's vectors.** The build machine
-embeds the whole library into a semantic artifact, from the lexical index the
-release ships; the application opens that artifact with `openSemanticArtifact`
-and embeds nothing but the query. `configureSemantic`, `semanticIndexBooks` and
-the other calls that build vectors on the device are development and testing
+embeds the whole library, from the lexical index the release ships, into a
+release of its vectors; the application installs that release into a vector set
+with `installSemanticVectors`, opens the set with `openSemanticArtifact`, and
+embeds nothing but the query. `configureSemantic`, `semanticIndexBooks` and the
+other calls that build vectors on the device are development and testing
 scaffolding, described at the end; they are not for the library.
 
-### Opening a prebuilt artifact
+### Installing and opening the library's vectors
 
 ```dart
+final vectorsDir = '$root/vectors';
+final identityJson =
+    await File('$root/otzaria/meivin/model.json').readAsString();
+// A release is a segment and its manifest, and the manifest's SHA-256
+// published beside them.
+await engine.installSemanticVectors(
+  input: SemanticVectorsInstallInput(
+    vectorsDir: vectorsDir,
+    segmentPath: downloadedSegment.path, // `.oxv`, or `.oxv.zst`
+    manifestJson: await downloadedManifest.readAsString(),
+    publishedManifestSha256: release.manifestSha256,
+    modelIdentityJson: identityJson,
+  ),
+  cancellation: SemanticCancellationToken(),
+);
 final status = await engine.openSemanticArtifact(
   config: SemanticArtifactInput(
-    artifactDir: '$root/semantic',
+    vectorsDir: vectorsDir,
     modelPath: '$root/otzaria/meivin/seforim-embed-round2-int8.onnx',
     // The model's identity file, from the model's folder or the app's assets.
-    modelIdentityJson: await File('$root/otzaria/meivin/model.json')
-        .readAsString(),
-    publishedDigest: release.semanticDigest,
+    modelIdentityJson: identityJson,
     // The ONNX Runtime the application ships; leave it out to use the one
     // beside the graph (see "The ONNX Runtime library").
     onnxRuntimePath: bundledOnnxRuntimePath,
@@ -87,39 +101,51 @@ final status = await engine.openSemanticArtifact(
 );
 ```
 
-Opening loads the model, verifies the artifact against this installation, and
-from then on `searchSemantic` serves semantic and hybrid results from it,
-hydrated from the lexical index as always. Nothing in the input is a value to
-type in, and every field of the artifact's identity is compared:
+A vector set holds the library's vectors keyed by the text each was embedded
+from, not by where that text sits in the index. A base release replaces what the
+set holds; a delta brings it from the library version it stands at to the next.
+An install is locked and crash-safe, the new generation goes live in one flip,
+and a release that is refused, cancelled or cut off leaves the set as it was; an
+open session on the same set moves onto the new generation. What a release must
+agree with:
 
-| what | written by | compared, on opening, with | a mismatch means |
+| what | written by | compared with | a mismatch means |
 | --- | --- | --- | --- |
-| the corpus stamp, `otzaria_semantic_corpus.json` inside the lexical index | the build machine, by `build_semantic_artifact --stamp-index` or `pack_semantic_artifact --stamp-index` | the index's segment set, and then the artifact's corpus identity | another release's index, or this one changed since: install the release's index and artifact together |
-| the model identity, `modelIdentityJson` | the model's publisher: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin INT8 graph, the file the artifact was built with | the artifact's model identity, and the model at `modelPath` once it has loaded (`model_checksum`, `embedding_backend`) | another model, or an identity file that describes other weights |
-| the artifact | the build machine: `build_semantic_artifact`, or `pack_semantic_artifact` after a sharded build | this build's store format, and its payload's checksums as it loads | a damaged artifact, or one this build cannot read |
-| `publishedDigest` | the build machine prints it; the release publishes it outside the artifact | the artifact's own digest | an artifact rebuilt to look like the published one |
+| the line recipe | the build: the index's line text and the chunk key over it | this build's (`LINE_TEXT_VERSION`, the key version, and the chunking compiled in) | vectors of other text: install the release built for this application |
+| the model identity, `modelIdentityJson` | the model's publisher: the sidecar's `config/models/meivin-round2-onnx/model.json` for the Meivin model, the file the vectors were built with | the release's model family, and on opening the model at `modelPath`: its package among `query_packages`, and once it has loaded its `tokenizer_checksum` | another model, or an identity file that describes other weights |
+| the store | the build | the format and codec this build reads | a release of a newer or older store format |
+| `publishedManifestSha256` | the build prints it; the release publishes it outside the manifest | the manifest's SHA-256 | a release rebuilt to look like the published one |
+| a delta's starting point | the build | the library version the set stands at | a delta that does not follow the set: install the base, or the deltas in between |
 
-The corpus identity comes from the index, not from the caller, because it has to
-describe the index that is actually open, and the artifact's own copy proves
-nothing about that. It cannot be recomputed on a device either: `corpus_id`
-digests every stored line, so the build machine writes it into the index
-directory, with the index's segment set at that moment, and the index carries it
-wherever it is shipped. An index added to, deleted from or merged since is
-refused, since the artifact's line ids may then name lines that moved, so the
-build machine stamps the index as it will ship, after any optimize.
+Nothing ties a set to one index: every search resolves the set's hits against
+the index that is open, by the key of each line's text, which a new index keeps
+in its `chunkKey` column. A commit after opening leaves the set serving; a line
+that moved is found where it is now, in its book or in another; a line whose
+text is gone, or whose embedded text changed with its neighbours, is not shown,
+and every line shown is checked by recomputing its key from the text the index
+holds. An index of schema version 4, without the column, is served the same way,
+by recomputing the keys of the books a hit names, which is slower.
 
-Every refusal names every field that disagreed, and leaves no session open. It is
-a `SemanticError`, whose `kind` says which refusal it was (see "Telling failures
-apart" below). An opened artifact is read-only: `semanticIndexBooks`,
-`removeSemanticBooks`, `resetSemanticIndex`, `semanticIndexDiff` and
-`configureSemantic` are refused by name. A commit to the index after opening
-makes the artifact stale: searches then fall back to lexical results with the
-reason as `fallbackReason`, and `semanticStatus` reports `available: false` with
-the reason as `lastError`, until the session is disabled and a matching pair
-opened; `state` is then `stale`, and `fallbackKind` and `errorKind` are
-`artifactStale`. Opening the same artifact again is a no-op; opening another
-needs `disableSemantic` first. Opening does not hold the engine's write lock, so
-lexical search keeps serving while the model and the vectors load.
+Keeping the set, all on `SearchEngine` and all cheap except where noted:
+
+| call | does |
+| --- | --- |
+| `semanticVectorsInfo` | what is installed: library version, generation, segments, live and dead vectors, size, and whether it wants compacting; `present: false` when nothing is |
+| `compactSemanticVectors` | merges the set into one segment when its policy (`SemanticCompactionPolicy`, the sidecar's defaults) asks, or when forced; given the open index's library version, moves every record onto the line that holds its text now. Needs about the set's size free |
+| `verifySemanticVectors` | reads every block of every segment against its checksum, the check opening leaves out; a damaged segment is marked and refused from then on. Reads the whole set |
+| `semanticCoverage` | the live lines the recipe embeds, and how many the set holds a vector for. One pass over the `chunkKey` column, or, without it, a read of the whole store |
+
+`SemanticStatus` reports the open set's `vectorsLibraryVersion`,
+`vectorSegments` and `needsCompaction`.
+
+Every refusal names every field that disagreed, and leaves the set and the
+session as they were. It is a `SemanticError`, whose `kind` says which refusal
+it was (see "Telling failures apart" below). An opened set is read-only:
+`semanticIndexBooks`, `removeSemanticBooks`, `resetSemanticIndex`,
+`semanticIndexDiff` and `configureSemantic` are refused by name. Opening the same
+set again is a no-op; opening another needs `disableSemantic` first. Opening does
+not hold the engine's write lock, so lexical search keeps serving while the model
+and the vectors load.
 
 INT8 vectors depend on the CPU's INT8 kernels: ARM (KleidiAI) and x86 (MLAS)
 land about cosine 0.999 apart, the same order as INT8 against fp32. A library
@@ -143,22 +169,21 @@ On the application's path:
 
 | kind | reported by | means, and what to do |
 | --- | --- | --- |
-| `artifactMissing` | `openSemanticArtifact` | nothing installed at `artifactDir`: download the artifact |
-| `artifactCorrupt` | `openSemanticArtifact` | a damaged artifact (metadata, a payload, a checksum): download it again |
-| `artifactNotPublished` | `openSemanticArtifact` | not the artifact whose digest was published: download the official one |
-| `artifactIncompatible` | `openSemanticArtifact` | built for something else; `field` names the first field that disagreed: `corpus.*` for another release of the library, `model.*` for another model, `store.*` or `metadata_version` for another release of the application. Install the artifact built for this one |
-| `indexNotStamped`, `indexStampMismatch` | `openSemanticArtifact` | the index has no corpus stamp this build reads, or changed after it was stamped: install the release's index with its artifact |
+| `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing installed at `vectorsDir`: download and install the vectors |
+| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: download it again |
+| `artifactNotPublished` | `installSemanticVectors` | not the release whose manifest digest was published: download the official one |
+| `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application |
+| `insufficientDiskSpace` | installing, compacting | not enough free space: free some, and try again |
 | `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package. `modelInvalid` with `field` `model_path` is a path that names no ONNX graph, such as a GGUF: point `modelPath` at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
 | `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
-| `readOnlySession` | the calls that build vectors | refused on an opened artifact; nothing to fix |
-| `artifactStale` | `state: stale`, `fallbackKind` | the index was committed to after the artifact was opened |
+| `readOnlySession` | the calls that build vectors | refused on an opened set; nothing to fix |
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
-| `cancelled` | `searchSemantic` | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, drop it |
-| `invalidInput` | `openSemanticArtifact`, `configureSemantic`, `searchSemantic` | a value the call cannot take, a ranking option out of its range among them: fix the call |
+| `cancelled` | `searchSemantic`, and the calls that install, compact, verify or count | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, and nothing changed |
+| `invalidInput` | `openSemanticArtifact`, `configureSemantic`, `searchSemantic`, `compactSemanticVectors` | a value the call cannot take, a ranking option or a compaction threshold out of its range among them: fix the call |
 | `internal` | any call | a fault, including the lexical index failing under `searchSemantic`: report `message` |
 
 The development path adds `reindexRequired`, and the states `empty` (nothing
@@ -175,8 +200,8 @@ try {
   switch (error.kind) {
     case SemanticErrorKind.artifactMissing:
     case SemanticErrorKind.artifactCorrupt:
-    case SemanticErrorKind.artifactNotPublished:
-      offerArtifactDownload();
+    case SemanticErrorKind.artifactIncompatible:
+      offerVectorsDownload();
     case SemanticErrorKind.modelMissing:
     case SemanticErrorKind.tokenizerMissing:
     case SemanticErrorKind.modelInvalid:
@@ -287,10 +312,10 @@ The Meivin model the application uses is its INT8 graph,
 `seforim-embed-round2-int8.onnx`, with its `tokenizer.json` beside it: the
 accuracy it gives up is negligible, and it is a quarter of the size, which
 matters on weak machines. Its identity file is the sidecar's
-`config/models/meivin-round2-onnx/model.json`. The full-precision
-`seforim-embed-round2-fp32.onnx` remains an alternative, with an identity of its
-own (`config/models/meivin-round2-onnx-fp32/model.json`), so vectors from one are
-never compared with the other's.
+`config/models/meivin-round2-onnx/model.json`, which describes the model family:
+the full-precision `seforim-embed-round2-fp32.onnx` is its other package, and
+queries from either land in the same space, so a vector set that lists both among
+its `query_packages` opens with either graph.
 
 ### The ONNX Runtime library
 
@@ -310,10 +335,10 @@ A path passed, or a variable set, that names nothing is refused rather than
 skipped for the next place, since falling back would load a runtime nobody
 chose; an empty `onnxRuntimePath` is refused as `invalidInput` before anything
 is opened. Pass an absolute path. Where the runtime lives is not part of any
-identity: no manifest or artifact records it, and moving it invalidates
+identity: no manifest or vector set records it, and moving it invalidates
 nothing. A process holds one runtime and can neither unload nor replace it, so
 `onnxRuntimePath` is compared when the same call is repeated: opening the same
-artifact with another path is a `sessionConflict`, not a no-op, and after
+vector set with another path is a `sessionConflict`, not a no-op, and after
 `disableSemantic` a session that names a runtime other than the one already
 loaded is refused as `onnxRuntimeUnusable` until the process restarts.
 
@@ -327,11 +352,14 @@ The application's installation, and what each input names:
 │       ├── seforim-embed-round2-int8.onnx      modelPath
 │       ├── tokenizer.json
 │       └── model.json        the identity file, modelIdentityJson
-├── index/                    the lexical index, with its corpus stamp
-└── <artifact>/               the vectors artifact, artifactDir
+├── index/                    the lexical index
+└── vectors/                  the vector set, vectorsDir
 ```
 
-The artifact is a folder of its own beside `index/`. The runtime either ships
+The vector set is a folder of its own beside `index/`, which installing creates
+and keeps: `CURRENT` and `PREVIOUS` name its live generation and the one before
+it, `segments/` holds the vectors, and `incoming/` is where a download can be
+left for an install to move in rather than copy. The runtime either ships
 with the application, which passes its path as `onnxRuntimePath` (on macOS
 from inside the signed application bundle, below), or sits in `<model>/` beside
 the graph under the platform's file name, where it is found with no path
@@ -390,7 +418,8 @@ path `available`, not `enabled`, is the flag that says so:
 So a caller must gate indexing on `available`, not on `enabled` or on a
 non-empty diff. Search needs no such guard: it degrades on its own.
 
-`SearchEngine` exposes opening an artifact, status, and unified
+`SearchEngine` exposes installing, keeping and opening the library's vectors,
+status, and unified
 lexical/hybrid/semantic search, plus the development path's configuration and
 index diff/index/remove/reset. Exact/fuzzy lexical interpretation is kept
 separate from the lexical/hybrid/semantic retrieval mode. Hybrid requests fall
@@ -480,7 +509,7 @@ selects documents by their marks, but the line it shows is the mark-free one.
 ### Session lifecycle
 
 One semantic session is open at a time, opened by `openSemanticArtifact` or by
-`configureSemantic`, and closed by `disableSemantic`. An opened artifact's
+`configureSemantic`, and closed by `disableSemantic`. An opened vector set's
 vectors are on disk (`SemanticStatus.vectorsPersisted` is true) and open again
 after a restart; closing the session leaves its files alone.
 
@@ -494,10 +523,11 @@ and it discards the session's vectors. Indexing progress, and cancelling an
 indexing run, are not exposed; a search can be cancelled (see "Cancelling a
 search").
 
-`openSemanticArtifact`, `semanticIndexBooks`, `removeSemanticBooks`,
-`resetSemanticIndex` and `semanticStatus` are all non-exclusive and
-asynchronous, so lexical search and status polling stay responsive while an
-artifact loads or a semantic index is being built.
+`openSemanticArtifact`, the calls that install, compact, verify and count a
+vector set, `semanticIndexBooks`, `removeSemanticBooks`, `resetSemanticIndex`
+and `semanticStatus` are all non-exclusive and asynchronous, so lexical search
+and status polling stay responsive while a set installs or loads or a semantic
+index is being built.
 
 ## Getting Started
 

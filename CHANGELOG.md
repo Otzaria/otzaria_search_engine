@@ -4,13 +4,15 @@
 
 > Breaking for Dart code that constructs `SemanticConfigInput` or
 > `SemanticStatus`, that calls `searchSemantic`, or that catches the semantic
-> calls' `AnyhowException`, and for an application that configures a GGUF
-> model, so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its
-> own (see 0.8.0).
+> calls' `AnyhowException`, and for an application that configures a GGUF model,
+> so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its own
+> (see 0.8.0). An existing lexical index is not one of them: it opens, and
+> searches, as it did.
 
 **The application never builds the library's vectors.** The build machine
-embeds the whole library into a semantic artifact; the application opens it
-with the new `openSemanticArtifact` and embeds only the query.
+embeds the whole library into a release of its vectors; the application
+installs it into a vector set with the new `installSemanticVectors`, opens the
+set with the new `openSemanticArtifact`, and embeds only the query.
 `configureSemantic`, `semanticIndexBooks`, `semanticIndexDiff`,
 `removeSemanticBooks` and `resetSemanticIndex` build vectors on the device, and
 are now documented as development and testing scaffolding, not for the library.
@@ -105,32 +107,87 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Added
 
+- **New indexes store each line's chunk key, and a version 4 index keeps
+  working as it is.** A new `chunkKey` column holds, for every line
+  `addTextBook` adds, the key of the text the line is embedded as: the first
+  eight bytes of the SHA-256 of that text, read big-endian (the sidecar's
+  `ChunkKey::column_value`). It is 0 for a line the recipe does not embed, for
+  a PDF's lines, and for documents added one by one or in batches. The column
+  is what ties a stored vector to the lines that hold its text, by content
+  rather than position, so that a library update leaves the vector of every
+  unchanged line usable.
+
+  The key is computed after normalization, from what the index stores: the
+  line, its neighbours within two lines in its section, and the sections the
+  `<h` headings open. It uses the sidecar's own chunker under Meivin Round 2's
+  chunking, which is compiled in because indexing runs with no model. The
+  SHA-256 runs in parallel. `FAST` only: the column is neither indexed nor
+  stored. Measured on 300 books of the library, 286,235 lines, on an Apple M4:
+  the column costs 8.0 bytes a line, which is 55 MB over the library's 6.9
+  million lines, about 1.3% of the 3.9 GiB release index. The keys took 0.21 s
+  of an indexing run of about 3.1 s, which is 0.75 µs a line, or 1.9 µs a
+  line on one core: about 13 s of CPU for the whole library.
+
+  `INDEX_SCHEMA_VERSION` is 5, and **an index of version 4 is not rebuilt**.
+  `checkIndexCompatibility` reports it `compatible`. The engine opens it under
+  its own schema, searches it, and adds books to it as before, and it stays
+  version 4 with no column. Only an index this version creates, a new one or a
+  rebuild, has the column. Its `otzaria_index_meta.json` records the recipe the
+  column was written under: `line_text_version`, `chunk_key_version` and
+  `chunk_key_chunking_identity`. A column written under another recipe, or
+  under none that is known, counts as absent: it never means a rebuild, and
+  nothing writes to it. An engine before this one reports a version 5 index
+  as `engine_too_old`, which it is.
+
+  `semantic_keys::recompute_chunk_key` (Rust only) computes a line's key again
+  from the stored text of its window and the `sectionId` column. This is what
+  an index without a usable column is asked, and what a result is checked
+  against before it is shown.
+
+  Tested:
+  - a synthetic book keyed to the values Python's hashlib computes over
+    embedded strings written out by hand;
+  - every line recomputes to the key its column holds;
+  - the parallel keys equal the sidecar's `chunk_keys`;
+  - the compiled-in chunking is the one the model family publishes, against
+    the pinned sidecar's files in the real-model job;
+  - version 4's schema is the one in the release index's `meta.json`;
+  - a version 4 index, with or without its metadata, opens compatible,
+    searches, takes books without the field, and stays version 4;
+  - a new index records its recipe;
+  - every add path but `addTextBook` writes 0;
+  - a column under another recipe, or unparseable metadata, counts as absent
+    and leaves the index compatible.
+
+  A copy of the release index (6,042,284 lines, version 4) opened compatible
+  under this engine, served searches, and took a book. On the 300 books, every
+  line's column equalled its key recomputed from the stored text.
 - **Typed semantic failures and states, for an application to switch on.** The
   sidecar types its errors and leaves turning them into user-facing states to
   the host; now the plugin does. `SemanticErrorKind` names what stopped the
   semantic path: no session open, or no semantic support in the build; the
-  artifact missing, corrupt, incompatible (with the first field that
-  disagreed), not the published one or stale; the index unstamped or
-  changed since it was stamped; the model missing, invalid or not the one its
+  vectors missing, corrupt, incompatible (with the first field that
+  disagreed) or not the release published; too little disk space to install
+  or compact them; the model missing, invalid or not the one its
   identity describes, or its tokenizer missing; ONNX Runtime missing or
   unusable; no backend for the model's format in this build; another session
   open, a read-only session, a re-index needed, one query's semantic half
   failed, a search cancelled; an invalid input; or an internal fault. `SemanticState` says what a
-  session can do: `notInBuild`, `notConfigured`, `ready` and `stale` on the
+  session can do: `notInBuild`, `notConfigured` and `ready` on the
   application's path, and `empty`, `needsReindex` and `failed` for a session
   built on the device. The doc comment of `SemanticErrorKind`, the README and
   API_DOCUMENTATION have the table of each kind, what it means, and what the
   application should do.
 
   A kind is decided from the type of the failure, the sidecar's typed errors and
-  the plugin's own (the corpus stamp, the model identity, sessions), and never by
+  the plugin's own (the model identity, the chunking, sessions), and never by
   reading a message. Where the sidecar uses one type for two states, a fact
-  decides: a missing `manifest.json` makes unusable metadata a missing artifact
-  rather than a damaged one, and a file where ONNX Runtime is looked for makes a
+  decides: a set with neither `CURRENT` nor `PREVIOUS` makes unusable metadata
+  a missing set rather than a damaged one, and a file where ONNX Runtime is looked for makes a
   runtime that did not load unusable rather than missing. The installation's own
   identity values are checked first, by the sidecar's own functions, so a value
   no build serves is `invalidInput` and what opening refuses after it is the
-  artifact's, the model's or the runtime's. The matches name every sidecar
+  set's, the model's or the runtime's. The matches name every sidecar
   variant with no wildcard, so a repin that adds one does not compile until it
   is classified. Where nothing can place a failure precisely it gets the broad
   kind that is true of it: a semantic half that failed during a search is
@@ -139,11 +196,12 @@ are now documented as development and testing scaffolding, not for the library.
   precise kind.
 
   Tests produce each kind from the real failure: in
-  `rust/tests/semantic_artifact.rs`, a missing artifact, a garbled manifest, a
-  missing or flipped payload, a damaged, missing or outdated stamp, every kind of
-  wrong model identity, a missing, invalid or tokenizer-less model, an invalid
-  identity value, a wrong digest, the read-only refusals, a query with nothing to
-  embed and the stale state; in `rust/tests/semantic_mock_integration.rs`, the
+  `rust/tests/semantic_artifact.rs`, a missing set, garbled pointers, a flipped
+  segment byte, a damaged block found by verifying, a truncated compressed
+  segment, every kind of wrong model identity, another chunking, a
+  missing, invalid or tokenizer-less model, an invalid identity value, a
+  manifest that is not the published one, a compaction threshold out of range,
+  the read-only refusals and a query with nothing to embed; in `rust/tests/semantic_mock_integration.rs`, the
   development session's states and refusals; in the new
   `rust/tests/semantic_onnx_errors.rs`, a GGUF model, which no build serves,
   and an ONNX model with no runtime or one that does not load, which
@@ -200,30 +258,66 @@ are now documented as development and testing scaffolding, not for the library.
   mock suite; and the same across the bridge, where the Dart defaults equal the
   engine's.
 - **`openSemanticArtifact`: the application's semantic path.** It opens a
-  prebuilt artifact read-only, verifies every field of its identity against
-  this installation, and serves `searchSemantic` from it with each result
-  hydrated from the lexical index. `SemanticArtifactInput` takes the artifact
-  directory, the model file, the text of the model's identity file (the one the
-  artifact was built with, such as the sidecar's
-  `config/models/meivin-round2-onnx/model.json`) and, optionally, the published
-  digest; the model identity's `model_checksum` and `embedding_backend` are also
-  compared with the model once it has loaded. The corpus half is not an input:
-  it is read from the index (next entry). On an opened artifact,
-  `semanticIndexBooks`, `removeSemanticBooks`, `resetSemanticIndex`,
-  `semanticIndexDiff` and `configureSemantic` are refused as read-only, and a
-  commit to the index afterwards makes the artifact stale: searches fall back to
-  lexical results and `semanticStatus` reports why. It takes the engine's read
-  lock, so lexical search keeps serving while the model and the vectors load.
-- **The corpus stamp, `otzaria_semantic_corpus.json`.** `build_semantic_artifact
-  --stamp-index` and `pack_semantic_artifact --stamp-index` write the corpus
-  identity the artifact was built for into the lexical index directory,
-  together with the index's segment set, from the snapshot the artifact was
-  read from. A device cannot recompute `corpus_id`, which digests every stored
-  line, and the artifact's own copy proves nothing about the index that is
-  open, so `openSemanticArtifact` reads the stamp, refuses it unless the index
-  still has that segment set, and compares it with the artifact's. The index
-  carries its stamp wherever it is shipped; without `--stamp-index` the bins
-  still write nothing outside `--out`.
+  vector set read-only, verifies every field of its identity against this
+  installation, and serves `searchSemantic` from it with each result hydrated
+  from the lexical index. `SemanticArtifactInput` takes the set's directory,
+  the model file, the text of the model's identity file (the one the vectors
+  were built with, such as the sidecar's
+  `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
+  Runtime and the number of threads a search scans with. The sidecar is pinned
+  at its `store-v2` branch (bc4c854), which keys a vector by the text it was
+  embedded from, so a set's identity is a line recipe and a model family, with
+  nothing positional in it:
+  - The text half is the line recipe of the index, which this plugin declares
+    as `LINE_TEXT_VERSION` 1: split on `\n`, `normalize_text_for_indexing`, a
+    line starting with `<h` opens a section, one document per line. The other
+    part of it is the sidecar's key version.
+  - The model half describes a family: `family_id`, `tokenizer_checksum`, the
+    recipe the vectors were built under, the chunking among it, and the
+    `query_packages` a query may come from, which are the INT8 and fp32
+    graphs. The graph at `modelPath` must be one of those packages, by its
+    checksum, and its tokenizer must be `tokenizer_checksum`; either refusal
+    is `modelIdentityMismatch`. A set chunked otherwise than this build keys
+    lines is `artifactIncompatible` on `model.chunking_identity`.
+
+  On an opened set, `semanticIndexBooks`, `removeSemanticBooks`,
+  `resetSemanticIndex`, `semanticIndexDiff` and `configureSemantic` are refused
+  as read-only. It takes the engine's read lock, so lexical search keeps
+  serving while the model and the vectors load.
+- **A set's hits are resolved against the open index, by the key of their
+  text.** Nothing ties a set to one index, and nothing is stamped into one: a
+  commit after opening leaves the set serving. Each hit the sidecar scans names
+  its records by book and a hint, the line it held when the set was built. The
+  plugin's resolver checks the hint, then the book's lines by distance from it,
+  then, for what its books no longer hold, every book's `chunkKey` column in one
+  pass, and remembers what it found nowhere until the index changes. On an index
+  without the column it recomputes the keys around the hint from the stored
+  text instead. Filters are applied by book, from a directory of the index's
+  books built once per index generation. A line that moved is found where it is
+  now; a text that left its book for another is found there; a line whose text
+  is gone, or whose embedded text changed with its neighbours, is not shown.
+  Results hydrate by their address in the index the search read, and every line
+  shown is checked first by recomputing its full 128-bit key from the stored
+  text: a semantic match that fails is dropped, and one the lexical side found
+  too is shown as lexical; the response's note counts them.
+- **Installing and keeping the library's vectors.** `installSemanticVectors`
+  installs a release, a segment and its manifest, into the set at `vectorsDir`,
+  checked against the manifest's published SHA-256 and this installation's
+  identity: a base replaces the set, a delta brings it to the next library
+  version, a segment compressed with zstd (`.oxv.zst`) is expanded first, and an
+  open session on the set moves onto the new generation. `semanticVectorsInfo`
+  reads what is installed from its small files; `compactSemanticVectors` merges
+  the set into one segment under a `SemanticCompactionPolicy`, the sidecar's
+  defaults on both sides of the bridge, and, given the index's library version,
+  re-anchors every record on the line that holds its text now;
+  `verifySemanticVectors` checks every block of every segment against its
+  checksum; and `semanticCoverage` counts the live lines the recipe embeds and
+  those the set holds. All are cancellable through a
+  `SemanticCancellationToken`, and the set is left as it was by any that is
+  refused, cancelled or cut off. `SemanticStatus` gains `vectorsLibraryVersion`,
+  `vectorSegments` and `needsCompaction`, and `SemanticErrorKind` gains
+  `insufficientDiskSpace`. The decoder is the zstd crate tantivy already builds,
+  so `Cargo.lock` gains no crate; `sha2` is now a test dependency only.
 - **The ONNX embedding backend, `semantic-onnx`**, for ONNX graphs such as the
   Meivin model. It links nothing native: the sidecar loads the ONNX Runtime
   shared library when a model loads, from the path the application passes
@@ -231,7 +325,7 @@ are now documented as development and testing scaffolding, not for the library.
   platform's default file name beside the `.onnx` graph. **An application that
   configures an ONNX model has to provide that library**; the reference is
   Microsoft's ONNX Runtime 1.28.0 release, and the oldest runtime API accepted
-  is 1.17's. Without one that loads, opening an artifact (or, on the
+  is 1.17's. Without one that loads, opening a vector set (or, on the
   development path, indexing) throws an error that says "ONNX Runtime could not
   be loaded: …" and what each place held, not the no-backend error of a build
   without it; semantic search reports itself unavailable, and lexical search is
@@ -248,7 +342,7 @@ are now documented as development and testing scaffolding, not for the library.
   not load `onnxRuntimeUnusable`, never a fall-back to `OTZARIA_ONNX_RUNTIME` or
   to the file beside the graph, which stay the second and third places; an empty
   one is `invalidInput` before anything is opened. No identity reads it: the
-  manifest does not record it, and an artifact opens whatever it names. Both
+  manifest does not record it, and a vector set opens whatever it names. Both
   calls compare it on a repeat all the same, since a process keeps the first
   runtime it loads and cannot replace it: another path while a session is open
   is a `sessionConflict` naming `onnx_runtime_path`, rather than a no-op that
@@ -258,14 +352,14 @@ are now documented as development and testing scaffolding, not for the library.
   API_DOCUMENTATION give the layout the application installs: `<root>/otzaria/`
   holds `seforim.db` and the model package's folder (the graph,
   `tokenizer.json` and the identity file `model.json`), `<root>/index/` the
-  lexical index, and the artifact a folder of its own beside `index/`; the
+  lexical index, and `<root>/vectors/` the vector set; the
   runtime ships with the application, or sits beside the graph as the build for
   that machine. Microsoft's macOS build of 1.28.0 is arm64 only and needs macOS
   14 (its `LC_BUILD_VERSION` minimum), so on macOS 12 and 13, which the plugin
   supports, it is `onnxRuntimeUnusable`. Tested: a passed path that names no
   file, and one that does not load, in `rust/tests/semantic_onnx_errors.rs`; the
   comparison on a repeat and the empty path, for both calls, with the stand-in
-  and across the bridge; and in the real-model suite, the artifact opened on the
+  and across the bridge; and in the real-model suite, the vector set opened on the
   passed runtime alone, in a child process without `OTZARIA_ONNX_RUNTIME` and
   with nothing beside the graph, and a second runtime refused after it.
 - **Tests against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
@@ -274,21 +368,50 @@ are now documented as development and testing scaffolding, not for the library.
   prefixes reached the model, so text recipe 2 is also checked against its
   definition: it must score every pair exactly as recipe 1 does when handed the
   `[PASSAGE] ` / `[QUERY] `-prefixed strings. A third runs the application's
-  path: the build binary embeds the lines into an artifact and stamps the
-  index, and `openSemanticArtifact` opens it and must rank the same lines first,
+  path: the build binary embeds the lines into a base package and installs it,
+  and `openSemanticArtifact` opens the set and must rank the same lines first,
   using the model's published identity files from `OTZARIA_TEST_ONNX_IDENTITY`.
   `#[ignore]`d, and they skip loudly unless `OTZARIA_TEST_ONNX_MODEL`,
   `OTZARIA_ONNX_RUNTIME` and, for the third, `OTZARIA_TEST_ONNX_IDENTITY` name
   what they need; with `OTZARIA_REQUIRE_ONNX_MODEL` set, as the Dart suites
   have `OTZARIA_REQUIRE_NATIVE`, each skip is a failure instead.
-- **Tests of the artifact path with the stand-in**, `rust/tests/semantic_artifact.rs`:
-  an artifact built by the binary from a small index, opened, searched both
-  ways and hydrated; refusals of a missing, foreign or outdated stamp, of every
-  kind of wrong model identity and of a wrong published digest; every
-  build-side call refused as read-only; and a commit after opening turning the
-  artifact stale. The FFI suite opens one across the bridge too, so CI now
-  builds `build_semantic_artifact` beside the library, and the package gains
-  `crypto` as a dev dependency for the stub model's checksum.
+- **`export_semantic_plan` writes the sidecar's plan of a vector build**, in one
+  step from the release index: `records.bin`, `books.json`, `embed.jsonl` and
+  `embed-manifest.json`, `tombstones.bin` and `plan-manifest.json`, each by the
+  sidecar's own writer, for its `embed-shard`, `warehouse-add` and `assemble`.
+  `--warehouse` leaves out of `embed.jsonl` every text the warehouse holds a
+  vector for, refusing a warehouse of another model or package, and
+  `--previous-ledger` splits the plan against the release before it, which
+  writes its tombstones. Lines are keyed from the text the index stores, under
+  the chunking compiled in, so a version 4 index plans as a version 5 one does;
+  a version 5 index's `chunkKey` column is held to that text line by line, and
+  a plan whose column disagrees fails the manifest's parity gate and the export.
+  A PDF's lines are not planned, since the index keys them 0 and a device never
+  resolves to one. On the v30 release index (6,042,284 lines in 7,376 books,
+  version 4) it plans 5,753,225 records and 5,510,809 distinct texts, leaving
+  out 132,076 PDF lines, in 60 s and 3.6 GB on an Apple M4. That index holds
+  53,493 line ids that two books share, which the build binary's corpus
+  refuses; the plan keys a line by its book and position and is not affected.
+  `validate_semantic_vectors` reports how an installed set lands on an index:
+  the keyed lines its records cover in their book, and how many records are at
+  their hint, moved within their book, or gone; with `--plan`, how many of the
+  plan's records a scan reaches. Tested over a small library, where the plan is
+  byte for byte what the sidecar's `plan_from_corpus` writes, from a version 5
+  and a version 4 index alike.
+- **Tests of the vector-set path with the stand-in**, `rust/tests/semantic_artifact.rs`:
+  a base package built by the binary from a small index, installed by the
+  binary and through the API, plain and compressed, opened, searched both ways
+  and hydrated; lines inserted above, moved to another book, gone, of a changed
+  context, in two books, and in a book moved to another category, on an index
+  with the column and on one of version 4; refusals of every kind of wrong
+  model identity, of another chunking, and of a manifest that is not the
+  published one; every build-side call refused as read-only; an install and a
+  compaction under an open session, which follows them; re-anchoring, which
+  needs the column and the set's library version; a damaged block found by
+  verifying and refused by opening after; and coverage, the same from the
+  column and recomputed. The FFI suite installs and opens a set across the
+  bridge too, so CI builds `build_semantic_artifact` beside the library, and
+  the package gains `crypto` as a dev dependency for the stub model's checksum.
 - **INT8 vectors depend on the CPU's INT8 kernels**, documented: ARM (KleidiAI)
   and x86 (MLAS) land about cosine 0.999 apart, the same order as INT8 against
   fp32, so a library built on x86 and queried on an ARM Mac meets at about
@@ -297,11 +420,25 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Changed
 
+- **The sidecar is compiled into every build**, declared with
+  `default-features = false`, because a line's chunk key has to be the same
+  function of its text in every build: the release index is built once and
+  ships to every platform. `semantic-integration` and the backend features
+  still gate the code that talks to the sidecar. The inference crates (ort,
+  tokenizers, libloading) still come only with `semantic-onnx`, and only on
+  desktop targets, so an Android or iOS build pulls in none of them. Cargo.lock
+  gains no crate.
 - **The plugin calls the sidecar's `HybridCoordinator` itself**, not the
   `OtzariaHybridEngine` wrapper, which turned every error into a string, so the
   typed error reaches the classification; nothing else the wrapper did is lost.
-  In Rust, `semantic_corpus::CorpusStamp::read` and `ensure_describes` refuse
-  with a typed `CorpusStampError` instead of `anyhow`, with the same messages.
+- **`build_semantic_artifact` writes a vector set's base package**: the segment
+  and its release manifest, whose SHA-256 it prints for the release to publish,
+  and installs it into a set with `--install`. It takes the library version
+  (`db_version`) and `--release-tag`, writes nothing into the lexical index,
+  and writes the sidecar's default codec (`i8-sym-vec`). `pack_semantic_artifact`,
+  which assembled the shards of the old artifact, says it is retired and exits
+  with status 2: the sidecar's `assemble` builds a release from a plan and its
+  vectors.
 - **The calls that build vectors on the device are documented as development
   and testing scaffolding**: `configureSemantic`, `semanticIndexBooks`,
   `semanticIndexDiff`, `removeSemanticBooks` and `resetSemanticIndex`, in their

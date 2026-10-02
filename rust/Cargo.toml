@@ -17,7 +17,9 @@ default = []
 semantic = ["semantic-onnx"]
 # Internal gate for code that talks to the sidecar. Every backend feature below
 # turns it on; on its own it compiles the integration with no backend behind it.
-semantic-integration = ["dep:otzaria-semantic-search"]
+# It gates code, not the dependency: the sidecar is compiled into every build (see
+# its declaration below).
+semantic-integration = []
 # ONNX graphs on ONNX Runtime (the Meivin model). Nothing is linked: the sidecar
 # loads the ONNX Runtime shared library when a model loads, so the build needs no
 # download and the binary no new dependency. The sidecar builds the backend for
@@ -54,7 +56,13 @@ path = "src/bin/build_semantic_artifact.rs"
 name = "export_semantic_plan"
 path = "src/bin/export_semantic_plan.rs"
 
-# The last step of a sharded build: ready-made vectors joined to the live index.
+# How an installed vector set lands on a release index: coverage and resolution.
+[[bin]]
+name = "validate_semantic_vectors"
+path = "src/bin/validate_semantic_vectors.rs"
+
+# Retired with the v1 artifact; it says so and exits. The sharded build's last step is
+# the sidecar's `assemble`.
 [[bin]]
 name = "pack_semantic_artifact"
 path = "src/bin/pack_semantic_artifact.rs"
@@ -82,16 +90,27 @@ lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
-# `corpus_id` is a SHA-256 over the documents an artifact is built from. Same crate and
-# major version the semantic sidecar hashes with, so the two sides cannot disagree about
-# what SHA-256 means.
+# A release may publish its vector segment compressed (`.oxv.zst`), and installing it
+# expands it. The version tantivy already builds, with no features: decoding only.
+zstd = { version = "0.13", default-features = false }
+# A vector plan names each embedded text by its full SHA-256. Same crate and major version
+# the semantic sidecar hashes with.
 sha2 = "0.10"
 
 # The semantic sidecar's persisted-vector format and its inference bindings
 # (ONNX Runtime) are part of the index identity.  A branch dependency
 # can silently change any of them; pin the exact reviewed revision and retain it
 # in Cargo.lock for reproducible builds.
-otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "dc11d59ddbd70831cf78d76e69f0ee53232fb6a3", optional = true }
+#
+# Not optional, and with no feature of its own: the chunk key the index stores
+# for a line is computed with the sidecar's chunker, and it has to be the same
+# function of the line's text in every build — the release index is built once
+# and ships to every platform, whatever features the build that opens it has.
+# With `default-features = false` that brings the recipe and the formats alone:
+# the inference crates come only with `onnx-backend`, which `semantic-onnx` turns
+# on and the sidecar declares for desktop targets only. The `semantic*` features
+# gate the code that talks to it.
+otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-search", rev = "9effe41c0c8fb06dc3ab3fcc37307ddf03644ac1", default-features = false }
 
 [dev-dependencies]
 # תבניות ההדגשה המשולבות כוללות lookahead (הפרדת תגי inline מתגי שבירה),

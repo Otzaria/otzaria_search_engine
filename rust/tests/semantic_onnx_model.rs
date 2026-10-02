@@ -34,13 +34,15 @@
 //! its own identity.
 //!
 //! Two tests are the application's own path rather than the scaffolding's: the build binary
-//! embeds the lines into an artifact and stamps the index, and `open_semantic_artifact`
+//! embeds the lines into a base package and installs it, and `open_semantic_artifact`
 //! opens it and serves the queries, embedding nothing but them; the second opens it with the
 //! runtime passed as `onnx_runtime_path`, in a child process of its own from which
 //! `OTZARIA_ONNX_RUNTIME` is removed. They also need the model's published identity files,
 //! `model.json` and `chunking.json`, from the directory `OTZARIA_TEST_ONNX_IDENTITY` names:
-//! the sidecar's `config/models/meivin-round2-onnx` for the INT8 graph,
-//! `config/models/meivin-round2-onnx-fp32` for the fp32 one. Run them with:
+//! the sidecar's `config/models/meivin-round2-onnx`, whose `model.json` is the model family
+//! and lists both the INT8 and the fp32 package. One more needs those files and nothing
+//! else: the chunking compiled in to key the index's lines must be the family's. Run them
+//! with:
 //!
 //! ```sh
 //! OTZARIA_TEST_ONNX_MODEL=/path/to/judaic-semantic-round2-onnx-zayit/seforim-embed-round2-int8.onnx \
@@ -404,8 +406,8 @@ fn recipe_two_scores_exactly_like_the_role_prefixed_text_it_is_defined_as() {
     }
 }
 
-/// The library as a release builds it, closed before the build reads it, and the artifact the
-/// build binary embeds it into, stamping the index: the index's directory and the artifact's.
+/// The library as a release builds it, closed before the build reads it, and the vector set
+/// the build binary embeds it into and installs: the index's directory and the set's.
 /// One book, so the ids are the ones `add_text_book` composes; every line is long enough to
 /// embed on its own, so none borrows a neighbour's text.
 ///
@@ -436,12 +438,14 @@ fn build_artifact(
         engine.commit().unwrap();
     }
 
-    let artifact = root.path().join("artifact");
+    let vectors = root.path().join("vectors");
     let mut command = Command::new(env!("CARGO_BIN_EXE_build_semantic_artifact"));
     command.args([
         "--index",
         index.to_str().unwrap(),
         "--library-version",
+        "1",
+        "--release-tag",
         "meivin-probe",
         "--model",
         identity.join("model.json").to_str().unwrap(),
@@ -450,8 +454,9 @@ fn build_artifact(
         "--chunking",
         identity.join("chunking.json").to_str().unwrap(),
         "--out",
-        artifact.to_str().unwrap(),
-        "--stamp-index",
+        root.path().join("package").to_str().unwrap(),
+        "--install",
+        vectors.to_str().unwrap(),
     ]);
     if let Some(runtime) = runtime {
         command.env(RUNTIME_ENV, runtime);
@@ -463,10 +468,10 @@ fn build_artifact(
         String::from_utf8_lossy(&built.stdout),
         String::from_utf8_lossy(&built.stderr)
     );
-    (index, artifact)
+    (index, vectors)
 }
 
-/// How the device opens the artifact: the model's published identity file, and the runtime
+/// How the device opens the vector set: the model's published identity file, and the runtime
 /// the application passes, if it passes one.
 fn artifact_input(
     artifact: &Path,
@@ -475,11 +480,11 @@ fn artifact_input(
     runtime: Option<&Path>,
 ) -> SemanticArtifactInput {
     SemanticArtifactInput {
-        artifact_dir: artifact.to_string_lossy().into_owned(),
+        vectors_dir: artifact.to_string_lossy().into_owned(),
         model_path: model.to_string_lossy().into_owned(),
         model_identity_json: std::fs::read_to_string(identity.join("model.json")).unwrap(),
-        published_digest: None,
         onnx_runtime_path: runtime.map(|runtime| runtime.to_string_lossy().into_owned()),
+        scan_threads: None,
     }
 }
 
@@ -508,11 +513,37 @@ fn assert_each_query_ranks_its_line_first(engine: &SearchEngine) {
     }
 }
 
+/// The chunking this crate compiles in, to key every line it indexes, is the one the model
+/// family publishes: its `chunking.json`, whose hash is `chunking_identity` in the family's
+/// `model.json`. A key computed under any other would name no vector built from the family's.
+#[test]
+#[ignore = "needs the model's identity files; set OTZARIA_TEST_ONNX_IDENTITY and pass --ignored"]
+fn the_compiled_in_chunking_is_the_one_the_model_publishes() {
+    let Some([identity]) = needed([required_file(
+        IDENTITY_ENV,
+        "the directory with the model's model.json and chunking.json, such as the sidecar's \
+         config/models/meivin-round2-onnx",
+    )]) else {
+        return;
+    };
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(identity.join(name)).unwrap()).unwrap()
+    };
+    let compiled = search_engine::semantic_keys::production_chunking();
+    let published: otzaria_semantic_search::semantic::chunker::ChunkerConfig =
+        serde_json::from_value(read("chunking.json")).unwrap();
+    assert_eq!(compiled, published);
+    assert_eq!(
+        read("model.json")["chunking_identity"].as_u64(),
+        Some(compiled.identity())
+    );
+}
+
 /// The application's path with the real model: the build binary embeds the library into an
 /// artifact and stamps the index, and the device opens that artifact against the index and
 /// embeds nothing but the queries. The identity files are the model's published ones, used
 /// by both sides exactly as a release would use them, so this also shows the published
-/// `model_checksum` names the graph on disk.
+/// `query_packages` names the graph on disk.
 #[test]
 #[ignore = "needs the Meivin ONNX model, an ONNX Runtime and the model's identity files; set \
             OTZARIA_TEST_ONNX_MODEL, OTZARIA_ONNX_RUNTIME and OTZARIA_TEST_ONNX_IDENTITY and \

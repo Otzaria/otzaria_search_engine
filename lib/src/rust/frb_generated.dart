@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 462886284;
+  int get rustContentHash => 258446943;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -165,6 +165,15 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiSearchEngineSearchEngineCommit({
     required SearchEngine that,
+  });
+
+  Future<SemanticCompactionReport>
+  crateApiSearchEngineSearchEngineCompactSemanticVectors({
+    required SearchEngine that,
+    required String vectorsDir,
+    int? liveLibraryVersion,
+    SemanticCompactionPolicy? policy,
+    required SemanticCancellationToken cancellation,
   });
 
   Future<SemanticStatus> crateApiSearchEngineSearchEngineConfigureSemantic({
@@ -550,6 +559,13 @@ abstract class RustLibApi extends BaseApi {
     required SearchEngine that,
   });
 
+  Future<SemanticVectorsInstallReport>
+  crateApiSearchEngineSearchEngineInstallSemanticVectors({
+    required SearchEngine that,
+    required SemanticVectorsInstallInput input,
+    required SemanticCancellationToken cancellation,
+  });
+
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew({
     required String path,
   });
@@ -859,6 +875,12 @@ abstract class RustLibApi extends BaseApi {
     required int chunkSize,
   });
 
+  Future<SemanticCoverage> crateApiSearchEngineSearchEngineSemanticCoverage({
+    required SearchEngine that,
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  });
+
   Future<SemanticIndexingSummary>
   crateApiSearchEngineSearchEngineSemanticIndexBooks({
     required SearchEngine that,
@@ -871,6 +893,12 @@ abstract class RustLibApi extends BaseApi {
 
   Future<SemanticStatus> crateApiSearchEngineSearchEngineSemanticStatus({
     required SearchEngine that,
+  });
+
+  Future<SemanticVectorsInfo>
+  crateApiSearchEngineSearchEngineSemanticVectorsInfo({
+    required SearchEngine that,
+    required String vectorsDir,
   });
 
   bool crateApiSearchEngineSearchEngineSetAcronymsDictionaryPath({
@@ -916,6 +944,13 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiSearchEngineSearchEngineUpsertDocumentsBatch({
     required SearchEngine that,
     required List<DocumentInput> docs,
+  });
+
+  Future<SemanticVectorsVerification>
+  crateApiSearchEngineSearchEngineVerifySemanticVectors({
+    required SearchEngine that,
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
   });
 
   void crateApiSearchEngineSemanticCancellationTokenCancel({
@@ -986,6 +1021,9 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiFocusedBenchmarkRunFocusedBenchmark();
 
   String crateApiSearchEngineSanitizeQuery({required String query});
+
+  SemanticCompactionPolicy
+  crateApiSearchEngineSemanticCompactionPolicyDefaults();
 
   SemanticRankingOptions crateApiSearchEngineSemanticRankingOptionsDefaults();
 
@@ -1616,6 +1654,65 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "SearchEngine_commit", argNames: ["that"]);
 
   @override
+  Future<SemanticCompactionReport>
+  crateApiSearchEngineSearchEngineCompactSemanticVectors({
+    required SearchEngine that,
+    required String vectorsDir,
+    int? liveLibraryVersion,
+    SemanticCompactionPolicy? policy,
+    required SemanticCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(vectorsDir, serializer);
+          sse_encode_opt_box_autoadd_u_32(liveLibraryVersion, serializer);
+          sse_encode_opt_box_autoadd_semantic_compaction_policy(
+            policy,
+            serializer,
+          );
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 13,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_compaction_report,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineCompactSemanticVectorsConstMeta,
+        argValues: [that, vectorsDir, liveLibraryVersion, policy, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineCompactSemanticVectorsConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_compact_semantic_vectors",
+        argNames: [
+          "that",
+          "vectorsDir",
+          "liveLibraryVersion",
+          "policy",
+          "cancellation",
+        ],
+      );
+
+  @override
   Future<SemanticStatus> crateApiSearchEngineSearchEngineConfigureSemantic({
     required SearchEngine that,
     required SemanticConfigInput config,
@@ -1632,7 +1729,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -1677,7 +1774,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 15,
             port: port_,
           );
         },
@@ -1756,7 +1853,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -1873,7 +1970,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -1957,7 +2054,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -2036,7 +2133,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -2156,7 +2253,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -2240,7 +2337,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 21,
             port: port_,
           );
         },
@@ -2286,7 +2383,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 22,
             port: port_,
           );
         },
@@ -2334,7 +2431,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 23,
             port: port_,
           );
         },
@@ -2389,7 +2486,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 24,
             port: port_,
           );
         },
@@ -2443,7 +2540,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 25,
             port: port_,
           );
         },
@@ -2482,7 +2579,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 26,
             port: port_,
           );
         },
@@ -2528,7 +2625,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 27,
             port: port_,
           );
         },
@@ -2572,7 +2669,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 28,
             port: port_,
           );
         },
@@ -2620,7 +2717,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 29,
             port: port_,
           );
         },
@@ -2673,7 +2770,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 30,
             port: port_,
           );
         },
@@ -2726,7 +2823,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 31,
             port: port_,
           );
         },
@@ -2764,7 +2861,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 32,
             port: port_,
           );
         },
@@ -2803,7 +2900,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 33,
             port: port_,
           );
         },
@@ -2843,7 +2940,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 34,
             port: port_,
           );
         },
@@ -2881,7 +2978,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 35,
             port: port_,
           );
         },
@@ -2922,7 +3019,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2974,7 +3071,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 37,
             port: port_,
           );
         },
@@ -3027,7 +3124,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 38,
             port: port_,
           );
         },
@@ -3067,7 +3164,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 39,
             port: port_,
           );
         },
@@ -3106,7 +3203,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 40,
             port: port_,
           );
         },
@@ -3146,7 +3243,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 41,
             port: port_,
           );
         },
@@ -3182,7 +3279,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 42,
             port: port_,
           );
         },
@@ -3229,7 +3326,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 43,
             port: port_,
           );
         },
@@ -3318,7 +3415,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 44,
             port: port_,
           );
         },
@@ -3442,7 +3539,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 45,
             port: port_,
           );
         },
@@ -3530,7 +3627,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 46,
             port: port_,
           );
         },
@@ -3586,7 +3683,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 47,
             port: port_,
           );
         },
@@ -3643,7 +3740,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 48,
             port: port_,
           );
         },
@@ -3710,7 +3807,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 49,
             port: port_,
           );
         },
@@ -3775,7 +3872,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 50,
             port: port_,
           );
         },
@@ -3820,7 +3917,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 51,
             port: port_,
           );
         },
@@ -3858,7 +3955,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 52,
             port: port_,
           );
         },
@@ -3891,7 +3988,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -3924,7 +4021,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -3956,7 +4053,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 55)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -3978,6 +4075,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SemanticVectorsInstallReport>
+  crateApiSearchEngineSearchEngineInstallSemanticVectors({
+    required SearchEngine that,
+    required SemanticVectorsInstallInput input,
+    required SemanticCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_box_autoadd_semantic_vectors_install_input(
+            input,
+            serializer,
+          );
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 56,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_vectors_install_report,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineInstallSemanticVectorsConstMeta,
+        argValues: [that, input, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineInstallSemanticVectorsConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_install_semantic_vectors",
+        argNames: ["that", "input", "cancellation"],
+      );
+
+  @override
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew({
     required String path,
   }) {
@@ -3989,7 +4135,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 57,
             port: port_,
           );
         },
@@ -4025,7 +4171,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 58,
             port: port_,
           );
         },
@@ -4063,7 +4209,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 59,
             port: port_,
           );
         },
@@ -4101,7 +4247,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 60,
             port: port_,
           );
         },
@@ -4142,7 +4288,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 61,
             port: port_,
           );
         },
@@ -4181,7 +4327,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 62,
             port: port_,
           );
         },
@@ -4218,7 +4364,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 63,
             port: port_,
           );
         },
@@ -4270,7 +4416,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 64,
             port: port_,
           );
         },
@@ -4377,7 +4523,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 65,
             port: port_,
           );
         },
@@ -4522,7 +4668,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 64,
+              funcId: 66,
               port: port_,
             );
           },
@@ -4675,7 +4821,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 65,
+              funcId: 67,
               port: port_,
             );
           },
@@ -4781,7 +4927,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 68,
             port: port_,
           );
         },
@@ -4889,7 +5035,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 67,
+            funcId: 69,
             port: port_,
           );
         },
@@ -4989,7 +5135,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 70,
             port: port_,
           );
         },
@@ -5065,7 +5211,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 71,
             port: port_,
           );
         },
@@ -5141,7 +5287,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 72,
             port: port_,
           );
         },
@@ -5218,7 +5364,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 71,
+              funcId: 73,
               port: port_,
             );
           },
@@ -5304,7 +5450,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 72,
+              funcId: 74,
               port: port_,
             );
           },
@@ -5386,7 +5532,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 73,
+            funcId: 75,
             port: port_,
           );
         },
@@ -5467,7 +5613,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 74,
+              funcId: 76,
               port: port_,
             );
           },
@@ -5557,7 +5703,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 75,
+              funcId: 77,
               port: port_,
             );
           },
@@ -5637,7 +5783,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 78,
             port: port_,
           );
         },
@@ -5726,7 +5872,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 77,
+            funcId: 79,
             port: port_,
           );
         },
@@ -5811,7 +5957,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 78,
+              funcId: 80,
               port: port_,
             );
           },
@@ -5859,6 +6005,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SemanticCoverage> crateApiSearchEngineSearchEngineSemanticCoverage({
+    required SearchEngine that,
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(vectorsDir, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 81,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_coverage,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta: kCrateApiSearchEngineSearchEngineSemanticCoverageConstMeta,
+        argValues: [that, vectorsDir, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSemanticCoverageConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_semantic_coverage",
+        argNames: ["that", "vectorsDir", "cancellation"],
+      );
+
+  @override
   Future<SemanticIndexingSummary>
   crateApiSearchEngineSearchEngineSemanticIndexBooks({
     required SearchEngine that,
@@ -5876,7 +6066,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 79,
+            funcId: 82,
             port: port_,
           );
         },
@@ -5913,7 +6103,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 80,
+            funcId: 83,
             port: port_,
           );
         },
@@ -5950,7 +6140,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 81,
+            funcId: 84,
             port: port_,
           );
         },
@@ -5972,6 +6162,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SemanticVectorsInfo>
+  crateApiSearchEngineSearchEngineSemanticVectorsInfo({
+    required SearchEngine that,
+    required String vectorsDir,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(vectorsDir, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 85,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_vectors_info,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineSemanticVectorsInfoConstMeta,
+        argValues: [that, vectorsDir],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSemanticVectorsInfoConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_semantic_vectors_info",
+        argNames: ["that", "vectorsDir"],
+      );
+
+  @override
   bool crateApiSearchEngineSearchEngineSetAcronymsDictionaryPath({
     required SearchEngine that,
     required String path,
@@ -5985,7 +6216,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 82)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 86)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6023,7 +6254,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 83,
+            funcId: 87,
             port: port_,
           );
         },
@@ -6061,7 +6292,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 84,
+            funcId: 88,
             port: port_,
           );
         },
@@ -6097,7 +6328,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 85)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 89)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6132,7 +6363,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 86)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 90)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6190,7 +6421,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 87,
+            funcId: 91,
             port: port_,
           );
         },
@@ -6254,7 +6485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 88,
+            funcId: 92,
             port: port_,
           );
         },
@@ -6278,6 +6509,52 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SemanticVectorsVerification>
+  crateApiSearchEngineSearchEngineVerifySemanticVectors({
+    required SearchEngine that,
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(vectorsDir, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 93,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_vectors_verification,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineVerifySemanticVectorsConstMeta,
+        argValues: [that, vectorsDir, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineVerifySemanticVectorsConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_verify_semantic_vectors",
+        argNames: ["that", "vectorsDir", "cancellation"],
+      );
+
+  @override
   void crateApiSearchEngineSemanticCancellationTokenCancel({
     required SemanticCancellationToken that,
   }) {
@@ -6289,7 +6566,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 89)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 94)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -6322,7 +6599,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 90)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 95)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6349,7 +6626,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 91)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 96)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -6382,7 +6659,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 92,
+            funcId: 97,
             port: port_,
           );
         },
@@ -6422,7 +6699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(catalogueOrder, serializer);
           sse_encode_u_32(generationOrder, serializer);
           sse_encode_opt_list_String(extraFacets, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 93)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 98)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_u_64,
@@ -6462,7 +6739,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 94)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 99)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_u_64,
@@ -6493,7 +6770,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 95,
+            funcId: 100,
             port: port_,
           );
         },
@@ -6535,7 +6812,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             searchOptions,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 96)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 101,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_highlight_pattern,
@@ -6575,7 +6856,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(query, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 97)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 102,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_String,
@@ -6605,7 +6890,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(normalizedText, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 98)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 103,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6633,7 +6922,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(input, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 99)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 104,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -6664,7 +6957,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 105,
           )!;
         },
         codec: SseCodec(
@@ -6695,7 +6988,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 106,
           )!;
         },
         codec: SseCodec(
@@ -6727,7 +7020,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 107,
           )!;
         },
         codec: SseCodec(
@@ -6759,7 +7052,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 108,
           )!;
         },
         codec: SseCodec(
@@ -6785,7 +7078,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 109,
             port: port_,
           );
         },
@@ -6812,7 +7105,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 110,
             port: port_,
           );
         },
@@ -6840,7 +7133,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 106,
+            funcId: 111,
           )!;
         },
         codec: SseCodec(
@@ -6858,6 +7151,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "sanitize_query", argNames: ["query"]);
 
   @override
+  SemanticCompactionPolicy
+  crateApiSearchEngineSemanticCompactionPolicyDefaults() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 112,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_compaction_policy,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSemanticCompactionPolicyDefaultsConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSemanticCompactionPolicyDefaultsConstMeta =>
+      const TaskConstMeta(
+        debugName: "semantic_compaction_policy_defaults",
+        argNames: [],
+      );
+
+  @override
   SemanticRankingOptions crateApiSearchEngineSemanticRankingOptionsDefaults() {
     return handler.executeSync(
       SyncTask(
@@ -6866,7 +7191,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 107,
+            funcId: 113,
           )!;
         },
         codec: SseCodec(
@@ -6897,7 +7222,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 108,
+            funcId: 114,
           )!;
         },
         codec: SseCodec(
@@ -7264,6 +7589,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticCompactionPolicy dco_decode_box_autoadd_semantic_compaction_policy(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_semantic_compaction_policy(raw);
+  }
+
+  @protected
   SemanticConfigInput dco_decode_box_autoadd_semantic_config_input(
     dynamic raw,
   ) {
@@ -7291,6 +7624,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_semantic_ranking_options(raw);
+  }
+
+  @protected
+  SemanticVectorsInstallInput
+  dco_decode_box_autoadd_semantic_vectors_install_input(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_semantic_vectors_install_input(raw);
   }
 
   @protected
@@ -7615,6 +7955,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SemanticSegmentInfo> dco_decode_list_semantic_segment_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_semantic_segment_info)
+        .toList();
+  }
+
+  @protected
   List<TestCase> dco_decode_list_test_case(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_test_case).toList();
@@ -7701,6 +8049,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_search_result(raw);
+  }
+
+  @protected
+  SemanticCompactionPolicy?
+  dco_decode_opt_box_autoadd_semantic_compaction_policy(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_semantic_compaction_policy(raw);
   }
 
   @protected
@@ -7928,11 +8285,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 5)
       throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return SemanticArtifactInput(
-      artifactDir: dco_decode_String(arr[0]),
+      vectorsDir: dco_decode_String(arr[0]),
       modelPath: dco_decode_String(arr[1]),
       modelIdentityJson: dco_decode_String(arr[2]),
-      publishedDigest: dco_decode_opt_String(arr[3]),
-      onnxRuntimePath: dco_decode_opt_String(arr[4]),
+      onnxRuntimePath: dco_decode_opt_String(arr[3]),
+      scanThreads: dco_decode_opt_box_autoadd_u_32(arr[4]),
     );
   }
 
@@ -7970,6 +8327,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticCompactionPolicy dco_decode_semantic_compaction_policy(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return SemanticCompactionPolicy(
+      maxDeltaRatio: dco_decode_f_64(arr[0]),
+      maxSegments: dco_decode_u_32(arr[1]),
+      maxDeadRatio: dco_decode_f_64(arr[2]),
+      minFreeSpaceFactor: dco_decode_f_64(arr[3]),
+      refreshHints: dco_decode_bool(arr[4]),
+      force: dco_decode_bool(arr[5]),
+    );
+  }
+
+  @protected
+  SemanticCompactionReport dco_decode_semantic_compaction_report(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return SemanticCompactionReport(
+      compacted: dco_decode_bool(arr[0]),
+      reason: dco_decode_String(arr[1]),
+      generation: dco_decode_u_64(arr[2]),
+      bytesBefore: dco_decode_u_64(arr[3]),
+      bytesAfter: dco_decode_u_64(arr[4]),
+      slotsBefore: dco_decode_u_64(arr[5]),
+      slotsAfter: dco_decode_u_64(arr[6]),
+      recordsPruned: dco_decode_u_64(arr[7]),
+      hintsRefreshed: dco_decode_u_64(arr[8]),
+      elapsedMs: dco_decode_u_64(arr[9]),
+    );
+  }
+
+  @protected
   SemanticConfigInput dco_decode_semantic_config_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -7985,6 +8378,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       modelQuantization: dco_decode_String(arr[6]),
       embeddingTextVersion: dco_decode_u_32(arr[7]),
       onnxRuntimePath: dco_decode_opt_String(arr[8]),
+    );
+  }
+
+  @protected
+  SemanticCoverage dco_decode_semantic_coverage(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return SemanticCoverage(
+      liveKeyedLines: dco_decode_u_64(arr[0]),
+      coveredLines: dco_decode_u_64(arr[1]),
+      booksLive: dco_decode_u_32(arr[2]),
+      booksCovered: dco_decode_u_32(arr[3]),
+      vectorsLibraryVersion: dco_decode_u_32(arr[4]),
+      ratio: dco_decode_f_64(arr[5]),
     );
   }
 
@@ -8188,6 +8597,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticSegmentInfo dco_decode_semantic_segment_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return SemanticSegmentInfo(
+      id: dco_decode_String(arr[0]),
+      kind: dco_decode_semantic_vectors_package_kind(arr[1]),
+      fromLibraryVersion: dco_decode_u_32(arr[2]),
+      toLibraryVersion: dco_decode_u_32(arr[3]),
+      slots: dco_decode_u_64(arr[4]),
+      slotsDead: dco_decode_u_64(arr[5]),
+      foreignUnresolved: dco_decode_u_64(arr[6]),
+      size: dco_decode_u_64(arr[7]),
+    );
+  }
+
+  @protected
   SemanticState dco_decode_semantic_state(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SemanticState.values[raw as int];
@@ -8197,8 +8624,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticStatus dco_decode_semantic_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return SemanticStatus(
       state: dco_decode_semantic_state(arr[0]),
       enabled: dco_decode_bool(arr[1]),
@@ -8214,6 +8641,94 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       needsFullReindex: dco_decode_opt_String(arr[11]),
       lastError: dco_decode_opt_String(arr[12]),
       errorKind: dco_decode_opt_box_autoadd_semantic_error_kind(arr[13]),
+      vectorsLibraryVersion: dco_decode_opt_box_autoadd_u_32(arr[14]),
+      vectorSegments: dco_decode_u_32(arr[15]),
+      needsCompaction: dco_decode_bool(arr[16]),
+    );
+  }
+
+  @protected
+  SemanticVectorsInfo dco_decode_semantic_vectors_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return SemanticVectorsInfo(
+      present: dco_decode_bool(arr[0]),
+      identityDigest: dco_decode_String(arr[1]),
+      libraryVersion: dco_decode_u_32(arr[2]),
+      libraryReleaseTag: dco_decode_String(arr[3]),
+      generation: dco_decode_u_64(arr[4]),
+      segments: dco_decode_list_semantic_segment_info(arr[5]),
+      slotsLive: dco_decode_u_64(arr[6]),
+      slotsDead: dco_decode_u_64(arr[7]),
+      bytesOnDisk: dco_decode_u_64(arr[8]),
+      needsCompaction: dco_decode_bool(arr[9]),
+      recoveredFromPrevious: dco_decode_bool(arr[10]),
+    );
+  }
+
+  @protected
+  SemanticVectorsInstallInput dco_decode_semantic_vectors_install_input(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return SemanticVectorsInstallInput(
+      vectorsDir: dco_decode_String(arr[0]),
+      segmentPath: dco_decode_String(arr[1]),
+      manifestJson: dco_decode_String(arr[2]),
+      publishedManifestSha256: dco_decode_opt_String(arr[3]),
+      modelIdentityJson: dco_decode_String(arr[4]),
+    );
+  }
+
+  @protected
+  SemanticVectorsInstallReport dco_decode_semantic_vectors_install_report(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return SemanticVectorsInstallReport(
+      kind: dco_decode_semantic_vectors_package_kind(arr[0]),
+      libraryVersion: dco_decode_u_32(arr[1]),
+      generation: dco_decode_u_64(arr[2]),
+      segments: dco_decode_u_32(arr[3]),
+      slotsAdded: dco_decode_u_64(arr[4]),
+      tombstonesApplied: dco_decode_u_64(arr[5]),
+      duplicatesRemoved: dco_decode_u_64(arr[6]),
+      foreignUnresolved: dco_decode_u_64(arr[7]),
+      bytesOnDisk: dco_decode_u_64(arr[8]),
+      needsCompaction: dco_decode_bool(arr[9]),
+      alreadyApplied: dco_decode_bool(arr[10]),
+    );
+  }
+
+  @protected
+  SemanticVectorsPackageKind dco_decode_semantic_vectors_package_kind(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SemanticVectorsPackageKind.values[raw as int];
+  }
+
+  @protected
+  SemanticVectorsVerification dco_decode_semantic_vectors_verification(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return SemanticVectorsVerification(
+      generation: dco_decode_u_64(arr[0]),
+      segments: dco_decode_u_32(arr[1]),
+      bytesChecked: dco_decode_u_64(arr[2]),
+      elapsedMs: dco_decode_u_64(arr[3]),
     );
   }
 
@@ -8641,6 +9156,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticCompactionPolicy sse_decode_box_autoadd_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_semantic_compaction_policy(deserializer));
+  }
+
+  @protected
   SemanticConfigInput sse_decode_box_autoadd_semantic_config_input(
     SseDeserializer deserializer,
   ) {
@@ -8670,6 +9193,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_semantic_ranking_options(deserializer));
+  }
+
+  @protected
+  SemanticVectorsInstallInput
+  sse_decode_box_autoadd_semantic_vectors_install_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_semantic_vectors_install_input(deserializer));
   }
 
   @protected
@@ -9150,6 +9682,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SemanticSegmentInfo> sse_decode_list_semantic_segment_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SemanticSegmentInfo>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_semantic_segment_info(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -9302,6 +9848,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_search_result(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  SemanticCompactionPolicy?
+  sse_decode_opt_box_autoadd_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_semantic_compaction_policy(deserializer));
     } else {
       return null;
     }
@@ -9561,17 +10121,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_artifactDir = sse_decode_String(deserializer);
+    var var_vectorsDir = sse_decode_String(deserializer);
     var var_modelPath = sse_decode_String(deserializer);
     var var_modelIdentityJson = sse_decode_String(deserializer);
-    var var_publishedDigest = sse_decode_opt_String(deserializer);
     var var_onnxRuntimePath = sse_decode_opt_String(deserializer);
+    var var_scanThreads = sse_decode_opt_box_autoadd_u_32(deserializer);
     return SemanticArtifactInput(
-      artifactDir: var_artifactDir,
+      vectorsDir: var_vectorsDir,
       modelPath: var_modelPath,
       modelIdentityJson: var_modelIdentityJson,
-      publishedDigest: var_publishedDigest,
       onnxRuntimePath: var_onnxRuntimePath,
+      scanThreads: var_scanThreads,
     );
   }
 
@@ -9620,6 +10180,56 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticCompactionPolicy sse_decode_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_maxDeltaRatio = sse_decode_f_64(deserializer);
+    var var_maxSegments = sse_decode_u_32(deserializer);
+    var var_maxDeadRatio = sse_decode_f_64(deserializer);
+    var var_minFreeSpaceFactor = sse_decode_f_64(deserializer);
+    var var_refreshHints = sse_decode_bool(deserializer);
+    var var_force = sse_decode_bool(deserializer);
+    return SemanticCompactionPolicy(
+      maxDeltaRatio: var_maxDeltaRatio,
+      maxSegments: var_maxSegments,
+      maxDeadRatio: var_maxDeadRatio,
+      minFreeSpaceFactor: var_minFreeSpaceFactor,
+      refreshHints: var_refreshHints,
+      force: var_force,
+    );
+  }
+
+  @protected
+  SemanticCompactionReport sse_decode_semantic_compaction_report(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_compacted = sse_decode_bool(deserializer);
+    var var_reason = sse_decode_String(deserializer);
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_bytesBefore = sse_decode_u_64(deserializer);
+    var var_bytesAfter = sse_decode_u_64(deserializer);
+    var var_slotsBefore = sse_decode_u_64(deserializer);
+    var var_slotsAfter = sse_decode_u_64(deserializer);
+    var var_recordsPruned = sse_decode_u_64(deserializer);
+    var var_hintsRefreshed = sse_decode_u_64(deserializer);
+    var var_elapsedMs = sse_decode_u_64(deserializer);
+    return SemanticCompactionReport(
+      compacted: var_compacted,
+      reason: var_reason,
+      generation: var_generation,
+      bytesBefore: var_bytesBefore,
+      bytesAfter: var_bytesAfter,
+      slotsBefore: var_slotsBefore,
+      slotsAfter: var_slotsAfter,
+      recordsPruned: var_recordsPruned,
+      hintsRefreshed: var_hintsRefreshed,
+      elapsedMs: var_elapsedMs,
+    );
+  }
+
+  @protected
   SemanticConfigInput sse_decode_semantic_config_input(
     SseDeserializer deserializer,
   ) {
@@ -9643,6 +10253,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       modelQuantization: var_modelQuantization,
       embeddingTextVersion: var_embeddingTextVersion,
       onnxRuntimePath: var_onnxRuntimePath,
+    );
+  }
+
+  @protected
+  SemanticCoverage sse_decode_semantic_coverage(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_liveKeyedLines = sse_decode_u_64(deserializer);
+    var var_coveredLines = sse_decode_u_64(deserializer);
+    var var_booksLive = sse_decode_u_32(deserializer);
+    var var_booksCovered = sse_decode_u_32(deserializer);
+    var var_vectorsLibraryVersion = sse_decode_u_32(deserializer);
+    var var_ratio = sse_decode_f_64(deserializer);
+    return SemanticCoverage(
+      liveKeyedLines: var_liveKeyedLines,
+      coveredLines: var_coveredLines,
+      booksLive: var_booksLive,
+      booksCovered: var_booksCovered,
+      vectorsLibraryVersion: var_vectorsLibraryVersion,
+      ratio: var_ratio,
     );
   }
 
@@ -9927,6 +10556,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticSegmentInfo sse_decode_semantic_segment_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_kind = sse_decode_semantic_vectors_package_kind(deserializer);
+    var var_fromLibraryVersion = sse_decode_u_32(deserializer);
+    var var_toLibraryVersion = sse_decode_u_32(deserializer);
+    var var_slots = sse_decode_u_64(deserializer);
+    var var_slotsDead = sse_decode_u_64(deserializer);
+    var var_foreignUnresolved = sse_decode_u_64(deserializer);
+    var var_size = sse_decode_u_64(deserializer);
+    return SemanticSegmentInfo(
+      id: var_id,
+      kind: var_kind,
+      fromLibraryVersion: var_fromLibraryVersion,
+      toLibraryVersion: var_toLibraryVersion,
+      slots: var_slots,
+      slotsDead: var_slotsDead,
+      foreignUnresolved: var_foreignUnresolved,
+      size: var_size,
+    );
+  }
+
+  @protected
   SemanticState sse_decode_semantic_state(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -9952,6 +10606,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_errorKind = sse_decode_opt_box_autoadd_semantic_error_kind(
       deserializer,
     );
+    var var_vectorsLibraryVersion = sse_decode_opt_box_autoadd_u_32(
+      deserializer,
+    );
+    var var_vectorSegments = sse_decode_u_32(deserializer);
+    var var_needsCompaction = sse_decode_bool(deserializer);
     return SemanticStatus(
       state: var_state,
       enabled: var_enabled,
@@ -9967,6 +10626,116 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       needsFullReindex: var_needsFullReindex,
       lastError: var_lastError,
       errorKind: var_errorKind,
+      vectorsLibraryVersion: var_vectorsLibraryVersion,
+      vectorSegments: var_vectorSegments,
+      needsCompaction: var_needsCompaction,
+    );
+  }
+
+  @protected
+  SemanticVectorsInfo sse_decode_semantic_vectors_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_present = sse_decode_bool(deserializer);
+    var var_identityDigest = sse_decode_String(deserializer);
+    var var_libraryVersion = sse_decode_u_32(deserializer);
+    var var_libraryReleaseTag = sse_decode_String(deserializer);
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_segments = sse_decode_list_semantic_segment_info(deserializer);
+    var var_slotsLive = sse_decode_u_64(deserializer);
+    var var_slotsDead = sse_decode_u_64(deserializer);
+    var var_bytesOnDisk = sse_decode_u_64(deserializer);
+    var var_needsCompaction = sse_decode_bool(deserializer);
+    var var_recoveredFromPrevious = sse_decode_bool(deserializer);
+    return SemanticVectorsInfo(
+      present: var_present,
+      identityDigest: var_identityDigest,
+      libraryVersion: var_libraryVersion,
+      libraryReleaseTag: var_libraryReleaseTag,
+      generation: var_generation,
+      segments: var_segments,
+      slotsLive: var_slotsLive,
+      slotsDead: var_slotsDead,
+      bytesOnDisk: var_bytesOnDisk,
+      needsCompaction: var_needsCompaction,
+      recoveredFromPrevious: var_recoveredFromPrevious,
+    );
+  }
+
+  @protected
+  SemanticVectorsInstallInput sse_decode_semantic_vectors_install_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_vectorsDir = sse_decode_String(deserializer);
+    var var_segmentPath = sse_decode_String(deserializer);
+    var var_manifestJson = sse_decode_String(deserializer);
+    var var_publishedManifestSha256 = sse_decode_opt_String(deserializer);
+    var var_modelIdentityJson = sse_decode_String(deserializer);
+    return SemanticVectorsInstallInput(
+      vectorsDir: var_vectorsDir,
+      segmentPath: var_segmentPath,
+      manifestJson: var_manifestJson,
+      publishedManifestSha256: var_publishedManifestSha256,
+      modelIdentityJson: var_modelIdentityJson,
+    );
+  }
+
+  @protected
+  SemanticVectorsInstallReport sse_decode_semantic_vectors_install_report(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_semantic_vectors_package_kind(deserializer);
+    var var_libraryVersion = sse_decode_u_32(deserializer);
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_segments = sse_decode_u_32(deserializer);
+    var var_slotsAdded = sse_decode_u_64(deserializer);
+    var var_tombstonesApplied = sse_decode_u_64(deserializer);
+    var var_duplicatesRemoved = sse_decode_u_64(deserializer);
+    var var_foreignUnresolved = sse_decode_u_64(deserializer);
+    var var_bytesOnDisk = sse_decode_u_64(deserializer);
+    var var_needsCompaction = sse_decode_bool(deserializer);
+    var var_alreadyApplied = sse_decode_bool(deserializer);
+    return SemanticVectorsInstallReport(
+      kind: var_kind,
+      libraryVersion: var_libraryVersion,
+      generation: var_generation,
+      segments: var_segments,
+      slotsAdded: var_slotsAdded,
+      tombstonesApplied: var_tombstonesApplied,
+      duplicatesRemoved: var_duplicatesRemoved,
+      foreignUnresolved: var_foreignUnresolved,
+      bytesOnDisk: var_bytesOnDisk,
+      needsCompaction: var_needsCompaction,
+      alreadyApplied: var_alreadyApplied,
+    );
+  }
+
+  @protected
+  SemanticVectorsPackageKind sse_decode_semantic_vectors_package_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SemanticVectorsPackageKind.values[inner];
+  }
+
+  @protected
+  SemanticVectorsVerification sse_decode_semantic_vectors_verification(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_segments = sse_decode_u_32(deserializer);
+    var var_bytesChecked = sse_decode_u_64(deserializer);
+    var var_elapsedMs = sse_decode_u_64(deserializer);
+    return SemanticVectorsVerification(
+      generation: var_generation,
+      segments: var_segments,
+      bytesChecked: var_bytesChecked,
+      elapsedMs: var_elapsedMs,
     );
   }
 
@@ -10439,6 +11208,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_semantic_compaction_policy(
+    SemanticCompactionPolicy self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_compaction_policy(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_semantic_config_input(
     SemanticConfigInput self,
     SseSerializer serializer,
@@ -10472,6 +11250,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_semantic_ranking_options(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_semantic_vectors_install_input(
+    SemanticVectorsInstallInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_vectors_install_input(self, serializer);
   }
 
   @protected
@@ -10887,6 +11674,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_semantic_segment_info(
+    List<SemanticSegmentInfo> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_semantic_segment_info(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_test_case(
     List<TestCase> self,
     SseSerializer serializer,
@@ -11031,6 +11830,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_search_result(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_compaction_policy(
+    SemanticCompactionPolicy? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_semantic_compaction_policy(self, serializer);
     }
   }
 
@@ -11271,11 +12083,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.artifactDir, serializer);
+    sse_encode_String(self.vectorsDir, serializer);
     sse_encode_String(self.modelPath, serializer);
     sse_encode_String(self.modelIdentityJson, serializer);
-    sse_encode_opt_String(self.publishedDigest, serializer);
     sse_encode_opt_String(self.onnxRuntimePath, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.scanThreads, serializer);
   }
 
   @protected
@@ -11308,6 +12120,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_semantic_compaction_policy(
+    SemanticCompactionPolicy self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_f_64(self.maxDeltaRatio, serializer);
+    sse_encode_u_32(self.maxSegments, serializer);
+    sse_encode_f_64(self.maxDeadRatio, serializer);
+    sse_encode_f_64(self.minFreeSpaceFactor, serializer);
+    sse_encode_bool(self.refreshHints, serializer);
+    sse_encode_bool(self.force, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_compaction_report(
+    SemanticCompactionReport self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.compacted, serializer);
+    sse_encode_String(self.reason, serializer);
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_u_64(self.bytesBefore, serializer);
+    sse_encode_u_64(self.bytesAfter, serializer);
+    sse_encode_u_64(self.slotsBefore, serializer);
+    sse_encode_u_64(self.slotsAfter, serializer);
+    sse_encode_u_64(self.recordsPruned, serializer);
+    sse_encode_u_64(self.hintsRefreshed, serializer);
+    sse_encode_u_64(self.elapsedMs, serializer);
+  }
+
+  @protected
   void sse_encode_semantic_config_input(
     SemanticConfigInput self,
     SseSerializer serializer,
@@ -11322,6 +12166,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.modelQuantization, serializer);
     sse_encode_u_32(self.embeddingTextVersion, serializer);
     sse_encode_opt_String(self.onnxRuntimePath, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_coverage(
+    SemanticCoverage self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.liveKeyedLines, serializer);
+    sse_encode_u_64(self.coveredLines, serializer);
+    sse_encode_u_32(self.booksLive, serializer);
+    sse_encode_u_32(self.booksCovered, serializer);
+    sse_encode_u_32(self.vectorsLibraryVersion, serializer);
+    sse_encode_f_64(self.ratio, serializer);
   }
 
   @protected
@@ -11527,6 +12385,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_semantic_segment_info(
+    SemanticSegmentInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_semantic_vectors_package_kind(self.kind, serializer);
+    sse_encode_u_32(self.fromLibraryVersion, serializer);
+    sse_encode_u_32(self.toLibraryVersion, serializer);
+    sse_encode_u_64(self.slots, serializer);
+    sse_encode_u_64(self.slotsDead, serializer);
+    sse_encode_u_64(self.foreignUnresolved, serializer);
+    sse_encode_u_64(self.size, serializer);
+  }
+
+  @protected
   void sse_encode_semantic_state(SemanticState self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -11552,6 +12426,81 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.needsFullReindex, serializer);
     sse_encode_opt_String(self.lastError, serializer);
     sse_encode_opt_box_autoadd_semantic_error_kind(self.errorKind, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.vectorsLibraryVersion, serializer);
+    sse_encode_u_32(self.vectorSegments, serializer);
+    sse_encode_bool(self.needsCompaction, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_vectors_info(
+    SemanticVectorsInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.present, serializer);
+    sse_encode_String(self.identityDigest, serializer);
+    sse_encode_u_32(self.libraryVersion, serializer);
+    sse_encode_String(self.libraryReleaseTag, serializer);
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_list_semantic_segment_info(self.segments, serializer);
+    sse_encode_u_64(self.slotsLive, serializer);
+    sse_encode_u_64(self.slotsDead, serializer);
+    sse_encode_u_64(self.bytesOnDisk, serializer);
+    sse_encode_bool(self.needsCompaction, serializer);
+    sse_encode_bool(self.recoveredFromPrevious, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_vectors_install_input(
+    SemanticVectorsInstallInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.vectorsDir, serializer);
+    sse_encode_String(self.segmentPath, serializer);
+    sse_encode_String(self.manifestJson, serializer);
+    sse_encode_opt_String(self.publishedManifestSha256, serializer);
+    sse_encode_String(self.modelIdentityJson, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_vectors_install_report(
+    SemanticVectorsInstallReport self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_vectors_package_kind(self.kind, serializer);
+    sse_encode_u_32(self.libraryVersion, serializer);
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_u_32(self.segments, serializer);
+    sse_encode_u_64(self.slotsAdded, serializer);
+    sse_encode_u_64(self.tombstonesApplied, serializer);
+    sse_encode_u_64(self.duplicatesRemoved, serializer);
+    sse_encode_u_64(self.foreignUnresolved, serializer);
+    sse_encode_u_64(self.bytesOnDisk, serializer);
+    sse_encode_bool(self.needsCompaction, serializer);
+    sse_encode_bool(self.alreadyApplied, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_vectors_package_kind(
+    SemanticVectorsPackageKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_vectors_verification(
+    SemanticVectorsVerification self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_u_32(self.segments, serializer);
+    sse_encode_u_64(self.bytesChecked, serializer);
+    sse_encode_u_64(self.elapsedMs, serializer);
   }
 
   @protected
@@ -11851,6 +12800,36 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCommit(that: this);
+
+  /// Merge the set at `vectors_dir` into one segment, when `policy` (or, with `None`, the
+  /// sidecar's defaults, [`SemanticCompactionPolicy::defaults`]) asks for it; the report
+  /// says whether it did, and why. Deltas pile up as the library is updated, and each one
+  /// a search scans costs it time; the set wants compacting when
+  /// [`SemanticVectorsInfo::needs_compaction`] says so.
+  ///
+  /// `live_library_version` is the library version the open index holds, which the
+  /// application knows and the index does not. When it is the set's own, and the index
+  /// has the `chunkKey` column, every record is moved onto the live line that holds its
+  /// text, and records whose book no longer holds it are dropped; otherwise records are
+  /// kept as they are, which costs nothing but the space.
+  ///
+  /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
+  /// compaction leaves the set as it was. It refuses to start without
+  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
+  /// An open session on the same set is moved onto the compacted generation.
+  Future<SemanticCompactionReport> compactSemanticVectors({
+    required String vectorsDir,
+    int? liveLibraryVersion,
+    SemanticCompactionPolicy? policy,
+    required SemanticCancellationToken cancellation,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineCompactSemanticVectors(
+        that: this,
+        vectorsDir: vectorsDir,
+        liveLibraryVersion: liveLibraryVersion,
+        policy: policy,
+        cancellation: cancellation,
+      );
 
   /// Open a semantic session whose vectors are built on this device, and wire
   /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
@@ -12628,51 +13607,81 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   bool hasTranslationDictionary() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineHasTranslationDictionary(that: this);
 
-  /// Open a prebuilt semantic artifact and serve semantic and hybrid search
-  /// from it, with every result hydrated from this Tantivy index as
+  /// Install a release of the library's vectors into the set at `vectors_dir`, creating
+  /// the set when there is none: a base replaces whatever the set holds, and a delta
+  /// brings it from the library version it stands at to the next. The release must be
+  /// of this installation — the line recipe this build indexes with, the model family
+  /// `model_identity_json` describes, chunked as this build keys lines, and the store
+  /// this build reads — and, given `published_manifest_sha256`, the one published.
+  ///
+  /// The set is locked throughout, and the new generation goes live in one flip: a
+  /// release that is refused, cancelled through `cancellation`, or cut off by a crash
+  /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
+  /// the set's `incoming/` folder first, so it needs its expanded size free besides what
+  /// the install needs. An open session on the same set is moved onto the new
+  /// generation before this returns.
+  ///
+  /// Refusals are [`SemanticError`]s of the kinds in the table on
+  /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
+  /// published one, `ArtifactIncompatible` for a release of another identity or a delta
+  /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
+  /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+  ///
+  /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
+  /// engine's write lock while it copies a segment of hundreds of megabytes.
+  Future<SemanticVectorsInstallReport> installSemanticVectors({
+    required SemanticVectorsInstallInput input,
+    required SemanticCancellationToken cancellation,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineInstallSemanticVectors(
+        that: this,
+        input: input,
+        cancellation: cancellation,
+      );
+
+  /// Open the vector set installed on this device and serve semantic and hybrid
+  /// search from it, with every result hydrated from this Tantivy index as
   /// [`Self::search_semantic`] always does. **This is the application's
   /// semantic path**: the library's vectors are built on the build machine,
   /// and the device embeds only the query. When this crate was built without
   /// the optional semantic feature this is a no-op that returns an explicit
   /// `NotInBuild` status.
   ///
-  /// Opening verifies the artifact against this installation, all of it and
-  /// before reading a vector:
+  /// Opening recovers what an interrupted install left, opens the generation
+  /// `CURRENT` names (or `PREVIOUS`, when it does not open), loads the model,
+  /// and verifies the set against this installation, all of it and before a
+  /// vector is read:
   ///
   /// | half | expected value, from | fixed by |
   /// | --- | --- | --- |
-  /// | corpus | the corpus stamp inside this index's directory, and the index's own segment set | installing the release's index with its artifact |
-  /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the artifact was built with |
-  /// | store | what this build can read | a build that reads the artifact's format |
+  /// | text | the line recipe this build indexes with, and the key function it computes keys with | a set built for this application's line recipe |
+  /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the set was built with |
+  /// | store | what this build can read | a build that reads the set's format |
   ///
-  /// The corpus identity is read from the index, never passed in: nothing on
-  /// a device can recompute `corpus_id`, which digests every stored line, so
-  /// the build machine writes it into the index directory beside the index it
-  /// describes (`build_semantic_artifact --stamp-index`), together with the
-  /// index's segment set at that moment. An index added to, deleted from or
-  /// merged since is refused here, and so is one stamped for another corpus.
+  /// The set is not tied to one state of the index. Its vectors are addressed by
+  /// the key of the text they were embedded from, and each hit is resolved, on
+  /// every search, to the live lines that hold that text: lines added, deleted,
+  /// moved or renumbered since the set was built leave every unchanged line's
+  /// vector usable, and nothing goes stale.
   ///
   /// A mismatch is an error naming every field that disagreed, and nothing is
   /// left open. On success the session is read-only: `semantic_index_books`,
   /// `remove_semantic_books`, `reset_semantic_index` and `semantic_index_diff`
-  /// are refused by name, and so is [`Self::configure_semantic`]. A commit to
-  /// this index afterwards makes the artifact stale: searches then fall back
-  /// to lexical results with the reason, and [`Self::semantic_status`]
-  /// reports it, until the session is disabled and a matching pair opened.
+  /// are refused by name, and so is [`Self::configure_semantic`].
   ///
   /// - Called again with the same inputs it is a no-op returning the status.
   /// - Called while another session is open it fails: call
   ///   [`Self::disable_semantic`] first.
   ///
   /// Every refusal is a [`SemanticError`] whose kind says which of these it was,
-  /// so the application can tell the user what to install: the artifact, the
-  /// release's index, the model or ONNX Runtime. The table on
-  /// [`SemanticErrorKind`] has each kind, and `field` names the identity field
-  /// that disagreed when the artifact was built for something else.
+  /// so the application can tell the user what to install: the vectors, the
+  /// model or ONNX Runtime. The table on [`SemanticErrorKind`] has each kind, and
+  /// `field` names the identity field that disagreed when the set was built for
+  /// something else.
   ///
   /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
-  /// the artifact's vectors, which takes time, and a `&mut self` binding would
-  /// hold the engine's write lock throughout, stalling every lexical search.
+  /// maps the set, which takes time, and a `&mut self` binding would hold the
+  /// engine's write lock throughout, stalling every lexical search.
   Future<SemanticStatus> openSemanticArtifact({
     required SemanticArtifactInput config,
   }) =>
@@ -13294,6 +14303,23 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     chunkSize: chunkSize,
   );
 
+  /// How much of the open index the set at `vectors_dir` covers: the live lines the
+  /// recipe embeds, and how many of them the set holds a vector for. From the `chunkKey`
+  /// column, one pass over it; on an index without the column, every book's keys are
+  /// recomputed from its stored text, which reads the whole store. Cancellable.
+  ///
+  /// A line is covered when any slot of the set holds its text's key, including a slot a
+  /// later delta deleted; a release deletes only texts no line of its library holds, so
+  /// that counts a line of an index older than the set at most.
+  Future<SemanticCoverage> semanticCoverage({
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticCoverage(
+    that: this,
+    vectorsDir: vectorsDir,
+    cancellation: cancellation,
+  );
+
   /// Index or replace semantic vectors for complete books. The caller should
   /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
   /// be the global Tantivy document ids so semantic-only results can hydrate.
@@ -13338,6 +14364,18 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// it must not be able to freeze the UI.
   Future<SemanticStatus> semanticStatus() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSemanticStatus(that: this);
+
+  /// What is installed at `vectors_dir`, from its small files alone: nothing is opened,
+  /// mapped or cleaned up, so it is cheap enough to ask before every download. Nothing
+  /// installed is not an error: [`SemanticVectorsInfo::present`] is `false` then.
+  /// `ArtifactCorrupt` when what is there does not read.
+  Future<SemanticVectorsInfo> semanticVectorsInfo({
+    required String vectorsDir,
+  }) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticVectorsInfo(
+        that: this,
+        vectorsDir: vectorsDir,
+      );
 
   /// טוען את מילון ראשי-התיבות (ה-`Acronyms.json` של האפליקציה) עבור
   /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
@@ -13433,6 +14471,24 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
       RustLib.instance.api.crateApiSearchEngineSearchEngineUpsertDocumentsBatch(
         that: this,
         docs: docs,
+      );
+
+  /// Read every block of every segment of the set at `vectors_dir` and check it against
+  /// its checksum: the check opening leaves out, to run on demand, such as after a crash
+  /// or before reporting a problem. It reads the whole set, so it takes the time a read of
+  /// that many bytes takes, and stops at a cancel.
+  ///
+  /// A damaged segment is marked so that every later open refuses it, and this returns
+  /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
+  /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+  Future<SemanticVectorsVerification> verifySemanticVectors({
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineVerifySemanticVectors(
+        that: this,
+        vectorsDir: vectorsDir,
+        cancellation: cancellation,
       );
 }
 
