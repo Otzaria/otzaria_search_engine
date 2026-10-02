@@ -1571,6 +1571,309 @@ fn a_compressed_release_is_expanded_and_installed() {
         .unwrap();
 }
 
+/// Expansions in progress in the set at `vectors`: `(name, bytes)`.
+fn expansions(vectors: &Path) -> Vec<(String, u64)> {
+    std::fs::read_dir(vectors.join("incoming"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        entry.metadata().map_or(0, |meta| meta.len()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A compressed "segment" that expands to 4 GiB of zeros, from 4,096 copies of one frame,
+/// so an install of it is still expanding whenever a test looks.
+fn endless_download(path: &Path) {
+    let frame = zstd::stream::encode_all(&vec![0u8; 1 << 20][..], 1).unwrap();
+    std::fs::write(path, frame.repeat(4096)).unwrap();
+}
+
+fn assert_busy(result: Result<impl Sized, SemanticError>, doing: &str) {
+    match result {
+        Ok(_) => panic!("{doing} must be refused while another runs"),
+        Err(error) => {
+            assert_eq!(
+                (error.kind, error.field.as_deref()),
+                (SemanticErrorKind::SessionConflict, Some("vectors_dir")),
+                "{doing}: {}",
+                error.message
+            );
+        }
+    }
+}
+
+/// One install or compaction of a set at a time. While an install is expanding a
+/// compressed download, a second install of the same set — a valid release — and a
+/// compaction are refused at once as busy, without reading or writing anything; an
+/// install into another set is not held up. The first, cancelled, leaves nothing in
+/// `incoming/` and the set as it was, and the valid release then installs.
+#[test]
+fn a_second_install_of_a_set_while_one_expands_is_refused_and_changes_nothing() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let library = build_library();
+    let downloads = library.work.join("downloads");
+    std::fs::create_dir_all(downloads.join("a")).unwrap();
+    std::fs::create_dir_all(downloads.join("b")).unwrap();
+    let endless = downloads.join("a/segment.oxv.zst");
+    endless_download(&endless);
+    let (segment, manifest, digest) = release(&library.package);
+    // The same file name as the other download, in another folder.
+    let valid = downloads.join("b/segment.oxv.zst");
+    std::fs::write(
+        &valid,
+        zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 1).unwrap(),
+    )
+    .unwrap();
+    let engine = Arc::new(library.engine());
+    let vectors = library.vectors.clone();
+    let before = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+
+    let token = Arc::new(SemanticCancellationToken::new());
+    let first = {
+        let engine = Arc::clone(&engine);
+        let token = Arc::clone(&token);
+        let input = library.install_input(&vectors, &endless, &manifest, Some(digest.clone()));
+        std::thread::spawn(move || engine.install_semantic_vectors(input, &token))
+    };
+    let started = Instant::now();
+    while !expansions(&vectors)
+        .iter()
+        .any(|(name, bytes)| name.starts_with(".expanding-") && *bytes > 1 << 20)
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the first install never started expanding"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    let fresh = SemanticCancellationToken::new();
+    assert_busy(
+        engine.install_semantic_vectors(
+            library.install_input(&vectors, &valid, &manifest, Some(digest.clone())),
+            &fresh,
+        ),
+        "a second install",
+    );
+    assert_busy(
+        engine.compact_semantic_vectors(
+            dir_string(&vectors),
+            None,
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &fresh,
+        ),
+        "a compaction",
+    );
+    // Another set is another set.
+    let elsewhere = library.package.with_file_name("elsewhere");
+    engine
+        .install_semantic_vectors(
+            library.install_input(&elsewhere, &valid, &manifest, Some(digest.clone())),
+            &fresh,
+        )
+        .unwrap();
+    assert_eq!(
+        expansions(&vectors).len(),
+        1,
+        "the refused install wrote nothing: {:?}",
+        expansions(&vectors)
+    );
+
+    token.cancel();
+    let error = match first.join().unwrap() {
+        Ok(_) => panic!("4 GiB of zeros is no segment"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::Cancelled,
+        "{}",
+        error.message
+    );
+    assert_eq!(expansions(&vectors), Vec::new(), "nothing is left behind");
+    let after = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+    assert_eq!(
+        (after.generation, after.bytes_on_disk),
+        (before.generation, before.bytes_on_disk)
+    );
+
+    let report = engine
+        .install_semantic_vectors(
+            library.install_input(&vectors, &valid, &manifest, Some(digest)),
+            &fresh,
+        )
+        .unwrap();
+    assert!(report.generation > before.generation);
+    assert_eq!(expansions(&vectors), Vec::new());
+    engine
+        .verify_semantic_vectors(dir_string(&vectors), &fresh)
+        .unwrap();
+}
+
+/// In the other order — the valid release first, a download that is not it second — the
+/// second is refused for what it is and leaves the set as the first made it, and nothing of
+/// either expansion stays behind.
+#[test]
+fn a_refused_install_after_a_valid_one_leaves_the_set_as_it_made_it() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let valid = library.work.join("segment.oxv.zst");
+    std::fs::write(
+        &valid,
+        zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 1).unwrap(),
+    )
+    .unwrap();
+    let zeros = library.work.join("zeros.oxv.zst");
+    std::fs::write(
+        &zeros,
+        zstd::stream::encode_all(&vec![0u8; 1 << 20][..], 1).unwrap(),
+    )
+    .unwrap();
+    let vectors = &library.vectors;
+
+    let installed = engine
+        .install_semantic_vectors(
+            library.install_input(vectors, &valid, &manifest, Some(digest.clone())),
+            &token,
+        )
+        .unwrap();
+    let error = match engine.install_semantic_vectors(
+        library.install_input(vectors, &zeros, &manifest, Some(digest)),
+        &token,
+    ) {
+        Ok(_) => panic!("zeros are no segment"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::ArtifactCorrupt,
+        "{}",
+        error.message
+    );
+    let info = engine.semantic_vectors_info(dir_string(vectors)).unwrap();
+    assert_eq!(info.generation, installed.generation);
+    assert_eq!(expansions(vectors), Vec::new());
+    engine
+        .verify_semantic_vectors(dir_string(vectors), &token)
+        .unwrap();
+}
+
+/// An install or a compaction in another process holds the sidecar's lock on the set, and
+/// meets this one there: refused as busy too, by the kind of the sidecar's refusal.
+#[test]
+fn an_install_or_compaction_under_another_process_lock_is_refused_as_busy() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    // What another process's install holds while it runs.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(library.vectors.join(".lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+
+    assert_busy(
+        engine.install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest.clone())),
+            &token,
+        ),
+        "an install",
+    );
+    assert_busy(
+        engine.compact_semantic_vectors(
+            dir_string(&library.vectors),
+            None,
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        ),
+        "a compaction",
+    );
+
+    drop(lock);
+    engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+}
+
+/// What an expansion that never finished left — a process that stopped while it expanded —
+/// is removed by the next install of the set; one another process still writes, and holds
+/// a lock on, is not. A download the application left in `incoming/` is its own.
+#[test]
+fn an_abandoned_expansion_is_removed_and_one_in_progress_is_not() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let compressed = library.work.join("segment.oxv.zst");
+    std::fs::write(
+        &compressed,
+        zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 1).unwrap(),
+    )
+    .unwrap();
+    let incoming = library.vectors.join("incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    std::fs::write(incoming.join(".expanding-abandoned.oxv"), b"half").unwrap();
+    std::fs::write(incoming.join(".expanding-writing.oxv"), b"half").unwrap();
+    std::fs::write(incoming.join("download.part"), b"the application's").unwrap();
+    let writing = std::fs::OpenOptions::new()
+        .write(true)
+        .open(incoming.join(".expanding-writing.oxv"))
+        .unwrap();
+    writing.try_lock().unwrap();
+
+    let install = || {
+        engine
+            .install_semantic_vectors(
+                library.install_input(
+                    &library.vectors,
+                    &compressed,
+                    &manifest,
+                    Some(digest.clone()),
+                ),
+                &token,
+            )
+            .unwrap()
+    };
+    install();
+    let mut left: Vec<String> = expansions(&library.vectors)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    left.sort();
+    assert_eq!(left, [".expanding-writing.oxv", "download.part"]);
+
+    drop(writing);
+    install();
+    let left: Vec<String> = expansions(&library.vectors)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(left, ["download.part"]);
+}
+
 /// A release that is not the one published, or not for this installation, is refused by
 /// kind and field, and the set is left as it was.
 #[test]

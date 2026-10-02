@@ -716,7 +716,7 @@ pub struct SemanticCoverage {
 /// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
 /// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
-/// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
+/// | `SessionConflict` | another semantic session is open, or this one with different inputs; or, installing or compacting, another install or compaction of the same vector set is running (`field` is `vectors_dir` then) | `disable_semantic` first, if replacing it is intended; for a set busy with another install or compaction, try again once it has finished | `configure_semantic`, `open_semantic_artifact`, installing, compacting |
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
@@ -784,6 +784,7 @@ pub enum SemanticErrorKind {
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
+/// | `SessionConflict` | `vectors_dir`, when another install or compaction of that vector set is running |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say; for a compaction, `policy.` and the [`SemanticCompactionPolicy`] option |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
@@ -1562,22 +1563,138 @@ fn package_kind(
     }
 }
 
-/// A zstd-compressed segment expanded into the set's `incoming/` folder, from which an
-/// install moves it into the set: the path of the expanded file. Looks at `cancel` between
-/// blocks of 1 MiB, and leaves nothing behind when it fails; `refused` words the failure.
+/// The vector sets an install or a compaction in this process is working on, by their
+/// directories as resolved: see [`VectorSetWork`].
+#[cfg(feature = "semantic-integration")]
+static VECTOR_SET_WORK: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// An install's or a compaction's hold on one vector set in this process, taken before
+/// either reads anything and let go when dropped: one of them at a time per set, and a
+/// second is refused at once.
+///
+/// The sidecar locks a set itself, but an install takes that lock only once it has its
+/// segment in hand, and a compressed release is expanded before that. Two installs of one
+/// set would otherwise both expand, and the second would meet the first at the sidecar's
+/// lock only after spending the time and the space. Another process's install still meets
+/// this one at the sidecar's lock, which is refused the same way.
+#[cfg(feature = "semantic-integration")]
+struct VectorSetWork {
+    dir: PathBuf,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl VectorSetWork {
+    /// Hold the set at `vectors_dir` for `doing`, or refuse while something else does.
+    fn take(vectors_dir: &Path, doing: &str) -> Result<Self, SemanticError> {
+        let dir = resolved_dir(vectors_dir);
+        let mut work = VECTOR_SET_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if work.contains(&dir) {
+            return Err(vector_set_busy(vectors_dir, doing));
+        }
+        work.push(dir.clone());
+        Ok(Self { dir })
+    }
+}
+
+#[cfg(feature = "semantic-integration")]
+impl Drop for VectorSetWork {
+    fn drop(&mut self) {
+        VECTOR_SET_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|dir| *dir != self.dir);
+    }
+}
+
+/// `dir` as one path names it whatever way it is written: resolved when it exists, and
+/// otherwise, as before a first install creates it, its parent resolved and its name.
+#[cfg(feature = "semantic-integration")]
+fn resolved_dir(dir: &Path) -> PathBuf {
+    fs::canonicalize(dir).unwrap_or_else(|_| {
+        match (
+            dir.parent()
+                .and_then(|parent| fs::canonicalize(parent).ok()),
+            dir.file_name(),
+        ) {
+            (Some(parent), Some(name)) => parent.join(name),
+            _ => std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()),
+        }
+    })
+}
+
+/// What an install or a compaction of the set at `vectors_dir` is refused with while
+/// another of either runs: in this process ([`VectorSetWork`]), or in another, which the
+/// sidecar's lock on the set says. `SessionConflict` about `vectors_dir`.
+#[cfg(feature = "semantic-integration")]
+fn vector_set_busy(vectors_dir: &Path, doing: &str) -> SemanticError {
+    SemanticError::new(
+        SemanticErrorKind::SessionConflict,
+        format!(
+            "{doing} was refused: another install or compaction of the vector set at {} is \
+             running, and one finishes before the next starts. Nothing was read or changed; \
+             try again once it has finished",
+            vectors_dir.display()
+        ),
+    )
+    .with_field("vectors_dir")
+}
+
+/// What an expansion in progress is named in the set's `incoming/` folder: this prefix, a
+/// name of its own, and `.oxv`.
+#[cfg(feature = "semantic-integration")]
+const EXPANDING_PREFIX: &str = ".expanding-";
+
+/// Remove what expansions that never finished left in `incoming/`: the file of a process
+/// that stopped while expanding, which nothing holds a lock on any more. One another
+/// process is writing is locked while it does, and stays. Best effort.
+#[cfg(feature = "semantic-integration")]
+fn remove_abandoned_expansions(incoming: &Path) {
+    let Ok(entries) = fs::read_dir(incoming) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(EXPANDING_PREFIX)
+        {
+            continue;
+        }
+        let path = entry.path();
+        let abandoned = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .is_ok_and(|file| file.try_lock().is_ok());
+        if abandoned {
+            if let Err(err) = fs::remove_file(&path) {
+                debug!(
+                    "an abandoned expansion stays for now: {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// A zstd-compressed segment expanded into a file of its own in the set's `incoming/`
+/// folder, from which an install moves it into the set: the file's path, which removes the
+/// file when it is dropped, so whatever the install does with it, nothing stays behind.
+///
+/// The name is the expansion's own, never the download's, so two expansions into one set
+/// cannot write one file, and the file is locked while it is written, so an install in
+/// another process does not take it for abandoned. Looks at `cancel` between blocks of
+/// 1 MiB; `refused` words a failure.
 #[cfg(feature = "semantic-integration")]
 fn expand_segment(
     compressed: &Path,
     vectors_dir: &Path,
     cancel: &SearchCancellation,
     refused: &dyn Fn(&dyn std::fmt::Display) -> String,
-) -> Result<PathBuf, SemanticError> {
+) -> Result<tempfile::TempPath, SemanticError> {
     use std::io::{Read, Write};
     let incoming = otzaria_semantic_search::semantic::segment_set::incoming_dir(vectors_dir);
-    let name = compressed
-        .file_stem()
-        .map_or_else(|| "segment.oxv".into(), |stem| stem.to_os_string());
-    let expanded = incoming.join(name);
     // Writing it is the one step here that a full disk stops.
     let writing = |err: std::io::Error| {
         let kind = match err.kind() {
@@ -1588,55 +1705,57 @@ fn expand_segment(
         };
         SemanticError::new(
             kind,
-            refused(&format!("expanding into {}: {err}", expanded.display())),
+            refused(&format!("expanding into {}: {err}", incoming.display())),
         )
     };
-    let result = (|| -> Result<(), SemanticError> {
-        fs::create_dir_all(&incoming).map_err(writing)?;
-        let source = fs::File::open(compressed).map_err(|err| {
-            SemanticError::new(
-                SemanticErrorKind::Internal,
-                refused(&format!("reading {}: {err}", compressed.display())),
-            )
-        })?;
-        let damaged = |err: std::io::Error| {
-            SemanticError::new(
-                SemanticErrorKind::ArtifactCorrupt,
-                refused(&format!(
-                    "{} does not expand as zstd: {err}",
-                    compressed.display()
-                )),
-            )
-        };
-        let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
-        let mut sink = std::io::BufWriter::new(fs::File::create(&expanded).map_err(writing)?);
-        let mut buffer = vec![0u8; 1 << 20];
-        loop {
-            if cancel.is_cancelled() {
-                return Err(SemanticError::new(
-                    SemanticErrorKind::Cancelled,
-                    "installing the vectors was cancelled before it finished; the set is as \
-                     it was",
-                ));
-            }
-            let read = decoder.read(&mut buffer).map_err(damaged)?;
-            if read == 0 {
-                break;
-            }
-            sink.write_all(&buffer[..read]).map_err(writing)?;
+    fs::create_dir_all(&incoming).map_err(writing)?;
+    remove_abandoned_expansions(&incoming);
+    let source = fs::File::open(compressed).map_err(|err| {
+        SemanticError::new(
+            SemanticErrorKind::Internal,
+            refused(&format!("reading {}: {err}", compressed.display())),
+        )
+    })?;
+    let damaged = |err: std::io::Error| {
+        SemanticError::new(
+            SemanticErrorKind::ArtifactCorrupt,
+            refused(&format!(
+                "{} does not expand as zstd: {err}",
+                compressed.display()
+            )),
+        )
+    };
+    let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
+    let mut expanded = tempfile::Builder::new()
+        .prefix(EXPANDING_PREFIX)
+        .suffix(".oxv")
+        .tempfile_in(&incoming)
+        .map_err(writing)?;
+    // Released when the file is closed, below, before the install takes it.
+    expanded
+        .as_file()
+        .try_lock()
+        .map_err(|err| writing(std::io::Error::other(err)))?;
+    let mut sink = std::io::BufWriter::new(expanded.as_file_mut());
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(SemanticError::new(
+                SemanticErrorKind::Cancelled,
+                "installing the vectors was cancelled before it finished; the set is as it was",
+            ));
         }
-        sink.into_inner()
-            .map_err(|err| writing(err.into_error()))?
-            .sync_all()
-            .map_err(writing)
-    })();
-    match result {
-        Ok(()) => Ok(expanded),
-        Err(err) => {
-            let _ = fs::remove_file(&expanded);
-            Err(err)
+        let read = decoder.read(&mut buffer).map_err(damaged)?;
+        if read == 0 {
+            break;
         }
+        sink.write_all(&buffer[..read]).map_err(writing)?;
     }
+    sink.into_inner()
+        .map_err(|err| writing(err.into_error()))?
+        .sync_all()
+        .map_err(writing)?;
+    Ok(expanded.into_temp_path())
 }
 
 /// The package of the family `model_identity_json` declares that the graph at `model_path` is,
@@ -4114,15 +4233,22 @@ impl SearchEngine {
     /// The set is locked throughout, and the new generation goes live in one flip: a
     /// release that is refused, cancelled through `cancellation`, or cut off by a crash
     /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-    /// the set's `incoming/` folder first, so it needs its expanded size free besides what
-    /// the install needs. An open session on the same set is moved onto the new
+    /// a file of the install's own in the set's `incoming/` folder first, so it needs its
+    /// expanded size free besides what the install needs; the file is gone when this
+    /// returns, installed or not. An open session on the same set is moved onto the new
     /// generation before this returns.
+    ///
+    /// One install or compaction of a set runs at a time. While another runs in this
+    /// process, this one is refused before it reads anything; while one runs in another
+    /// process, once it reaches the set's lock. Either way the refusal is a
+    /// `SessionConflict` about `vectors_dir`, and the set is as it was.
     ///
     /// Refusals are [`SemanticError`]s of the kinds in the table on
     /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
     /// published one, `ArtifactIncompatible` for a release of another identity or a delta
     /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
-    /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+    /// its manifest describes, `InsufficientDiskSpace`, `SessionConflict`, and
+    /// `Cancelled`.
     ///
     /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
     /// engine's write lock while it copies a segment of hundreds of megabytes.
@@ -4169,16 +4295,21 @@ impl SearchEngine {
                 .with_field("manifest_json"));
             }
             let cancel = &cancellation.flag;
+            // Held until the session is on the new generation: nothing else installs into
+            // or compacts this set meanwhile, in this process.
+            let _work = VectorSetWork::take(&vectors_dir, "installing the vectors")?;
             let compressed = downloaded.extension().is_some_and(|ext| ext == "zst");
-            let segment = if compressed {
-                expand_segment(&downloaded, &vectors_dir, cancel, &refused)?
+            // An expansion's file, removed when this is dropped: an install moves it into the
+            // set, and a refused one leaves it where it was.
+            let expanded = if compressed {
+                Some(expand_segment(&downloaded, &vectors_dir, cancel, &refused)?)
             } else {
-                downloaded
+                None
             };
             let installed = segment_set::install_package(
                 &vectors_dir,
                 &InstallSource {
-                    segment: &segment,
+                    segment: expanded.as_deref().unwrap_or(&downloaded),
                     manifest_json: &input.manifest_json,
                 },
                 &InstallExpectation {
@@ -4187,10 +4318,7 @@ impl SearchEngine {
                 },
                 cancel,
             );
-            if compressed {
-                // An install moves it into the set; a refused one leaves it in `incoming/`.
-                let _ = fs::remove_file(&segment);
-            }
+            drop(expanded);
             let report = installed.map_err(|err| {
                 vector_set_error(&err, &vectors_dir, refused(&err), "installing the vectors")
             })?;
@@ -4231,8 +4359,10 @@ impl SearchEngine {
     ///
     /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
     /// compaction leaves the set as it was. It refuses to start without
-    /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
-    /// An open session on the same set is moved onto the compacted generation.
+    /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
+    /// and while another install or compaction of the set runs, as `SessionConflict`
+    /// about `vectors_dir`. An open session on the same set is moved onto the compacted
+    /// generation.
     pub fn compact_semantic_vectors(
         &self,
         vectors_dir: String,
@@ -4259,6 +4389,8 @@ impl SearchEngine {
             };
             let policy =
                 compaction_policy(policy.unwrap_or_else(SemanticCompactionPolicy::defaults))?;
+            // As an install holds it, and for as long.
+            let _work = VectorSetWork::take(&vectors_dir, "compacting the vectors")?;
             let resolver = LiveResolver::new(
                 self.index_reader.searcher(),
                 self.chunk_key_field,
