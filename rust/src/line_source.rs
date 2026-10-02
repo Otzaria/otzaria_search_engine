@@ -14,6 +14,7 @@
 use crate::sqlite_host;
 use anyhow::{Context, Result};
 use lru::LruCache;
+use rusqlite::config::DbConfig;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::borrow::Cow;
@@ -30,6 +31,11 @@ const BUSY_TIMEOUT: Duration = Duration::from_millis(100);
 const BUSY_BACKOFF: Duration = Duration::from_secs(1);
 /// Upper bound on the cached ordinal-to-rowid maps: 4 bytes a row, ~4M rows.
 const ROW_MAP_BYTES: usize = 16 * 1024 * 1024;
+/// SQLite page cache of the connection, in KiB: a window's index and content pages stay
+/// cached for the next one.
+const PAGE_CACHE_KIB: i64 = 8 * 1024;
+/// Rows found at `lineIndex = ordinal` that passed their check, remembered (16 bytes each).
+const AT_LINE_INDEX_ENTRIES: usize = 64 * 1024;
 /// Same as the app's `stripDataUrisForIndex`: shorter payloads are kept.
 const MIN_DATA_URI_PAYLOAD: usize = 64;
 const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
@@ -72,13 +78,6 @@ impl RowIds {
             RowIds::Narrow(ids.into_iter().map(|id| id as u32).collect())
         } else {
             RowIds::Wide(ids)
-        }
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            RowIds::Narrow(ids) => ids.len(),
-            RowIds::Wide(ids) => ids.len(),
         }
     }
 
@@ -221,9 +220,12 @@ pub(crate) struct LineStore {
     layout: Layout,
     /// `PRAGMA data_version` the caches below were built under.
     data_version: i64,
-    /// Ordinal-to-rowid maps, bounded by [`ROW_MAP_BYTES`], least recently used out first.
+    /// Ordinal-to-rowid maps of the books whose rows were not all at `lineIndex = ordinal`,
+    /// bounded by [`ROW_MAP_BYTES`], least recently used out first.
     books: LruCache<i64, RowIds>,
     book_bytes: usize,
+    /// The row at `lineIndex = ordinal` of keys whose check it passed.
+    at_line_index: HashMap<LineKey, i64>,
     /// Whether the indexing path saw `data:` anywhere in the book; only asked about books
     /// whose first row starts with a BOM.
     data_uri_books: HashMap<i64, bool>,
@@ -240,7 +242,12 @@ impl LineStore {
         )
         .with_context(|| format!("opening the library database {}", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        conn.execute_batch("PRAGMA query_only=1")?;
+        // With the library's sqlite_stat4, a plan that depends on bound values is re-prepared
+        // on every new binding: the per-line lookups would each pay a full prepare.
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG, true)?;
+        conn.execute_batch(&format!(
+            "PRAGMA query_only=1; PRAGMA cache_size=-{PAGE_CACHE_KIB}"
+        ))?;
         let data_version = data_version(&conn)?;
         let layout = Layout::read(&conn, path)?;
         Ok(Self {
@@ -250,6 +257,7 @@ impl LineStore {
             data_version,
             books: LruCache::unbounded(),
             book_bytes: 0,
+            at_line_index: HashMap::new(),
             data_uri_books: HashMap::new(),
         })
     }
@@ -279,6 +287,7 @@ impl LineStore {
         if version != self.data_version {
             self.books.clear();
             self.book_bytes = 0;
+            self.at_line_index.clear();
             self.data_uri_books.clear();
             self.layout = Layout::read(&self.conn, &self.path)?;
             self.data_version = version;
@@ -287,60 +296,126 @@ impl LineStore {
     }
 
     /// Fetches every key in one read transaction, in the order given. Keys may repeat.
-    pub fn fetch_window(&mut self, keys: &[LineKey]) -> Result<Vec<RowText>> {
+    ///
+    /// `checks` holds each key's `lineCheck`, when it has one. Such a key is read first at
+    /// `lineIndex = ordinal` — its row whenever the book's `lineIndex` has no gap or repeat
+    /// before it — and only a row that fails the check is read again through the book's
+    /// ordinal map, built then. Keys without a check always go through the map.
+    pub fn fetch_window(
+        &mut self,
+        keys: &[LineKey],
+        checks: &[Option<u32>],
+    ) -> Result<Vec<RowText>> {
+        assert_eq!(keys.len(), checks.len(), "one check slot per key");
         self.in_read_txn(|store| {
+            let mut rows = vec![RowText::Missing; keys.len()];
             let mut targets: Vec<(i64, usize)> = Vec::with_capacity(keys.len());
-            for (slot, key) in keys.iter().enumerate() {
-                if let Some(id) = store.row_ids(key.book_id)?.get(key.ordinal) {
+            let mut by_line_index: Vec<(usize, Option<i64>)> = Vec::new();
+            for (slot, (key, check)) in keys.iter().zip(checks).enumerate() {
+                let id = if check.is_some() && !store.books.contains(&key.book_id) {
+                    let id = match store.at_line_index.get(key) {
+                        Some(&id) => Some(id),
+                        None => store.row_id_at_line_index(*key)?,
+                    };
+                    by_line_index.push((slot, id));
+                    id
+                } else {
+                    store.row_ids(key.book_id)?.get(key.ordinal)
+                };
+                if let Some(id) = id {
                     targets.push((id, slot));
                 }
             }
-            // Ascending rowids walk the content B-tree forward.
-            targets.sort_unstable();
-            let mut rows = vec![RowText::Missing; keys.len()];
-            let mut first_rows: Vec<(usize, Vec<u8>)> = Vec::new();
-            {
-                let Self { conn, layout, .. } = &mut *store;
-                let mut stmt = conn.prepare_cached(if layout.split {
-                    "SELECT content FROM line_content WHERE id = ?1"
-                } else {
-                    "SELECT content FROM line WHERE id = ?1"
-                })?;
-                for (i, &(id, slot)) in targets.iter().enumerate() {
-                    if i > 0 && targets[i - 1].0 == id {
+            store.read_rows(keys, &mut targets, &mut rows)?;
+            let mut retry: Vec<(i64, usize)> = Vec::new();
+            for (slot, id) in by_line_index {
+                let key = keys[slot];
+                if let (Some(id), RowText::Found(text)) = (id, &rows[slot]) {
+                    if Some(line_check(text)) == checks[slot] {
+                        store.remember_at_line_index(key, id);
                         continue;
                     }
-                    let key = keys[slot];
-                    let mut query = stmt.query([id])?;
-                    // A line without a content row reads as empty, like the app's LEFT JOIN.
-                    let value = match query.next()? {
-                        Some(row) => row.get_ref(0)?,
-                        None => ValueRef::Null,
-                    };
-                    rows[slot] = match row_bytes(value, &mut layout.codec) {
-                        Ok(bytes) if key.ordinal == 0 && bytes.starts_with(BOM) => {
-                            first_rows.push((slot, bytes.into_owned()));
-                            continue;
-                        }
-                        Ok(bytes) => RowText::Found(prepare_row(&bytes, false)),
-                        Err(reason) => {
-                            log::warn!("line {key:?} cannot be decoded: {reason}");
-                            RowText::Unreadable
-                        }
-                    };
+                }
+                store.at_line_index.remove(&key);
+                rows[slot] = RowText::Missing;
+                if let Some(id) = store.row_ids(key.book_id)?.get(key.ordinal) {
+                    retry.push((id, slot));
                 }
             }
-            for (slot, bytes) in first_rows {
-                let strip_bom = store.book_contains_data_uri(keys[slot].book_id)?;
-                rows[slot] = RowText::Found(prepare_row(&bytes, strip_bom));
-            }
-            for i in 1..targets.len() {
-                if targets[i - 1].0 == targets[i].0 {
-                    rows[targets[i].1] = rows[targets[i - 1].1].clone();
-                }
-            }
+            store.read_rows(keys, &mut retry, &mut rows)?;
             Ok(rows)
         })
+    }
+
+    fn remember_at_line_index(&mut self, key: LineKey, id: i64) {
+        if self.at_line_index.len() >= AT_LINE_INDEX_ENTRIES {
+            self.at_line_index.clear();
+        }
+        self.at_line_index.insert(key, id);
+    }
+
+    /// Reads the row of each `(rowid, slot)` into `rows[slot]`.
+    fn read_rows(
+        &mut self,
+        keys: &[LineKey],
+        targets: &mut [(i64, usize)],
+        rows: &mut [RowText],
+    ) -> Result<()> {
+        // Ascending rowids walk the content B-tree forward.
+        targets.sort_unstable();
+        let mut first_rows: Vec<(usize, Vec<u8>)> = Vec::new();
+        {
+            let Self { conn, layout, .. } = &mut *self;
+            let mut stmt = conn.prepare_cached(if layout.split {
+                "SELECT content FROM line_content WHERE id = ?1"
+            } else {
+                "SELECT content FROM line WHERE id = ?1"
+            })?;
+            for (i, &(id, slot)) in targets.iter().enumerate() {
+                if i > 0 && targets[i - 1].0 == id {
+                    continue;
+                }
+                let key = keys[slot];
+                let mut query = stmt.query([id])?;
+                // A line without a content row reads as empty, like the app's LEFT JOIN.
+                let value = match query.next()? {
+                    Some(row) => row.get_ref(0)?,
+                    None => ValueRef::Null,
+                };
+                rows[slot] = match row_bytes(value, &mut layout.codec) {
+                    Ok(bytes) if key.ordinal == 0 && bytes.starts_with(BOM) => {
+                        first_rows.push((slot, bytes.into_owned()));
+                        continue;
+                    }
+                    Ok(bytes) => RowText::Found(prepare_row(&bytes, false)),
+                    Err(reason) => {
+                        log::warn!("line {key:?} cannot be decoded: {reason}");
+                        RowText::Unreadable
+                    }
+                };
+            }
+        }
+        for (slot, bytes) in first_rows {
+            let strip_bom = self.book_contains_data_uri(keys[slot].book_id)?;
+            rows[slot] = RowText::Found(prepare_row(&bytes, strip_bom));
+        }
+        for i in 1..targets.len() {
+            if targets[i - 1].0 == targets[i].0 {
+                rows[targets[i].1] = rows[targets[i - 1].1].clone();
+            }
+        }
+        Ok(())
+    }
+
+    /// The first row at `lineIndex = ordinal`, through idx_line_book_index alone.
+    fn row_id_at_line_index(&self, key: LineKey) -> Result<Option<i64>> {
+        let Ok(line_index) = i64::try_from(key.ordinal) else {
+            return Ok(None);
+        };
+        Ok(self
+            .conn
+            .prepare_cached("SELECT min(id) FROM line WHERE bookId = ?1 AND lineIndex = ?2")?
+            .query_row([key.book_id, line_index], |r| r.get(0))?)
     }
 
     /// Every row of `book_id` in order (the build tools' whole-book path), streamed by one
@@ -387,7 +462,11 @@ impl LineStore {
 
     /// The book's current row count (0 when it does not exist).
     pub fn book_row_count(&mut self, book_id: i64) -> Result<u64> {
-        self.in_read_txn(|store| Ok(store.row_ids(book_id)?.len() as u64))
+        let count: i64 = self
+            .conn
+            .prepare_cached("SELECT count(*) FROM line WHERE bookId = ?1")?
+            .query_row([book_id], |r| r.get(0))?;
+        Ok(count as u64)
     }
 
     fn row_ids(&mut self, book_id: i64) -> Result<&RowIds> {
@@ -530,6 +609,7 @@ struct Global {
     generation: u64,
     suspend_depth: u32,
     busy_until: Option<Instant>,
+    library_fallbacks: u64,
 }
 
 static GLOBAL: Mutex<Global> = Mutex::new(Global {
@@ -538,6 +618,7 @@ static GLOBAL: Mutex<Global> = Mutex::new(Global {
     generation: 0,
     suspend_depth: 0,
     busy_until: None,
+    library_fallbacks: 0,
 });
 
 fn global() -> MutexGuard<'static, Global> {
@@ -565,6 +646,7 @@ pub(crate) struct Status {
     pub open: bool,
     pub suspend_depth: u32,
     pub generation: u64,
+    pub library_fallbacks: u64,
 }
 
 pub(crate) fn configure(db_path: &str) -> Result<()> {
@@ -610,7 +692,13 @@ pub(crate) fn status() -> Status {
         open: g.store.is_some(),
         suspend_depth: g.suspend_depth,
         generation: g.generation,
+        library_fallbacks: g.library_fallbacks,
     }
+}
+
+/// Counts a book asked for as `LibraryDb` and stored `InIndex`.
+pub(crate) fn note_library_fallback() {
+    global().library_fallbacks += 1;
 }
 
 /// Whether `err` is SQLite reporting another connection's lock.
@@ -629,6 +717,21 @@ fn is_busy(err: &anyhow::Error) -> bool {
 pub(crate) fn with_store<R>(
     f: impl FnOnce(&mut LineStore) -> Result<R>,
 ) -> std::result::Result<R, SourceUnavailable> {
+    with_store_inner(true, f)
+}
+
+/// [`with_store`] for indexing, which may wait out one busy timeout: a window's busy
+/// backoff would otherwise store whole books in the index.
+pub(crate) fn with_store_for_indexing<R>(
+    f: impl FnOnce(&mut LineStore) -> Result<R>,
+) -> std::result::Result<R, SourceUnavailable> {
+    with_store_inner(false, f)
+}
+
+fn with_store_inner<R>(
+    honor_backoff: bool,
+    f: impl FnOnce(&mut LineStore) -> Result<R>,
+) -> std::result::Result<R, SourceUnavailable> {
     let mut g = global();
     if g.suspend_depth > 0 {
         return Err(SourceUnavailable::Suspended);
@@ -636,7 +739,7 @@ pub(crate) fn with_store<R>(
     let Some(path) = g.path.clone() else {
         return Err(SourceUnavailable::Unconfigured);
     };
-    if g.busy_until.is_some_and(|until| Instant::now() < until) {
+    if honor_backoff && g.busy_until.is_some_and(|until| Instant::now() < until) {
         return Err(SourceUnavailable::Busy);
     }
     g.busy_until = None;
@@ -672,6 +775,19 @@ pub(crate) fn reset_for_tests() {
     g.suspend_depth = 0;
     g.generation += 1;
     g.busy_until = None;
+}
+
+/// The books whose ordinal maps the open store holds, ascending.
+#[cfg(test)]
+pub(crate) fn mapped_books_for_tests() -> Vec<i64> {
+    let g = global();
+    let mut ids: Vec<i64> = g
+        .store
+        .as_ref()
+        .map(|s| s.books.iter().map(|(&id, _)| id).collect())
+        .unwrap_or_default();
+    ids.sort_unstable();
+    ids
 }
 
 /// `(row map bytes, page cache bytes)` of the open store.

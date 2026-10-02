@@ -41,15 +41,21 @@
   `lineSourceStatus` and the synchronous `sqliteHostEntryAddress`. The source
   opens lazily, read-only (`SQLITE_OPEN_READONLY` on the plain path, so UNC
   paths work; `query_only`); every result window reads its rows in one read
-  transaction and nothing holds a transaction between windows. Rows are fetched
-  by rowid through a cached per-book ordinal map (bounded at 16 MiB, ~4 bytes a
-  row); a commit by another connection (`PRAGMA data_version`) drops the maps.
-  A busy database costs one 100 ms wait, then is skipped for a second.
-  `suspendLineSource` waits for a running window and returns once the file is
-  closed, so the database can be replaced.
-- `TextStatus` on `SearchResult` and `SemanticSearchResult`: `ok`; `stale` when
-  the database no longer holds the indexed line (every row checked against its
-  `lineCheck`) — the text is then the current line, escaped and unhighlighted;
+  transaction and nothing holds a transaction between windows. A line is read
+  at `lineIndex = segment` through `idx_line_book_index` and kept only when it
+  matches its `lineCheck`; a book where that fails gets a cached ordinal-to-rowid
+  map (bounded at 16 MiB, ~4 bytes a row), so a cold window costs ~13 ms even
+  over the 100 largest books. A commit by another connection
+  (`PRAGMA data_version`) drops the cached lookups and maps. A busy database
+  costs a window one 100 ms wait, then windows skip it for a second; indexing
+  ignores that backoff. `suspendLineSource` waits for a running window and
+  returns once the file is closed, so the database can be replaced.
+- `LineSourceStatus.libraryFallbacks`: how many books asked for as `libraryDb`
+  were stored `inIndex` in this process.
+- `TextStatus` on `SearchResult` and `SemanticSearchResult`: `ok` when the text
+  is exactly what was indexed (its `lineCheck`, and its `lineHash` when not 0);
+  `stale` when the database no longer holds the indexed line — the text is then
+  the current line, escaped and unhighlighted;
   `unavailable` when the source is unconfigured, suspended, busy or unreadable
   — the text is empty.
 - Rows stored as zstd frames (`line_content` BLOBs with a `zstd_dict` table,

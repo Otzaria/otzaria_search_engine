@@ -160,6 +160,11 @@ pub struct LineSourceStatus {
     /// Bumped whenever cached knowledge of the database is discarded (a new path,
     /// or the last [`resume_line_source`]).
     pub generation: u64,
+    /// Books asked for as [`TextStorage::LibraryDb`] that were stored
+    /// [`TextStorage::InIndex`] instead, because the library database could not be
+    /// read or its row count differed from the book's lines. Only grows within a
+    /// process.
+    pub library_fallbacks: u64,
 }
 
 pub struct DocumentInput {
@@ -1011,6 +1016,10 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // `textStored`/`textVocalizedStored`, written only for `TextStorage::InIndex`
 // documents. Official books read their text from the library database, verified
 // against the new `lineCheck` (FAST).
+//
+// A change to `normalize_text_for_indexing` or to the row preparation
+// (`line_source::prepare_row`) needs a bump: that is what keeps `TextStatus::Ok` true,
+// the promise that the displayed text is exactly what was indexed.
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 
@@ -1147,6 +1156,7 @@ pub fn line_source_status() -> LineSourceStatus {
         suspend_depth: status.suspend_depth,
         host_api_ready: crate::sqlite_host::is_ready(),
         generation: status.generation,
+        library_fallbacks: status.library_fallbacks,
     }
 }
 
@@ -1526,9 +1536,19 @@ pub(crate) fn line_dedup_hash(normalized_text: &str) -> u64 {
     let mut letters = 0usize;
     let mut buf = [0u8; 4];
     for c in normalized_text.chars() {
+        // Hebrew letters and ASCII skip the Unicode tables (same result).
         if ('א'..='ת').contains(&c) {
             letters += 1;
-        } else if !c.is_alphanumeric() {
+            fnv.feed(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        if c.is_ascii() {
+            if c.is_ascii_alphanumeric() {
+                fnv.feed(&[c.to_ascii_lowercase() as u8]);
+            }
+            continue;
+        }
+        if !c.is_alphanumeric() {
             continue;
         }
         for lower in c.to_lowercase() {
@@ -1590,10 +1610,11 @@ fn require_library_book_id(file_path: &str) -> Result<i64> {
 /// otherwise `InIndex`, since a document's `segment` would not be its row's ordinal (a row
 /// containing `\n` splits into two lines) or nothing can tell.
 fn library_storage_or_fallback(book_id: i64, lines: usize, title: &str) -> TextStorage {
-    let rows = crate::line_source::with_store(|store| store.book_row_count(book_id));
+    let rows = crate::line_source::with_store_for_indexing(|store| store.book_row_count(book_id));
     match rows {
         Ok(rows) if rows == lines as u64 => TextStorage::LibraryDb,
         rows => {
+            crate::line_source::note_library_fallback();
             warn!(
                 "add_text_book '{title}' (id:{book_id}): {lines} lines against library rows \
                  {rows:?}; storing its text in the index"
@@ -9233,10 +9254,11 @@ impl SearchEngine {
             slot: usize,
             key: crate::line_source::LineKey,
             line_check: Option<u32>,
+            line_hash: u64,
         }
         let mut out = Vec::with_capacity(documents.len());
         let mut pending: Vec<Pending> = Vec::new();
-        let mut line_check_columns = HashMap::new();
+        let mut check_columns = HashMap::new();
         for (slot, (address, document)) in documents.iter().enumerate() {
             if let Some(stored) = document.get_first(text_stored_f).and_then(|v| v.as_str()) {
                 out.push(HitText {
@@ -9262,21 +9284,20 @@ impl SearchEngine {
                 .get_first(segment_f)
                 .and_then(|v| v.as_u64())
                 .unwrap_or_default();
-            let column = match line_check_columns.entry(address.segment_ord) {
+            let (check_column, hash_column) = match check_columns.entry(address.segment_ord) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => e.insert(
-                    searcher
-                        .segment_reader(address.segment_ord)
-                        .fast_fields()
-                        .u64(LINE_CHECK_FIELD)?,
-                ),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let fast = searcher.segment_reader(address.segment_ord).fast_fields();
+                    e.insert((fast.u64(LINE_CHECK_FIELD)?, fast.u64("lineHash")?))
+                }
             };
             pending.push(Pending {
                 slot,
                 key: crate::line_source::LineKey { book_id, ordinal },
-                line_check: column
+                line_check: check_column
                     .first(address.doc_id)
                     .and_then(|v| u32::try_from(v).ok()),
+                line_hash: hash_column.first(address.doc_id).unwrap_or_default(),
             });
         }
         if pending.is_empty() {
@@ -9284,7 +9305,9 @@ impl SearchEngine {
         }
 
         let keys: Vec<_> = pending.iter().map(|p| p.key).collect();
-        let rows = match crate::line_source::with_store(|store| store.fetch_window(&keys)) {
+        let checks: Vec<_> = pending.iter().map(|p| p.line_check).collect();
+        let rows = match crate::line_source::with_store(|store| store.fetch_window(&keys, &checks))
+        {
             Ok(rows) => rows,
             Err(reason) => {
                 debug!(
@@ -9300,7 +9323,7 @@ impl SearchEngine {
             .par_iter()
             .zip(rows.into_par_iter())
             .with_min_len(LIBRARY_ROWS_PER_TASK)
-            .map(|(p, row)| HitText::from_library_row(row, p.line_check, vocalized))
+            .map(|(p, row)| HitText::from_library_row(row, p.line_check, p.line_hash, vocalized))
             .collect();
         for (p, hit) in pending.iter().zip(hits) {
             out[p.slot] = hit;
@@ -9330,10 +9353,11 @@ impl HitText {
     }
 
     /// The texts `add_text_book` indexed this row as, `Ok` when the row is the line the
-    /// document was indexed from (its `lineCheck`).
+    /// document was indexed from: its `lineCheck`, and its `lineHash` when that is not 0.
     fn from_library_row(
         row: crate::line_source::RowText,
         line_check: Option<u32>,
+        line_hash: u64,
         vocalized: bool,
     ) -> Self {
         use crate::line_source::RowText;
@@ -9348,18 +9372,26 @@ impl HitText {
             }
             RowText::Unreadable => return HitText::unavailable(),
         };
-        let status = if line_check == Some(crate::line_source::line_check(&raw)) {
+        let vocalized = (vocalized && hebrew_query::contains_attached_marks(&raw))
+            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(&raw))
+            .filter(|v| !v.is_empty());
+        let plain = if vocalized.is_none() || line_hash != 0 {
+            hebrew_query::normalize_text_for_indexing(&raw)
+        } else {
+            String::new()
+        };
+        let status = if line_check == Some(crate::line_source::line_check(&raw))
+            && (line_hash == 0 || line_dedup_hash(&plain) == line_hash)
+        {
             TextStatus::Ok
         } else {
             TextStatus::Stale
         };
-        let vocalized = (vocalized && hebrew_query::contains_attached_marks(&raw))
-            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(&raw))
-            .filter(|v| !v.is_empty());
         // `display` shows the vocalized rendering whenever there is one.
-        let plain = match vocalized {
-            Some(_) => String::new(),
-            None => hebrew_query::normalize_text_for_indexing(&raw),
+        let plain = if vocalized.is_some() {
+            String::new()
+        } else {
+            plain
         };
         HitText {
             plain,
@@ -17636,6 +17668,68 @@ mod tests {
         assert_eq!(page.total_count, 2);
         assert_eq!(page.group_count, Some(2));
         assert!(page.results.iter().all(|r| r.merged_count == 1));
+    }
+
+    #[test]
+    fn a_library_row_needs_its_line_hash_as_well_as_its_check() {
+        use crate::line_source::RowText;
+        let raw = "וַיֹּאמֶר אֱלֹהִים יְהִי אוֹר וַיְהִי אוֹר וירא אלהים";
+        let check = crate::line_source::line_check(raw);
+        let hash = line_dedup_hash(&hebrew_query::normalize_text_for_indexing(raw));
+        assert_ne!(hash, 0);
+        let status = |line_hash: u64, vocalized: bool| {
+            HitText::from_library_row(
+                RowText::Found(raw.to_string()),
+                Some(check),
+                line_hash,
+                vocalized,
+            )
+            .status
+        };
+        for vocalized in [false, true] {
+            assert_eq!(status(hash, vocalized), TextStatus::Ok);
+            // 0 is "no signature": only the check vouches for the row.
+            assert_eq!(status(0, vocalized), TextStatus::Ok);
+            assert_eq!(status(hash ^ 1, vocalized), TextStatus::Stale);
+        }
+        let shown =
+            HitText::from_library_row(RowText::Found(raw.to_string()), Some(check), hash, true);
+        assert!(shown.plain.is_empty() && shown.vocalized.is_some());
+    }
+
+    #[test]
+    fn line_dedup_hash_fast_paths_hash_like_the_unicode_tables() {
+        fn reference(text: &str) -> u64 {
+            let mut fnv = Fnv::new();
+            let mut letters = 0usize;
+            let mut buf = [0u8; 4];
+            for c in text.chars() {
+                if ('א'..='ת').contains(&c) {
+                    letters += 1;
+                } else if !c.is_alphanumeric() {
+                    continue;
+                }
+                for lower in c.to_lowercase() {
+                    fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+            if letters < LINE_DEDUP_MIN_LETTERS {
+                return 0;
+            }
+            fnv.finish()
+        }
+        let prefix = "אבגדהוזחטיכלמנ";
+        for c in (0u32..0x3000).filter_map(char::from_u32) {
+            let text = format!("{prefix}{c}");
+            assert_eq!(
+                line_dedup_hash(&text),
+                reference(&text),
+                "U+{:04X}",
+                c as u32
+            );
+        }
+        let mixed = "וַיֹּ֥אמֶר אֱלֹהִ֖ים, Rabbi ÉLI 15 ١٥ \u{200E}ﬠ ײ׳ \"מ\" שָׁלוֹם";
+        assert_eq!(line_dedup_hash(mixed), reference(mixed));
     }
 
     #[test]

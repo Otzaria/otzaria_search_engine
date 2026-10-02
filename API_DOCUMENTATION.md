@@ -274,7 +274,7 @@ final entry = sqliteHostEntryAddress();          // BigInt; 0 = SQLite is bundle
 Future<void> configureLineSource({required String dbPath}); // lazy; new path drops caches
 Future<void> suspendLineSource();  // closes the file; waits for a running window
 Future<void> resumeLineSource();   // undoes one suspend; the last drops all caches
-Future<LineSourceStatus> lineSourceStatus();
+Future<LineSourceStatus> lineSourceStatus(); // ..., generation, libraryFallbacks
 ```
 
 - `addTextBook` / `addTextBookBytes` take `required TextStorage textStorage`. Pass
@@ -284,19 +284,22 @@ Future<LineSourceStatus> lineSourceStatus();
 - `libraryDb` needs the line source configured while indexing: the book's text is split
   into lines and their count is compared with the book's rows in the database. When they
   differ (a row containing `\n`, another database) or the source cannot be read
-  (unconfigured, suspended, busy), the book is indexed as `inIndex` instead — its text is
-  stored and its results are always `ok` — and a warning is logged. The return value is
-  unchanged.
+  (unconfigured, suspended, or busy past the 100 ms timeout), the book is indexed as
+  `inIndex` instead — its text is stored and its results are always `ok` — a warning is
+  logged and `LineSourceStatus.libraryFallbacks` grows by one. The return value is
+  unchanged. Indexing does not honor a window's busy backoff (below).
 - `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
   `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
   ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
 - Each library line carries `lineCheck`, a CRC-32 of its exact text (spacing, punctuation,
   nikud and markup included). Every library row of one result window is read in a single
-  read transaction and must match its `lineCheck`; see `TextStatus` below.
+  read transaction and must match its `lineCheck`, and its `lineHash` when that is not 0;
+  see `TextStatus` below. A line is read first at `lineIndex = segment`; only when that
+  row does not match is the book's row order mapped (and cached) to find it by position.
 - `suspendLineSource` must be called before the database file is renamed or replaced
   (Windows cannot replace an open file); while suspended, library results are
   `TextStatus.unavailable`. A write by another connection without a suspend is noticed
-  (`PRAGMA data_version`) by the next window, which drops its cached row maps first.
+  (`PRAGMA data_version`) by the next window, which drops its cached lookups first.
 - While another connection holds a write lock on the database, a window waits at most
   100 ms, its library results are `unavailable`, and the next second of windows does not
   touch the database at all.
@@ -326,10 +329,14 @@ class SearchResult {
 ```
 
 `textStatus` is always `ok` for text stored in the index. For `TextStorage.libraryDb`
-documents: `stale` — the database no longer holds the indexed line (changed in any way,
-moved or deleted); `text` is the database's current line, HTML-escaped and unhighlighted
-(empty when the row is gone), and reindexing the book fixes it. `unavailable` — the line
-source is unconfigured, suspended, busy or unreadable; `text` is empty.
+documents, `ok` means the displayed text is exactly the text that was indexed — not that
+it came from the same database row: identical lines can trade places, and a line still at
+its `lineIndex` after an earlier row was deleted without renumbering reads `ok`.
+`stale` — the database no longer holds the indexed line (changed in any way, moved or
+deleted); `text` is the database's current line at that position, HTML-escaped and
+unhighlighted (empty when the row is gone), and reindexing the book fixes it.
+`unavailable` — the line source is unconfigured, suspended, busy or unreadable; `text` is
+empty.
 `SemanticSearchResult` carries the same field.
 
 **Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags by default (configurable via `HighlightConfig`). If no snippet is generated, it contains the full document text.

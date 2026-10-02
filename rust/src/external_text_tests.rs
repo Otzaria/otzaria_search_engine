@@ -1100,19 +1100,51 @@ fn a_short_line_whose_row_shifted_is_stale() {
     let (engine, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
     assert_eq!(exact(&engine, "אור")[0].text_status, TextStatus::Ok);
 
-    // One row deleted and one appended: the book keeps its row count, and ordinal 2 (the
-    // indexed "אור") now holds LONG2.
+    // One row deleted, the rest renumbered and one appended: the book keeps its row count,
+    // and ordinal 2 (the indexed "אור") now holds LONG2.
     edit_suspended(
         &db,
         "DELETE FROM line_content WHERE id = (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1);
          DELETE FROM line WHERE bookId = 1 AND lineIndex = 1;
-         INSERT INTO line (id, bookId, lineIndex) VALUES (9000, 1, 5);
+         UPDATE line SET lineIndex = lineIndex - 1 WHERE bookId = 1 AND lineIndex > 1;
+         INSERT INTO line (id, bookId, lineIndex) VALUES (9000, 1, 4);
          INSERT INTO line_content (id, content) VALUES (9000, 'חדש');",
     );
     let after = exact(&engine, "אור");
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].text_status, TextStatus::Stale);
     assert_eq!(after[0].text, LONG2);
+}
+
+/// `Ok` vouches for the text, not the position: a row deleted without renumbering leaves
+/// the lines after it at their `lineIndex`, with the indexed text.
+#[test]
+fn a_gap_left_by_a_deleted_row_is_stale_only_where_the_text_differs() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, "אור", LONG2, "מים"]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (engine, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    edit_suspended(
+        &db,
+        "DELETE FROM line_content WHERE id = (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1);
+         DELETE FROM line WHERE bookId = 1 AND lineIndex = 1;",
+    );
+    let at_its_index = exact(&engine, "אור");
+    let shown = at_its_index[0]
+        .text
+        .replace("<font color=red>", "")
+        .replace("</font>", "");
+    assert_eq!(
+        (at_its_index[0].text_status, shown.as_str()),
+        (TextStatus::Ok, "אור")
+    );
+    // Ordinal 1 has no row at lineIndex 1; by position it is now "אור".
+    let gone = exact(&engine, "ראשונה");
+    assert_eq!(
+        (gone[0].text_status, gone[0].text.as_str()),
+        (TextStatus::Stale, "אור")
+    );
 }
 
 #[test]
@@ -1275,10 +1307,13 @@ fn a_unc_path_is_opened_as_a_plain_path() {
         let mut store = line_source::LineStore::open(&path)
             .unwrap_or_else(|err| panic!("{}: {err:#}", path.display()));
         let rows = store
-            .fetch_window(&[line_source::LineKey {
-                book_id: 1,
-                ordinal: 1,
-            }])
+            .fetch_window(
+                &[line_source::LineKey {
+                    book_id: 1,
+                    ordinal: 1,
+                }],
+                &[None],
+            )
             .unwrap();
         assert!(matches!(&rows[0], line_source::RowText::Found(text) if text == LONG1));
         store.close();
@@ -1334,11 +1369,26 @@ fn a_whole_book_reads_like_its_windows() {
                 ordinal,
             })
             .collect();
-        let windows = store.fetch_window(&keys).unwrap();
+        let windows = store.fetch_window(&keys, &vec![None; keys.len()]).unwrap();
         let whole = store.fetch_book(book.id).unwrap().unwrap();
         assert_eq!(
             format!("{whole:?}"),
             format!("{windows:?}"),
+            "book {}",
+            book.id
+        );
+        // Read by lineIndex first, with their checks: the same rows.
+        let checks: Vec<Option<u32>> = whole
+            .iter()
+            .map(|row| match row {
+                line_source::RowText::Found(text) => Some(line_source::line_check(text)),
+                _ => None,
+            })
+            .collect();
+        let checked = store.fetch_window(&keys, &checks).unwrap();
+        assert_eq!(
+            format!("{whole:?}"),
+            format!("{checked:?}"),
             "book {}",
             book.id
         );
@@ -1368,6 +1418,134 @@ fn a_missing_row_is_stale_and_empty() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].text_status, TextStatus::Stale);
     assert_eq!(results[0].text, "");
+}
+
+#[test]
+fn only_books_whose_rows_are_not_at_their_line_index_get_a_row_map() {
+    let _guard = guard();
+    let f = fixture();
+    suspend_line_source().unwrap();
+    resume_line_source().unwrap();
+    for word in ["בראשית", "אור", "אלהים"] {
+        let results = exact(&f.external, word);
+        assert_all_ok(&results, word);
+    }
+    // Book 3's lineIndex has gaps; every other book is read by lineIndex alone.
+    assert_eq!(line_source::mapped_books_for_tests(), [3]);
+}
+
+/// A library of one book with explicit `(rowid, lineIndex, text)` rows (no `line_content`).
+fn library_with_rows(dir: &Path, rows: &[(i64, i64, &str)]) -> (PathBuf, Book) {
+    let db = dir.join("lib.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER NOT NULL,
+                            lineIndex INTEGER NOT NULL, content TEXT);
+         CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);",
+    )
+    .unwrap();
+    for (id, line_index, text) in rows {
+        conn.execute(
+            "INSERT INTO line (id, bookId, lineIndex, content) VALUES (?1, 1, ?2, ?3)",
+            rusqlite::params![id, line_index, text],
+        )
+        .unwrap();
+    }
+    let mut ordered = rows.to_vec();
+    ordered.sort_by_key(|&(id, line_index, _)| (line_index, id));
+    let book = Book {
+        id: 1,
+        title: "ספר",
+        topics: "/t",
+        catalogue_order: 0,
+        generation_order: 0,
+        line_indexes: Vec::new(),
+        rows: ordered.iter().map(|r| r.2.as_bytes().to_vec()).collect(),
+        compressed: false,
+    };
+    (db, book)
+}
+
+#[test]
+fn repeated_and_missing_line_indexes_read_the_indexed_rows() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    // Ordinal 2 is at lineIndex 1 and ordinal 3 (lineIndex 2) holds the same text; ordinal
+    // 3 then finds ordinal 4's row at lineIndex 3, and nothing is at lineIndex 4 or 6.
+    let rows = [
+        (10, 0, "<h1>ספר</h1>"),
+        (11, 1, LONG1),
+        (12, 1, LONG2),
+        (13, 2, LONG2),
+        (14, 3, LONG1),
+        (15, 5, "אור משה גדול"),
+        (16, 9, "סוף בראשית ברא"),
+    ];
+    let (db, book) = library_with_rows(dir.path(), &rows);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (stored, _) = index_one(&dir.path().join("s"), &book, TextStorage::InIndex);
+    let (external, added) = index_one(&dir.path().join("x"), &book, TextStorage::LibraryDb);
+    assert_eq!(added as usize, rows.len());
+    assert!(doc_store_view(&external).iter().all(|(_, text, _)| !text));
+    for cold in [true, false, true] {
+        if cold {
+            suspend_line_source().unwrap();
+            resume_line_source().unwrap();
+        }
+        for word in ["ארוכה", "משה", "בראשית", "אור"] {
+            let (a, b) = (exact(&stored, word), exact(&external, word));
+            assert!(!b.is_empty(), "{word}");
+            assert_all_ok(&b, word);
+            assert_same(word, &a, &b);
+        }
+        for ordinal in 1..=rows.len() as u64 {
+            let id = (1u64 << 32) + ordinal;
+            let a = stored.get_document_by_id(id).unwrap().unwrap();
+            let b = external.get_document_by_id(id).unwrap().unwrap();
+            assert_eq!(b.text_status, TextStatus::Ok, "{ordinal}");
+            assert_eq!(snap(&a), snap(&b), "{ordinal}");
+        }
+        assert_eq!(line_source::mapped_books_for_tests(), [1]);
+    }
+}
+
+#[test]
+fn a_changed_row_at_its_line_index_is_still_stale() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, LONG2]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (engine, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    edit_suspended(
+        &db,
+        &format!("UPDATE line_content SET content = '{LONG1} ' WHERE content = '{LONG1}'"),
+    );
+    let results = exact(&engine, "ראשונה");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].text_status, TextStatus::Stale);
+    // The miss fell back to the ordinal map, which found the same row.
+    assert_eq!(line_source::mapped_books_for_tests(), [1]);
+}
+
+#[test]
+fn indexing_waits_out_a_window_backoff_and_counts_its_fallbacks() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, "אור", LONG2]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let fallbacks = || line_source_status().library_fallbacks;
+    let before = fallbacks();
+    let writer = Connection::open(&db).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let (busy, _) = index_one(&dir.path().join("a"), &book, TextStorage::LibraryDb);
+    writer.execute_batch("COMMIT").unwrap();
+    drop(writer);
+    assert_eq!(fallbacks(), before + 1);
+    // Still inside the backoff a window would honor: indexing reads the database anyway.
+    let (after, _) = index_one(&dir.path().join("b"), &book, TextStorage::LibraryDb);
+    let stored = |e: &SearchEngine| doc_store_view(e).iter().filter(|(_, t, _)| *t).count();
+    assert_eq!((stored(&busy), stored(&after)), (4, 0));
+    assert_eq!(fallbacks(), before + 1);
 }
 
 #[test]
@@ -1894,6 +2072,8 @@ fn real_library_rows_match_the_indexing_input() {
         .map(Result::unwrap)
         .collect();
     let special = ids.len();
+    // The filter reads TEXT rows: a zstd library would leave nothing special to check.
+    assert!(special > 0, "no special books found (compressed rows?)");
     ids.extend(
         conn.prepare(
             "SELECT bookId FROM line GROUP BY bookId HAVING count(*) <> max(lineIndex) + 1 \

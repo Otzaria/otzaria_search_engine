@@ -1596,12 +1596,19 @@ class LineSourceStatus {
   /// or the last [`resume_line_source`]).
   final BigInt generation;
 
+  /// Books asked for as [`TextStorage::LibraryDb`] that were stored
+  /// [`TextStorage::InIndex`] instead, because the library database could not be
+  /// read or its row count differed from the book's lines. Only grows within a
+  /// process.
+  final BigInt libraryFallbacks;
+
   const LineSourceStatus({
     required this.configured,
     required this.open,
     required this.suspendDepth,
     required this.hostApiReady,
     required this.generation,
+    required this.libraryFallbacks,
   });
 
   @override
@@ -1610,7 +1617,8 @@ class LineSourceStatus {
       open.hashCode ^
       suspendDepth.hashCode ^
       hostApiReady.hashCode ^
-      generation.hashCode;
+      generation.hashCode ^
+      libraryFallbacks.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1621,7 +1629,8 @@ class LineSourceStatus {
           open == other.open &&
           suspendDepth == other.suspendDepth &&
           hostApiReady == other.hostApiReady &&
-          generation == other.generation;
+          generation == other.generation &&
+          libraryFallbacks == other.libraryFallbacks;
 }
 
 /// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
