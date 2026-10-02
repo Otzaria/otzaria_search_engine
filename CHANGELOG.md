@@ -265,9 +265,9 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at its `store-v2` branch (bc4c854), which keys a vector by the text it was
-  embedded from, so a set's identity is a line recipe and a model family, with
-  nothing positional in it:
+  at eae84d1, its `onnx-backend` with the `store-v2` branch and its audit fixes
+  merged, which keys a vector by the text it was embedded from, so a set's
+  identity is a line recipe and a model family, with nothing positional in it:
   - The text half is the line recipe of the index, which this plugin declares
     as `LINE_TEXT_VERSION` 1: split on `\n`, `normalize_text_for_indexing`, a
     line starting with `<h` opens a section, one document per line. The other
@@ -392,12 +392,34 @@ are now documented as development and testing scaffolding, not for the library.
   out 132,076 PDF lines, in 60 s and 3.6 GB on an Apple M4. That index holds
   53,493 line ids that two books share, which the build binary's corpus
   refuses; the plan keys a line by its book and position and is not affected.
-  `validate_semantic_vectors` reports how an installed set lands on an index:
-  the keyed lines its records cover in their book, and how many records are at
-  their hint, moved within their book, or gone; with `--plan`, how many of the
-  plan's records a scan reaches. Tested over a small library, where the plan is
-  byte for byte what the sidecar's `plan_from_corpus` writes, from a version 5
-  and a version 4 index alike.
+  Tested over a small library, where the plan is byte for byte what the
+  sidecar's `plan_from_corpus` writes, from a version 5 and a version 4 index
+  alike.
+- **`validate_semantic_vectors` is the publishing pipeline's gate on a
+  release**, for what the sidecar's `assemble --verify` cannot check without
+  the release index. It installs the releases given with `--release` (the
+  published chain first, the new one last) into a set of its own as a device
+  installs them, or takes one installed already with `--vectors`, and checks
+  **G3**, with `--plan`: every record of the plan is reachable in the set;
+  **G4**: every record resolves on the index by all 128 bits of its key, a
+  record of a book the index lacks counting as unresolved, and every line's
+  `chunkKey` column is its text's, with records off their hint reported and
+  failing it only past `--max-stale-hints`; and **G6**, with `--warehouse`,
+  `--model` and `--model-identity`: mean recall@10 and recall@50 of the set's
+  scan against the sidecar's exact `f32` reference over the warehouse, on
+  queries embedded once by the runtime query model, at least `--min-recall-10`
+  (0.98) and `--min-recall-50` (0.99). The queries are `--queries`, one per
+  line, or 200 spans of the index's lines drawn with a fixed seed. Recall is
+  counted over keys, which are distinct texts: a scan returns a text once,
+  however many books hold it, so repeated texts cannot take the top 50 as they
+  do on a page of lines. Exit 0 when every gate that ran passed, 1 when one
+  failed, 2 for wrong arguments or inputs that do not read; `--report` writes
+  every gate's verdict and numbers as JSON. On the v30 set a scratch harness of
+  the same measurement gave recall@10 0.987 to 0.994 and recall@50, over
+  distinct texts, 0.993 to 0.995. Tested through the pipeline itself: a plan,
+  a warehouse of the stand-in's vectors, a base assembled and installed, which
+  passes; and a book gone, stale hints past the limit, a plan the set does not
+  reach, a warehouse of other vectors and wrong arguments, which each fail.
 - **Tests of the vector-set path with the stand-in**, `rust/tests/semantic_artifact.rs`:
   a base package built by the binary from a small index, installed by the
   binary and through the API, plain and compressed, opened, searched both ways
@@ -470,6 +492,70 @@ are now documented as development and testing scaffolding, not for the library.
   pinned revision, and runs `rust/tests/semantic_onnx_model.rs` under
   `OTZARIA_REQUIRE_ONNX_MODEL`. Without the secret it fails rather than skips;
   it does not run for pull requests from forks, which get no secrets.
+
+### Fixed
+
+- **Every semantic line a search returns holds its vector's text by the whole
+  key, grouped siblings included.** The resolver found a vector's lines by
+  their `chunkKey` column, a key's first 64 bits, and only a page's primaries
+  were held to the full 128 before they were shown; a group's siblings were
+  hydrated as they came, so a line whose text was replaced while its column
+  value was kept could cross the bridge as the sibling of the line that does
+  hold the text. The resolver now checks every line it returns against the key
+  recomputed from the line's text and its neighbours' — at a hint, in a book
+  searched for a moved line, among a book's repeats, and in the pass over the
+  whole column — so a line that fails reaches neither fusion nor grouping nor a
+  page, and is counted in `fallbackReason` as primaries were. A line long
+  enough to stand alone is checked at one document rather than five: on a
+  synthetic set of 1,050,000 lines an unfiltered semantic-only search takes
+  8.4 ms where it took 10.9, since the page no longer checks its primaries
+  separately.
+- **A line no vector resolved is hydrated by its book and its id.** A grouped
+  sibling that only lexical search found, and a line of a session built on the
+  device, were looked up by id alone, and two books can share ids when an index
+  is updated book by book: such a sibling came back as another book's line.
+- **A passage a book holds in two places is a result for each.** A vector set
+  records a text once per book, at its first line, and the resolver stopped at
+  the first line that held it, so the second section's copy never came back,
+  even ungrouped. Every record is now tried at its hint, and each line found
+  there brings its book's other lines of the same text, found by the book's
+  `chunkKey` values (its `lineHash` in a version 4 index), up to the sidecar's
+  32 lines a hit. Without grouping each is a result; grouped by section they
+  head their sections' groups, and grouped by text they are one group.
+  Pagination is unchanged by it.
+- **A filtered search finds a text that moved, or was copied, into a book it
+  admits.** The scan reads only the vectors with a record in an admitted book,
+  and a set's records are where its texts were when it was built, so under the
+  filter of the category a text had moved into, it was not there until the
+  vectors were updated. A filtered search of an opened set is now planned
+  first, when the index has the `chunkKey` column: an admitted book's live
+  texts that the set records nowhere in it are its arrivals, looked for in it;
+  and when no admitted book records one of them, the books that hold its
+  vector join the scan, which fetches more vectors by how many more it reads
+  (at most the ranking's ceiling, `candidate_window_multiplier` 10). When
+  nothing moved the plan is the admitted books alone, as before. A book's
+  arrivals are kept under its text hash for the set's generation, and a plan
+  per filter for the index's. Measured on 1,050,000 lines in 1,500 books, with
+  1,030,500 vectors: planning a category of 50 books the first time, 15 to
+  30 ms; every book the first time, about 230 ms, against 80 to 150 ms
+  unplanned; after a commit, 40 to 45 ms for a category and 18 to 20 ms for
+  every book; after 50 texts were copied into one book of a category, the
+  category's first search 70 ms (55 to 60 unplanned), and its searches after
+  5.2 ms. A version 4 index, which has no column, scans the admitted books
+  alone as before; an unfiltered search finds a copied text where the set
+  records it, until the vectors are updated.
+- **One install or compaction of a vector set at a time, and each expansion
+  its own.** A compressed release was expanded to `incoming/<download name>`
+  before the set was locked, so two installs of one set from downloads of the
+  same name wrote one file, and a valid release was refused as corrupt because
+  the other install was still writing over it. An install or a compaction now
+  holds the set for the process before it reads anything, and a second one is
+  refused at once as `sessionConflict` with `field` `vectors_dir`, nothing read
+  or changed; one in another process meets it at the sidecar's lock, whose
+  refusal was `internal` and is now the same `sessionConflict`. A compressed
+  segment is expanded into a file of the install's own, locked while it is
+  written and removed when the install returns, installed or not, and the next
+  install of a set removes what a stopped process left there.
 
 ## 0.8.7 – 2026-09-29
 
