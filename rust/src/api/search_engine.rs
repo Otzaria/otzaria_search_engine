@@ -2983,6 +2983,10 @@ pub struct SearchEngine {
     /// and semantic-index lifecycle; Tantivy remains owned by this engine.
     #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
     semantic_runtime: SemanticRuntime,
+    /// What resolving a vector set's hits against this index remembers from one search to
+    /// the next, for one generation of it: see [`crate::semantic_resolver`].
+    #[cfg(feature = "semantic-integration")]
+    semantic_resolver: Mutex<crate::semantic_resolver::ResolverCache>,
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -3112,6 +3116,8 @@ impl SearchEngine {
             semantic_runtime: RwLock::new(None),
             #[cfg(not(feature = "semantic-integration"))]
             semantic_runtime: (),
+            #[cfg(feature = "semantic-integration")]
+            semantic_resolver: Mutex::default(),
         }
     }
 
@@ -3457,6 +3463,21 @@ impl SearchEngine {
             // runtime. None of them reads the package's precision, which is found next.
             let family = LocalModel::of_family(key.model_path.clone(), &key.model, "");
             semantic_errors::check_local_model(&family, |err| refused(err))?;
+            // This build keys the index's lines under one chunking, the one compiled in; a
+            // set built under another would resolve no line, so it is refused here, by name,
+            // rather than opened to answer nothing.
+            let keyed_under = ChunkKeyRecipe::current().chunking_identity;
+            if key.model.chunking_identity != keyed_under {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ArtifactIncompatible,
+                    refused(&format!(
+                        "model.chunking_identity is {}, and this build keys the index's \
+                         lines under chunking {keyed_under}, so no line could be resolved",
+                        key.model.chunking_identity
+                    )),
+                )
+                .with_field("model.chunking_identity"));
+            }
             let package = family_package(&key, call, &refused)?;
             let local = LocalModel {
                 model_quantization: package.quantization,
@@ -4039,6 +4060,19 @@ impl SearchEngine {
                     )?,
                 }
             };
+            // The live index a vector set's hits are resolved against, at the generation this
+            // search reads. A session built on this device never asks it.
+            let resolver = crate::semantic_resolver::LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .map_err(|err| {
+                SemanticError::new(
+                    SemanticErrorKind::Internal,
+                    format!("the index could not be read to resolve semantic results: {err}"),
+                )
+            })?;
             // The sidecar's first act is to look at the token, so this crate does not look
             // here itself; a test is told how far the search got.
             search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
@@ -4074,7 +4108,7 @@ impl SearchEngine {
                         feature_flags: None,
                         ranking,
                     },
-                    &otzaria_semantic_search::semantic::resolve::NoResolver,
+                    &resolver,
                     cancel,
                 )
                 .map_err(|err| semantic_errors::search_error(&err, session.call()))?;
