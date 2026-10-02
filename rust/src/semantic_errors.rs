@@ -485,6 +485,12 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
         // The device ran out of room installing or compacting a vector set: the one state
         // the application can do something about that no other kind names.
         ArtifactError::InsufficientSpace { .. } => (K::InsufficientDiskSpace, None),
+        // The set's lock is held: another install or compaction of it runs, in another
+        // process — one in this process is refused before the sidecar is asked. The lock is
+        // never waited for, and the sidecar says so by the error's kind, not its words.
+        ArtifactError::Io { source, .. } if source.kind() == std::io::ErrorKind::WouldBlock => {
+            (K::SessionConflict, Some("vectors_dir".to_string()))
+        }
         // An install interrupted and not resolvable, and any other I/O failure. Neither is
         // a damaged artifact, and the first must not be answered by downloading over it:
         // the only good copy may be parked beside the target.
@@ -1010,6 +1016,17 @@ mod tests {
                 installed.path(),
                 K::Internal,
                 None,
+            ),
+            // The set's lock, held by another install or compaction: by the I/O kind the
+            // sidecar gives it, whatever its context says.
+            (
+                ArtifactError::Io {
+                    context: "c".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
+                },
+                installed.path(),
+                K::SessionConflict,
+                Some("vectors_dir"),
             ),
         ];
         for (error, vectors_dir, expected, field) in cases {

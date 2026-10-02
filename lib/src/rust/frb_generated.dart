@@ -12815,8 +12815,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
   /// compaction leaves the set as it was. It refuses to start without
-  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
-  /// An open session on the same set is moved onto the compacted generation.
+  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
+  /// and while another install or compaction of the set runs, as `SessionConflict`
+  /// about `vectors_dir`. An open session on the same set is moved onto the compacted
+  /// generation.
   Future<SemanticCompactionReport> compactSemanticVectors({
     required String vectorsDir,
     int? liveLibraryVersion,
@@ -13617,15 +13619,22 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// The set is locked throughout, and the new generation goes live in one flip: a
   /// release that is refused, cancelled through `cancellation`, or cut off by a crash
   /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-  /// the set's `incoming/` folder first, so it needs its expanded size free besides what
-  /// the install needs. An open session on the same set is moved onto the new
+  /// a file of the install's own in the set's `incoming/` folder first, so it needs its
+  /// expanded size free besides what the install needs; the file is gone when this
+  /// returns, installed or not. An open session on the same set is moved onto the new
   /// generation before this returns.
+  ///
+  /// One install or compaction of a set runs at a time. While another runs in this
+  /// process, this one is refused before it reads anything; while one runs in another
+  /// process, once it reaches the set's lock. Either way the refusal is a
+  /// `SessionConflict` about `vectors_dir`, and the set is as it was.
   ///
   /// Refusals are [`SemanticError`]s of the kinds in the table on
   /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
   /// published one, `ArtifactIncompatible` for a release of another identity or a delta
   /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
-  /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+  /// its manifest describes, `InsufficientDiskSpace`, `SessionConflict`, and
+  /// `Cancelled`.
   ///
   /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
   /// engine's write lock while it copies a segment of hundreds of megabytes.
