@@ -274,12 +274,14 @@ set holds, and a delta brings it from the library version it stands at to the
 next. The set is locked throughout and the new generation goes live in one
 flip, so a release refused, cancelled or cut off by a crash leaves the set as it
 was; an open session on the same set is moved onto the new generation before
-the call returns.
+the call returns. One install or compaction of a set runs at a time: while
+another runs, in this process or another, the call is refused as
+`sessionConflict` with `field` `vectors_dir`, and the set is as it was.
 
 | field | meaning |
 | --- | --- |
 | `vectorsDir` | the vector set, `<root>/vectors` |
-| `segmentPath` | the release's segment as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd, which is expanded into the set's `incoming/` folder first. A segment inside `incoming/` is moved into the set; anywhere else it is copied and left |
+| `segmentPath` | the release's segment as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd, which is expanded into a file of the install's own in the set's `incoming/` folder first, gone when the call returns. A segment inside `incoming/` is moved into the set; anywhere else it is copied and left |
 | `manifestJson` | the release manifest published beside the segment (`release.json`), as published |
 | `publishedManifestSha256` | optional: the manifest's SHA-256 as the release publishes it outside the manifest; without it an install detects damage and the wrong release, not one rebuilt to match |
 | `modelIdentityJson` | the model identity this installation queries with, as for opening: a release it would not open is not installed |
@@ -342,13 +344,18 @@ A set's vectors are keyed by the text each was embedded from, not by where it
 sits in an index, so nothing ties the set to one index: every search resolves
 its hits against the index that is open, by the key of each line's text, which a
 new index keeps in its `chunkKey` column. A commit after opening leaves the set
-serving. A line that moved is found where it is now; a line whose text is gone,
-or whose embedded text changed with its neighbours, is not shown; and every line
-shown is checked first by recomputing its key from the text the index holds. A
-semantic match that fails the check is dropped, or, when the lexical side found
-the line too, shown as a lexical result. An index of schema version 4, without
-the column, is resolved by recomputing the keys of the books a hit names, which
-is slower. On an opened set the calls that build vectors are refused as
+serving. A line that moved is found where it is now; a text a book holds in
+several places is a line for each, so ungrouped every one is a result; a line
+whose text is gone, or whose embedded text changed with its neighbours, is not
+shown; and every line a search returns, grouped siblings included, is checked
+first by recomputing its key from the text the index holds. A semantic match
+that fails the check is dropped, or, when the lexical side found the line too,
+shown as a lexical result; `fallbackReason` counts them. Under a filter, a text
+that moved or was copied into an admitted book since the set was built is found
+there, the scan also reading the books that hold its vector. An index of schema
+version 4, without the column, is resolved by recomputing the keys of the books
+a hit names, which is slower, and a filter there scans the books it admits
+alone. On an opened set the calls that build vectors are refused as
 read-only. `SemanticStatus` reports the open set's `vectorsLibraryVersion`,
 `vectorSegments` and `needsCompaction`. INT8 vectors from x86 and ARM CPUs meet
 at about cosine 0.999, the same order as INT8 against fp32.
@@ -478,7 +485,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for: at `onnxRuntimePath` when it is passed | provide ONNX Runtime there |
 | `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
 | `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no ONNX backend in this build, as on Android and iOS | a desktop build |
-| `sessionConflict` | `configureSemantic`, `openSemanticArtifact` | another session, or other inputs, is open | `disableSemantic` first |
+| `sessionConflict` | `configureSemantic`, `openSemanticArtifact`, `installSemanticVectors`, `compactSemanticVectors` | another session, or other inputs, is open; installing or compacting, with `field` `vectors_dir`, another install or compaction of the set is running | `disableSemantic` first; for a busy set, try again once the other has finished |
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened vector set | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
 | `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
