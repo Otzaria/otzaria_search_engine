@@ -454,6 +454,7 @@ type Probe = Box<dyn Fn(&SearchEngine) -> Vec<SearchResult>>;
 type Run<'a> = dyn Fn(&SearchEngine) -> Vec<SearchResult> + 'a;
 
 type OrderOf = fn() -> ResultsOrder;
+type Run<'a> = dyn Fn(&SearchEngine) -> Vec<SearchResult> + 'a;
 
 fn orders() -> Vec<(&'static str, OrderOf)> {
     vec![

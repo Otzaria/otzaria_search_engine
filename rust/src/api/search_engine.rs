@@ -12159,6 +12159,7 @@ impl SearchEngine {
         }
         let mut out = Vec::with_capacity(documents.len());
         let mut pending: Vec<Pending> = Vec::new();
+        let mut line_hash_columns = HashMap::new();
         for (slot, (address, document)) in documents.iter().enumerate() {
             if let Some(stored) = document.get_first(text_stored_f).and_then(|v| v.as_str()) {
                 out.push(HitText {
@@ -12184,12 +12185,16 @@ impl SearchEngine {
                 .get_first(segment_f)
                 .and_then(|v| v.as_u64())
                 .unwrap_or_default();
-            let line_hash = searcher
-                .segment_reader(address.segment_ord)
-                .fast_fields()
-                .u64("lineHash")?
-                .first(address.doc_id)
-                .unwrap_or_default();
+            let column = match line_hash_columns.entry(address.segment_ord) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => e.insert(
+                    searcher
+                        .segment_reader(address.segment_ord)
+                        .fast_fields()
+                        .u64("lineHash")?,
+                ),
+            };
+            let line_hash = column.first(address.doc_id).unwrap_or_default();
             pending.push(Pending {
                 slot,
                 key: crate::line_source::LineKey { book_id, ordinal },
