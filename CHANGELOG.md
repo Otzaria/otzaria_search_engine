@@ -4,9 +4,11 @@
 
 > Breaking for Dart code that constructs `SemanticConfigInput` or
 > `SemanticStatus`, that calls `searchSemantic`, or that catches the semantic
-> calls' `AnyhowException`, and for an application that configures a GGUF
-> model, so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its
-> own (see 0.8.0).
+> calls' `AnyhowException`, for an application that configures a GGUF model,
+> and for one that opens an artifact with a model identity of the old shape,
+> so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its own
+> (see 0.8.0). An existing lexical index is not one of them: it opens, and
+> searches, as it did.
 
 **The application never builds the library's vectors.** The build machine
 embeds the whole library into a semantic artifact; the application opens it
@@ -17,6 +19,40 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Breaking
 
+- **An artifact's identity is a line recipe and a model family: the sidecar
+  is pinned at its `store-v2` branch (f42deec).** That branch keys a vector by
+  the text it was embedded from, so nothing positional is part of an
+  artifact's identity any more:
+  - The text half is the line recipe of the index, which this plugin declares
+    as `LINE_TEXT_VERSION` 1: split on `\n`, `normalize_text_for_indexing`, a
+    line starting with `<h` opens a section, one document per line. The other
+    part of it is the sidecar's key version. `corpus_id` is gone.
+  - The model half describes a family. `modelIdentityJson` is the sidecar's
+    `config/models/meivin-round2-onnx/model.json` as that revision writes it:
+    `family_id`, `tokenizer_checksum` and the `query_packages` a query may
+    come from, which are the INT8 and fp32 graphs. The graph at `modelPath`
+    must be one of those packages, by its checksum, and its tokenizer must be
+    `tokenizer_checksum`. Either refusal is `modelIdentityMismatch`, with
+    `field` `query_packages` or `tokenizer_checksum`. `model_checksum` and
+    `embedding_backend` are no longer compared.
+
+  The corpus stamp is version 2 and carries the line recipe and the library
+  edition. An artifact's records still name lines by position, so
+  `openSemanticArtifact` also compares the edition recorded in the
+  artifact's manifest with the stamp's, as `artifactIncompatible` with
+  `field` `to_library_version` or `library_release_tag`. The identity fields
+  that refusals name are now `text.line_text_version`, `model.family_id` and
+  the rest of the sidecar's identity v2.
+
+  The build binaries take the edition as `--library-version`, the library's
+  `db_version`, and `--release-tag`. `pack_semantic_artifact` also takes
+  `--provenance`, which names the package that embedded the vectors and what
+  ran it. No artifact or stamp has shipped. One built before this would be
+  refused (`artifactIncompatible` on its `metadata_version`, and
+  `indexNotStamped`), and needs building again. The sidecar's new errors are
+  classified: a resolution failure is `queryFailed`, a delta that does not
+  apply is `artifactIncompatible`, and a lack of disk space is `internal`
+  until a call that installs vectors gives it a kind of its own.
 - **`SemanticConfigInput` states the whole recipe: four new required fields.**
   `pooling`, `maxTokens`, `modelQuantization` and `embeddingTextVersion` were
   taken silently from the sidecar's defaults, which fit only the Qwen3 GGUF
@@ -105,6 +141,61 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Added
 
+- **New indexes store each line's chunk key, and a version 4 index keeps
+  working as it is.** A new `chunkKey` column holds, for every line
+  `addTextBook` adds, the key of the text the line is embedded as: the first
+  eight bytes of the SHA-256 of that text, read big-endian (the sidecar's
+  `ChunkKey::column_value`). It is 0 for a line the recipe does not embed, for
+  a PDF's lines, and for documents added one by one or in batches. The column
+  is what will tie a stored vector to the lines that hold its text, by
+  content rather than position, so that a library update leaves the vector of
+  every unchanged line usable.
+
+  The key is computed after normalization, from what the index stores: the
+  line, its neighbours within two lines in its section, and the sections the
+  `<h` headings open. It uses the sidecar's own chunker under Meivin Round 2's
+  chunking, which is compiled in because indexing runs with no model. The
+  SHA-256 runs in parallel. `FAST` only: the column is neither indexed nor
+  stored. Measured on 300 books of the library, 286,235 lines, on an Apple M4:
+  the column costs 8.0 bytes a line, which is 55 MB over the library's 6.9
+  million lines, about 1.3% of the 3.9 GiB release index. The keys took 0.21 s
+  of an indexing run of about 3.1 s, which is 0.75 µs a line, or 1.9 µs a
+  line on one core: about 13 s of CPU for the whole library.
+
+  `INDEX_SCHEMA_VERSION` is 5, and **an index of version 4 is not rebuilt**.
+  `checkIndexCompatibility` reports it `compatible`. The engine opens it under
+  its own schema, searches it, and adds books to it as before, and it stays
+  version 4 with no column. Only an index this version creates, a new one or a
+  rebuild, has the column. Its `otzaria_index_meta.json` records the recipe the
+  column was written under: `line_text_version`, `chunk_key_version` and
+  `chunk_key_chunking_identity`. A column written under another recipe, or
+  under none that is known, counts as absent: it never means a rebuild, and
+  nothing writes to it. An engine before this one reports a version 5 index
+  as `engine_too_old`, which it is.
+
+  `semantic_keys::recompute_chunk_key` (Rust only) computes a line's key again
+  from the stored text of its window and the `sectionId` column. This is what
+  an index without a usable column will be asked, and what a result will be
+  checked against before it is shown.
+
+  Tested:
+  - a synthetic book keyed to the values Python's hashlib computes over
+    embedded strings written out by hand;
+  - every line recomputes to the key its column holds;
+  - the parallel keys equal the sidecar's `chunk_keys`;
+  - the compiled-in chunking is the one the model family publishes, against
+    the pinned sidecar's files in the real-model job;
+  - version 4's schema is the one in the release index's `meta.json`;
+  - a version 4 index, with or without its metadata, opens compatible,
+    searches, takes books without the field, and stays version 4;
+  - a new index records its recipe;
+  - every add path but `addTextBook` writes 0;
+  - a column under another recipe, or unparseable metadata, counts as absent
+    and leaves the index compatible.
+
+  A copy of the release index (6,042,284 lines, version 4) opened compatible
+  under this engine, served searches, and took a book. On the 300 books, every
+  line's column equalled its key recomputed from the stored text.
 - **Typed semantic failures and states, for an application to switch on.** The
   sidecar types its errors and leaves turning them into user-facing states to
   the host; now the plugin does. `SemanticErrorKind` names what stopped the
@@ -206,8 +297,8 @@ are now documented as development and testing scaffolding, not for the library.
   directory, the model file, the text of the model's identity file (the one the
   artifact was built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the published
-  digest; the model identity's `model_checksum` and `embedding_backend` are also
-  compared with the model once it has loaded. The corpus half is not an input:
+  digest; the graph must be one of the identity's `query_packages`, and its
+  tokenizer the identity's `tokenizer_checksum`. The corpus is not an input:
   it is read from the index (next entry). On an opened artifact,
   `semanticIndexBooks`, `removeSemanticBooks`, `resetSemanticIndex`,
   `semanticIndexDiff` and `configureSemantic` are refused as read-only, and a
@@ -216,12 +307,13 @@ are now documented as development and testing scaffolding, not for the library.
   lock, so lexical search keeps serving while the model and the vectors load.
 - **The corpus stamp, `otzaria_semantic_corpus.json`.** `build_semantic_artifact
   --stamp-index` and `pack_semantic_artifact --stamp-index` write the corpus
-  identity the artifact was built for into the lexical index directory,
-  together with the index's segment set, from the snapshot the artifact was
-  read from. A device cannot recompute `corpus_id`, which digests every stored
-  line, and the artifact's own copy proves nothing about the index that is
-  open, so `openSemanticArtifact` reads the stamp, refuses it unless the index
-  still has that segment set, and compares it with the artifact's. The index
+  the artifact was built for (its line recipe and library edition) into the
+  lexical index directory, together with the index's segment set, from the
+  snapshot the artifact was read from. A device cannot re-read every stored
+  line to describe its index, and the artifact's own description proves
+  nothing about the index that is open, so `openSemanticArtifact` reads the
+  stamp, refuses it unless the index still has that segment set, and compares
+  the artifact's line recipe and recorded edition with it. The index
   carries its stamp wherever it is shipped; without `--stamp-index` the bins
   still write nothing outside `--out`.
 - **The ONNX embedding backend, `semantic-onnx`**, for ONNX graphs such as the
@@ -297,6 +389,14 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Changed
 
+- **The sidecar is compiled into every build**, declared with
+  `default-features = false`, because a line's chunk key has to be the same
+  function of its text in every build: the release index is built once and
+  ships to every platform. `semantic-integration` and the backend features
+  still gate the code that talks to the sidecar. The inference crates (ort,
+  tokenizers, libloading) still come only with `semantic-onnx`, and only on
+  desktop targets, so an Android or iOS build pulls in none of them. Cargo.lock
+  gains no crate.
 - **The plugin calls the sidecar's `HybridCoordinator` itself**, not the
   `OtzariaHybridEngine` wrapper, which turned every error into a string, so the
   typed error reaches the classification; nothing else the wrapper did is lost.
