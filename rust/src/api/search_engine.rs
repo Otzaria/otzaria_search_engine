@@ -21375,6 +21375,61 @@ mod tests {
             );
         }
 
+        /// A filtered search after a commit that left the book it admits alone plans again —
+        /// a commit is a new generation of the index — and reads none of the book's lines:
+        /// its postings are the segments they were, so the arrivals the view keeps for them
+        /// hold.
+        #[test]
+        fn a_plan_after_a_commit_that_left_its_book_alone_reads_none_of_it() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let filtered = |engine: &SearchEngine| {
+                engine
+                    .search_semantic(
+                        PROBE.to_string(),
+                        vec!["/root".to_string()],
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let walks = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .walks
+            };
+            assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
+            assert_eq!(walks(&engine), 1, "the first plan reads the book");
+            engine
+                .add_text_book(
+                    "ספר אחר".to_string(),
+                    "/other".to_string(),
+                    "/books/other.txt".to_string(),
+                    1,
+                    0,
+                    "שורה בספר אחר ארוכה דיה לעמוד לבדה".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
+            assert_eq!(
+                walks(&engine),
+                0,
+                "a plan of the new generation reads none of the book it admits"
+            );
+        }
+
         /// One lexical search also found keeps its lexical half alone.
         #[test]
         fn a_line_lexical_search_also_found_keeps_its_lexical_half() {
