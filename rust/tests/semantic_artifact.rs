@@ -1285,6 +1285,90 @@ fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
     }
 }
 
+/// Every line one vector resolves to scores alike, so a page shows them in the order the
+/// resolver returns them — the line of each book that holds the text, then one book's
+/// repeats of it — and not by id: a book first in the catalogue, whose twenty-five repeats
+/// have the lowest ids, filled a page of twenty with them (R1 of the acceptance run).
+/// Ungrouped, every book's line comes before any repeat; the page is the same on every
+/// call, and pages of five make it up. From the column, and in a version 4 index from the
+/// text.
+#[test]
+fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let many = "/books/a-many.txt";
+    let others = [
+        "/books/b-once.txt",
+        "/books/c-once.txt",
+        "/books/d-once.txt",
+        "/books/e-once.txt",
+    ];
+    let mut books = vec![("רבים", "/א", many, 0, vec![passage; 25].join("\n"))];
+    for (order, book) in (1..).zip(others) {
+        books.push((
+            "יחיד",
+            "/ב",
+            book,
+            order,
+            format!("שורה פותחת בספר {order} ארוכה דיה לעמוד לבדה\n{passage}"),
+        ));
+    }
+    for version_4 in [false, true] {
+        let library = build_library_of(&books, version_4);
+        let page = |offset: u32, limit: u32| -> Vec<(String, u64)> {
+            // A session of its own each time, so that no page is answered from a cache.
+            let engine = library.engine();
+            engine.open_semantic_artifact(library.input()).unwrap();
+            let response = search_page(
+                &engine,
+                passage,
+                limit,
+                offset,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+            );
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            response
+                .results
+                .into_iter()
+                .map(|hit| {
+                    assert_eq!(hit.snippet_html, passage);
+                    (hit.file_path, hit.segment)
+                })
+                .collect()
+        };
+        let context = format!("version 4: {version_4}");
+        let first = page(0, 20);
+        assert_eq!(first.len(), 20, "{context}");
+        let first_repeat = first
+            .iter()
+            .enumerate()
+            .filter(|(_, (book, _))| book == many)
+            .nth(1)
+            .map(|(at, _)| at)
+            .expect("the page holds the book's repeats");
+        for book in others {
+            let at = first
+                .iter()
+                .position(|(found, _)| found == book)
+                .unwrap_or_else(|| panic!("{book} has its line on the page: {context}"));
+            assert!(
+                at < first_repeat,
+                "{book}'s line, at {at}, comes before the first repeat, at {first_repeat}: \
+                 {first:?}, {context}"
+            );
+        }
+        for _ in 0..2 {
+            assert_eq!(page(0, 20), first, "the same page again: {context}");
+        }
+        let paged: Vec<(String, u64)> = (0..4).flat_map(|n| page(5 * n, 5)).collect();
+        assert_eq!(paged, first, "pages of five: {context}");
+    }
+}
+
 /// The cap is shared alike when a text left the book the set records it in: found by the
 /// pass over the whole column, the first line of each book that holds it now is a line of
 /// the hit's before any book's second — the other book's line and 31 of the forty, though
@@ -2004,6 +2088,51 @@ fn a_release_installs_through_the_api_and_reports_itself() {
         semantic_lines(&engine, PROBE_LINE, &[]).first(),
         Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
     );
+}
+
+/// A release manifest's `requires` is information, and nothing reads it: the published v30
+/// release says `indexSchemaVersion: 5` — the schema whose `chunkKey` column it is resolved
+/// through — and a device whose index is still version 4, as the published v30 library
+/// index is, installs, opens and searches it all the same, resolving from the stored text.
+#[test]
+fn a_release_that_requires_schema_5_serves_a_version_4_index() {
+    use sha2::Digest;
+    let library = build_library_of(&default_books(), true);
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, _) = release(&library.package);
+    let mut manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    manifest["requires"] = serde_json::json!({
+        "indexSchemaVersion": 5,
+        "lineTextVersion": 1,
+        "keyVersion": 1,
+    });
+    let manifest = serde_json::to_string_pretty(&manifest).unwrap();
+    let digest = format!("{:x}", sha2::Sha256::digest(manifest.as_bytes()));
+    let vectors = library.package.with_file_name("requires-5");
+    engine
+        .install_semantic_vectors(
+            library.install_input(&vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .expect("a version 4 index installs a release that requires version 5");
+    let status = engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            ..library.input()
+        })
+        .expect("and opens it");
+    assert!(status.available, "{:?}", status.last_error);
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3)),
+        "and serves it"
+    );
+    let metadata: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(library.index.join("otzaria_index_meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["schema_version"], 4, "the index stayed version 4");
 }
 
 /// A segment published compressed is expanded and installed, and nothing of it is left

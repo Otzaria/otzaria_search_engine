@@ -287,6 +287,13 @@ session keeps serving; try again once the other has finished.
 | `publishedManifestSha256` | optional: the manifest's SHA-256 as the release publishes it outside the manifest; without it an install detects damage and the wrong release, not one rebuilt to match |
 | `modelIdentityJson` | the model identity this installation queries with, as for opening: a release it would not open is not installed |
 
+A release manifest's `requires` (`indexSchemaVersion`, `lineTextVersion`,
+`keyVersion`) and `builtBy` are information, and nothing checks them: the
+release's identity is what an install and an open check. The published v30
+release says `indexSchemaVersion: 5`, the schema whose `chunkKey` column its
+records are resolved by, and installs, opens and searches on a version 4 index
+all the same, with version 4's limits (below).
+
 The report says what the release was (`kind`: `base`, `delta` or `compacted`),
 the library version and generation the set stands at, the vectors it added and
 the older ones it deleted, the set's size, and whether it wants compacting.
@@ -358,7 +365,9 @@ is at most 32 lines: first one for each book that holds its text — each book
 the set records it in, or, when it left them, each book the index holds it in
 now; under a filter, also each admitted book it arrived in — then those books'
 other lines of it, in that order, while the 32 last; lines past them are not
-semantic results of that hit, though lexical search still finds every one. A line
+semantic results of that hit, though lexical search still finds every one. A
+hit's lines score alike, so an ungrouped page shows them in that order: a line
+of each book before any book's second. A line
 whose text is gone, or whose embedded text changed with its neighbours, is not
 shown; and every line a search returns, grouped siblings included, is checked
 first by recomputing its key from the text the index holds. A semantic match
@@ -372,7 +381,16 @@ moved; that needs version 5 too.
 An index of schema version 4 has no `chunkKey` column — the published v30
 library index is one. Keys are recomputed from the stored text, which is
 slower; every line returned is still held to its whole key, and a passage a book
-repeats is still a line for each, by its `lineHash`. But a record's line is found
+repeats is still a line for each, by its `lineHash`. A line under 20 characters
+is keyed with up to two neighbours on each side, so a short text a book holds
+in many places among other lines has its key only where the neighbours repeat
+too: once one line of the same `lineHash` is found not to hold the key, the
+others are recomputed only where their neighbours' `lineHash`es can spell the
+hit's text, and a hit stops after 16 lines that were recomputed and did not
+hold its key — which takes neighbours too short to have a `lineHash` (under 12
+Hebrew letters), or one before the line that fills the 512-character cap alone
+— so such a hit may show fewer of a book's repeats than version 5 does. But a
+record's line is found
 only at the line the set recorded or within 16 lines of it in the same book: a
 line moved further within its book, or a text moved to another book, is not
 found, filtered or not; a filter scans the books it admits alone, so a text
