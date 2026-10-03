@@ -372,7 +372,16 @@ moved; that needs version 5 too.
 An index of schema version 4 has no `chunkKey` column — the published v30
 library index is one. Keys are recomputed from the stored text, which is
 slower; every line returned is still held to its whole key, and a passage a book
-repeats is still a line for each, by its `lineHash`. But a record's line is found
+repeats is still a line for each, by its `lineHash`. A line under 20 characters
+is keyed with up to two neighbours on each side, so a short text a book holds
+in many places among other lines has its key only where the neighbours repeat
+too: once one line of the same `lineHash` is found not to hold the key, the
+others are recomputed only where their neighbours' `lineHash`es can spell the
+hit's text, and a hit stops after 16 lines that were recomputed and did not
+hold its key — which takes neighbours too short to have a `lineHash` (under 12
+Hebrew letters), or one before the line that fills the 512-character cap alone
+— so such a hit may show fewer of a book's repeats than version 5 does. But a
+record's line is found
 only at the line the set recorded or within 16 lines of it in the same book: a
 line moved further within its book, or a text moved to another book, is not
 found, filtered or not; a filter scans the books it admits alone, so a text
