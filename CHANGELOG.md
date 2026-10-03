@@ -518,6 +518,15 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Fixed
 
+- **A text that moved keeps every book's line when one book holds it more
+  than a thousand times.** A hit whose books no longer hold its text is looked
+  for in one pass over the whole `chunkKey` column, and the pass kept a text's
+  first 1,024 places in index order before a line of each book was chosen: a
+  book that holds the text 1,100 times took all of them, and a book added
+  after it, which holds it once, lost its line. The pass now keeps each book's
+  first 32 lines by position, and cuts to 1,024 by rank in the book, every
+  book's first line before any book's second, so the cut never costs a book
+  its line. The cache it fills is bounded as before, 1,024 places a value.
 - **Every semantic line a search returns holds its vector's text by the whole
   key, grouped siblings included.** The resolver found a vector's lines by
   their `chunkKey` column, a key's first 64 bits, and only a page's primaries
