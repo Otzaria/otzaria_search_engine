@@ -2098,9 +2098,18 @@ fn a_second_install_of_a_set_while_one_expands_is_refused_and_changes_nothing() 
             &fresh,
         )
         .unwrap();
+    // The first install's expansion, its segment and its lock file, and nothing else.
+    let mut written: Vec<String> = expansions(&vectors)
+        .into_iter()
+        .map(|(name, _)| {
+            name.rsplit_once('.')
+                .map_or(name.clone(), |(_, suffix)| suffix.to_string())
+        })
+        .collect();
+    written.sort();
     assert_eq!(
-        expansions(&vectors).len(),
-        1,
+        written,
+        ["lock", "oxv"],
         "the refused install wrote nothing: {:?}",
         expansions(&vectors)
     );
@@ -2232,11 +2241,13 @@ fn an_install_or_compaction_under_another_process_lock_is_refused_as_busy() {
         .unwrap();
 }
 
-/// What an expansion that never finished left — a process that stopped while it expanded —
-/// is removed by the next install of the set; one another process still writes, and holds
-/// a lock on, is not. A download the application left in `incoming/` is its own.
+/// An expansion is its install's until the install returns, though its file is written and
+/// closed before the sidecar takes it: its lock file stays locked all along, so an install
+/// in another process does not take the file for abandoned in between. One whose process is
+/// gone — its lock file unlocked — is removed, lock file and all; an expansion file with no
+/// lock file only once it is old. The application's own files are left alone.
 #[test]
-fn an_abandoned_expansion_is_removed_and_one_in_progress_is_not() {
+fn an_expansion_waiting_for_its_install_is_not_taken_for_abandoned() {
     let library = build_library();
     let engine = library.engine();
     let token = SemanticCancellationToken::new();
@@ -2249,14 +2260,31 @@ fn an_abandoned_expansion_is_removed_and_one_in_progress_is_not() {
     .unwrap();
     let incoming = library.vectors.join("incoming");
     std::fs::create_dir_all(&incoming).unwrap();
-    std::fs::write(incoming.join(".expanding-abandoned.oxv"), b"half").unwrap();
-    std::fs::write(incoming.join(".expanding-writing.oxv"), b"half").unwrap();
-    std::fs::write(incoming.join("download.part"), b"the application's").unwrap();
-    let writing = std::fs::OpenOptions::new()
+    for name in [
+        // Written and closed, its install in another process not yet returned.
+        ".expanding-waiting.lock",
+        ".expanding-waiting.oxv",
+        // Its process gone.
+        ".expanding-gone.lock",
+        ".expanding-gone.oxv",
+        // No lock file: one a moment old, one an hour and more.
+        ".expanding-stray.oxv",
+        ".expanding-old.oxv",
+        "download.part",
+    ] {
+        std::fs::write(incoming.join(name), b"half").unwrap();
+    }
+    let waiting = std::fs::OpenOptions::new()
         .write(true)
-        .open(incoming.join(".expanding-writing.oxv"))
+        .open(incoming.join(".expanding-waiting.lock"))
         .unwrap();
-    writing.try_lock().unwrap();
+    waiting.try_lock().unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(incoming.join(".expanding-old.oxv"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7_200))
+        .unwrap();
 
     let install = || {
         engine
@@ -2271,21 +2299,28 @@ fn an_abandoned_expansion_is_removed_and_one_in_progress_is_not() {
             )
             .unwrap()
     };
+    let left = || {
+        let mut left: Vec<String> = expansions(&library.vectors)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        left.sort();
+        left
+    };
     install();
-    let mut left: Vec<String> = expansions(&library.vectors)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    left.sort();
-    assert_eq!(left, [".expanding-writing.oxv", "download.part"]);
+    assert_eq!(
+        left(),
+        [
+            ".expanding-stray.oxv",
+            ".expanding-waiting.lock",
+            ".expanding-waiting.oxv",
+            "download.part"
+        ]
+    );
 
-    drop(writing);
+    drop(waiting);
     install();
-    let left: Vec<String> = expansions(&library.vectors)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    assert_eq!(left, ["download.part"]);
+    assert_eq!(left(), [".expanding-stray.oxv", "download.part"]);
 }
 
 /// A release that is not the one published, or not for this installation, is refused by

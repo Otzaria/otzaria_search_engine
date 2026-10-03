@@ -371,7 +371,7 @@ it, `segments/` holds the vectors, and `incoming/` is where a download can be
 left for an install to move in rather than copy — moved when the install
 succeeds, left where it is when it fails, and on Windows copied when it is
 read-only — and where an install expands a compressed one, into a file of its
-own that is gone when the install returns.
+own beside a lock file it holds, both gone when the install returns.
 One install or compaction of a set runs at a time: a second is refused at once.
 The runtime either ships with the application, which passes its path as
 `onnxRuntimePath` (on macOS from inside the signed application bundle, below),
