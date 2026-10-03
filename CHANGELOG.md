@@ -551,7 +551,9 @@ are now documented as development and testing scaffolding, not for the library.
   generation under its postings (the segments that hold its lines, and their
   deletions) and its text hash, so a plan after a commit that left a book
   alone reads none of its lines; a plan per filter is kept for the index's
-  generation. A version 4 index, which has no column, scans the
+  generation. A filtered search that cannot be planned, because the index
+  could not be read for it, fails its semantic half alone: the lexical
+  results are served with the reason, `fallbackKind` `queryFailed`. A version 4 index, which has no column, scans the
   admitted books alone as before; an unfiltered search finds a copied text
   where the set records it, until the vectors are updated.
 - **One install or compaction of a vector set at a time, and each expansion
