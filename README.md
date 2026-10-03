@@ -471,7 +471,7 @@ set installed already instead.
 | G6, retrieval | `--warehouse`, `--model`, `--model-identity` | the set's scan, as a device runs it, reaches mean recall@10 of `--min-recall-10` (0.98) and recall@50 of `--min-recall-50` (0.99) against the exact `f32` scan of the warehouse's vectors, on the same query vectors |
 
 G6's queries are `--queries <file>`, one per line, or else `--sample-queries`
-(200) spans of the index's lines drawn with a fixed seed, embedded by the
+(200; from 1 to 100,000) spans of the index's lines drawn with a fixed seed, embedded by the
 runtime query model (`--onnx-runtime`, or `OTZARIA_ONNX_RUNTIME`). Recall is
 counted over keys, which are distinct texts, since that is what a scan returns:
 a text in many books is one hit, so repeated texts cannot take the top 50 here
