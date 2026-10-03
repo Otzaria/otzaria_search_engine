@@ -517,12 +517,15 @@ are now documented as development and testing scaffolding, not for the library.
 - **A passage a book holds in two places is a result for each.** A vector set
   records a text once per book, at its first line, and the resolver stopped at
   the first line that held it, so the second section's copy never came back,
-  even ungrouped. Every record is now tried at its hint, and each line found
-  there brings its book's other lines of the same text, found by the book's
-  `chunkKey` values (its `lineHash` in a version 4 index), up to the sidecar's
-  32 lines a hit. Without grouping each is a result; grouped by section they
-  head their sections' groups, and grouped by text they are one group.
-  Pagination is unchanged by it.
+  even ungrouped. A hit now resolves in two passes, up to the sidecar's 32
+  lines a hit: first one line for each record — each book the set records the
+  text in, at its hint or where the book holds it now — and then, in that
+  order, each of those books' other lines of the same text, found by the
+  book's `chunkKey` values (its `lineHash` in a version 4 index), while the cap
+  lasts. So a book that repeats a passage forty times takes 31 of the 32 and
+  never the line of another book that holds it once. Without grouping each is
+  a result; grouped by section they head their sections' groups, and grouped
+  by text they are one group. Pagination is unchanged by it.
 - **A filtered search finds a text that moved, or was copied, into a book it
   admits.** The scan reads only the vectors with a record in an admitted book,
   and a set's records are where its texts were when it was built, so under the
