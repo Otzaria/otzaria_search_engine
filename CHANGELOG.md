@@ -509,7 +509,12 @@ are now documented as development and testing scaffolding, not for the library.
   enough to stand alone is checked at one document rather than five: on a
   synthetic set of 1,050,000 lines an unfiltered semantic-only search takes
   8.4 ms where it took 10.9, since the page no longer checks its primaries
-  separately.
+  separately. Where the pass over the whole column found each value it looked
+  for — or that it found one nowhere — is kept for the index's generation (the
+  last 1,024 values, up to 1,024 places each), so a vector whose only line is
+  one a stale column holds costs one pass a generation, not one a search; and
+  the lines the pass finds share the cap as a hit's records do, one line of
+  each book first.
 - **A line no vector resolved is hydrated by its book and its id.** A grouped
   sibling that only lexical search found, and a line of a session built on the
   device, were looked up by id alone, and two books can share ids when an index

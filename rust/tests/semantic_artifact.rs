@@ -1228,6 +1228,57 @@ fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
     }
 }
 
+/// The cap is shared alike when a text left the book the set records it in: found by the
+/// pass over the whole column, the first line of each book that holds it now is a line of
+/// the hit's before any book's second — the other book's line and 31 of the forty, though
+/// the forty come first in the index.
+#[test]
+fn a_moved_passage_one_book_repeats_leaves_the_other_book_its_line() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let opening = "שורה פותחת בספר הישן ארוכה דיה לעמוד לבדה";
+    let (old, many, once) = ("/books/old.txt", "/books/many.txt", "/books/once.txt");
+    let library = build_library_of(
+        &[("ישן", "/א", old, 0, format!("{opening}\n{passage}"))],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    // The old book loses the passage; one new book holds it forty times, another once.
+    replace_book(&mut engine, ("ישן", "/א", old, 0, opening.to_string()));
+    add_books(
+        &mut engine,
+        &[
+            ("רבים", "/ב", many, 1, vec![passage; 40].join("\n")),
+            (
+                "יחיד",
+                "/ג",
+                once,
+                2,
+                format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+            ),
+        ],
+    );
+    let response = search_page(
+        &engine,
+        passage,
+        50,
+        0,
+        SemanticRetrievalMode::SemanticOnly,
+        None,
+    );
+    let of = |book: &str| -> Vec<u64> {
+        response
+            .results
+            .iter()
+            .filter(|hit| hit.file_path == book && hit.snippet_html == passage)
+            .map(|hit| hit.segment)
+            .collect()
+    };
+    assert_eq!(of(once), [1], "the other book's line");
+    let lines = of(many);
+    assert_eq!(lines.len(), 31, "{lines:?}");
+}
+
 /// A line whose `chunkKey` column holds a vector's key and whose text is another is no line
 /// of that vector's, whatever card it would be on: not a result, not a grouped sibling,
 /// under any grouping and in either mode that searches semantically. The index is edited
