@@ -489,7 +489,7 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
         // process — one in this process is refused before the sidecar is asked. The lock is
         // never waited for, and the sidecar says so by the error's kind, not its words.
         ArtifactError::Io { source, .. } if source.kind() == std::io::ErrorKind::WouldBlock => {
-            (K::SessionConflict, Some("vectors_dir".to_string()))
+            (K::VectorsBusy, Some("vectors_dir".to_string()))
         }
         // An install interrupted and not resolvable, and any other I/O failure. Neither is
         // a damaged artifact, and the first must not be answered by downloading over it:
@@ -1025,7 +1025,7 @@ mod tests {
                     source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
                 },
                 installed.path(),
-                K::SessionConflict,
+                K::VectorsBusy,
                 Some("vectors_dir"),
             ),
         ];

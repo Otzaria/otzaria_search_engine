@@ -569,9 +569,13 @@ are now documented as development and testing scaffolding, not for the library.
   same name wrote one file, and a valid release was refused as corrupt because
   the other install was still writing over it. An install or a compaction now
   holds the set for the process before it reads anything, and a second one is
-  refused at once as `sessionConflict` with `field` `vectors_dir`, nothing read
-  or changed; one in another process meets it at the sidecar's lock, whose
-  refusal was `internal` and is now the same `sessionConflict`. A compressed
+  refused at once as `vectorsBusy` with `field` `vectors_dir`, nothing read or
+  changed; one in another process meets it at the sidecar's lock, whose
+  refusal was `internal` and is now the same `vectorsBusy`. That is a kind of
+  its own, `SemanticErrorKind.vectorsBusy`, added last to the enum: try again
+  once the other has finished. It is not `sessionConflict`, whose answer —
+  `disableSemantic` — would close a session that is serving, for an install
+  that only has to wait. A compressed
   segment is expanded into a file of the install's own, locked while it is
   written and removed when the install returns, installed or not, and the next
   install of a set removes what a stopped process left there.
