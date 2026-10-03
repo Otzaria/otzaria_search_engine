@@ -121,7 +121,9 @@ Nothing ties a set to one index: every search resolves the set's hits against
 the index that is open, by the key of each line's text, which a new index keeps
 in its `chunkKey` column. A commit after opening leaves the set serving; a line
 that moved is found where it is now, in its book or in another; a text a book
-holds in several places is a line for each; a line whose text is gone, or whose
+holds in several places is a line for each, up to 32 lines a hit — one for each
+book that holds it first, then those books' other lines of it; a line whose text
+is gone, or whose
 embedded text changed with its neighbours, is not shown; and every line a search
 returns, a grouped sibling as much as a result, is checked by recomputing its key
 from the text the index holds. Under a filter, a text that moved or was copied

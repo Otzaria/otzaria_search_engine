@@ -1111,9 +1111,14 @@ impl CandidateResolver for LiveResolver<'_> {
             if cancel.is_cancelled() {
                 return Err(ResolveError::Cancelled);
             }
+            // Two passes, so that the cap goes to every book before it goes to any book's
+            // second line: first one line for each record — at its hint, or, for a record
+            // whose line moved, the nearest line of its book that holds the key — and one
+            // for each admitted book the text arrived in under a plan; then, in that order,
+            // the other lines of those books that hold it, which the set records once per
+            // book, with what is left of the cap.
             let mut emitted = 0usize;
-            // Every record at its hint first, and with each line found there the book's
-            // other lines of the same text, which the set does not record.
+            let mut found: Vec<(Arc<BookLines>, usize)> = Vec::new();
             let mut missed: Vec<(Arc<BookLines>, u32)> = Vec::new();
             for record in &hit.records {
                 if emitted == MAX_LINES_PER_HIT {
@@ -1145,16 +1150,10 @@ impl CandidateResolver for LiveResolver<'_> {
                 }
                 lines.push(self.describe(hit_index, &book, position)?);
                 emitted += 1;
-                let limit = MAX_LINES_PER_HIT - emitted;
-                for other in self.repeats_of(&book, position, hit.key, limit, &taken)? {
-                    taken.insert(book.docs[other]);
-                    lines.push(self.describe(hit_index, &book, other)?);
-                    emitted += 1;
-                }
+                found.push((book, position));
             }
-            // Then a record whose line moved is looked for in its book: once per book with
-            // the column, every line of it; around each such hint without, and the repeats
-            // of what is found there.
+            // A record whose line moved is looked for in its book — once per book with the
+            // column, which reads every line of it; around each such hint without.
             let mut searched: HashSet<&str> = HashSet::new();
             for (book, hint) in &missed {
                 if emitted == MAX_LINES_PER_HIT {
@@ -1163,25 +1162,18 @@ impl CandidateResolver for LiveResolver<'_> {
                 if self.column && !searched.insert(&book.name) {
                     continue;
                 }
-                let limit = MAX_LINES_PER_HIT - emitted;
-                for position in self.search_book(book, hit.key, *hint, limit, &taken, cancel)? {
-                    if emitted == MAX_LINES_PER_HIT || !taken.insert(book.docs[position]) {
-                        continue;
-                    }
+                if let Some(&position) = self
+                    .search_book(book, hit.key, *hint, 1, &taken, cancel)?
+                    .first()
+                {
+                    taken.insert(book.docs[position]);
                     lines.push(self.describe(hit_index, book, position)?);
                     emitted += 1;
-                    if !self.column {
-                        let limit = MAX_LINES_PER_HIT - emitted;
-                        for other in self.repeats_of(book, position, hit.key, limit, &taken)? {
-                            taken.insert(book.docs[other]);
-                            lines.push(self.describe(hit_index, book, other)?);
-                            emitted += 1;
-                        }
-                    }
+                    found.push((Arc::clone(book), position));
                 }
             }
             // Under a plan, the admitted books the text arrived in since the set was built,
-            // which the set does not record it in: every line of each that holds it.
+            // which the set does not record it in: the first line of each that holds it.
             if let Some(arrived) = self
                 .plan
                 .as_ref()
@@ -1194,13 +1186,27 @@ impl CandidateResolver for LiveResolver<'_> {
                     let Some(book) = self.book(name)? else {
                         continue;
                     };
-                    let limit = MAX_LINES_PER_HIT - emitted;
-                    for position in self.search_book(&book, hit.key, 0, limit, &taken, cancel)? {
-                        if taken.insert(book.docs[position]) {
-                            lines.push(self.describe(hit_index, &book, position)?);
-                            emitted += 1;
-                        }
+                    if let Some(&position) = self
+                        .search_book(&book, hit.key, 0, 1, &taken, cancel)?
+                        .first()
+                    {
+                        taken.insert(book.docs[position]);
+                        lines.push(self.describe(hit_index, &book, position)?);
+                        emitted += 1;
+                        found.push((book, position));
                     }
+                }
+            }
+            // Then each book's other lines of the text, in the order its first was found.
+            for (book, position) in &found {
+                if emitted == MAX_LINES_PER_HIT {
+                    break;
+                }
+                let limit = MAX_LINES_PER_HIT - emitted;
+                for other in self.repeats_of(book, *position, hit.key, limit, &taken)? {
+                    taken.insert(book.docs[other]);
+                    lines.push(self.describe(hit_index, book, other)?);
+                    emitted += 1;
                 }
             }
             if emitted == 0 && !hit.records.is_empty() {
