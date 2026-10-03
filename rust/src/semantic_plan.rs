@@ -345,12 +345,20 @@ pub fn installation_identity(model: ModelIdentity) -> IndexVersion {
     }
 }
 
+/// The most queries [`sample_queries`] draws: far more than a measurement of recall needs,
+/// few enough that a mistyped count is refused rather than allocated for.
+pub const MAX_SAMPLED_QUERIES: usize = 100_000;
+
 /// `count` queries drawn from the index at `index_path`, the same ones whenever the index is
 /// the same: spans of three to ten consecutive words of its lines, PDF pages aside, at lines
 /// chosen with a fixed seed over every book's lines in order. What `validate_semantic_vectors`
 /// measures retrieval with when it is handed no queries; fewer only for an index with fewer
 /// lines of three words than the draw finds.
 pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
+    anyhow::ensure!(
+        (1..=MAX_SAMPLED_QUERIES).contains(&count),
+        "{count} queries cannot be drawn: the count is from 1 to {MAX_SAMPLED_QUERIES}"
+    );
     let (searcher, _) = open_index(index_path)?;
     let books = books_of(&searcher)?;
     let lines: Vec<DocAddress> = books.into_values().flatten().collect();
@@ -369,7 +377,8 @@ pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
         state ^= state << 17;
         state
     };
-    let mut queries = Vec::with_capacity(count);
+    // Never for more than the most a count may be, whatever reaches here.
+    let mut queries = Vec::with_capacity(count.min(MAX_SAMPLED_QUERIES));
     let mut draws = 0usize;
     while queries.len() < count && draws < count.saturating_mul(50).max(50) {
         draws += 1;
