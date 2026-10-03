@@ -3492,11 +3492,6 @@ const VOC_VARIANTS_PER_TOKEN: usize = 128;
 #[cfg(feature = "semantic-integration")]
 const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
-/// The widest candidate window a ranking may ask for, per result on the page: the top of
-/// the range `RankingProfile::validate` accepts for `candidate_window_multiplier`.
-#[cfg(feature = "semantic-integration")]
-const MAX_CANDIDATE_WINDOW_MULTIPLIER: f64 = 10.0;
-
 pub struct SearchEngine {
     /// The schema of the index this engine opened, which is the one it was built with: a
     /// version 4 index has no `chunkKey` field, and is not given one.
@@ -5091,33 +5086,22 @@ impl SearchEngine {
             };
             // A filtered search of an opened vector set is planned against the generation the
             // session serves: texts that moved into an admitted book since the set was built
-            // are looked for there, and widen the scan when no admitted book's records reach
-            // their vectors. The widened scan fetches more vectors, by how many more it reads.
-            let plan = match (&session.vectors_dir, retrieval_mode) {
-                (_, SemanticRetrievalMode::LexicalOnly) | (None, _) => None,
-                (Some(vectors_dir), _) if filters.compile().is_some() => {
-                    match session
+            // are looked for there, and the vectors of those no admitted book's records reach
+            // are weighed besides the scan of the admitted books, which is not widened.
+            if let (Some(vectors_dir), false) = (
+                &session.vectors_dir,
+                matches!(retrieval_mode, SemanticRetrievalMode::LexicalOnly),
+            ) {
+                if filters.compile().is_some() {
+                    if let Some(view) = session
                         .coordinator
                         .vector_set_info()
                         .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
                     {
-                        Some(view) => resolver.plan(&filters, &view, cancel).map_err(unreadable)?,
-                        None => None,
+                        resolver.plan(&filters, &view, cancel).map_err(unreadable)?;
                     }
                 }
-                _ => None,
-            };
-            let ranking = match plan.as_ref().map(|plan| plan.over_fetch()) {
-                Some(over_fetch) if over_fetch > 1.0 => {
-                    let mut ranking = ranking
-                        .unwrap_or_else(|| RankingProfile::from_profile(SearchProfile::Balanced));
-                    ranking.candidate_window_multiplier =
-                        (f64::from(ranking.candidate_window_multiplier) * over_fetch)
-                            .min(MAX_CANDIDATE_WINDOW_MULTIPLIER) as f32;
-                    Some(ranking)
-                }
-                _ => ranking,
-            };
+            }
             // The sidecar's first act is to look at the token, so this crate does not look
             // here itself; a test is told how far the search got.
             search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
@@ -5144,8 +5128,7 @@ impl SearchEngine {
                         // `ranking` is the caller's, and replaces the preset `profile` names
                         // when it is passed; `None` ranks by that preset exactly as before.
                         // The preset and the feature flags, which clamp where `ranking` is
-                        // refused, stay the sidecar's defaults. A widened scan's plan raises
-                        // its candidate window, and nothing else.
+                        // refused, stay the sidecar's defaults.
                         profile: None,
                         feature_flags: None,
                         ranking,

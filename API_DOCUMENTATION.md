@@ -356,7 +356,9 @@ first by recomputing its key from the text the index holds. A semantic match
 that fails the check is dropped, or, when the lexical side found the line too,
 shown as a lexical result; `fallbackReason` counts them. Under a filter, a text
 that moved or was copied into an admitted book since the set was built is found
-there, the scan also reading the books that hold its vector. An index of schema
+there, and only there: its vector is weighed at its own score beside the scan of
+the admitted books, whose results are exactly what they would be had nothing
+moved. An index of schema
 version 4, without the column, is resolved by recomputing the keys of the books
 a hit names, which is slower, and a filter there scans the books it admits
 alone. On an opened set the calls that build vectors are refused as

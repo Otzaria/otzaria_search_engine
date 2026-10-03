@@ -1444,9 +1444,9 @@ fn a_book_moved_to_another_category_is_filtered_by_its_new_one() {
 }
 
 /// A text that left its book for one in another category is found under the filter of the
-/// book it moved into, although its vector's records name only the book it left: the scan
-/// is widened by that book, and only lines of the admitted book come back. Under the filter
-/// of the book it left, it is gone. Paged one at a time, the widened search pages as any.
+/// book it moved into, although its vector's records name only the book it left: the vector
+/// is weighed besides the scan of the admitted book, and resolves in that book alone. Under
+/// the filter of the book it left, it is gone. Paged one at a time, the search pages as any.
 #[test]
 fn a_text_moved_into_another_category_is_found_under_its_filter() {
     let library = build_library();
@@ -1489,7 +1489,8 @@ fn a_text_moved_into_another_category_is_found_under_its_filter() {
     );
     assert!(
         filtered.iter().all(|(book, _, _)| book == new_book),
-        "a widened scan returns lines of admitted books only: {filtered:?}"
+        "the vector weighed for the moved text resolves in the admitted book it arrived in, \
+         and in no book its records name: {filtered:?}"
     );
     assert!(
         !semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
@@ -1528,6 +1529,112 @@ fn a_text_moved_into_another_category_is_found_under_its_filter() {
     assert_eq!(paged, all);
 }
 
+/// A text copied into an admitted book from a big book of another category is weighed at
+/// its own score, beside the admitted books' hits, which stay exactly as they were: the
+/// filtered scan is not widened by the big book, whose vectors would crowd the small book's
+/// lines out of the candidate window. No line of the big book comes back under the filter.
+#[test]
+fn review_e_widening_crowds_out_the_admitted_books() {
+    let word = |book: usize, n: usize| -> String {
+        // A distinct "word" per (book, n): letters from a small counter.
+        let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+        let mut x = book * 100_000 + n * 7 + 13;
+        let mut word = String::new();
+        for _ in 0..5 {
+            word.push(letters[x % letters.len()]);
+            x /= letters.len();
+        }
+        word
+    };
+    let query = "אלפא ביתא גימלא דלתא";
+    let a_lines: Vec<String> = (0..6)
+        .map(|n| {
+            format!(
+                "{} {} {} {query}",
+                word(1, 3 * n),
+                word(1, 3 * n + 1),
+                word(1, 3 * n + 2)
+            )
+        })
+        .collect();
+    let w_lines: Vec<String> = (0..400)
+        .map(|n| format!("{query} {} {}", word(2, 2 * n), word(2, 2 * n + 1)))
+        .collect();
+    let (a, w, copy) = ("/books/a.txt", "/books/w.txt", "/books/n.txt");
+    let books = vec![
+        ("ספר א", "/א", a, 0, a_lines.join("\n")),
+        ("ספר ב", "/ב", w, 1, w_lines.join("\n")),
+    ];
+    let library = build_library_of(&books, false);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    // (book, line, semantic score), in the order of the results.
+    let results = |engine: &SearchEngine, facets: &[&str]| -> Vec<(String, u64, Option<f32>)> {
+        let response = search(engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        response
+            .results
+            .into_iter()
+            .map(|hit| (hit.file_path, hit.segment, hit.semantic_score))
+            .collect()
+    };
+    let of = |results: &[(String, u64, Option<f32>)], book: &str| -> Vec<(u64, Option<f32>)> {
+        results
+            .iter()
+            .filter(|(of, _, _)| of == book)
+            .map(|(_, line, score)| (*line, *score))
+            .collect()
+    };
+
+    let before = results(&engine, &["/א"]);
+    assert_eq!(of(&before, a).len(), 6, "{before:?}");
+    // One line of the big book copied into a new book of the admitted category.
+    add_books(
+        &mut engine,
+        &[("ספר חדש", "/א", copy, 2, w_lines[0].clone())],
+    );
+    let after = results(&engine, &["/א"]);
+    assert_eq!(
+        of(&after, a),
+        of(&before, a),
+        "the admitted book's hits are the same, in the same order, at the same scores"
+    );
+    let copied = of(&after, copy);
+    assert_eq!(copied.len(), 1, "the copied line is found: {after:?}");
+    assert!(
+        after.iter().all(|(book, _, _)| book == a || book == copy),
+        "no line of a book the filter does not admit: {after:?}"
+    );
+    // At the score its vector has: the one the big book's line, which the set records it
+    // in, has under the big book's own filter.
+    let in_w = engine
+        .search_semantic(
+            query.to_string(),
+            vec!["/ב".to_string()],
+            400,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            SemanticRetrievalMode::SemanticOnly,
+            None,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    let source = in_w
+        .results
+        .iter()
+        .find(|hit| hit.file_path == w && hit.segment == 0)
+        .expect("the big book's line is found under its own filter");
+    assert_eq!(copied[0].1, source.semantic_score);
+}
+
 /// A text copied into a book of another category, and still in its own, is found under
 /// either filter, each in its own book. An unfiltered search finds it where the set records
 /// it until the vectors are updated.
@@ -1542,9 +1649,15 @@ fn a_text_copied_into_another_category_is_found_under_each_filter() {
         &[("עותק", "/עותקים", copy, 2, BERACHOT_TEXT.to_string())],
     );
 
+    let copies = semantic_lines(&engine, BERACHOT_TEXT, &["/עותקים"]);
     assert_eq!(
-        semantic_lines(&engine, BERACHOT_TEXT, &["/עותקים"]).first(),
+        copies.first(),
         Some(&(copy.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+    assert!(
+        copies.iter().all(|(book, _, _)| book == copy),
+        "the vector's records name berachot, which still holds the text, and which the \
+         filter does not admit: no line of it comes back: {copies:?}"
     );
     assert_eq!(
         semantic_lines(&engine, BERACHOT_TEXT, &["/משנה/זרעים"]).first(),
@@ -1561,7 +1674,7 @@ fn a_text_copied_into_another_category_is_found_under_each_filter() {
 /// of books happens to iterate, so it is the same after every commit, each of which plans
 /// the filter afresh.
 #[test]
-fn the_lines_of_a_widened_search_are_the_same_whatever_the_plan_iterates() {
+fn the_lines_of_a_planned_search_are_the_same_whatever_the_plan_iterates() {
     let library = build_library();
     let mut engine = library.engine();
     engine.open_semantic_artifact(library.input()).unwrap();
