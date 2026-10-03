@@ -1720,6 +1720,28 @@ fn a_text_copied_into_another_category_is_found_under_each_filter() {
     );
 }
 
+/// A text copied into a book of its own category is an arrival of that book whose vector the
+/// scan reaches already, through the book the set records it in: it is not weighed again,
+/// and both books' lines of it come back under the category's filter.
+#[test]
+fn a_text_copied_within_its_category_is_found_in_both_books() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copy = "/books/copy.txt";
+    add_books(
+        &mut engine,
+        &[("עותק", "/משנה/זרעים", copy, 2, BERACHOT_TEXT.to_string())],
+    );
+    let mut found: Vec<(String, u64)> = semantic_lines(&engine, BERACHOT_TEXT, &["/משנה/זרעים"])
+        .into_iter()
+        .filter(|(_, text, _)| text == BERACHOT_TEXT)
+        .map(|(book, _, line)| (book, line))
+        .collect();
+    found.sort();
+    assert_eq!(found, [(BERACHOT.to_string(), 0), (copy.to_string(), 0)]);
+}
+
 /// A text two admitted books hold, each many times over, and the set records in neither: more
 /// lines of it than a hit resolves to. Which of them come back does not depend on how a map
 /// of books happens to iterate, so it is the same after every commit, each of which plans
