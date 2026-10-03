@@ -36,6 +36,7 @@ use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::highlight_matcher as display_highlight_matcher;
+use crate::index_directory::IndexDirectory;
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
@@ -3422,7 +3423,7 @@ pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option
 /// refuses it under [`current_schema`], and it is opened again under the schema of each
 /// older version in turn. A schema none of them is stays refused, as the `SchemaError`
 /// `open_or_create` returns.
-fn open_or_create_index(directory: MmapDirectory) -> tantivy::Result<Index> {
+fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
     let mut opened = Index::open_or_create(directory.clone(), current_schema());
     for version in (MIN_READABLE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).rev() {
         if !matches!(opened, Err(tantivy::TantivyError::SchemaError(_))) {
@@ -3712,7 +3713,7 @@ impl SearchEngine {
         init_engine_logger();
         debug!("new path={}", path);
         let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = match open_or_create_index(mmap_directory) {
+        let index = match open_or_create_index(IndexDirectory::new(mmap_directory)) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -15072,6 +15073,36 @@ mod tests {
         assert!(after.contains(&large_id));
         assert_eq!(engine.get_document_count(), 9);
         assert_eq!(count_hits(&engine, "שלום"), 9);
+    }
+
+    // A handle like the one the reader's meta-file watcher opens every 500 ms: replacing
+    // meta.json under it failed the commit with "Access is denied. (os error 5)".
+    #[cfg(windows)]
+    #[test]
+    fn replace_meta_json_while_a_reader_holds_it() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/1.txt");
+        let held = fs::File::open(dir.path().join("meta.json")).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        engine.commit().unwrap();
+        release.join().unwrap();
+        assert_eq!(count_hits(&engine, "שלום"), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replace_meta_json_held_past_the_retries_fails_and_the_next_commit_recovers() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/1.txt");
+        let held = fs::File::open(dir.path().join("meta.json")).unwrap();
+        let error = engine.commit().unwrap_err();
+        assert!(error.to_string().contains("os error 5"), "{error}");
+        drop(held);
+        engine.commit().unwrap();
+        assert_eq!(count_hits(&engine, "שלום"), 1);
     }
 
     /// גדלים סינתטיים: כאן נבדק הכלל עצמו, בלי לתלות אותו בגודל שסגמנט
