@@ -186,7 +186,8 @@ On the application's path:
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
 | `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
-| `sessionConflict` | `openSemanticArtifact`, `configureSemantic`; installing, compacting | another session is open: `disableSemantic` first. Installing or compacting, with `field` `vectors_dir`: another install or compaction of the set is running, and nothing was changed; try again once it has finished |
+| `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
+| `vectorsBusy` | installing, compacting | another install or compaction of the set is running, with `field` `vectors_dir`: nothing was changed, and an open session keeps serving; try again once it has finished |
 | `readOnlySession` | the calls that build vectors | refused on an opened set; nothing to fix |
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |

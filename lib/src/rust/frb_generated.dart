@@ -12816,8 +12816,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
   /// compaction leaves the set as it was. It refuses to start without
   /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
-  /// and while another install or compaction of the set runs, as `SessionConflict`
-  /// about `vectors_dir`. An open session on the same set is moved onto the compacted
+  /// and while another install or compaction of the set runs, as `VectorsBusy` about
+  /// `vectors_dir`. An open session on the same set is moved onto the compacted
   /// generation.
   Future<SemanticCompactionReport> compactSemanticVectors({
     required String vectorsDir,
@@ -13626,14 +13626,15 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// One install or compaction of a set runs at a time. While another runs in this
   /// process, this one is refused before it reads anything; while one runs in another
-  /// process, once it reaches the set's lock. Either way the refusal is a
-  /// `SessionConflict` about `vectors_dir`, and the set is as it was.
+  /// process, once it reaches the set's lock. Either way the refusal is `VectorsBusy`
+  /// about `vectors_dir`: nothing was changed, an open session keeps serving, and the
+  /// install can be tried again once the other has finished.
   ///
   /// Refusals are [`SemanticError`]s of the kinds in the table on
   /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
   /// published one, `ArtifactIncompatible` for a release of another identity or a delta
   /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
-  /// its manifest describes, `InsufficientDiskSpace`, `SessionConflict`, and
+  /// its manifest describes, `InsufficientDiskSpace`, `VectorsBusy`, and
   /// `Cancelled`.
   ///
   /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
