@@ -83,6 +83,12 @@ const BOOK_CACHE: usize = 64;
 /// How many filters' scan plans are kept between searches, for one generation of the index.
 const PLAN_CACHE: usize = 16;
 
+#[cfg(test)]
+thread_local! {
+    /// Set by a test, on its own thread, to make every plan fail as an unreadable index would.
+    pub(crate) static FAIL_PLANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// How many values' places a pass over the whole column found are kept between searches,
 /// for one generation of the index.
 const MOVED_CACHE: usize = 1024;
@@ -251,6 +257,9 @@ pub(crate) struct LiveResolver<'a> {
     rejected: Mutex<HashSet<DocAddress>>,
     /// The plan of this search's filter, when one was made.
     plan: Option<Arc<ScanPlan>>,
+    /// Why this search's filter could not be planned, when it could not: the semantic half
+    /// of the search fails with it, as it would had the resolver failed to read the index.
+    failed: Option<ResolveError>,
 }
 
 fn index_error(reason: impl std::fmt::Display) -> ResolveError {
@@ -296,6 +305,7 @@ impl<'a> LiveResolver<'a> {
             records: Mutex::new(HashMap::new()),
             rejected: Mutex::new(HashSet::new()),
             plan: None,
+            failed: None,
         })
     }
 
@@ -780,6 +790,13 @@ pub(crate) struct Coverage {
 }
 
 impl LiveResolver<'_> {
+    /// Fail the semantic half of this search with `error`, which planning it met: the
+    /// sidecar is told when it asks which books the filter admits, and the search falls back
+    /// to its lexical results with the reason, as for any resolver that cannot read the index.
+    pub(crate) fn fail(&mut self, error: ResolveError) {
+        self.failed = Some(error);
+    }
+
     /// Whether this resolver reads keys from the `chunkKey` column.
     pub(crate) fn has_column(&self) -> bool {
         self.column
@@ -889,6 +906,10 @@ impl LiveResolver<'_> {
         let Some(compiled) = filters.compile() else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if FAIL_PLANS.with(std::cell::Cell::get) {
+            return Err(index_error("a test made planning fail"));
+        }
         let generation = self.generation_id();
         let key = PlanKey {
             vectors_dir: view.dir().to_path_buf(),
@@ -1198,6 +1219,9 @@ impl CandidateResolver for LiveResolver<'_> {
         &self,
         filters: Option<&SearchFilters>,
     ) -> Result<Option<BookSet>, ResolveError> {
+        if let Some(error) = &self.failed {
+            return Err(error.clone());
+        }
         let Some(compiled) = filters.and_then(SearchFilters::compile) else {
             return Ok(None);
         };

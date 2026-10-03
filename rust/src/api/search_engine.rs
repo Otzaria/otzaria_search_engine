@@ -5098,7 +5098,20 @@ impl SearchEngine {
                         .vector_set_info()
                         .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
                     {
-                        resolver.plan(&filters, &view, cancel).map_err(unreadable)?;
+                        // A plan that cannot be made fails the semantic half alone, which
+                        // falls back to the lexical results with the reason.
+                        match resolver.plan(&filters, &view, cancel) {
+                            Ok(_) => {}
+                            Err(
+                                otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled,
+                            ) => {
+                                return Err(SemanticError::cancelled());
+                            }
+                            Err(error) => {
+                                warn!("a filtered semantic search could not be planned: {error}");
+                                resolver.fail(error);
+                            }
+                        }
                     }
                 }
             }
@@ -21473,6 +21486,57 @@ mod tests {
                 );
                 assert_eq!(passes(&engine), expected, "{query}");
             }
+        }
+
+        /// A filtered search that cannot be planned — the index could not be read for it —
+        /// is a semantic half that failed, as one whose resolver cannot read the index is:
+        /// the lexical results are served, with the reason, and the next search is planned.
+        #[test]
+        fn a_filtered_search_that_cannot_be_planned_falls_back_with_a_reason() {
+            let dir = TempDir::new().unwrap();
+            let engine = opened(&dir);
+            let filtered = |query: &str| {
+                engine.search_semantic(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::Hybrid,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+            };
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
+            let failed = filtered(PROBE);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
+            let failed = failed.expect("a fallback, not an error of the call");
+            assert!(!failed.semantic_available);
+            assert_eq!(failed.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+            assert!(
+                failed
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("a test made planning fail")),
+                "{:?}",
+                failed.fallback_reason
+            );
+            assert!(
+                failed
+                    .results
+                    .iter()
+                    .any(|result| result.snippet_html.contains("ויאמר")
+                        && result.source == SemanticResultSource::Lexical),
+                "the lexical results are served"
+            );
+
+            let planned = filtered("ויאמר אלהים יהי אור").unwrap();
+            assert!(planned.semantic_available, "{:?}", planned.fallback_reason);
+            assert_eq!(planned.fallback_kind, None);
         }
 
         /// One lexical search also found keeps its lexical half alone.
