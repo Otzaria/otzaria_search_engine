@@ -424,7 +424,8 @@ are now documented as development and testing scaffolding, not for the library.
   do on a page of lines. A release passes when every gate ran and passed: a
   gate whose inputs are not given has not run, which fails it, unless the
   caller skips that gate by name (`--skip G6`), which the output and the
-  report record. Exit 0 when every gate passed or was skipped so, 1 when one
+  report record; skipping all three is a wrong argument, since it validates
+  nothing. Exit 0 when every gate passed or was skipped so, 1 when one
   failed or did not run, 2 for wrong arguments or inputs that do not read;
   `--report` writes every gate's verdict and numbers as JSON. On the v30 set a scratch harness of
   the same measurement gave recall@10 0.987 to 0.994 and recall@50, over

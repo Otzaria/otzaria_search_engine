@@ -700,6 +700,30 @@ fn a_sample_of_queries_out_of_range_is_a_wrong_argument() {
     }
 }
 
+/// Every gate skipped is no validation: a wrong argument, exit 2, never a pass.
+#[test]
+fn skipping_every_gate_is_a_wrong_argument() {
+    let release = release(&books());
+    let out = release.path("report.json");
+    let (code, printed) = validate(&[
+        "--index",
+        release.index.to_str().unwrap(),
+        "--vectors",
+        release.vectors.to_str().unwrap(),
+        "--report",
+        out.to_str().unwrap(),
+        "--skip",
+        "G3",
+        "--skip",
+        "G4",
+        "--skip",
+        "G6",
+    ]);
+    assert_eq!(code, 2, "{printed}");
+    assert!(printed.contains("--skip"), "{printed}");
+    assert!(!out.exists(), "no verdict is written");
+}
+
 /// Arguments that are wrong, and inputs that do not read, exit 2 without a verdict.
 #[test]
 fn wrong_arguments_and_unreadable_inputs_exit_2() {

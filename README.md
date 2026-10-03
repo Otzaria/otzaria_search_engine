@@ -500,7 +500,7 @@ as they do on a results page.
 A release passes when every gate ran and passed. A gate whose inputs are not
 given has not run, and fails the release like a gate that failed, unless it is
 skipped by name with `--skip <gate>` (G3, G4 or G6, once per gate), which the
-output and the report record. The exit status is 0 when every gate passed or
+output and the report record; skipping all three is a wrong argument. The exit status is 0 when every gate passed or
 was skipped so, 1 when one failed or did not run, and 2 when the arguments are
 wrong or an input does not read. `--report` writes `{tool, reportVersion,
 passed, index, vectors, releases, skipped, set, gates: [{gate, name, status,
