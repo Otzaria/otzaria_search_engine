@@ -117,6 +117,7 @@ fn library(dir: &Path, without_column: bool) -> PathBuf {
                 text,
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
     }
@@ -314,6 +315,7 @@ fn official_library(dir: &Path, storage: TextStorage) -> PathBuf {
                 text,
                 None,
                 storage,
+                None,
             )
             .unwrap();
     }

@@ -77,6 +77,7 @@ fn index_of(dir: &Path, books: &[Book]) {
                 lines.join("\n"),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
     }

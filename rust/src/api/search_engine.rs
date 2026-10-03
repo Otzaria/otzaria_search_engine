@@ -139,7 +139,8 @@ pub enum ResultGrouping {
 ///   through [`SearchEngine::add_text_book`]: `file_path` must be `id:<bookId>`, and
 ///   a document's `segment` is the 0-based position of its row among the book's
 ///   rows ordered by `lineIndex`. Each line keeps a check of its exact text
-///   (`lineCheck`), which the row read back must match.
+///   (`lineCheck`), which the row read back must match. The lines the call lists in
+///   `stored_lines` are stored as for `InIndex` instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStorage {
     LibraryDb,
@@ -3299,7 +3300,7 @@ impl LineDedupHasher {
     }
 }
 
-/// The display copies of a [`TextStorage::InIndex`] document. `textStored` is
+/// The display copies of a document whose text is kept in the index. `textStored` is
 /// written even when empty: its absence is what marks a library-database document.
 fn add_stored_text(
     document: &mut TantivyDocument,
@@ -3814,8 +3815,8 @@ fn index_schema() -> Schema {
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
     // CRC-32 of the exact line the indexing path normalized (`line_source::line_check`),
-    // written only for `TextStorage::LibraryDb` documents: the row read back from the
-    // library database must match it to be shown as the indexed line.
+    // written only for documents whose text is read from the library database: the row
+    // read back must match it to be shown as the indexed line.
     schema_builder.add_u64_field(LINE_CHECK_FIELD, FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
     // The key of the text the line is embedded as, `ChunkKey::column_value` (see
@@ -3823,10 +3824,10 @@ fn index_schema() -> Schema {
     // not added by `add_text_book`. FAST only: read columnar to tie a stored vector to
     // the lines that hold its text; neither searched nor stored.
     schema_builder.add_u64_field(CHUNK_KEY_FIELD, FAST);
-    // Display copies of `text`/`textVocalized`, stored only (never indexed) and
-    // written only for `TextStorage::InIndex` documents. `textStored` is present on
-    // every such document, even when empty, so its absence marks a document whose
-    // text is in the library database.
+    // Display copies of `text`/`textVocalized`, stored only (never indexed): on every
+    // `TextStorage::InIndex` document and on the `stored_lines` of a `LibraryDb` book.
+    // `textStored` is present on each, even when empty, so its absence marks a document
+    // whose text is in the library database.
     schema_builder.add_text_field(TEXT_STORED_FIELD, STORED);
     schema_builder.add_text_field(TEXT_VOCALIZED_STORED_FIELD, STORED);
     schema_builder.build()
@@ -6279,6 +6280,11 @@ impl SearchEngine {
     /// configured line source does not hold exactly as many rows for it as `text`
     /// has lines — a row containing `\n`, a different database — or cannot be read
     /// (unconfigured, suspended, busy).
+    ///
+    /// `stored_lines`: 0-based line ordinals of a `LibraryDb` book whose text is stored
+    /// in the index anyway, as for `InIndex` — the rows that held embedded `data:` images,
+    /// which a result would otherwise read back raw (megabytes) on every window. Ignored
+    /// for `InIndex`; ordinals past the last line are ignored.
     pub fn add_text_book(
         &mut self,
         title: String,
@@ -6289,6 +6295,7 @@ impl SearchEngine {
         text: String,
         extra_facets: Option<Vec<String>>,
         text_storage: TextStorage,
+        stored_lines: Option<Vec<u32>>,
     ) -> Result<u32> {
         self.add_text_book_impl(
             title,
@@ -6299,6 +6306,7 @@ impl SearchEngine {
             &text,
             extra_facets.unwrap_or_default(),
             text_storage,
+            stored_lines.unwrap_or_default(),
         )
     }
 
@@ -6318,6 +6326,7 @@ impl SearchEngine {
         text: Vec<u8>,
         extra_facets: Option<Vec<String>>,
         text_storage: TextStorage,
+        stored_lines: Option<Vec<u32>>,
     ) -> Result<u32> {
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
@@ -6335,6 +6344,7 @@ impl SearchEngine {
             &text,
             extra_facets.unwrap_or_default(),
             text_storage,
+            stored_lines.unwrap_or_default(),
         )
     }
 
@@ -6349,6 +6359,7 @@ impl SearchEngine {
         text: &str,
         extra_facets: Vec<String>,
         text_storage: TextStorage,
+        stored_lines: Vec<u32>,
     ) -> Result<u32> {
         let library_book = match text_storage {
             TextStorage::LibraryDb => Some(require_library_book_id(&file_path)?),
@@ -6399,7 +6410,17 @@ impl SearchEngine {
         let id_base = catalogue_id_base(catalogue_order)?;
         let chunk_key_f = self.chunk_key_field;
         let library = text_storage == TextStorage::LibraryDb;
-        let stored_fields = (!library).then(|| self.stored_text_fields()).transpose()?;
+        let mut kept_in_index = Vec::new();
+        if library && !stored_lines.is_empty() {
+            kept_in_index = vec![false; lines.len()];
+            for ordinal in stored_lines {
+                if let Some(kept) = kept_in_index.get_mut(ordinal as usize) {
+                    *kept = true;
+                }
+            }
+        }
+        let stores_text = |segment: usize| !library || kept_in_index.get(segment) == Some(&true);
+        let stored_fields = self.stored_text_fields()?;
         let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
         let writer = self.writer_mut()?;
 
@@ -6441,13 +6462,15 @@ impl SearchEngine {
         type Prepared = (String, Option<String>, u64, Option<u32>);
         let normalized: Vec<Prepared> = lines
             .par_iter()
-            .map(|raw_line| {
+            .enumerate()
+            .map(|(segment, raw_line)| {
                 let plain = hebrew_query::normalize_text_for_indexing(raw_line);
                 let vocalized = hebrew_query::contains_attached_marks(raw_line)
                     .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
                     .filter(|v| !v.is_empty());
                 let line_hash = line_dedup_hash(&plain);
-                let line_check = library.then(|| crate::line_source::line_check(raw_line));
+                let line_check =
+                    (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
                 (plain, vocalized, line_hash, line_check)
             })
             .collect();
@@ -6508,11 +6531,10 @@ impl SearchEngine {
             }
             if let Some(check) = line_check {
                 document.add_u64(line_check_f, u64::from(check));
-            }
-            if let Some(fields) = stored_fields {
+            } else {
                 add_stored_text(
                     &mut document,
-                    fields,
+                    stored_fields,
                     &normalized_line,
                     vocalized_line.as_deref(),
                 );
@@ -13966,6 +13988,7 @@ mod tests {
                 "בראשית ברא אלהים את השמים ואת הארץ\nאו".to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -14045,6 +14068,7 @@ mod tests {
                     "בראשית ברא אלהים את השמים ואת הארץ".to_string(),
                     None,
                     TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
             engine.commit().unwrap();
@@ -14074,6 +14098,7 @@ mod tests {
                     "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
                     None,
                     TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
             engine.commit().unwrap();
@@ -14416,6 +14441,7 @@ mod tests {
                 text.to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -14543,6 +14569,7 @@ mod tests {
                 "יותר בכבוד המורים<br>כי אב הביאו לעולם".to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -15324,6 +15351,7 @@ mod tests {
                 text.as_bytes().to_vec(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -15377,6 +15405,7 @@ mod tests {
                 String::new(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         assert_eq!(added, 0);
@@ -17529,6 +17558,7 @@ mod tests {
                     text.to_string(),
                     None,
                     TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
         }
@@ -17596,6 +17626,7 @@ mod tests {
                     text.to_string(),
                     None,
                     TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
             engine.commit().unwrap();
@@ -19971,6 +20002,7 @@ mod tests {
                 text.to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -20275,6 +20307,7 @@ mod tests {
                 text.to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -20735,6 +20768,7 @@ mod tests {
                 lines.join("\n"),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -21038,6 +21072,7 @@ mod tests {
                 text,
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -22237,6 +22272,7 @@ mod tests {
                         text.clone(),
                         None,
                         storage,
+                        None,
                     )
                     .unwrap();
             }
@@ -22805,6 +22841,7 @@ mod tests {
                     "שורה בספר אחר ארוכה דיה לעמוד לבדה".to_string(),
                     None,
                     TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
             engine.commit().unwrap();
@@ -22875,6 +22912,7 @@ mod tests {
                     format!("שורה בספר אחר ארוכה דיה לעמוד לבדה\n{PROBE}"),
                     None,
                     TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
             engine.commit().unwrap();

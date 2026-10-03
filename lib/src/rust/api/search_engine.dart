@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `library_book_id`, `line_dedup_hash`, `live_chunk_key_field`, `live_doc_count`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `library_book_id`, `library_storage_or_fallback`, `line_dedup_hash`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `terms_regex_union`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `vocalized_variant_branches`, `with_field`, `write_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`
@@ -20,8 +20,9 @@ Future<IndexCompatibility> checkIndexCompatibility({required String path}) =>
 
 /// Points the line source at the library database (`seforim.db`) that
 /// [`TextStorage::LibraryDb`] documents read their text from. Nothing is opened
-/// here — the first result window opens it, read-only. A different path discards
-/// the open connection and every cache.
+/// here — the first result window (or `LibraryDb` indexing) opens it, read-only,
+/// by its plain path (UNC paths work). A different path discards the open
+/// connection and every cache.
 Future<void> configureLineSource({required String dbPath}) => RustLib
     .instance
     .api
@@ -38,6 +39,19 @@ Future<void> suspendLineSource() =>
 /// the file may have been replaced; the next window reopens it.
 Future<void> resumeLineSource() =>
     RustLib.instance.api.crateApiSearchEngineResumeLineSource();
+
+/// Suspends for a Dart owner port. Duplicate holds are ignored; a closed port is
+/// released automatically before the next source access, including isolate exit.
+Future<void> suspendLineSourceOwned({required PlatformInt64 ownerPort}) =>
+    RustLib.instance.api.crateApiSearchEngineSuspendLineSourceOwned(
+      ownerPort: ownerPort,
+    );
+
+/// Releases only this owner's hold. Safe to repeat or call after its port closed.
+Future<void> resumeLineSourceOwned({required PlatformInt64 ownerPort}) =>
+    RustLib.instance.api.crateApiSearchEngineResumeLineSourceOwned(
+      ownerPort: ownerPort,
+    );
 
 Future<LineSourceStatus> lineSourceStatus() =>
     RustLib.instance.api.crateApiSearchEngineLineSourceStatus();
@@ -308,7 +322,16 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
   /// newline-joined rows of an official book read from the library database
   /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
-  /// the index and results read them back from that database.
+  /// the index and results read them back from that database. The book is
+  /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
+  /// configured line source does not hold exactly as many rows for it as `text`
+  /// has lines — a row containing `\n`, a different database — or cannot be read
+  /// (unconfigured, suspended, busy).
+  ///
+  /// `stored_lines`: 0-based line ordinals of a `LibraryDb` book whose text is stored
+  /// in the index anyway, as for `InIndex` — the rows that held embedded `data:` images,
+  /// which a result would otherwise read back raw (megabytes) on every window. Ignored
+  /// for `InIndex`; ordinals past the last line are ignored.
   Future<int> addTextBook({
     required String title,
     required String topics,
@@ -318,6 +341,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String text,
     List<String>? extraFacets,
     required TextStorage textStorage,
+    Uint32List? storedLines,
   });
 
   /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
@@ -335,6 +359,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<int> text,
     List<String>? extraFacets,
     required TextStorage textStorage,
+    Uint32List? storedLines,
   });
 
   /// Delete all documents. Does not commit.
@@ -1539,9 +1564,9 @@ class DocumentInput {
   /// ממדים). `None` = אין.
   final List<String>? extraFacets;
 
-  /// Where the display text is kept; `None` = [`TextStorage::InIndex`]. With
-  /// `LibraryDb`, `file_path` must be `id:<bookId>` and `segment` the row's
-  /// ordinal in the book.
+  /// Where the display text is kept: `None` or [`TextStorage::InIndex`].
+  /// `LibraryDb` is refused here — only [`SearchEngine::add_text_book`] can tie a
+  /// line to its library row.
   final TextStorage? textStorage;
 
   const DocumentInput({
@@ -3810,11 +3835,12 @@ class SemanticVectorsVerification {
 /// Whether a result's text is the line its document was indexed from.
 ///
 /// - `Ok` — it is (always, for text stored in the index).
-/// - `Stale` — the library database no longer matches the index (the row changed,
-///   moved or disappeared). `text` is the database's current line, HTML-escaped
-///   and unhighlighted (empty when the row is gone). Reindexing the book fixes it.
-/// - `Unavailable` — the line source is unconfigured, suspended or unreadable.
-///   `text` is empty.
+/// - `Stale` — the library database no longer matches the index (the row changed
+///   in any way, moved or disappeared). `text` is the database's current line,
+///   HTML-escaped and unhighlighted (empty when the row is gone). Reindexing the
+///   book fixes it.
+/// - `Unavailable` — the line source is unconfigured, suspended, busy (another
+///   connection is writing the database) or unreadable. `text` is empty.
 enum TextStatus { ok, stale, unavailable }
 
 /// Where a document's display text is kept.
@@ -3824,10 +3850,12 @@ enum TextStatus { ok, stale, unavailable }
 ///   `Index`: Dart enums already have an `index` member.)
 /// - `LibraryDb` — only in the inverted index; the display text is read from the
 ///   library database configured with [`configure_line_source`] when a result is
-///   built. Only for an official book whose text came from that database's rows:
-///   `file_path` must be `id:<bookId>`, and a document's `segment` is the 0-based
-///   position of its row among the book's rows ordered by `lineIndex` (what
-///   [`SearchEngine::add_text_book`] assigns).
+///   built. Only for an official book whose text came from that database's rows,
+///   through [`SearchEngine::add_text_book`]: `file_path` must be `id:<bookId>`, and
+///   a document's `segment` is the 0-based position of its row among the book's
+///   rows ordered by `lineIndex`. Each line keeps a check of its exact text
+///   (`lineCheck`), which the row read back must match. The lines the call lists in
+///   `stored_lines` are stored as for `InIndex` instead.
 enum TextStorage { libraryDb, inIndex }
 
 /// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).

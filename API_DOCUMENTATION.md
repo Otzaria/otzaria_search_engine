@@ -597,6 +597,14 @@ Future<LineSourceStatus> lineSourceStatus(); // ..., generation, libraryFallback
   `TextStorage.libraryDb` only when the text is the `\n`-joined rows of an official book
   read from the library database; `filePath` must then be `id:<bookId>`. A document's
   `segment` is its row's 0-based position in the book's `lineIndex` order.
+- `addTextBook` / `addTextBookBytes` also take an optional `Uint32List? storedLines`: the
+  line ordinals of a `libraryDb` book whose text is stored in the index anyway, as for
+  `inIndex`. Pass the rows whose `data:` URIs (embedded images) indexing removed: read
+  back from the database, each would cost its raw size on every result window, while its
+  cleaned text is a few bytes. Those lines carry no `lineCheck` and are always `ok`; the rest of the
+  book reads from the database. Ignored for `inIndex`; ordinals past the last line are
+  ignored. Without it every line of a `libraryDb` book reads from the database, image rows
+  included (decoded and stripped exactly as indexing did).
 - `libraryDb` needs the line source configured while indexing: the book's text is split
   into lines and their count is compared with the book's rows in the database. When they
   differ (a row containing `\n`, another database) or the source cannot be read

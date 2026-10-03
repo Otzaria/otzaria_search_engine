@@ -810,6 +810,7 @@ mod tests {
                 GENESIS_TEXT.to_string(),
                 Some(vec!["/era/תנך".to_string()]),
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine
@@ -822,6 +823,7 @@ mod tests {
                 BERACHOT_TEXT.to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -952,6 +954,7 @@ mod tests {
                 "ויהי אחרי מות משה עבד יהוה".to_string(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -1181,6 +1184,7 @@ mod tests {
             "שורה ארוכה דיה לעמוד בפני עצמה".to_string(),
             None,
             TextStorage::InIndex,
+            None,
         );
         let error = refused.expect_err("the last catalogue position cannot form an id");
         assert!(format!("{error}").contains("overflows u64"), "{error}");

@@ -527,6 +527,7 @@ mod tests {
                 text,
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();

@@ -99,6 +99,7 @@ fn add_books(index: &Path, books: &[Book]) {
                 text.clone(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
     }
@@ -609,6 +610,7 @@ fn stale_hints_are_reported_and_fail_only_past_the_limit() {
             lines.join("\n"),
             None,
             TextStorage::InIndex,
+            None,
         )
         .unwrap();
     engine.commit().unwrap();

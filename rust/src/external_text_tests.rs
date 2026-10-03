@@ -234,6 +234,7 @@ pub(crate) fn write_book(path: &Path, book_id: i64, rows: &[&str]) {
 /// The indexing input the app builds from a book's rows (`loadTextBookSource`): the rows
 /// joined by `\n` as bytes, or — when `data:` occurs anywhere — decoded as one string
 /// (dropping its leading BOM) and cleaned of data URIs.
+#[derive(Clone)]
 enum BookInput {
     Bytes(Vec<u8>),
     Text(String),
@@ -250,18 +251,55 @@ fn app_indexing_input(book: &Book) -> BookInput {
     }
 }
 
+/// The `stored_lines` the app passes: the ordinals of the rows its `data:` URI
+/// cleaning changes (`IndexingRepository.dataUriLineOrdinals`).
+fn app_stored_lines(book: &Book) -> Option<Vec<u32>> {
+    let ordinals: Vec<u32> = book
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            let text = String::from_utf8_lossy(row);
+            line_source::strip_data_uris_for_index(&text) != text
+        })
+        .map(|(ordinal, _)| ordinal as u32)
+        .collect();
+    (!ordinals.is_empty()).then_some(ordinals)
+}
+
 fn index_books(dir: &Path, books: &[Book], storage: TextStorage) -> SearchEngine {
-    let mut engine = index_library_books(dir, books, storage);
+    index_books_as(dir, books, storage, true)
+}
+
+/// `store_image_rows: false` builds what an engine before `stored_lines` built: every
+/// line of a `LibraryDb` book, images included, is read from the database.
+fn index_books_as(
+    dir: &Path,
+    books: &[Book],
+    storage: TextStorage,
+    store_image_rows: bool,
+) -> SearchEngine {
+    let mut engine = index_library_books_as(dir, books, storage, store_image_rows);
     index_books_extras(&mut engine);
     engine.commit().unwrap();
     engine
 }
 
 fn index_library_books(dir: &Path, books: &[Book], storage: TextStorage) -> SearchEngine {
+    index_library_books_as(dir, books, storage, true)
+}
+
+fn index_library_books_as(
+    dir: &Path,
+    books: &[Book],
+    storage: TextStorage,
+    store_image_rows: bool,
+) -> SearchEngine {
     let mut engine = SearchEngine::new(dir.to_str().unwrap());
     for book in books {
         let file_path = format!("id:{}", book.id);
         let facets = Some(vec![format!("/era/{}", book.generation_order)]);
+        let stored_lines = store_image_rows.then(|| app_stored_lines(book)).flatten();
         let added = match app_indexing_input(book) {
             BookInput::Bytes(bytes) => engine.add_text_book_bytes(
                 book.title.to_string(),
@@ -272,6 +310,7 @@ fn index_library_books(dir: &Path, books: &[Book], storage: TextStorage) -> Sear
                 bytes,
                 facets,
                 storage,
+                stored_lines,
             ),
             BookInput::Text(text) => engine.add_text_book(
                 book.title.to_string(),
@@ -282,6 +321,7 @@ fn index_library_books(dir: &Path, books: &[Book], storage: TextStorage) -> Sear
                 text,
                 facets,
                 storage,
+                stored_lines,
             ),
         }
         .unwrap();
@@ -330,6 +370,7 @@ fn index_books_extras(engine: &mut SearchEngine) {
             "בראשית ברא אלהים\nאור".to_string(),
             None,
             TextStorage::InIndex,
+            None,
         )
         .unwrap();
     engine
@@ -410,7 +451,7 @@ fn assert_all_ok(results: &[SearchResult], what: &str) {
 }
 
 struct Fixture {
-    _dir: TempDir,
+    dir: TempDir,
     db: PathBuf,
     stored: SearchEngine,
     external: SearchEngine,
@@ -433,7 +474,7 @@ fn fixture() -> Fixture {
     let stored = index_books(&stored_path, &books, TextStorage::InIndex);
     let external = index_books(&external_path, &books, TextStorage::LibraryDb);
     Fixture {
-        _dir: dir,
+        dir,
         db,
         stored,
         external,
@@ -765,12 +806,21 @@ impl std::fmt::Debug for ResultGrouping {
 pub(crate) fn library_text_answers_every_query_like_stored_text() {
     let _guard = guard();
     let f = fixture();
+    assert_answers_like_stored(&f.stored, &f.external);
+    // An index built before `stored_lines` reads its image rows from the database.
+    let legacy_path = f.dir.path().join("legacy");
+    std::fs::create_dir_all(&legacy_path).unwrap();
+    let legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    assert_answers_like_stored(&f.stored, &legacy);
+}
+
+fn assert_answers_like_stored(stored_index: &SearchEngine, library_index: &SearchEngine) {
     let mut compared = 0usize;
     let mut non_empty = 0usize;
     let mut vocalized_library_hits = 0usize;
     for (name, probe) in probes() {
-        let stored = probe(&f.stored);
-        let external = probe(&f.external);
+        let stored = probe(stored_index);
+        let external = probe(library_index);
         assert_all_ok(&external, &name);
         assert_same(&name, &stored, &external);
         compared += stored.len();
@@ -809,7 +859,7 @@ pub(crate) fn library_text_answers_every_query_like_stored_text() {
                 )
                 .unwrap()
             };
-            let (a, b) = (page(&f.stored), page(&f.external));
+            let (a, b) = (page(stored_index), page(library_index));
             assert_eq!(
                 (a.total_count, a.truncated, a.group_count),
                 (b.total_count, b.truncated, b.group_count)
@@ -829,7 +879,7 @@ pub(crate) fn library_text_answers_every_query_like_stored_text() {
                 )
                 .unwrap()
             };
-            let (a, b) = (fuzzy(&f.stored), fuzzy(&f.external));
+            let (a, b) = (fuzzy(stored_index), fuzzy(library_index));
             assert_eq!(a.total_count, b.total_count);
             assert_eq!(
                 snaps(&a.results),
@@ -840,8 +890,7 @@ pub(crate) fn library_text_answers_every_query_like_stored_text() {
     }
 
     // The raw line of every document, by id.
-    let all = f
-        .stored
+    let all = stored_index
         .search_exact(
             "בראשית".to_string(),
             vec![],
@@ -860,13 +909,11 @@ pub(crate) fn library_text_answers_every_query_like_stored_text() {
     }
     ids.push(99);
     for id in ids {
-        let a = f
-            .stored
+        let a = stored_index
             .get_document_by_id(id)
             .unwrap()
             .expect("stored doc");
-        let b = f
-            .external
+        let b = library_index
             .get_document_by_id(id)
             .unwrap()
             .expect("external doc");
@@ -892,7 +939,7 @@ pub(crate) fn library_text_answers_every_query_like_stored_text() {
         )
         .unwrap()
     };
-    let (a, b) = (semantic(&f.stored), semantic(&f.external));
+    let (a, b) = (semantic(stored_index), semantic(library_index));
     let flatten = |r: &SemanticSearchResponse| -> Vec<String> {
         let mut flat: Vec<String> = r
             .results
@@ -953,14 +1000,21 @@ fn library_documents_keep_no_text_in_the_doc_store() {
             .sum()
     };
     assert!(size(&f.external_path) < size(&f.stored_path));
-    let mut library_docs = 0;
+    let (mut library_docs, mut kept_image_rows) = (0, 0);
     for (path, has_text, check) in doc_store_view(&f.external) {
-        assert_eq!(has_text, !path.starts_with("id:"), "{path}");
         // Only library lines carry a check, and every one of them does.
         assert_eq!(check.is_some(), !has_text, "{path}");
         library_docs += usize::from(!has_text);
+        kept_image_rows += usize::from(has_text && path.starts_with("id:"));
     }
     assert!(library_docs > 100);
+    // Of the official books, only the rows that held `data:` keep their text.
+    let image_rows: usize = books()
+        .iter()
+        .map(|b| app_stored_lines(b).map_or(0, |o| o.len()))
+        .sum();
+    assert_eq!(image_rows, IMAGE_ROWS.len());
+    assert_eq!(kept_image_rows, image_rows);
     assert!(doc_store_view(&f.stored)
         .iter()
         .all(|(_, has_text, check)| *has_text && check.is_none()));
@@ -1114,6 +1168,197 @@ fn library_lines_are_keyed_like_stored_ones() {
     assert_eq!(kept.unwrap(), Some(before));
 }
 
+/// The image rows of the fixture: (bookId, lineIndex, a word of the line). Book 1's row 8
+/// holds only a short `data:abc`, which cleaning keeps, so it still reads from the database.
+const IMAGE_ROWS: [(i64, i64, &str); 2] = [(1, 7, "תמונה"), (2, 1, "מילים")];
+
+/// A fixture result whose text is read from the library database: an official line
+/// other than an image row.
+fn reads_library(r: &SearchResult) -> bool {
+    r.file_path.starts_with("id:")
+        && !IMAGE_ROWS
+            .iter()
+            .any(|&(book, line, _)| r.file_path == format!("id:{book}") && r.segment == line as u64)
+}
+
+/// Results of `word` in book `book_id` at `segment`.
+fn hits_at(e: &SearchEngine, word: &str, book_id: i64, segment: u64) -> Vec<SearchResult> {
+    let path = format!("id:{book_id}");
+    exact(e, word)
+        .into_iter()
+        .filter(|r| r.file_path == path && r.segment == segment)
+        .collect()
+}
+
+#[test]
+fn image_rows_are_shown_from_the_index_without_reading_the_database() {
+    let _guard = guard();
+    let f = fixture();
+    let legacy_path = f.dir.path().join("legacy");
+    std::fs::create_dir_all(&legacy_path).unwrap();
+    let legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    let before: Vec<Vec<SearchResult>> = IMAGE_ROWS
+        .iter()
+        .map(|&(book, line, word)| hits_at(&f.stored, word, book, line as u64))
+        .collect();
+    assert!(before.iter().all(|hits| hits.len() == 1));
+
+    // While suspended nothing can be read: image rows still show their indexed text.
+    suspend_line_source().unwrap();
+    for (&(book, line, word), expected) in IMAGE_ROWS.iter().zip(&before) {
+        let hits = hits_at(&f.external, word, book, line as u64);
+        assert_eq!(snaps(&hits), snaps(expected), "{word}");
+        assert_eq!(hits[0].text_status, TextStatus::Ok, "{word}");
+        let doc = f.external.get_document_by_id(hits[0].id).unwrap().unwrap();
+        assert_eq!(doc.text_status, TextStatus::Ok, "{word}");
+        let old = hits_at(&legacy, word, book, line as u64);
+        assert_eq!(old[0].text_status, TextStatus::Unavailable, "{word}");
+    }
+    // The rest of a mixed book still needs the database.
+    let other = hits_at(&f.external, "ויאמר", 1, 11);
+    assert_eq!(other[0].text_status, TextStatus::Unavailable);
+
+    // Rewritten in the database: the old engine shows the new row, stale; ours is untouched.
+    {
+        let conn = Connection::open(&f.db).unwrap();
+        for &(book, line, _) in &IMAGE_ROWS {
+            conn.execute(
+                "UPDATE line_content SET content = 'שורה אחרת' WHERE id = \
+                 (SELECT id FROM line WHERE bookId = ?1 AND lineIndex = ?2)",
+                [book, line],
+            )
+            .unwrap();
+        }
+    }
+    resume_line_source().unwrap();
+    for (&(book, line, word), expected) in IMAGE_ROWS.iter().zip(&before) {
+        let hits = hits_at(&f.external, word, book, line as u64);
+        assert_eq!(snaps(&hits), snaps(expected), "{word}");
+        assert_eq!(hits[0].text_status, TextStatus::Ok, "{word}");
+        let old = hits_at(&legacy, word, book, line as u64);
+        assert_eq!(old[0].text_status, TextStatus::Stale, "{word}");
+    }
+}
+
+#[test]
+fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
+    use tantivy::schema::Value;
+    let _guard = guard();
+    let f = fixture();
+    let legacy_path = f.dir.path().join("legacy");
+    std::fs::create_dir_all(&legacy_path).unwrap();
+    let legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    // `textStored` of the official books' documents, by (filePath, segment).
+    let official_text = |e: &SearchEngine| -> std::collections::BTreeMap<(String, u64), String> {
+        let searcher = e.corpus_searcher();
+        let schema = searcher.schema().clone();
+        let [text_f, path_f, segment_f] =
+            ["textStored", "filePath", "segment"].map(|n| schema.get_field(n).unwrap());
+        let mut out = std::collections::BTreeMap::new();
+        for (ord, reader) in searcher.segment_readers().iter().enumerate() {
+            for doc_id in reader.doc_ids_alive() {
+                let doc: tantivy::TantivyDocument = searcher
+                    .doc(tantivy::DocAddress::new(ord as u32, doc_id))
+                    .unwrap();
+                let path = doc.get_first(path_f).and_then(|v| v.as_str()).unwrap();
+                let text = doc.get_first(text_f).and_then(|v| v.as_str());
+                if let (true, Some(text)) = (path.starts_with("id:"), text) {
+                    let segment = doc.get_first(segment_f).and_then(|v| v.as_u64()).unwrap();
+                    out.insert((path.to_string(), segment), text.to_string());
+                }
+            }
+        }
+        out
+    };
+    // Exactly the image rows' cleaned text, as the fully stored index holds it.
+    let all = official_text(&f.stored);
+    let expected: std::collections::BTreeMap<_, _> = IMAGE_ROWS
+        .iter()
+        .map(|&(book, line, _)| {
+            let key = (format!("id:{book}"), line as u64);
+            let text = all[&key].clone();
+            (key, text)
+        })
+        .collect();
+    assert_eq!(official_text(&f.external), expected);
+    assert!(official_text(&legacy).is_empty());
+    let cleaned: usize = expected.values().map(String::len).sum();
+
+    // On disk the doc store moves by about that much; compression makes it inexact.
+    let store_bytes = |p: &Path| -> u64 {
+        std::fs::read_dir(p)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".store"))
+            .map(|e| e.metadata().unwrap().len())
+            .sum()
+    };
+    let (old, mixed, stored) = (
+        store_bytes(&legacy_path),
+        store_bytes(&f.external_path),
+        store_bytes(&f.stored_path),
+    );
+    println!("store bytes: legacy={old} mixed={mixed} stored={stored} cleaned_text={cleaned}");
+    assert!(mixed < stored, "{mixed} {stored}");
+    assert!(mixed.abs_diff(old) < 1024, "{old} {mixed} {cleaned}");
+    drop(legacy);
+}
+
+#[test]
+fn stored_lines_are_ignored_out_of_range_and_for_in_index_books() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &[LONG1, LONG2]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let idx = dir.path().join("idx");
+    std::fs::create_dir_all(&idx).unwrap();
+    let mut engine = SearchEngine::new(idx.to_str().unwrap());
+    let text = format!("{LONG1}\n{LONG2}");
+    let added = engine
+        .add_text_book(
+            book.title.to_string(),
+            book.topics.to_string(),
+            "id:1".to_string(),
+            0,
+            0,
+            text.clone(),
+            None,
+            TextStorage::LibraryDb,
+            Some(vec![1, 1, 2, 99]),
+        )
+        .unwrap();
+    assert_eq!(added, 2);
+    engine
+        .add_text_book(
+            "אישי".to_string(),
+            "/t".to_string(),
+            "uid:3".to_string(),
+            1,
+            0,
+            text,
+            None,
+            TextStorage::InIndex,
+            Some(vec![0]),
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    let mut view = doc_store_view(&engine);
+    view.sort();
+    let kept: Vec<(String, bool, bool)> = view
+        .into_iter()
+        .map(|(path, has_text, check)| (path, has_text, check.is_some()))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("id:1".to_string(), false, true),
+            ("id:1".to_string(), true, false),
+            ("uid:3".to_string(), true, false),
+            ("uid:3".to_string(), true, false),
+        ]
+    );
+}
+
 #[test]
 fn appending_rows_leaves_existing_lines_ok() {
     let _guard = guard();
@@ -1186,6 +1431,7 @@ fn index_one(dir: &Path, book: &Book, storage: TextStorage) -> (SearchEngine, u3
             bytes,
             None,
             storage,
+            app_stored_lines(book),
         ),
         BookInput::Text(text) => engine.add_text_book(
             book.title.to_string(),
@@ -1196,6 +1442,7 @@ fn index_one(dir: &Path, book: &Book, storage: TextStorage) -> (SearchEngine, u3
             text,
             None,
             storage,
+            app_stored_lines(book),
         ),
     }
     .unwrap();
@@ -1449,7 +1696,7 @@ fn a_busy_database_is_skipped_without_waiting_each_window() {
     let library_statuses = |results: Vec<SearchResult>| {
         results
             .into_iter()
-            .filter(|r| r.file_path.starts_with("id:"))
+            .filter(reads_library)
             .map(|r| format!("{:?}", r.text_status))
             .collect::<std::collections::BTreeSet<_>>()
     };
@@ -1678,7 +1925,7 @@ fn an_unconfigured_missing_or_suspended_source_is_unavailable() {
         let results = exact(&f.external, "בראשית");
         assert!(!results.is_empty());
         for r in &results {
-            if r.file_path.starts_with("id:") {
+            if reads_library(r) {
                 assert_eq!(r.text_status, status, "{}", snap(r));
                 if status == TextStatus::Unavailable {
                     assert_eq!(r.text, "");
@@ -1844,7 +2091,7 @@ fn a_missing_host_api_is_a_defined_error_not_a_panic() {
     let results = exact(&f.external, "בראשית");
     assert!(results
         .iter()
-        .filter(|r| r.file_path.starts_with("id:"))
+        .filter(|r| reads_library(r))
         .all(|r| r.text_status == TextStatus::Unavailable && r.text.is_empty()));
     let mut engine = SearchEngine::new(f.stored_path.to_str().unwrap());
     assert!(!engine.set_magic_dictionary_path(f.db.to_string_lossy().into_owned()));
@@ -1881,6 +2128,7 @@ fn library_storage_needs_an_official_book_key() {
                 "בראשית".to_string(),
                 None,
                 TextStorage::LibraryDb,
+                None,
             )
             .unwrap_err();
         assert!(err.to_string().contains("id:<bookId>"), "{bad}: {err:#}");
@@ -2021,6 +2269,7 @@ fn real_library_smoke() {
                     bytes,
                     None,
                     storage,
+                    app_stored_lines(&book),
                 ),
                 BookInput::Text(text) => engine.add_text_book(
                     title.clone(),
@@ -2031,6 +2280,7 @@ fn real_library_smoke() {
                     text,
                     None,
                     storage,
+                    app_stored_lines(&book),
                 ),
             }
             .unwrap();
@@ -2257,6 +2507,254 @@ fn real_library_rows_match_the_indexing_input() {
     assert_eq!(diffs, 0);
 }
 
+/// Read-only timing against a real library, release build: every book with a `data:` row
+/// indexed three ways — text stored, every line read from the database (an index built
+/// before `stored_lines`), and image rows stored as the app now asks. Prints the index
+/// sizes and the time to show image rows. `OTZARIA_IMAGE_KEEP` keeps the indexes.
+#[test]
+#[ignore = "needs OTZARIA_SEFORIM_DB; run with --release"]
+fn real_library_image_rows() {
+    let _guard = guard();
+    let Ok(db) = std::env::var("OTZARIA_SEFORIM_DB") else {
+        return;
+    };
+    let root = std::env::temp_dir().join("otzaria_image_rows");
+    let _ = std::fs::remove_dir_all(&root);
+    let dirs = [root.join("stored"), root.join("legacy"), root.join("mixed")];
+    for dir in &dirs {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    configure_line_source(db.clone()).unwrap();
+    let conn = Connection::open_with_flags(
+        &db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA query_only=1").unwrap();
+    let ids: Vec<i64> = conn
+        .prepare(
+            "SELECT DISTINCT l.bookId FROM line l JOIN line_content lc ON lc.id = l.id \
+             WHERE instr(lc.content, 'data:') > 0 ORDER BY l.bookId",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        !ids.is_empty(),
+        "no book with a data: row (compressed rows?)"
+    );
+    let mut engines: Vec<SearchEngine> = dirs
+        .iter()
+        .map(|d| SearchEngine::new(d.to_str().unwrap()))
+        .collect();
+    // (document id, raw row bytes) of every image row.
+    let mut image_docs: Vec<(u64, usize)> = Vec::new();
+    let (mut rows_total, mut raw_bytes) = (0usize, 0usize);
+    for (order, &book_id) in ids.iter().enumerate() {
+        let rows: Vec<Vec<u8>> = conn
+            .prepare_cached(
+                "SELECT CAST(lc.content AS BLOB) FROM line l LEFT JOIN line_content lc \
+                 ON lc.id = l.id WHERE l.bookId = ?1 ORDER BY l.lineIndex, l.id",
+            )
+            .unwrap()
+            .query_map([book_id], |r| r.get::<_, Option<Vec<u8>>>(0))
+            .unwrap()
+            .map(|r| r.unwrap().unwrap_or_default())
+            .collect();
+        rows_total += rows.len();
+        let book = Book {
+            id: book_id,
+            title: "ספר",
+            topics: "/img",
+            catalogue_order: order as u32,
+            generation_order: 0,
+            line_indexes: Vec::new(),
+            rows,
+            compressed: false,
+        };
+        let stored_lines = app_stored_lines(&book);
+        let base = (order as u64 + 1) << 32;
+        for &ordinal in stored_lines.iter().flatten() {
+            let size = book.rows[ordinal as usize].len();
+            raw_bytes += size;
+            image_docs.push((base + u64::from(ordinal) + 1, size));
+        }
+        let input = app_indexing_input(&book);
+        let plans = [
+            (TextStorage::InIndex, None),
+            (TextStorage::LibraryDb, None),
+            (TextStorage::LibraryDb, stored_lines),
+        ];
+        for (engine, (storage, lines)) in engines.iter_mut().zip(plans) {
+            let path = format!("id:{book_id}");
+            let added = match input.clone() {
+                BookInput::Bytes(bytes) => engine.add_text_book_bytes(
+                    "ספר".into(),
+                    "/img".into(),
+                    path,
+                    order as u32,
+                    0,
+                    bytes,
+                    None,
+                    storage,
+                    lines,
+                ),
+                BookInput::Text(text) => engine.add_text_book(
+                    "ספר".into(),
+                    "/img".into(),
+                    path,
+                    order as u32,
+                    0,
+                    text,
+                    None,
+                    storage,
+                    lines,
+                ),
+            }
+            .unwrap();
+            assert!(added > 0);
+        }
+    }
+    drop(conn);
+    for engine in &mut engines {
+        engine.commit().unwrap();
+        engine.optimize().unwrap();
+    }
+    assert_eq!(line_source_status().library_fallbacks, 0);
+    let [stored, legacy, mixed] = &engines[..] else {
+        unreachable!()
+    };
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+
+    // Every image row by id, then the 100 largest, as one pass each (median of 5).
+    let by_id = |e: &SearchEngine, docs: &[(u64, usize)]| {
+        let t = std::time::Instant::now();
+        for &(id, _) in docs {
+            let doc = e.get_document_by_id(id).unwrap().unwrap();
+            assert_eq!(doc.text_status, TextStatus::Ok, "{id}");
+        }
+        ms(t.elapsed())
+    };
+    let mut largest = image_docs.clone();
+    largest.sort_by_key(|&(_, size)| std::cmp::Reverse(size));
+    largest.truncate(100);
+    let largest_bytes: usize = largest.iter().map(|&(_, size)| size).sum();
+    let timing = |docs: &[(u64, usize)]| -> [f64; 3] {
+        [stored, legacy, mixed].map(|e| {
+            by_id(e, docs);
+            median((0..5).map(|_| by_id(e, docs)).collect())
+        })
+    };
+    let all_rows = timing(&image_docs);
+    let largest_rows = timing(&largest);
+    // The slowest single rows read through the database, against the same row stored.
+    let one = |e: &SearchEngine, id: u64| median((0..5).map(|_| by_id(e, &[(id, 0)])).collect());
+    let mut slowest: Vec<(f64, f64, u64, usize)> = largest
+        .iter()
+        .take(20)
+        .map(|&(id, size)| (one(legacy, id), one(mixed, id), id, size))
+        .collect();
+    slowest.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    for (old, new, id, size) in slowest.iter().take(5) {
+        println!(
+            "slowest: id={id} raw_kb={} legacy_ms={old:.2} mixed_ms={new:.3}",
+            size / 1024
+        );
+    }
+
+    // Searches for a word of each image line, catalogue order, 100 a window.
+    let image_ids: std::collections::HashSet<u64> = image_docs.iter().map(|d| d.0).collect();
+    let mut words: Vec<String> = Vec::new();
+    for &(id, _) in &image_docs {
+        let text = stored.get_document_by_id(id).unwrap().unwrap().text;
+        let word = text.split_whitespace().find_map(|w| {
+            let letters: String = w.chars().filter(|c| ('א'..='ת').contains(c)).collect();
+            (letters.chars().count() >= 4 && letters.chars().count() == w.chars().count())
+                .then_some(letters)
+        });
+        if let Some(word) = word {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        if words.len() == 40 {
+            break;
+        }
+    }
+    let search = |e: &SearchEngine, q: &str| {
+        let t = std::time::Instant::now();
+        let r = e
+            .search_exact(
+                q.to_string(),
+                vec![],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        (ms(t.elapsed()), r)
+    };
+    let (mut totals, mut results, mut image_hits) = ([0.0f64; 3], 0usize, 0usize);
+    for word in &words {
+        let reference = search(stored, word).1;
+        results += reference.len();
+        image_hits += reference
+            .iter()
+            .filter(|r| image_ids.contains(&r.id))
+            .count();
+        for (total, e) in totals.iter_mut().zip([stored, legacy, mixed]) {
+            let (_, r) = search(e, word);
+            assert_eq!(snaps(&r), snaps(&reference), "{word}");
+            assert!(r.iter().all(|x| x.text_status == TextStatus::Ok), "{word}");
+            *total += median((0..7).map(|_| search(e, word).0).collect());
+        }
+    }
+    let size = |p: &Path| -> u64 {
+        std::fs::read_dir(p)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.metadata().unwrap().len())
+            .sum()
+    };
+    let [s_bytes, l_bytes, m_bytes] = [&dirs[0], &dirs[1], &dirs[2]].map(|d| size(d));
+    println!(
+        "image rows: books={} rows={rows_total} image_rows={} image_raw_mb={:.1} \
+         index_bytes stored={s_bytes} legacy={l_bytes} mixed={m_bytes} \
+         mixed_minus_legacy={} | by-id ms (stored/legacy/mixed): all={:.1}/{:.1}/{:.1} \
+         largest100({:.1}MB)={:.1}/{:.1}/{:.1} | search {} words, {results} results, \
+         {image_hits} image hits, total ms={:.1}/{:.1}/{:.1}",
+        ids.len(),
+        image_docs.len(),
+        raw_bytes as f64 / 1_048_576.0,
+        m_bytes as i64 - l_bytes as i64,
+        all_rows[0],
+        all_rows[1],
+        all_rows[2],
+        largest_bytes as f64 / 1_048_576.0,
+        largest_rows[0],
+        largest_rows[1],
+        largest_rows[2],
+        words.len(),
+        totals[0],
+        totals[1],
+        totals[2],
+    );
+    drop(engines);
+    line_source::reset_for_tests();
+    if std::env::var("OTZARIA_IMAGE_KEEP").is_err() {
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 /// Working set and private bytes of this process (Windows; zeros elsewhere).
 fn process_memory() -> (u64, u64) {
     #[cfg(windows)]
@@ -2393,6 +2891,7 @@ fn real_library_perf() {
                         bytes,
                         None,
                         storage,
+                        app_stored_lines(&book),
                     ),
                     BookInput::Text(text) => engine.add_text_book(
                         "ספר".into(),
@@ -2403,6 +2902,7 @@ fn real_library_perf() {
                         text,
                         None,
                         storage,
+                        app_stored_lines(&book),
                     ),
                 }
                 .unwrap();

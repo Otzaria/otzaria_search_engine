@@ -60,6 +60,7 @@ fn write_index(dir: &Path) {
             GENESIS_TEXT.to_string(),
             Some(vec!["/era/תנך".to_string()]),
             TextStorage::InIndex,
+            None,
         )
         .unwrap();
     engine
@@ -72,6 +73,7 @@ fn write_index(dir: &Path) {
             BERACHOT_TEXT.to_string(),
             None,
             TextStorage::InIndex,
+            None,
         )
         .unwrap();
     engine.commit().unwrap();

@@ -116,6 +116,7 @@ fn add_books(engine: &mut SearchEngine, books: &[Book]) {
                 text.clone(),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
     }
@@ -2123,6 +2124,7 @@ fn the_lines_of_a_planned_search_are_the_same_whatever_the_plan_iterates() {
                 format!("שורה נוספת ארוכה דיה לעמוד לבדה מספר {round}"),
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();

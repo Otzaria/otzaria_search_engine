@@ -434,6 +434,7 @@ fn build_artifact(
                 text,
                 None,
                 TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();

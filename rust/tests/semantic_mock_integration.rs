@@ -1248,7 +1248,7 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
     }
     configure_line_source(db.to_string_lossy().into_owned()).unwrap();
 
-    let build = |name: &str, storage: TextStorage| {
+    let build = |name: &str, storage: TextStorage, stored_lines: Option<Vec<u32>>| {
         let dir = root.path().join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(dir.join("tantivy")).unwrap();
@@ -1264,6 +1264,7 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
                 rows.join("\n"),
                 None,
                 storage,
+                stored_lines,
             )
             .unwrap();
         assert_eq!(added as usize, rows.len());
@@ -1295,8 +1296,11 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
             .unwrap();
         (engine, semantic_root)
     };
-    let (stored, _a) = build("stored", TextStorage::InIndex);
-    let (external, _b) = build("external", TextStorage::LibraryDb);
+    let (stored, _a) = build("stored", TextStorage::InIndex, None);
+    let (external, _b) = build("external", TextStorage::LibraryDb, None);
+    // Row 1 keeps its text in the index, as an image row of an official book does.
+    let kept_id = (1u64 << 32) + 2;
+    let (mixed, _c) = build("mixed", TextStorage::LibraryDb, Some(vec![1]));
 
     let flatten = |response: &SemanticSearchResponse| -> Vec<String> {
         let mut out: Vec<String> = response
@@ -1320,6 +1324,8 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
         for query in ["בראשית ברא", "אלהים", "אור"] {
             let (a, b) = (exact(&stored, query, mode), exact(&external, query, mode));
             assert_eq!(flatten(&a), flatten(&b), "{query} {mode:?}");
+            let c = exact(&mixed, query, mode);
+            assert_eq!(flatten(&a), flatten(&c), "{query} {mode:?}");
             assert!(!b.results.is_empty(), "{query} {mode:?}");
             assert!(b.results.iter().all(|r| r.text_status == TextStatus::Ok));
         }
@@ -1337,6 +1343,15 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
             assert!(r.snippet_html.is_empty());
             assert!(!r.is_highlighted);
         }
+        // The stored row never touches the suspended source; the others still need it.
+        let response = exact(&mixed, "אלהים", mode);
+        let kept = response.results.iter().find(|r| r.id == kept_id).unwrap();
+        assert_eq!(kept.text_status, TextStatus::Ok, "{mode:?}");
+        assert!(kept.snippet_html.contains("אלהים"), "{mode:?}");
+        assert!(response
+            .results
+            .iter()
+            .any(|r| r.id != kept_id && r.text_status == TextStatus::Unavailable));
     }
     resume_line_source().unwrap();
 }
