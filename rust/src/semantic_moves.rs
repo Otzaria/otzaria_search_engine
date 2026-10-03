@@ -60,6 +60,15 @@ pub(crate) struct SetView {
 /// documents of that segment are deleted. The same postings are the same lines.
 pub(crate) type Postings = Vec<(SegmentId, u32)>;
 
+/// A text a book holds that no live record of the set places in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Arrival {
+    /// The live slot of its vector.
+    pub(crate) slot: SlotRef,
+    /// The first line of the book that holds it: where the resolver looks for it first.
+    pub(crate) ordinal: u32,
+}
+
 /// A book's arrivals, and the state of the book they are of.
 struct Arrivals {
     postings: Postings,
@@ -67,8 +76,8 @@ struct Arrivals {
     /// so they hold for as long as it does. `0`, which a book without one has, is never
     /// matched.
     text_hash: u64,
-    /// The live slots that hold its arrivals' vectors, sorted.
-    slots: Arc<[SlotRef]>,
+    /// Its arrivals the set holds a live vector of, sorted.
+    slots: Arc<[Arrival]>,
 }
 
 impl SetView {
@@ -201,7 +210,7 @@ impl SetView {
     }
 
     /// `book`'s arrivals as computed before, when its postings are as they were then.
-    pub(crate) fn known_arrivals(&self, book: &str, postings: &Postings) -> Option<Arc<[SlotRef]>> {
+    pub(crate) fn known_arrivals(&self, book: &str, postings: &Postings) -> Option<Arc<[Arrival]>> {
         let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
         let known = arrivals.get(book)?;
         (known.postings == *postings).then(|| Arc::clone(&known.slots))
@@ -214,7 +223,7 @@ impl SetView {
         book: &str,
         text_hash: u64,
         postings: &Postings,
-    ) -> Option<Arc<[SlotRef]>> {
+    ) -> Option<Arc<[Arrival]>> {
         if text_hash == 0 {
             return None;
         }
@@ -232,7 +241,7 @@ impl SetView {
         book: Arc<str>,
         postings: Postings,
         text_hash: u64,
-        slots: Arc<[SlotRef]>,
+        slots: Arc<[Arrival]>,
     ) {
         self.arrivals
             .lock()
