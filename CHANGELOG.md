@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.9.0 – 2026-10-04
+
+### Breaking
+
+- **Display highlighting goes through a prepared matcher.** Native highlight
+  generators now return `HighlightPattern.matcher`; call
+  `matcher.findMatches(data:, requireTokenBoundaries:)` for phrases and
+  `findWordMatches` for independent words. Each `HighlightMatch` has `start` and
+  `end` in UTF-16 code units and `wordRanges` relative to `start`. The legacy
+  `combinedPattern` still works for a single word, but for a phrase it is now the
+  never-match sentinel `(?!)`: a full-phrase ECMAScript regex with several word
+  gaps could freeze the rendering isolate on a short near miss. The native
+  library, the regenerated FRB bindings and the app (Otzaria/otzaria#1674) must
+  be updated together. (#26)
+
+### Fixed
+
+- **A prefix or suffix on an inner word of a phrase no longer drops the book
+  highlight** (Otzaria/otzaria#1641). Searching `רשב"א גיטין` also highlights
+  `דגיטין`, with the same expansions the engine allows. Word regexes are bounded
+  to one word; the phrase and its gaps are matched over tokens with bounded
+  dynamic programming, so repeated runs with a missing ending no longer backtrack
+  exponentially. Offsets are kept in the original text, including nikud, display
+  forms and HTML tags, and oversized patterns are rejected before compiling. (#26)
+- **Ketiv/qere and textual variants: both readings of a single-token `(X) [Y]`
+  pair are indexed at the same position**, so a phrase is found with either
+  reading — `הארץ הוצא אתך` and `הארץ היצא אתך` both match
+  `הארץ (הוצא) [היצא] אתך` with gap 0. The tokenizer and the prepared highlight
+  share the pair detection; a trailing separator such as `(לך) [לכה־]נא` adds no
+  position, and a pasted pair in a query narrows to the second reading. (#27)
+
+### Added
+
+- **`queryWordSpans`** returns the query's words in engine order with their exact
+  UTF-16 ranges in the original input, so the app's caret, per-word options,
+  alternatives and gaps stay on the right word. (#27)
+
+### Changed
+
+- **Existing indexes stay readable; no reindex is forced.** Books indexed before
+  0.9.0 keep their old positions — reindex the affected books, or rebuild the
+  index, to get the paired-reading semantics in them. (#27)
+- **Faster searches combining typos and partial words.** Term collection probes
+  the first segment within a budget, reuses narrow probe hits instead of
+  rescanning the dictionary, and runs broad scans across segments in parallel
+  while keeping the sequential path's term order, postings cost, truncation point
+  and results. Phrase verification scans up to eight postings lists directly and
+  switches between a linear scan and a heap by term density. On the real index,
+  `קידוש השם` with typos and partial words went from 3.36s to 0.52s (warm).
+  The index format is unchanged. (#28)
+
 ## 0.8.7 – 2026-09-29
 
 ### Fixed
