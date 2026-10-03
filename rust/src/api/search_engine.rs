@@ -21430,6 +21430,51 @@ mod tests {
             );
         }
 
+        /// A vector whose line's column is stale resolves nowhere: its record's line and every
+        /// line its column value is found at hold another key. That is looked for across the
+        /// whole index once in a generation of it, not by every search that hits the vector.
+        #[test]
+        fn a_key_only_a_stale_column_holds_is_looked_for_once_a_generation() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, "שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+            let passes = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .passes
+            };
+            // Two queries, so that the second is not answered from the query cache: the set
+            // holds two vectors, and every search scans both.
+            for (query, expected) in [(PROBE, 1), ("בראשית ברא אלהים", 1)] {
+                let response = engine
+                    .search_semantic(
+                        query.to_string(),
+                        Vec::new(),
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap();
+                assert!(
+                    response
+                        .results
+                        .iter()
+                        .all(|result| result.file_path != BOOK || result.segment != 1),
+                    "{query}: the stale line is not the vector's"
+                );
+                assert_eq!(passes(&engine), expected, "{query}");
+            }
+        }
+
         /// One lexical search also found keeps its lexical half alone.
         #[test]
         fn a_line_lexical_search_also_found_keeps_its_lexical_half() {

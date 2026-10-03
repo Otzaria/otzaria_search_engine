@@ -15,8 +15,9 @@
 //!   is tried at its hint; a book where one is not is searched once, every line of it, the
 //!   nearest to the hint first; and a hit that resolves in none of its books is looked for
 //!   once more, with every other unresolved hit of the search, in one pass over every
-//!   column — the text moved to another book. A key found nowhere is remembered for the
-//!   generation.
+//!   column — the text moved to another book. Where the pass found each value, and that it
+//!   found one nowhere, is remembered for the generation, so a value is passed over the
+//!   index for at most once a generation, however many searches hit its vector.
 //! * **Recomputed from the stored text**, for an index without the column — a version 4
 //!   index — or with one written under another recipe: the key of the line at each hint,
 //!   and then of the lines within [`RECOMPUTE_REACH`] of a hint that does not hold it, from
@@ -53,7 +54,8 @@
 //!
 //! Per generation of the index (a commit is a new one): the books with the facets a filter
 //! needs, built on the first filtered search; each book's lines, ordinal to document, for
-//! the [`BOOK_CACHE`] books asked about last; the keys found nowhere; and the plans of the
+//! the [`BOOK_CACHE`] books asked about last; where the passes over the whole column found
+//! the [`MOVED_CACHE`] values they looked for last, found or not; and the plans of the
 //! [`PLAN_CACHE`] filters searched with last. A book's arrivals are kept with the set's
 //! view, under the book's postings and its text hash, across generations.
 
@@ -81,6 +83,15 @@ const BOOK_CACHE: usize = 64;
 /// How many filters' scan plans are kept between searches, for one generation of the index.
 const PLAN_CACHE: usize = 16;
 
+/// How many values' places a pass over the whole column found are kept between searches,
+/// for one generation of the index.
+const MOVED_CACHE: usize = 1024;
+
+/// The most places of one value a pass over the whole column keeps: far more than a hit
+/// resolves to, few enough that a text the library holds thousands of times is not kept
+/// whole.
+const MOVED_PLACES: usize = 1024;
+
 /// How far from its hint a hit's text is looked for, in lines, when keys are recomputed from
 /// the stored text: an insertion or a deletion a few lines above it is found; a text moved
 /// further, or to another book, is not.
@@ -103,13 +114,18 @@ pub(crate) struct ResolverCache {
     generation: u64,
     books: Option<Arc<BookDirectory>>,
     lines: Option<LruCache<Arc<str>, Arc<BookLines>>>,
-    /// Column values a pass over the whole index found nowhere.
-    nowhere: HashSet<u64>,
+    /// Where a pass over the whole column found each value it looked for, in index order:
+    /// lines whose column holds it, not yet held to any key; none for a value it found
+    /// nowhere.
+    moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
     /// The plans of the filters searched with last.
     plans: Option<LruCache<PlanKey, Arc<ScanPlan>>>,
     /// How many books' postings plans walked in this generation.
     #[cfg(test)]
     pub(crate) walks: u64,
+    /// How many passes over the whole column searches made in this generation.
+    #[cfg(test)]
+    pub(crate) passes: u64,
 }
 
 /// What a scan plan is of: a generation of one set, and a filter.
@@ -155,6 +171,12 @@ impl ResolverCache {
     fn plans(&mut self) -> &mut LruCache<PlanKey, Arc<ScanPlan>> {
         self.plans.get_or_insert_with(|| {
             LruCache::new(NonZeroUsize::new(PLAN_CACHE).expect("the cache holds plans"))
+        })
+    }
+
+    fn moved(&mut self) -> &mut LruCache<u64, Arc<[DocAddress]>> {
+        self.moved.get_or_insert_with(|| {
+            LruCache::new(NonZeroUsize::new(MOVED_CACHE).expect("the cache holds values"))
         })
     }
 }
@@ -705,6 +727,26 @@ impl<'a> LiveResolver<'a> {
             }
         }
         Ok(found)
+    }
+
+    /// The book a document belongs to, and its position among the book's lines.
+    fn locate(&self, address: DocAddress) -> Result<Option<(Arc<BookLines>, usize)>, ResolveError> {
+        let Some(name) = self.book_of(address)? else {
+            return Ok(None);
+        };
+        let Some(book) = self.book(&name)? else {
+            return Ok(None);
+        };
+        let ordinal = self.columns[address.segment_ord as usize]
+            .id
+            .first(address.doc_id)
+            .map(|id| (id & 0xFFFF_FFFF).saturating_sub(1) as u32);
+        let position = match ordinal.and_then(|ordinal| book.position(ordinal)) {
+            Some(position) if book.docs[position] == address => Some(position),
+            // A book that holds an ordinal twice keeps one document of it.
+            _ => book.docs.iter().position(|doc| *doc == address),
+        };
+        Ok(position.map(|position| (book, position)))
     }
 
     /// The book a document belongs to, by its `filePath`.
@@ -1320,59 +1362,96 @@ impl CandidateResolver for LiveResolver<'_> {
         // The text moved to another book, or left every book it was in: one pass over the
         // whole column for every such hit together, and only with a column to pass over. A
         // planned search needs none: every admitted book a text is in now either records it
-        // or has it among its arrivals.
+        // or has it among its arrivals. Where the pass found a value is kept for the
+        // generation, found or not, so it is passed for at most once.
         if self.column && self.plan.is_none() && !unresolved.is_empty() {
             let generation = self.generation_id();
+            let mut found: HashMap<u64, Arc<[DocAddress]>> = HashMap::new();
             let wanted: HashSet<u64> = {
                 let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-                let cache = cache.at(generation);
-                unresolved
-                    .iter()
-                    .map(|&hit| hits[hit].key.column_value())
-                    .filter(|value| *value != 0 && !cache.nowhere.contains(value))
-                    .collect()
+                let moved = cache.at(generation).moved();
+                let mut wanted = HashSet::new();
+                for &hit in &unresolved {
+                    let value = hits[hit].key.column_value();
+                    if value == 0 || found.contains_key(&value) {
+                        continue;
+                    }
+                    match moved.get(&value) {
+                        Some(places) => {
+                            found.insert(value, Arc::clone(places));
+                        }
+                        None => {
+                            wanted.insert(value);
+                        }
+                    }
+                }
+                wanted
             };
             if !wanted.is_empty() {
-                let found = self.find_everywhere(&wanted, cancel)?;
+                #[cfg(test)]
                 {
-                    let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-                    let cache = cache.at(generation);
-                    cache.nowhere.extend(
-                        wanted
-                            .iter()
-                            .filter(|value| !found.contains_key(*value))
-                            .copied(),
-                    );
+                    self.cache
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .at(generation)
+                        .passes += 1;
                 }
-                for &hit_index in &unresolved {
-                    let key = hits[hit_index].key;
-                    let Some(addresses) = found.get(&key.column_value()) else {
+                let mut passed = self.find_everywhere(&wanted, cancel)?;
+                let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+                let moved = cache.at(generation).moved();
+                for value in wanted {
+                    let mut places = passed.remove(&value).unwrap_or_default();
+                    places.truncate(MOVED_PLACES);
+                    let places: Arc<[DocAddress]> = places.into();
+                    moved.put(value, Arc::clone(&places));
+                    found.insert(value, places);
+                }
+            }
+            for &hit_index in &unresolved {
+                let key = hits[hit_index].key;
+                let Some(places) = found.get(&key.column_value()) else {
+                    continue;
+                };
+                // As for records: the first line of each book that holds the key, in index
+                // order, and then the books' other lines, by book and line, while the cap
+                // lasts. Each is held to the whole key, being found by its column value.
+                let mut emitted = 0usize;
+                let mut books: HashSet<Arc<str>> = HashSet::new();
+                let mut others: Vec<(Arc<BookLines>, usize)> = Vec::new();
+                for &address in places.iter() {
+                    if emitted == MAX_LINES_PER_HIT {
+                        break;
+                    }
+                    if taken.contains(&address) {
+                        continue;
+                    }
+                    let Some((book, position)) = self.locate(address)? else {
                         continue;
                     };
-                    let mut emitted = 0usize;
-                    for &address in addresses {
-                        if emitted == MAX_LINES_PER_HIT {
-                            break;
-                        }
-                        let Some(name) = self.book_of(address)? else {
-                            continue;
-                        };
-                        let Some(book) = self.book(&name)? else {
-                            continue;
-                        };
-                        if !admits(compiled.as_ref(), &book.name, &book.info) {
-                            continue;
-                        }
-                        let Some(position) = book.docs.iter().position(|doc| *doc == address)
-                        else {
-                            continue;
-                        };
-                        // Found by its column value, so held to the whole key like any.
-                        if !taken.contains(&address) && self.verified(&book, position, key)? {
-                            taken.insert(address);
-                            lines.push(self.describe(hit_index, &book, position)?);
-                            emitted += 1;
-                        }
+                    if !admits(compiled.as_ref(), &book.name, &book.info) {
+                        continue;
+                    }
+                    if books.contains(&book.name) {
+                        others.push((book, position));
+                        continue;
+                    }
+                    if self.verified(&book, position, key)? {
+                        taken.insert(address);
+                        lines.push(self.describe(hit_index, &book, position)?);
+                        emitted += 1;
+                        books.insert(Arc::clone(&book.name));
+                    }
+                }
+                others.sort_by(|a, b| (&a.0.name, a.1).cmp(&(&b.0.name, b.1)));
+                for (book, position) in others {
+                    if emitted == MAX_LINES_PER_HIT {
+                        break;
+                    }
+                    let address = book.docs[position];
+                    if !taken.contains(&address) && self.verified(&book, position, key)? {
+                        taken.insert(address);
+                        lines.push(self.describe(hit_index, &book, position)?);
+                        emitted += 1;
                     }
                 }
             }
