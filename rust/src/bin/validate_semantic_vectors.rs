@@ -12,9 +12,11 @@
 //! first, the new release last — installed into a set of the validator's own, which is
 //! removed after (the sidecar's `simulate_device`); or a set installed already, `--vectors`.
 //!
-//! * **G3, coverage** (with `--plan`): every record of the plan the set was assembled from
-//!   is one a scan of the installed set reaches, by the sidecar's own count.
-//! * **G4, resolution** (always): every record of the set resolves on the release index —
+//! * **G3, coverage**: every line of the release index the recipe embeds has its text
+//!   recorded by the set in its own book, by all 128 bits of the key recomputed from the
+//!   stored text; and with `--plan`, every record of the plan the set was assembled from is
+//!   one a scan of the installed set reaches, by the sidecar's own count.
+//! * **G4, resolution**: every record of the set resolves on the release index —
 //!   its book is there, and holds its text, by all 128 bits of the key recomputed from the
 //!   stored text — and every line's `chunkKey` column, which a device resolves by, is its
 //!   text's. A record whose text is elsewhere in its book than its hint is stale: reported,
@@ -29,10 +31,12 @@
 //!   a text repeated in many books is one hit however many lines it resolves to, so lines
 //!   that repeat a text cannot crowd the top 50 here as they do on a results page.
 //!
-//! A gate whose inputs are not given is skipped, and says so; a publishing pipeline gives
-//! them all. Exit 0 when every gate that ran passed, 1 when one failed, 2 when the inputs
-//! could not be read or the arguments are wrong. `--report` writes every gate's verdict and
-//! numbers as JSON, whatever the outcome when the gates ran.
+//! A release passes when every gate ran and passed. A gate whose inputs are not given has
+//! not run, which fails the release like a gate that failed, unless the caller skips it by
+//! name (`--skip G6`), which the output and the report record. Exit 0 when every gate
+//! passed or was skipped so, 1 when one failed or did not run, 2 when the inputs could not
+//! be read or the arguments are wrong. `--report` writes every gate's verdict and numbers as
+//! JSON, whatever the outcome when the gates ran.
 //!
 //! Nothing is written but the report, and the set `--release` installs. The index is opened
 //! read-only and its lines keyed from their text as `export_semantic_plan` keys them; the set
@@ -83,7 +87,9 @@ mod gates {
     };
     use otzaria_semantic_search::semantic::segment_set::SegmentSet;
     use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
-    use search_engine::semantic_plan::{installation_identity, sample_queries, validate};
+    use search_engine::semantic_plan::{
+        installation_identity, sample_queries, validate, Validation,
+    };
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -96,6 +102,9 @@ mod gates {
     const SAMPLED_QUERIES: usize = 200;
     /// The version of the report's JSON shape.
     const REPORT_VERSION: u32 = 1;
+
+    /// The gates, by name: what `--skip` takes.
+    const GATES: [&str; 3] = ["G3", "G4", "G6"];
 
     /// The flags, by name, each taking one value.
     const VALUED: &[&str] = &[
@@ -117,14 +126,17 @@ mod gates {
 
     struct Args {
         values: HashMap<&'static str, String>,
-        /// `--release`, the one flag given more than once, in order.
+        /// `--release`, a flag given once per release, in order.
         releases: Vec<PathBuf>,
+        /// `--skip`, a flag given once per gate the caller opts out of.
+        skipped: Vec<&'static str>,
     }
 
     impl Args {
         fn parse(args: Vec<String>) -> Result<Option<Self>> {
             let mut values = HashMap::new();
             let mut releases = Vec::new();
+            let mut skipped = Vec::new();
             let mut args = args.into_iter();
             while let Some(arg) = args.next() {
                 if arg == "--help" || arg == "-h" {
@@ -137,6 +149,22 @@ mod gates {
                     releases.push(PathBuf::from(value));
                     continue;
                 }
+                if arg == "--skip" {
+                    let Some(value) = args.next() else {
+                        bail!("--skip needs a gate\n\n{USAGE}");
+                    };
+                    let Some(gate) = GATES.iter().find(|gate| gate.eq_ignore_ascii_case(&value))
+                    else {
+                        bail!(
+                            "--skip {value:?} names no gate: {}\n\n{USAGE}",
+                            GATES.join(", ")
+                        );
+                    };
+                    if !skipped.contains(gate) {
+                        skipped.push(*gate);
+                    }
+                    continue;
+                }
                 let Some(name) = VALUED.iter().find(|name| **name == arg) else {
                     bail!("unknown argument {arg:?}\n\n{USAGE}");
                 };
@@ -147,11 +175,20 @@ mod gates {
                     bail!("{name} is given twice\n\n{USAGE}");
                 }
             }
-            Ok(Some(Self { values, releases }))
+            skipped.sort_unstable();
+            Ok(Some(Self {
+                values,
+                releases,
+                skipped,
+            }))
         }
 
         fn get(&self, name: &str) -> Option<&str> {
             self.values.get(name).map(String::as_str)
+        }
+
+        fn skips(&self, gate: &str) -> bool {
+            self.skipped.contains(&gate)
         }
 
         fn required(&self, name: &str) -> Result<&str> {
@@ -180,22 +217,58 @@ mod gates {
         }
     }
 
-    /// One gate's verdict: `passed` is `None` for a gate that did not run.
+    /// What became of one gate.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Status {
+        Passed,
+        Failed,
+        /// Not run because the caller said so, with `--skip`: no verdict, and no failure.
+        Skipped,
+        /// Not run because its inputs were not given: a release it has not passed.
+        NotRun,
+    }
+
+    impl Status {
+        fn of(passed: bool) -> Self {
+            if passed {
+                Self::Passed
+            } else {
+                Self::Failed
+            }
+        }
+
+        /// Whether a release may go out with the gate so.
+        fn clears(self) -> bool {
+            matches!(self, Self::Passed | Self::Skipped)
+        }
+    }
+
+    /// One gate's verdict.
     struct Gate {
         gate: &'static str,
         name: &'static str,
-        passed: Option<bool>,
+        status: Status,
         detail: String,
         metrics: Value,
     }
 
     impl Gate {
-        fn skipped(gate: &'static str, name: &'static str, why: &str) -> Self {
+        fn skipped(gate: &'static str, name: &'static str) -> Self {
             Self {
                 gate,
                 name,
-                passed: None,
-                detail: format!("skipped: {why}"),
+                status: Status::Skipped,
+                detail: format!("skipped: --skip {gate}"),
+                metrics: Value::Null,
+            }
+        }
+
+        fn not_run(gate: &'static str, name: &'static str, missing: &str) -> Self {
+            Self {
+                gate,
+                name,
+                status: Status::NotRun,
+                detail: format!("not run: no {missing}; give them, or --skip {gate}"),
                 metrics: Value::Null,
             }
         }
@@ -204,10 +277,11 @@ mod gates {
             json!({
                 "gate": self.gate,
                 "name": self.name,
-                "status": match self.passed {
-                    Some(true) => "passed",
-                    Some(false) => "failed",
-                    None => "skipped",
+                "status": match self.status {
+                    Status::Passed => "passed",
+                    Status::Failed => "failed",
+                    Status::Skipped => "skipped",
+                    Status::NotRun => "notRun",
                 },
                 "detail": self.detail,
                 "metrics": self.metrics,
@@ -215,7 +289,7 @@ mod gates {
         }
     }
 
-    /// Run every gate whose inputs `args` give: `Ok(true)` when every one that ran passed.
+    /// Run every gate `args` does not skip: `Ok(true)` when every one passed or was skipped.
     pub(crate) fn run(args: Vec<String>) -> Result<bool> {
         let Some(args) = Args::parse(args)? else {
             println!("{USAGE}");
@@ -276,12 +350,24 @@ mod gates {
             info.slots_dead
         );
 
-        let coverage_gate = match args.get("--plan") {
-            Some(plan) => g3(&set, Path::new(plan))?,
-            None => Gate::skipped("G3", "coverage", "no --plan"),
+        // G3 and G4 both read every book of the index against the set, once.
+        let validation = if args.skips("G3") && args.skips("G4") {
+            None
+        } else {
+            Some(validate(&index, &set).context("could not validate against the index")?)
         };
-        let resolution_gate = g4(&index, &set, max_stale_hints)?;
+        let coverage_gate = match &validation {
+            _ if args.skips("G3") => Gate::skipped("G3", "coverage"),
+            Some(validation) => g3(&set, validation, args.get("--plan").map(Path::new))?,
+            None => unreachable!("the index is read unless G3 and G4 are both skipped"),
+        };
+        let resolution_gate = match &validation {
+            _ if args.skips("G4") => Gate::skipped("G4", "resolution"),
+            Some(validation) => g4(validation, max_stale_hints),
+            None => unreachable!("the index is read unless G3 and G4 are both skipped"),
+        };
         let retrieval_gate = match retrieval_inputs {
+            _ if args.skips("G6") => Gate::skipped("G6", "retrieval"),
             [Some(warehouse), Some(model), Some(identity)] => g6(
                 &index,
                 &set,
@@ -299,23 +385,24 @@ mod gates {
                     threads,
                 },
             )?,
-            _ => Gate::skipped(
+            _ => Gate::not_run(
                 "G6",
                 "retrieval",
-                "no --warehouse, --model and --model-identity",
+                "--warehouse, --model and --model-identity",
             ),
         };
         let gates = [coverage_gate, resolution_gate, retrieval_gate];
 
         for gate in &gates {
-            let status = match gate.passed {
-                Some(true) => "PASS",
-                Some(false) => "FAIL",
-                None => "SKIP",
+            let status = match gate.status {
+                Status::Passed => "PASS",
+                Status::Failed => "FAIL",
+                Status::Skipped => "SKIP",
+                Status::NotRun => "NOT RUN",
             };
             println!("{} {:<10} {status}  {}", gate.gate, gate.name, gate.detail);
         }
-        let passed = gates.iter().all(|gate| gate.passed != Some(false));
+        let passed = gates.iter().all(|gate| gate.status.clears());
         if let Some(report) = args.get("--report") {
             let document = json!({
                 "tool": "validate_semantic_vectors",
@@ -328,6 +415,7 @@ mod gates {
                     .iter()
                     .map(|release| release.display().to_string())
                     .collect::<Vec<_>>(),
+                "skipped": args.skipped,
                 "set": {
                     "generation": info.generation,
                     "identityDigest": info.identity_digest,
@@ -356,39 +444,76 @@ mod gates {
         }
     }
 
-    /// G3: every record of the plan is reachable in the set.
-    fn g3(set: &SegmentSet, plan: &Path) -> Result<Gate> {
-        let plan = Plan::open(plan)
-            .map_err(|error| anyhow::anyhow!("could not open the plan: {error}"))?;
-        let reached = coverage(set, &plan);
-        let passed = reached.complete();
-        let mut detail = format!(
-            "{} of the plan's {} record(s) reachable in the set ({:.4}%)",
-            reached.reachable,
-            reached.records,
-            percent(reached.reachable, reached.records)
-        );
-        if let Some((book, ordinal)) = &reached.first_unreachable {
-            detail.push_str(&format!("; the first not: {book} line {ordinal}"));
+    /// G3: every keyed line of the index is covered by the set; with a plan, every record of
+    /// the plan is reachable in the set.
+    fn g3(set: &SegmentSet, validation: &Validation, plan: Option<&Path>) -> Result<Gate> {
+        let uncovered = validation.keyed_lines - validation.covered_lines;
+        let mut faults = Vec::new();
+        if uncovered > 0 {
+            faults.push(format!(
+                "{uncovered} keyed line(s) of the index have no record of their text in their \
+                 book"
+            ));
         }
+        let mut detail = format!(
+            "{} of the index's {} keyed line(s) recorded in their book ({:.4}%)",
+            validation.covered_lines,
+            validation.keyed_lines,
+            percent(validation.covered_lines, validation.keyed_lines)
+        );
+        let plan_metrics = match plan {
+            Some(plan) => {
+                let plan = Plan::open(plan)
+                    .map_err(|error| anyhow::anyhow!("could not open the plan: {error}"))?;
+                let reached = coverage(set, &plan);
+                if !reached.complete() {
+                    faults.push(format!(
+                        "{} of the plan's record(s) not reachable in the set",
+                        reached.records - reached.reachable
+                    ));
+                }
+                detail.push_str(&format!(
+                    "; {} of the plan's {} record(s) reachable in the set ({:.4}%)",
+                    reached.reachable,
+                    reached.records,
+                    percent(reached.reachable, reached.records)
+                ));
+                if let Some((book, ordinal)) = &reached.first_unreachable {
+                    detail.push_str(&format!(", the first not: {book} line {ordinal}"));
+                }
+                json!({
+                    "records": reached.records,
+                    "reachable": reached.reachable,
+                    "firstUnreachable": reached.first_unreachable.map(|(book, ordinal)| {
+                        json!({ "book": book, "ordinal": ordinal })
+                    }),
+                })
+            }
+            None => {
+                detail.push_str("; no --plan, so the plan's reach was not checked");
+                Value::Null
+            }
+        };
         Ok(Gate {
             gate: "G3",
             name: "coverage",
-            passed: Some(passed),
-            detail,
+            status: Status::of(faults.is_empty()),
+            detail: if faults.is_empty() {
+                detail
+            } else {
+                format!("{}; {detail}", faults.join("; "))
+            },
             metrics: json!({
-                "records": reached.records,
-                "reachable": reached.reachable,
-                "firstUnreachable": reached.first_unreachable.map(|(book, ordinal)| {
-                    json!({ "book": book, "ordinal": ordinal })
-                }),
+                "keyedLines": validation.keyed_lines,
+                "coveredLines": validation.covered_lines,
+                "uncoveredLines": uncovered,
+                "plan": plan_metrics,
             }),
         })
     }
 
     /// G4: every record resolves and verifies on the index; stale hints within the limit.
-    fn g4(index: &Path, set: &SegmentSet, max_stale_hints: Option<f64>) -> Result<Gate> {
-        let validation = validate(index, set).context("could not validate against the index")?;
+    fn g4(validation: &Validation, max_stale_hints: Option<f64>) -> Gate {
         let stale = if validation.records == 0 {
             0.0
         } else {
@@ -424,15 +549,13 @@ mod gates {
             }
         }
         let summary = format!(
-            "{} record(s): {} at their hint, {} stale ({:.4}%), {} unresolved; {} of {} keyed \
-             line(s) recorded in their book; chunkKey column {}",
+            "{} record(s): {} at their hint, {} stale ({:.4}%), {} unresolved; chunkKey column \
+             {}",
             validation.records,
             validation.at_hint,
             validation.moved,
             100.0 * stale,
             validation.gone,
-            validation.covered_lines,
-            validation.keyed_lines,
             if validation.column_checked {
                 format!(
                     "held to the text, {} mismatch(es)",
@@ -442,10 +565,10 @@ mod gates {
                 "absent, so keys come from the text alone".to_string()
             }
         );
-        Ok(Gate {
+        Gate {
             gate: "G4",
             name: "resolution",
-            passed: Some(faults.is_empty()),
+            status: Status::of(faults.is_empty()),
             detail: if faults.is_empty() {
                 summary
             } else {
@@ -459,12 +582,10 @@ mod gates {
                 "maxStaleHints": max_stale_hints,
                 "unresolved": validation.gone,
                 "booksMissing": validation.books_missing,
-                "keyedLines": validation.keyed_lines,
-                "coveredLines": validation.covered_lines,
                 "columnChecked": validation.column_checked,
                 "columnMismatches": validation.column_mismatches,
             }),
-        })
+        }
     }
 
     /// What G6 needs.
@@ -585,7 +706,7 @@ mod gates {
         Ok(Gate {
             gate: "G6",
             name: "retrieval",
-            passed: Some(passed),
+            status: Status::of(passed),
             detail: format!(
                 "recall@10 {recall_10:.4} (at least {}), recall@50 {recall_50:.4} over \
                  distinct texts (at least {}), on {} {source} queries against {} exact key(s)",
@@ -644,11 +765,11 @@ Usage:
                             of this run's own, removed after
   --vectors <dir>           Or a vector set installed already
 
-G3, coverage:
-  --plan <dir>              The plan the set was assembled from: every record must be
+G3, coverage — every keyed line of the index recorded in its book by the set:
+  --plan <dir>              And the plan the set was assembled from: every record must be
                             reachable in the set
 
-G4, resolution (always runs):
+G4, resolution — every record of the set resolves on the index:
   --max-stale-hints <r>     Fail when more than this fraction of the records is not at its
                             hint (default: report stale hints, never fail on them)
 
@@ -665,8 +786,12 @@ G6, retrieval — recall of the set's scan against the exact f32 scan:
   --min-recall-50 <r>       The least mean recall@50, over distinct texts (default 0.99)
   --threads <n>             Threads to scan with (default: every core)
 
+  --skip <gate>             Do not run G3, G4 or G6, and do not hold the release to it;
+                            given once per gate, and recorded in the output and the report.
+                            A gate whose inputs are not given, and is not skipped, has not
+                            run, and fails the release
   --report <file>           Write every gate's verdict and numbers as JSON
 
-Exit status: 0 when every gate that ran passed, 1 when one failed, 2 when the inputs
-could not be read or the arguments are wrong.";
+Exit status: 0 when every gate passed or was skipped, 1 when one failed or did not run,
+2 when the inputs could not be read or the arguments are wrong.";
 }
