@@ -2402,6 +2402,89 @@ fn an_expansion_waiting_for_its_install_is_not_taken_for_abandoned() {
     assert_eq!(left(), [".expanding-stray.oxv", "download.part"]);
 }
 
+/// Planning a filtered search opens the set beside the session without its lock, and
+/// cleans nothing: a garbage generation the first filtered search finds stays where it is,
+/// and installs that run beside filtered searches — each of which plans afresh against the
+/// generation the last install made — are never refused as busy.
+#[test]
+fn a_filtered_search_opens_the_set_without_its_lock_and_cleans_nothing() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let garbage = library.vectors.join("gen-000999");
+    std::fs::create_dir_all(&garbage).unwrap();
+    assert!(semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+        .iter()
+        .any(|(book, _, _)| book == GENESIS));
+    assert!(
+        garbage.exists(),
+        "the first filtered search of a generation cleans nothing"
+    );
+
+    // Two releases of the index, alternated, so that each install is a new generation.
+    let releases: Vec<(PathBuf, String, String)> =
+        [(31u32, "v31-20261002000000"), (32, "v32-20261003000000")]
+            .into_iter()
+            .map(|(version, tag)| {
+                let out = library.work.join(format!("package-{version}"));
+                build_package(
+                    &library.index,
+                    &library.work,
+                    &library.model_file,
+                    version,
+                    tag,
+                    &out,
+                    None,
+                );
+                release(&out)
+            })
+            .collect();
+    let searching = std::sync::atomic::AtomicBool::new(true);
+    let (outcomes, searches) = std::thread::scope(|scope| {
+        let searcher = scope.spawn(|| {
+            let mut searches = 0u32;
+            while searching.load(std::sync::atomic::Ordering::Acquire) {
+                search(
+                    &engine,
+                    PROBE_LINE,
+                    &["/מקרא/תורה"],
+                    SemanticRetrievalMode::SemanticOnly,
+                );
+                searches += 1;
+            }
+            searches
+        });
+        let outcomes: Vec<Result<(), (SemanticErrorKind, String)>> = (0..8)
+            .map(|round| {
+                let (segment, manifest, digest) = &releases[round % 2];
+                engine
+                    .install_semantic_vectors(
+                        library.install_input(
+                            &library.vectors,
+                            segment,
+                            manifest,
+                            Some(digest.clone()),
+                        ),
+                        &SemanticCancellationToken::new(),
+                    )
+                    .map(drop)
+                    .map_err(|error| (error.kind, error.message))
+            })
+            .collect();
+        searching.store(false, std::sync::atomic::Ordering::Release);
+        (outcomes, searcher.join().unwrap())
+    });
+    let refused: Vec<&(SemanticErrorKind, String)> = outcomes
+        .iter()
+        .filter_map(|outcome| outcome.as_ref().err())
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "every install went through: {refused:?}"
+    );
+    assert!(searches > 0);
+}
+
 /// A release that is not the one published, or not for this installation, is refused by
 /// kind and field, and the set is left as it was.
 #[test]

@@ -84,14 +84,17 @@ impl SetView {
     /// The set at `dir` as its live generation is, when that is `generation` — the one the
     /// session serves. `Ok(None)` when it is another, because an install or a compaction
     /// moved it on, and when nothing is installed; what is installed is read from its small
-    /// files first, so a set that moved on is not opened. Opening may clean up after a
-    /// crashed install when nothing holds the set's lock, as any open of a set does.
+    /// files first, so a set that moved on is not opened. Opened beside the session, without
+    /// the set's lock and without recovery or garbage collection
+    /// (`SegmentSet::open_without_recovery`): a search plans on its own thread, and must
+    /// neither make an install wait nor clean up the set. A generation an install collects
+    /// while it is opened fails the open, and the next filtered search opens again.
     pub(crate) fn open(dir: &Path, generation: u64) -> Result<Option<Self>, String> {
         match segment_set::info(dir).map_err(|err| err.to_string())? {
             Some(info) if info.generation == generation => {}
             _ => return Ok(None),
         }
-        let set = SegmentSet::open(dir).map_err(|err| err.to_string())?;
+        let set = SegmentSet::open_without_recovery(dir).map_err(|err| err.to_string())?;
         if set.generation() != generation {
             return Ok(None);
         }
