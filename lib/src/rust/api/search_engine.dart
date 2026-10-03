@@ -1374,8 +1374,16 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// that many bytes takes, and stops at a cancel.
   ///
   /// A damaged segment is marked so that every later open refuses it, and this returns
-  /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
-  /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+  /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
+  /// again if it is gone. On Windows a repair under the same segment fails while a
+  /// session holds the set open, since a mapped file cannot be replaced: close the session
+  /// (`disable_semantic`) before installing it. An open session keeps what it has mapped
+  /// until it is closed. `ArtifactMissing` when nothing is installed there.
+  ///
+  /// An install that replaced bytes the verification had read, while it read them, is
+  /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`
+  /// — verify again once the install has finished. A cancelled verification records
+  /// nothing.
   Future<SemanticVectorsVerification> verifySemanticVectors({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,
@@ -2591,7 +2599,7 @@ class SemanticCoverage {
 ///
 /// | kind | `field` |
 /// | --- | --- |
-/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version` |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version`; `segment_id`, installing a version the set has installed that was published again with other bytes |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
@@ -2650,8 +2658,8 @@ class SemanticError implements FrbException {
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
-/// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed | install the vectors built for this application and this model | `open_semantic_artifact`, installing |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
+/// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed. With `field` `segment_id`, installing: the release is a version the set has installed, published again with other bytes — a sound release, and a sound set, which keeps what it serves | install the vectors built for this application and this model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectors_dir` and open that | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
@@ -2668,7 +2676,7 @@ class SemanticError implements FrbException {
 /// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
-/// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving | try again once it has finished; never `disable_semantic` for it | installing, compacting |
+/// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read while it read them, and nothing was condemned | try again once it has finished; never `disable_semantic` for it | installing, compacting, verifying |
 enum SemanticErrorKind {
   /// No semantic session is open.
   notConfigured,

@@ -282,7 +282,7 @@ session keeps serving; try again once the other has finished.
 | field | meaning |
 | --- | --- |
 | `vectorsDir` | the vector set, `<root>/vectors` |
-| `segmentPath` | the release's segment as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd, which is expanded into a file of the install's own in the set's `incoming/` folder first, gone when the call returns. A segment inside `incoming/` is moved into the set; anywhere else it is copied and left |
+| `segmentPath` | the release's segment as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd, which is expanded into a file of the install's own in the set's `incoming/` folder first, gone when the call returns. A segment inside `incoming/` is moved into the set when the install succeeds, and stays where it is when it fails (on Windows a read-only one is copied instead); anywhere else it is copied and left |
 | `manifestJson` | the release manifest published beside the segment (`release.json`), as published |
 | `publishedManifestSha256` | optional: the manifest's SHA-256 as the release publishes it outside the manifest; without it an install detects damage and the wrong release, not one rebuilt to match |
 | `modelIdentityJson` | the model identity this installation queries with, as for opening: a release it would not open is not installed |
@@ -316,7 +316,13 @@ is; an open session follows it.
 `verifySemanticVectors` reads every block of every segment and checks it against
 its checksum, the check opening leaves out; it reads the whole set. A damaged
 segment is marked so that every later open refuses it, and the call throws
-`artifactCorrupt`. `semanticCoverage` counts the open index's live lines the
+`artifactCorrupt`: installing the release again repairs the set (download it
+again if it is gone). On Windows a repair under the same segment fails while a
+session holds the set open, since a mapped file cannot be replaced, so close
+the session (`disableSemantic`) before installing it. An install that replaced
+bytes the check had read, while it read them, is not damage: nothing is
+condemned, and the call throws `vectorsBusy`, to verify again once the install
+has finished. A cancelled verification records nothing. `semanticCoverage` counts the open index's live lines the
 recipe embeds and those the set holds a vector for: one pass over the `chunkKey`
 column, or, on an index without it, a read of the whole store.
 
@@ -482,8 +488,8 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `notConfigured` | `state`, `fallbackKind` | no session is open | open the vector set |
 | `featureNotInBuild` | `state`, `fallbackKind` | no semantic support in this build | hide semantic search |
 | `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing at `vectorsDir`, or nothing ever installed there (no `CURRENT` or `PREVIOUS`) | download and install the vectors |
-| `artifactCorrupt` | opening, installing, verifying, `semanticVectorsInfo` | a set whose pointers, metadata or segments do not open or fail their checksums, an identity left unfilled (`field`), or a release whose segment is not the one its manifest describes | download it again |
-| `artifactIncompatible` | opening, installing | sound vectors built for something else; `field` is the first field that disagreed: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, `metadata_version`, or for a delta that does not follow the set `delta.*` | install the vectors built for this application and model |
+| `artifactCorrupt` | opening, installing, verifying, `semanticVectorsInfo` | a set whose pointers, metadata or segments do not open or fail their checksums, an identity left unfilled (`field`), or a release whose segment is not the one its manifest describes | install the release again, which repairs the set (download it again if it is gone); on Windows, close the session first |
+| `artifactIncompatible` | opening, installing | sound vectors built for something else; `field` is the first field that disagreed: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, `metadata_version`, or for a delta that does not follow the set `delta.*`. Installing, `field` `segment_id`: the release is a version the set has installed, published again with other bytes; the set is sound and keeps what it serves | install the vectors built for this application and model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectorsDir` and open that |
 | `artifactNotPublished` | `installSemanticVectors` | the manifest is not the one whose digest was published | download the official release |
 | `insufficientDiskSpace` | installing, compacting | more free space is needed than the device has | free space, and try again |
 | `modelMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no file at `modelPath` | download the model |
@@ -500,7 +506,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `cancelled` | `searchSemantic`, and the calls that install, compact, verify or count | its `SemanticCancellationToken` was cancelled before it finished | drop it: nothing failed, and nothing changed |
 | `invalidInput` | `configureSemantic`, `openSemanticArtifact`, `installSemanticVectors`, `searchSemantic`, `compactSemanticVectors` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`, a ranking option such as `alpha_by_query_type.short` or `rrf_k`, or `policy.<option>`) | fix the call |
 | `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
-| `vectorsBusy` | `installSemanticVectors`, `compactSemanticVectors` | another install or compaction of the set at `vectorsDir` is running, in this process or another (`field` `vectors_dir`); nothing was read or changed, and an open session keeps serving | try again once it has finished; never `disableSemantic` for it |
+| `vectorsBusy` | `installSemanticVectors`, `compactSemanticVectors`, `verifySemanticVectors` | another install or compaction of the set at `vectorsDir` is running, in this process or another (`field` `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read, and nothing was condemned | try again once it has finished; never `disableSemantic` for it |
 
 ---
 

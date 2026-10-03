@@ -265,8 +265,9 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at eae84d1, its `onnx-backend` with the `store-v2` branch and its audit fixes
-  merged, which keys a vector by the text it was embedded from, so a set's
+  at 04a2cc9, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  audit fixes and `scan-with` merged, which keys a vector by the text it was
+  embedded from, so a set's
   identity is a line recipe and a model family, with nothing positional in it:
   - The text half is the line recipe of the index, which this plugin declares
     as `LINE_TEXT_VERSION` 1: split on `\n`, `normalize_text_for_indexing`, a
@@ -563,6 +564,21 @@ are now documented as development and testing scaffolding, not for the library.
   results are served with the reason, `fallbackKind` `queryFailed`. A version 4 index, which has no column, scans the
   admitted books alone as before; an unfiltered search finds a copied text
   where the set records it, until the vectors are updated.
+- **A version installed already, published again, and a verification an
+  install overtook, are not damage.** The sidecar (04a2cc9) refuses a release
+  whose segment is a version the set has installed, published again with
+  other bytes, while a generation that opens serves the installed bytes:
+  `SegmentIdTaken`, which is `artifactIncompatible` with `field` `segment_id`
+  here, not `artifactCorrupt` — the set and the release are sound, the set
+  keeps what it serves, and downloading the release again would be refused
+  the same way. A scrub that read bytes an install has since replaced now
+  reports it and condemns nothing, and `verifySemanticVectors` throws
+  `vectorsBusy` for it, to verify again, rather than `artifactCorrupt`.
+  Installing a release again now repairs a damaged or condemned set; on
+  Windows close the session first, since a mapped segment cannot be replaced.
+  A cancelled verification records nothing, and a download in `incoming/` is
+  moved into the set only when the install succeeds (on Windows a read-only
+  one is copied).
 - **One install or compaction of a vector set at a time, and each expansion
   its own.** A compressed release was expanded to `incoming/<download name>`
   before the set was locked, so two installs of one set from downloads of the

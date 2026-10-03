@@ -14489,8 +14489,16 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// that many bytes takes, and stops at a cancel.
   ///
   /// A damaged segment is marked so that every later open refuses it, and this returns
-  /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
-  /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+  /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
+  /// again if it is gone. On Windows a repair under the same segment fails while a
+  /// session holds the set open, since a mapped file cannot be replaced: close the session
+  /// (`disable_semantic`) before installing it. An open session keeps what it has mapped
+  /// until it is closed. `ArtifactMissing` when nothing is installed there.
+  ///
+  /// An install that replaced bytes the verification had read, while it read them, is
+  /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`
+  /// — verify again once the install has finished. A cancelled verification records
+  /// nothing.
   Future<SemanticVectorsVerification> verifySemanticVectors({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,
