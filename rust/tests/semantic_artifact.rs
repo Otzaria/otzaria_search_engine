@@ -1420,6 +1420,79 @@ fn a_moved_passage_one_book_repeats_leaves_the_other_book_its_line() {
     assert_eq!(lines.len(), 31, "{lines:?}");
 }
 
+/// F3 of the second audit: a moved passage one new book holds 1,100 times, past the 1,024
+/// places a text kept, and a later book once. That book keeps its line, filtered or not.
+#[test]
+fn a_moved_passage_one_book_holds_past_the_places_kept_leaves_the_other_book_its_line() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let opening = "שורה פותחת בספר הישן ארוכה דיה לעמוד לבדה";
+    let (old, many, once) = ("/books/old.txt", "/books/many.txt", "/books/once.txt");
+    let library = build_library_of(
+        &[("ישן", "/א", old, 0, format!("{opening}\n{passage}"))],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    replace_book(&mut engine, ("ישן", "/א", old, 0, opening.to_string()));
+    add_books(
+        &mut engine,
+        &[(
+            "רבים",
+            "/חדש/רבים",
+            many,
+            1,
+            vec![passage; 1_100].join("\n"),
+        )],
+    );
+    add_books(
+        &mut engine,
+        &[(
+            "יחיד",
+            "/חדש/יחיד",
+            once,
+            2,
+            format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+        )],
+    );
+    for facets in [vec![], vec!["/חדש"]] {
+        let response = engine
+            .search_semantic(
+                passage.to_string(),
+                facets.iter().map(|facet| facet.to_string()).collect(),
+                50,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        let of = |book: &str| -> Vec<u64> {
+            response
+                .results
+                .iter()
+                .filter(|hit| hit.file_path == book && hit.snippet_html == passage)
+                .map(|hit| hit.segment)
+                .collect()
+        };
+        assert_eq!(of(once), [1], "the other book's line, under {facets:?}");
+        assert_eq!(
+            of(many),
+            (0..31).collect::<Vec<u64>>(),
+            "the rest of the cap, in the book's order, under {facets:?}"
+        );
+    }
+}
+
 /// A line whose `chunkKey` column holds a vector's key and whose text is another is no line
 /// of that vector's, whatever card it would be on: not a result, not a grouped sibling,
 /// under any grouping and in either mode that searches semantically. The index is edited

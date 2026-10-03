@@ -71,6 +71,7 @@ use otzaria_semantic_search::semantic::resolve::{
     MAX_RECORDS_PER_HIT,
 };
 use otzaria_semantic_search::semantic::types::{CompiledFilters, SearchFilters};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -95,9 +96,8 @@ thread_local! {
 /// for one generation of the index.
 const MOVED_CACHE: usize = 1024;
 
-/// The most places of one value a pass over the whole column keeps: far more than a hit
-/// resolves to, few enough that a text the library holds thousands of times is not kept
-/// whole.
+/// The most places of one value a pass over the whole column keeps: [`MAX_LINES_PER_HIT`]
+/// per book at most, and every book's first before any book's second ([`FairPlaces`]).
 const MOVED_PLACES: usize = 1024;
 
 /// How far from its hint a hit's text is looked for, in lines, when keys are recomputed from
@@ -126,9 +126,8 @@ pub(crate) struct ResolverCache {
     generation: u64,
     books: Option<Arc<BookDirectory>>,
     lines: Option<LruCache<Arc<str>, Arc<BookLines>>>,
-    /// Where a pass over the whole column found each value it looked for, in index order:
-    /// lines whose column holds it, not yet held to any key; none for a value it found
-    /// nowhere.
+    /// Where a pass over the whole column found each value it looked for, every book's first
+    /// line before any book's second: not yet held to any key; none for a value found nowhere.
     moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
     /// The plans of the filters searched with last.
     plans: Option<LruCache<PlanKey, Arc<ScanPlan>>>,
@@ -245,6 +244,55 @@ impl BookLines {
             let after = Some(centre + step).filter(|&at| at < len);
             before.into_iter().chain(after)
         })
+    }
+}
+
+/// One value's places, of each book its [`MAX_LINES_PER_HIT`] first lines, cut to
+/// [`MOVED_PLACES`] by rank in their book, then by the order the books were found in.
+#[derive(Default)]
+struct FairPlaces {
+    /// `(ordinal, place)` per book. A book found after [`MOVED_PLACES`] others is never kept.
+    books: Vec<Vec<(u32, DocAddress)>>,
+    order: HashMap<Arc<str>, usize>,
+}
+
+impl FairPlaces {
+    fn push(&mut self, book: Arc<str>, ordinal: u32, place: DocAddress) {
+        let at = match self.order.entry(book) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(_) if self.books.len() >= MOVED_PLACES => return,
+            Entry::Vacant(entry) => {
+                self.books.push(Vec::new());
+                *entry.insert(self.books.len() - 1)
+            }
+        };
+        let places = &mut self.books[at];
+        places.push((ordinal, place));
+        if places.len() >= 2 * MAX_LINES_PER_HIT {
+            Self::first_lines(places);
+        }
+    }
+
+    fn first_lines(places: &mut Vec<(u32, DocAddress)>) {
+        places.sort_unstable();
+        places.truncate(MAX_LINES_PER_HIT);
+    }
+
+    /// Every book's first line, in the order the books were found, then every book's second.
+    fn into_places(self) -> Vec<DocAddress> {
+        let mut ranked: Vec<(usize, usize, DocAddress)> = Vec::new();
+        for (order, mut places) in self.books.into_iter().enumerate() {
+            Self::first_lines(&mut places);
+            ranked.extend(
+                places
+                    .into_iter()
+                    .enumerate()
+                    .map(|(rank, (_, place))| (rank, order, place)),
+            );
+        }
+        ranked.sort_unstable_by_key(|&(rank, order, _)| (rank, order));
+        ranked.truncate(MOVED_PLACES);
+        ranked.into_iter().map(|(_, _, place)| place).collect()
     }
 }
 
@@ -864,32 +912,63 @@ impl<'a> LiveResolver<'a> {
     }
 
     /// One pass over every `chunkKey` column for the values `wanted` holds: where each
-    /// is, in index order.
+    /// is, every book's first line before any book's second ([`FairPlaces`]).
     fn find_everywhere(
         &self,
         wanted: &HashSet<u64>,
         cancel: &CancellationToken,
     ) -> Result<HashMap<u64, Vec<DocAddress>>, ResolveError> {
-        let mut found: HashMap<u64, Vec<DocAddress>> = HashMap::new();
+        let mut found: HashMap<u64, FairPlaces> = HashMap::new();
         for (segment_ord, reader) in self.searcher.segment_readers().iter().enumerate() {
             let Some(column) = &self.columns[segment_ord].chunk_key else {
                 continue;
             };
+            let paths = reader
+                .fast_fields()
+                .str("filePath")
+                .map_err(index_error)?
+                .ok_or_else(|| index_error("the index has no filePath column"))?;
+            // By name, so a book is one book whatever segments hold it.
+            let mut names: HashMap<u64, Arc<str>> = HashMap::new();
             for (checked, doc) in reader.doc_ids_alive().enumerate() {
                 if checked % 65_536 == 0 && cancel.is_cancelled() {
                     return Err(ResolveError::Cancelled);
                 }
-                if let Some(value) = column.first(doc) {
-                    if value != 0 && wanted.contains(&value) {
-                        found
-                            .entry(value)
-                            .or_default()
-                            .push(DocAddress::new(segment_ord as u32, doc));
-                    }
+                let Some(value) = column.first(doc) else {
+                    continue;
+                };
+                if value == 0 || !wanted.contains(&value) {
+                    continue;
                 }
+                let Some(ord) = paths.term_ords(doc).next() else {
+                    continue;
+                };
+                let book = match names.get(&ord) {
+                    Some(book) => Arc::clone(book),
+                    None => {
+                        let mut name = String::new();
+                        paths.ord_to_str(ord, &mut name).map_err(index_error)?;
+                        let book: Arc<str> = name.into();
+                        names.insert(ord, Arc::clone(&book));
+                        book
+                    }
+                };
+                // Ids compose `(catalogue_order + 1) << 32` and `ordinal + 1`.
+                let ordinal = self.columns[segment_ord]
+                    .id
+                    .first(doc)
+                    .map_or(u32::MAX, |id| (id & 0xFFFF_FFFF).saturating_sub(1) as u32);
+                found.entry(value).or_default().push(
+                    book,
+                    ordinal,
+                    DocAddress::new(segment_ord as u32, doc),
+                );
             }
         }
-        Ok(found)
+        Ok(found
+            .into_iter()
+            .map(|(value, places)| (value, places.into_places()))
+            .collect())
     }
 
     /// The book a document belongs to, and its position among the book's lines.
@@ -1621,9 +1700,8 @@ impl CandidateResolver for LiveResolver<'_> {
                 let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
                 let moved = cache.at(generation).moved();
                 for value in wanted {
-                    let mut places = passed.remove(&value).unwrap_or_default();
-                    places.truncate(MOVED_PLACES);
-                    let places: Arc<[DocAddress]> = places.into();
+                    let places: Arc<[DocAddress]> =
+                        passed.remove(&value).unwrap_or_default().into();
                     moved.put(value, Arc::clone(&places));
                     found.insert(value, places);
                 }
@@ -1633,9 +1711,8 @@ impl CandidateResolver for LiveResolver<'_> {
                 let Some(places) = found.get(&key.column_value()) else {
                     continue;
                 };
-                // As for records: the first line of each book that holds the key, in index
-                // order, and then the books' other lines, by book and line, while the cap
-                // lasts. Each is held to the whole key, being found by its column value.
+                // As for records: a line of each book, then the books' other lines, by book
+                // and line, while the cap lasts. Each is held to the whole key.
                 let mut emitted = 0usize;
                 let mut books: HashSet<Arc<str>> = HashSet::new();
                 let mut others: Vec<(Arc<BookLines>, usize)> = Vec::new();
@@ -1678,5 +1755,72 @@ impl CandidateResolver for LiveResolver<'_> {
             }
         }
         Ok(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::search_engine::{live_chunk_key_field, SearchEngine};
+    use otzaria_semantic_search::semantic::resolve::RecordRef;
+    use tantivy::{Index, ReloadPolicy};
+
+    /// F3: a text that left its book, now held 1,100 times by one book and once by one added
+    /// later. Found by the pass over the column, each book gets its line before any repeat.
+    #[test]
+    fn the_pass_over_the_column_leaves_every_book_its_line() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+        let (many, once) = ("/books/many.txt", "/books/once.txt");
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        for (key, order, text) in [
+            (many, 0, vec![passage; 1_100].join("\n")),
+            (
+                once,
+                1,
+                format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+            ),
+        ] {
+            engine
+                .add_text_book("ספר".into(), "/א".into(), key.into(), order, 0, text, None)
+                .unwrap();
+            engine.commit().unwrap();
+        }
+
+        let index = Index::open_in_dir(dir.path()).unwrap();
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .unwrap();
+        let chunk_key = live_chunk_key_field(&index.schema(), dir.path());
+        assert!(chunk_key.is_some());
+        let cache = Mutex::default();
+        let resolver = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
+        let book = resolver.book(once).unwrap().unwrap();
+        let key = recompute_chunk_keys(resolver.searcher(), &book.docs, 1..2).unwrap()[0].unwrap();
+        // Recorded in a book the index no longer holds: no plan, so the pass finds it.
+        let hit = VectorHit {
+            score: 1.0,
+            key,
+            records: vec![RecordRef {
+                book: Arc::from("/books/gone.txt"),
+                hint: 1,
+            }],
+            seg: 0,
+            slot: 0,
+        };
+        let lines = resolver
+            .resolve(&[hit], None, &CancellationToken::new())
+            .unwrap();
+        let of = |book: &str| -> Vec<u64> {
+            lines
+                .iter()
+                .filter(|line| line.file_path == book)
+                .map(|line| line.segment)
+                .collect()
+        };
+        assert_eq!(of(once), [1]);
+        assert_eq!(of(many), (0..31).collect::<Vec<u64>>());
     }
 }
