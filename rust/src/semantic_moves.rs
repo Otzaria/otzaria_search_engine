@@ -13,12 +13,14 @@
 //! its **arrivals** are read: the texts, by `chunkKey` column value, that its live lines
 //! hold and that no live record of the set places in it, with the live slots the set holds
 //! their vectors in — a text the set holds no live vector of is nothing to look for. They
-//! are computed once per book and kept with the view of the set, under the book's text
-//! hash, which an index commit that leaves the book as it was keeps too. When no admitted
-//! book has any, nothing moved, and the plan is the filtered scan exactly as before. An
-//! arrival a live record of some admitted book reaches is scanned already. The vectors of
-//! the others are **unreached**: the sidecar weighs them besides the scan, each at its own
-//! score and none in place of one of the admitted books' hits
+//! are computed once per book and kept with the view of the set, under the book's postings
+//! (the segments of the index that hold its lines, and how many of their documents are
+//! deleted), which a commit that leaves the book alone leaves as they were, and under its
+//! text hash, which a merge that moves its lines into another segment keeps. When no
+//! admitted book has any, nothing moved, and the plan is the filtered scan exactly as
+//! before. An arrival a live record of some admitted book reaches is scanned already. The
+//! vectors of the others are **unreached**: the sidecar weighs them besides the scan, each
+//! at its own score and none in place of one of the admitted books' hits
 //! (`CandidateResolver::unreached`), and the resolver looks for each in the admitted books
 //! it arrived in, held to its whole key, and in no other book.
 //!
@@ -40,6 +42,7 @@ use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use tantivy::index::SegmentId;
 
 /// How many slots a pass over the set reads between two looks at the token.
 const SLOTS_PER_CHECK: u32 = 65_536;
@@ -53,14 +56,17 @@ pub(crate) struct SetView {
     arrivals: Mutex<HashMap<Arc<str>, Arrivals>>,
 }
 
+/// Where a book's lines are in the index: every segment that holds one, with how many
+/// documents of that segment are deleted. The same postings are the same lines.
+pub(crate) type Postings = Vec<(SegmentId, u32)>;
+
 /// A book's arrivals, and the state of the book they are of.
 struct Arrivals {
+    postings: Postings,
     /// The book's `textHash` then, when its lines agree on one: the same text keys the same,
     /// so they hold for as long as it does. `0`, which a book without one has, is never
     /// matched.
     text_hash: u64,
-    /// The index generation they were computed in, which they hold for whatever the hash.
-    index_generation: u64,
     /// The live slots that hold its arrivals' vectors, sorted.
     slots: Arc<[SlotRef]>,
 }
@@ -128,26 +134,38 @@ impl SetView {
         Some(found)
     }
 
-    /// `book`'s arrivals as computed before, when they still hold: for the same text hash,
-    /// or in the same index generation.
-    pub(crate) fn known_arrivals(
+    /// `book`'s arrivals as computed before, when its postings are as they were then.
+    pub(crate) fn known_arrivals(&self, book: &str, postings: &Postings) -> Option<Arc<[SlotRef]>> {
+        let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        let known = arrivals.get(book)?;
+        (known.postings == *postings).then(|| Arc::clone(&known.slots))
+    }
+
+    /// `book`'s arrivals as computed before for the same text, when it has one: kept, under
+    /// the postings it has now.
+    pub(crate) fn known_arrivals_of_text(
         &self,
         book: &str,
         text_hash: u64,
-        index_generation: u64,
+        postings: &Postings,
     ) -> Option<Arc<[SlotRef]>> {
-        let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
-        let known = arrivals.get(book)?;
-        ((text_hash != 0 && known.text_hash == text_hash)
-            || known.index_generation == index_generation)
-            .then(|| Arc::clone(&known.slots))
+        if text_hash == 0 {
+            return None;
+        }
+        let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        let known = arrivals.get_mut(book)?;
+        if known.text_hash != text_hash {
+            return None;
+        }
+        known.postings.clone_from(postings);
+        Some(Arc::clone(&known.slots))
     }
 
     pub(crate) fn remember_arrivals(
         &self,
         book: Arc<str>,
+        postings: Postings,
         text_hash: u64,
-        index_generation: u64,
         slots: Arc<[SlotRef]>,
     ) {
         self.arrivals
@@ -156,8 +174,8 @@ impl SetView {
             .insert(
                 book,
                 Arrivals {
+                    postings,
                     text_hash,
-                    index_generation,
                     slots,
                 },
             );
