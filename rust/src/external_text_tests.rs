@@ -2511,6 +2511,50 @@ fn real_library_perf() {
             deltas.push(per100(x50) - per100(s50));
         }
     }
+    let mut equivalence_results = 0;
+    for q in queries {
+        let a = stored
+            .search_exact(
+                q.into(),
+                vec![],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        let b = external
+            .search_exact(
+                q.into(),
+                vec![],
+                100,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        let signature = |r: &SearchResult| {
+            (
+                r.id,
+                r.segment,
+                r.file_path.clone(),
+                r.reference.clone(),
+                r.text.clone(),
+                r.text_status,
+            )
+        };
+        assert_eq!(
+            a.iter().map(signature).collect::<Vec<_>>(),
+            b.iter().map(signature).collect::<Vec<_>>(),
+            "query={q}"
+        );
+        equivalence_results += a.len();
+    }
+    println!("perf: catalogue equivalence: {equivalence_results} results");
     let memory_after = process_memory();
     let (map_bytes, page_cache_bytes) = line_source::memory_for_tests().unwrap_or_default();
     let (d50, d90) = pct(&mut deltas);
