@@ -326,7 +326,7 @@ impl LineStore {
                     targets.push((id, slot));
                 }
             }
-            store.read_rows(keys, &mut targets, &mut rows)?;
+            store.read_rows(keys, checks, &mut targets, &mut rows)?;
             let mut retry: Vec<(i64, usize)> = Vec::new();
             for (slot, id) in by_line_index {
                 let key = keys[slot];
@@ -342,7 +342,7 @@ impl LineStore {
                     retry.push((id, slot));
                 }
             }
-            store.read_rows(keys, &mut retry, &mut rows)?;
+            store.read_rows(keys, checks, &mut retry, &mut rows)?;
             Ok(rows)
         })
     }
@@ -358,6 +358,7 @@ impl LineStore {
     fn read_rows(
         &mut self,
         keys: &[LineKey],
+        checks: &[Option<u32>],
         targets: &mut [(i64, usize)],
         rows: &mut [RowText],
     ) -> Result<()> {
@@ -383,11 +384,29 @@ impl LineStore {
                     None => ValueRef::Null,
                 };
                 rows[slot] = match row_bytes(value, &mut layout.codec) {
-                    Ok(bytes) if key.ordinal == 0 && bytes.starts_with(BOM) => {
+                    Ok(bytes)
+                        if key.ordinal == 0 && bytes.starts_with(BOM) && checks[slot].is_none() =>
+                    {
                         first_rows.push((slot, bytes.into_owned()));
                         continue;
                     }
-                    Ok(bytes) => RowText::Found(prepare_row(&bytes, false)),
+                    Ok(bytes) => {
+                        let mut text = prepare_row(&bytes, false);
+                        if key.ordinal == 0 && bytes.starts_with(BOM) {
+                            // The stored check distinguishes the app's two BOM paths without
+                            // reading any other row, even when the database text is stale.
+                            if let Some(check) = checks[slot] {
+                                if line_check(&text) != check {
+                                    let without_bom =
+                                        text.strip_prefix('\u{FEFF}').unwrap_or(&text);
+                                    if line_check(without_bom) == check {
+                                        text = without_bom.to_owned();
+                                    }
+                                }
+                            }
+                        }
+                        RowText::Found(text)
+                    }
                     Err(reason) => {
                         log::warn!("line {key:?} cannot be decoded: {reason}");
                         RowText::Unreadable
@@ -608,6 +627,7 @@ struct Global {
     store: Option<LineStore>,
     generation: u64,
     suspend_depth: u32,
+    owner_ports: Vec<i64>,
     busy_until: Option<Instant>,
     library_fallbacks: u64,
 }
@@ -617,22 +637,42 @@ static GLOBAL: Mutex<Global> = Mutex::new(Global {
     store: None,
     generation: 0,
     suspend_depth: 0,
+    owner_ports: Vec::new(),
     busy_until: None,
     library_fallbacks: 0,
 });
 
 fn global() -> MutexGuard<'static, Global> {
-    GLOBAL.lock().unwrap_or_else(|poisoned| {
+    let mut g = GLOBAL.lock().unwrap_or_else(|poisoned| {
         // A panic inside a window can leave its read transaction open, holding the file's
         // shared lock: close the connection, and the caches with it.
         let mut g = poisoned.into_inner();
         g.drop_store();
         GLOBAL.clear_poison();
         g
-    })
+    });
+    g.reap_dead_owners(owner_port_is_open);
+    g
+}
+
+fn owner_port_is_open(port: i64) -> bool {
+    flutter_rust_bridge::for_generated::Channel::new(port).post(())
 }
 
 impl Global {
+    fn reap_dead_owners(&mut self, mut is_open: impl FnMut(i64) -> bool) {
+        let before = self.owner_ports.len();
+        self.owner_ports.retain(|&port| is_open(port));
+        if before != self.owner_ports.len()
+            && self.owner_ports.is_empty()
+            && self.suspend_depth == 0
+        {
+            self.drop_store();
+            self.generation += 1;
+            self.busy_until = None;
+        }
+    }
+
     fn drop_store(&mut self) {
         if let Some(store) = self.store.take() {
             store.close();
@@ -685,12 +725,36 @@ pub(crate) fn resume() -> Result<()> {
     Ok(())
 }
 
+/// Idempotent holds tied to Dart ports: the VM closes them when their isolate exits.
+pub(crate) fn suspend_owned(owner_port: i64) -> Result<()> {
+    let mut g = global();
+    if owner_port <= 0 || !owner_port_is_open(owner_port) {
+        anyhow::bail!("line-source suspension needs an open Dart owner port");
+    }
+    if !g.owner_ports.contains(&owner_port) {
+        g.owner_ports.push(owner_port);
+    }
+    g.drop_store();
+    Ok(())
+}
+
+pub(crate) fn resume_owned(owner_port: i64) {
+    let mut g = global();
+    let before = g.owner_ports.len();
+    g.owner_ports.retain(|&port| port != owner_port);
+    if before != g.owner_ports.len() && g.owner_ports.is_empty() && g.suspend_depth == 0 {
+        g.drop_store();
+        g.generation += 1;
+        g.busy_until = None;
+    }
+}
+
 pub(crate) fn status() -> Status {
     let g = global();
     Status {
         configured: g.path.is_some(),
         open: g.store.is_some(),
-        suspend_depth: g.suspend_depth,
+        suspend_depth: g.suspend_depth + g.owner_ports.len() as u32,
         generation: g.generation,
         library_fallbacks: g.library_fallbacks,
     }
@@ -733,7 +797,7 @@ fn with_store_inner<R>(
     f: impl FnOnce(&mut LineStore) -> Result<R>,
 ) -> std::result::Result<R, SourceUnavailable> {
     let mut g = global();
-    if g.suspend_depth > 0 {
+    if g.suspend_depth > 0 || !g.owner_ports.is_empty() {
         return Err(SourceUnavailable::Suspended);
     }
     let Some(path) = g.path.clone() else {
@@ -773,6 +837,7 @@ pub(crate) fn reset_for_tests() {
     g.drop_store();
     g.path = None;
     g.suspend_depth = 0;
+    g.owner_ports.clear();
     g.generation += 1;
     g.busy_until = None;
 }
@@ -799,6 +864,57 @@ pub(crate) fn memory_for_tests() -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dead_owner_cleanup_preserves_live_and_anonymous_holds() {
+        let mut g = Global {
+            path: None,
+            store: None,
+            generation: 0,
+            suspend_depth: 1,
+            owner_ports: vec![11, 22],
+            busy_until: None,
+            library_fallbacks: 0,
+        };
+        g.reap_dead_owners(|port| port == 22);
+        assert_eq!(g.owner_ports, vec![22]);
+        assert_eq!(g.generation, 0);
+        g.reap_dead_owners(|_| false);
+        assert_eq!(g.suspend_depth, 1);
+        assert_eq!(g.generation, 0);
+        g.suspend_depth = 0;
+        g.owner_ports.push(33);
+        g.reap_dead_owners(|_| false);
+        assert_eq!(g.generation, 1);
+        g.reap_dead_owners(|_| false);
+        assert_eq!(g.generation, 1);
+    }
+
+    #[test]
+    fn checked_bom_row_does_not_scan_the_book() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);
+                            CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);
+                            INSERT INTO line VALUES (1, 1, 0, char(65279) || 'בראשית');
+                            INSERT INTO line VALUES (2, 1, 1, 'data:short');").unwrap();
+        let mut store = LineStore::open(&path).unwrap();
+        let key = LineKey {
+            book_id: 1,
+            ordinal: 0,
+        };
+        for text in ["בראשית", "\u{FEFF}בראשית"] {
+            let rows = store
+                .fetch_window(&[key], &[Some(line_check(text))])
+                .unwrap();
+            assert!(matches!(&rows[0], RowText::Found(actual) if actual == text));
+            assert!(
+                store.data_uri_books.is_empty(),
+                "checked rows must not scan other content"
+            );
+        }
+    }
 
     #[test]
     fn data_uris_are_stripped_like_the_app() {

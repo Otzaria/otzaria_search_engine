@@ -1148,6 +1148,18 @@ pub fn resume_line_source() -> Result<()> {
     crate::line_source::resume()
 }
 
+/// Suspends for a Dart owner port. Duplicate holds are ignored; a closed port is
+/// released automatically before the next source access, including isolate exit.
+pub fn suspend_line_source_owned(owner_port: i64) -> Result<()> {
+    crate::line_source::suspend_owned(owner_port)
+}
+
+/// Releases only this owner's hold. Safe to repeat or call after its port closed.
+pub fn resume_line_source_owned(owner_port: i64) -> Result<()> {
+    crate::line_source::resume_owned(owner_port);
+    Ok(())
+}
+
 pub fn line_source_status() -> LineSourceStatus {
     let status = crate::line_source::status();
     LineSourceStatus {
