@@ -286,28 +286,27 @@ fn a_text_whose_record_in_a_book_is_dead_is_an_arrival_of_the_book() {
         }
         lines
     };
-    // The big book gains a line in every version, so that each delta ships a vector of its
-    // own besides what it tombstones.
-    let w_lines = |version: usize, with: bool| -> Vec<String> {
-        let mut lines: Vec<String> = (0..2 + version).map(|at| line(2, at)).collect();
+    let w_lines = |with: bool| -> Vec<String> {
+        let mut lines = vec![line(2, 0), line(2, 1)];
         if with {
             lines.push(text.clone());
         }
         lines
     };
-    let library = |version: usize, in_a: bool, in_w: bool| -> Vec<Book> {
+    let library = |in_a: bool, in_w: bool| -> Vec<Book> {
         vec![
             ("ספר א", "/א", a, 0, a_lines(in_a)),
-            ("ספר ב", "/ב", w, 1, w_lines(version, in_w)),
+            ("ספר ב", "/ב", w, 1, w_lines(in_w)),
         ]
     };
 
     let mut publisher = Publisher::new();
-    publisher.release(30, &library(0, true, false));
-    publisher.release(31, &library(1, false, false));
-    publisher.release(32, &library(2, false, true));
+    publisher.release(30, &library(true, false));
+    // A delta that only tombstones: it ships no vector.
+    publisher.release(31, &library(false, false));
+    publisher.release(32, &library(false, true));
     let device_index = publisher.root.path().join("device-index");
-    index_of(&device_index, &library(2, true, true));
+    index_of(&device_index, &library(true, true));
     let engine = publisher.device(&device_index);
 
     let found = lines_of(&engine, &text, &["/א"]);
@@ -322,7 +321,7 @@ fn a_text_whose_record_in_a_book_is_dead_is_an_arrival_of_the_book() {
     );
     assert_eq!(
         lines_of(&engine, &text, &["/ב"]).first(),
-        Some(&(w.to_string(), 4)),
+        Some(&(w.to_string(), 2)),
         "the book the live vector's record names finds it as it always did"
     );
 }
