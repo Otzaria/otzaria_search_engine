@@ -463,7 +463,7 @@ set installed already instead.
 
 | gate | runs with | passes when |
 | --- | --- | --- |
-| G3, coverage | `--plan` | every record of the plan the set was assembled from is reachable in the set |
+| G3, coverage | always; `--plan` adds to it | every line of the index the recipe embeds has its text recorded by the set in its own book, by all 128 bits of its key; and with `--plan`, every record of the plan the set was assembled from is reachable in the set |
 | G4, resolution | always | every record resolves on the index, by all 128 bits of its key, and every line's `chunkKey` column is its text's; records off their hint are reported, and fail it only past `--max-stale-hints <fraction>` |
 | G6, retrieval | `--warehouse`, `--model`, `--model-identity` | the set's scan, as a device runs it, reaches mean recall@10 of `--min-recall-10` (0.98) and recall@50 of `--min-recall-50` (0.99) against the exact `f32` scan of the warehouse's vectors, on the same query vectors |
 
@@ -474,12 +474,15 @@ counted over keys, which are distinct texts, since that is what a scan returns:
 a text in many books is one hit, so repeated texts cannot take the top 50 here
 as they do on a results page.
 
-A gate without its inputs is skipped and says so. The exit status is 0 when
-every gate that ran passed, 1 when one failed, and 2 when the arguments are
+A release passes when every gate ran and passed. A gate whose inputs are not
+given has not run, and fails the release like a gate that failed, unless it is
+skipped by name with `--skip <gate>` (G3, G4 or G6, once per gate), which the
+output and the report record. The exit status is 0 when every gate passed or
+was skipped so, 1 when one failed or did not run, and 2 when the arguments are
 wrong or an input does not read. `--report` writes `{tool, reportVersion,
-passed, index, vectors, releases, set, gates: [{gate, name, status, detail,
-metrics}]}`, `status` being `passed`, `failed` or `skipped`; `--help` lists
-every flag.
+passed, index, vectors, releases, skipped, set, gates: [{gate, name, status,
+detail, metrics}]}`, `status` being `passed`, `failed`, `skipped` (by
+`--skip`) or `notRun` (no inputs); `--help` lists every flag.
 
 ### Development and testing: vectors built on the device
 

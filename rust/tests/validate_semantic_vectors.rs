@@ -409,10 +409,13 @@ fn a_release_assembled_from_its_index_passes_every_gate() {
     let installed = PathBuf::from(report["vectors"].as_str().unwrap());
     assert!(!installed.exists(), "the set it installed is removed");
 
+    assert_eq!(report["skipped"], serde_json::json!([]));
     let (status, g3) = gate(&report, "G3");
     assert_eq!(status, "passed", "{printed}");
-    assert_eq!(g3["records"], g3["reachable"]);
-    assert!(g3["firstUnreachable"].is_null());
+    assert_eq!(g3["keyedLines"], g3["coveredLines"]);
+    assert_eq!(g3["uncoveredLines"], 0);
+    assert_eq!(g3["plan"]["records"], g3["plan"]["reachable"]);
+    assert!(g3["plan"]["firstUnreachable"].is_null());
 
     let (status, g4) = gate(&report, "G4");
     assert_eq!(status, "passed", "{printed}");
@@ -422,7 +425,6 @@ fn a_release_assembled_from_its_index_passes_every_gate() {
     assert_eq!(g4["columnChecked"], true);
     assert_eq!(g4["columnMismatches"], 0);
     assert_eq!(g4["records"], g4["atHint"]);
-    assert_eq!(g4["keyedLines"], g4["coveredLines"]);
 
     let (status, g6) = gate(&report, "G6");
     assert_eq!(status, "passed", "{printed}");
@@ -435,24 +437,39 @@ fn a_release_assembled_from_its_index_passes_every_gate() {
     assert_eq!(g6["countedOver"], "distinct texts (keys)");
 }
 
-/// A gate whose inputs are not given is skipped, not failed; queries can come from a file,
-/// one per line, blank lines aside; and the floors are the flags'.
+/// A gate whose inputs are not given has not run, and the release has not passed it; one
+/// the caller skips by name is recorded, and holds nothing back. G3 runs on the index alone
+/// without a plan. Queries can come from a file, one per line, blank lines aside; and the
+/// floors are the flags'.
 #[test]
-fn a_gate_without_its_inputs_is_skipped_and_queries_come_from_a_file() {
+fn a_gate_is_skipped_only_by_name_and_queries_come_from_a_file() {
     let release = release(&books());
     let out = release.path("report.json");
-    let (code, printed) = validate(&[
+    let base = [
         "--index",
         release.index.to_str().unwrap(),
         "--vectors",
         release.vectors.to_str().unwrap(),
         "--report",
         out.to_str().unwrap(),
-    ]);
+    ];
+    let (code, printed) = validate(&base);
+    assert_eq!(code, 1, "{printed}");
+    let not_run = report(&out);
+    assert_eq!(not_run["passed"], false);
+    assert_eq!(gate(&not_run, "G3").0, "passed");
+    assert!(gate(&not_run, "G3").1["plan"].is_null());
+    assert_eq!(gate(&not_run, "G4").0, "passed");
+    assert_eq!(gate(&not_run, "G6").0, "notRun");
+    assert!(printed.contains("--skip G6"), "{printed}");
+
+    let mut skipping = base.to_vec();
+    skipping.extend(["--skip", "g6", "--skip", "G6"]);
+    let (code, printed) = validate(&skipping);
     assert_eq!(code, 0, "{printed}");
     let skipped = report(&out);
-    assert_eq!(gate(&skipped, "G3").0, "skipped");
-    assert_eq!(gate(&skipped, "G4").0, "passed");
+    assert_eq!(skipped["passed"], true);
+    assert_eq!(skipped["skipped"], serde_json::json!(["G6"]));
     assert_eq!(gate(&skipped, "G6").0, "skipped");
 
     let queries = release.path("queries.txt");
@@ -480,6 +497,58 @@ fn a_gate_without_its_inputs_is_skipped_and_queries_come_from_a_file() {
     assert_eq!(g6["minRecallAt10"], 0.5);
 }
 
+/// An index with a line the set does not cover fails G3 on the index alone, without a plan;
+/// and a gate whose inputs are not given has not passed: the run fails unless the caller
+/// skips that gate by name, which the report records.
+#[test]
+fn review_uncovered_lines_without_plan_or_warehouse() {
+    let release = release(&books());
+    add_books(
+        &release.index,
+        &[(
+            "ספר ארבעה",
+            "/אחר",
+            "/books/four.txt",
+            3,
+            "שורה של ספר ארבעה שלא היה בספרייה כשהווקטורים נבנו".to_string(),
+        )],
+    );
+    let out = release.path("report.json");
+    let base = [
+        "--index",
+        release.index.to_str().unwrap(),
+        "--vectors",
+        release.vectors.to_str().unwrap(),
+        "--report",
+        out.to_str().unwrap(),
+    ];
+    let (code, printed) = validate(&base);
+    assert_eq!(code, 1, "{printed}");
+    let failed = report(&out);
+    assert_eq!(failed["passed"], false);
+    let (status, g3) = gate(&failed, "G3");
+    assert_eq!(status, "failed", "{printed}");
+    assert_eq!(
+        g3["keyedLines"].as_u64().unwrap() - g3["coveredLines"].as_u64().unwrap(),
+        1,
+        "{g3}"
+    );
+    assert_eq!(g3["uncoveredLines"], 1);
+    assert!(g3["plan"].is_null(), "no plan was given: {g3}");
+    assert_eq!(gate(&failed, "G4").0, "passed", "{printed}");
+    assert_eq!(gate(&failed, "G6").0, "notRun", "{printed}");
+
+    // Skipping G6 by name runs the rest, and still fails on G3.
+    let mut skipping = base.to_vec();
+    skipping.extend(["--skip", "G6"]);
+    let (code, printed) = validate(&skipping);
+    assert_eq!(code, 1, "{printed}");
+    let skipped = report(&out);
+    assert_eq!(gate(&skipped, "G6").0, "skipped");
+    assert_eq!(skipped["skipped"], serde_json::json!(["G6"]));
+    assert_eq!(gate(&skipped, "G3").0, "failed");
+}
+
 /// A record whose book the index no longer holds, or whose book no longer holds its text,
 /// resolves nowhere: G4 fails, and the binary exits 1, with the report written.
 #[test]
@@ -500,10 +569,13 @@ fn a_record_the_index_no_longer_holds_fails_resolution() {
         release.vectors.to_str().unwrap(),
         "--report",
         out.to_str().unwrap(),
+        "--skip",
+        "G6",
     ]);
     assert_eq!(code, 1, "{printed}");
     let report = report(&out);
     assert_eq!(report["passed"], false);
+    assert_eq!(gate(&report, "G3").0, "passed", "{printed}");
     let (status, g4) = gate(&report, "G4");
     assert_eq!(status, "failed", "{printed}");
     assert_eq!(g4["booksMissing"], 1);
@@ -517,6 +589,9 @@ fn stale_hints_are_reported_and_fail_only_past_the_limit() {
     let mut books = books();
     let release = release(&books);
     let (title, topics, key, order, text) = books.remove(0);
+    // The book's first line moved to its end: every text still there, every hint stale.
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.rotate_left(1);
     let mut engine = SearchEngine::new(release.index.to_str().unwrap());
     engine.delete_documents_by_file_path(key).unwrap();
     engine
@@ -526,7 +601,7 @@ fn stale_hints_are_reported_and_fail_only_past_the_limit() {
             key.to_string(),
             order,
             0,
-            format!("שורה חדשה בראש הספר ארוכה דיה לעמוד לבדה\n{text}"),
+            lines.join("\n"),
             None,
         )
         .unwrap();
@@ -537,6 +612,8 @@ fn stale_hints_are_reported_and_fail_only_past_the_limit() {
         release.index.to_str().unwrap(),
         "--vectors",
         release.vectors.to_str().unwrap(),
+        "--skip",
+        "G6",
     ];
 
     let (code, printed) = validate(&base);
@@ -582,10 +659,14 @@ fn a_plan_the_set_does_not_reach_fails_coverage() {
     let (status, g3) = gate(&report, "G3");
     assert_eq!(status, "failed", "{printed}");
     assert_eq!(
-        g3["records"].as_u64().unwrap() - g3["reachable"].as_u64().unwrap(),
+        g3["plan"]["records"].as_u64().unwrap() - g3["plan"]["reachable"].as_u64().unwrap(),
         1
     );
-    assert_eq!(g3["firstUnreachable"]["book"], "/books/four.txt");
+    assert_eq!(g3["plan"]["firstUnreachable"]["book"], "/books/four.txt");
+    assert_eq!(
+        g3["uncoveredLines"], 1,
+        "the index's own line is uncovered too"
+    );
 }
 
 /// Measured against a warehouse it was not assembled from, the set's scan misses the exact
@@ -640,6 +721,8 @@ fn wrong_arguments_and_unreadable_inputs_exit_2() {
             release.assembled.to_str().unwrap(),
         ],
         vec!["--index", index, "--release", index],
+        vec!["--index", index, "--vectors", vectors, "--skip", "G5"],
+        vec!["--index", index, "--vectors", vectors, "--skip"],
     ] {
         let (code, printed) = validate(&args);
         assert_eq!(code, 2, "{args:?}: {printed}");
