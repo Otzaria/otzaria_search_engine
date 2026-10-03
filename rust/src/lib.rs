@@ -24,3 +24,31 @@ mod lexicons;
 // flutter_rust_bridge must not generate bindings for it — Dart never supplies a corpus.
 #[cfg(feature = "semantic-integration")]
 pub mod semantic_corpus;
+// The plan of a vector build, from the release index, as the sidecar's plan files. At the
+// crate root for the reason `semantic_corpus` is.
+#[cfg(feature = "semantic-integration")]
+pub mod semantic_plan;
+// Which `SemanticErrorKind` each sidecar failure is. At the crate root for the reason
+// `semantic_corpus` is: it matches the sidecar's error types, which Dart never sees, and
+// flutter_rust_bridge must not generate bindings for it. The kinds themselves are in
+// `crate::api`, where Dart gets them.
+#[cfg(feature = "semantic-integration")]
+mod semantic_errors;
+// The live index as a vector set's resolver: which books a filter admits, and which live
+// lines hold the keys a scan returned. At the crate root for the reason `semantic_errors` is:
+// it implements the sidecar's port, which Dart never sees.
+#[cfg(feature = "semantic-integration")]
+mod semantic_resolver;
+// What a filtered search scans beyond the books it admits: the texts a live book holds that
+// the vector set records elsewhere. At the crate root for the reason `semantic_resolver` is.
+#[cfg(feature = "semantic-integration")]
+mod semantic_moves;
+// What a semantic search's cancellation token holds, and where a search looks at it. At the
+// crate root for the same reason: Dart gets the token, in `crate::api`, and nothing here. In
+// every build, since the token is part of the API whether or not the sidecar is.
+mod search_cancellation;
+// The chunk key the index stores for each line, and the recipe it is computed under. At the
+// crate root so flutter_rust_bridge generates no bindings for it, and in every build: the
+// release index is built by one build and opened by all of them. Public for the Rust side
+// alone: the tests and tools hold the recipe to the one a model publishes.
+pub mod semantic_keys;

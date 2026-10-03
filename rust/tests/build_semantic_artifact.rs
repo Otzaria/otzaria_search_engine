@@ -1,4 +1,4 @@
-//! S4b's production path, exercised as a production path.
+//! The build's production path, exercised as a production path.
 //!
 //! Everything else about the corpus adapter is a unit test holding a `TantivyCorpus` it
 //! constructed in-process. This runs the actual build binary against an index that exists on
@@ -7,15 +7,23 @@
 //! covered at all.
 //!
 //! Compiled only with the deterministic backend: a build is inference, and the real weights
-//! are a 396 MB gated download the sidecar's own golden job already fetches.
+//! are a 396 MB gated download the sidecar's own golden job already fetches. Not beside
+//! `semantic-onnx`, which would take the stub ONNX package ahead of the stand-in and fail to
+//! load it.
 
-#![cfg(all(feature = "semantic-mock", not(feature = "semantic-real")))]
+#![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
+use otzaria_semantic_search::cancellation::CancellationToken;
+use otzaria_semantic_search::distribution::builder::{RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME};
 use otzaria_semantic_search::distribution::corpus::CorpusIndex;
-use otzaria_semantic_search::distribution::packer::validate_artifact;
 use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
-use otzaria_semantic_search::semantic::embedding::{mock, validate_and_checksum_gguf};
-use otzaria_semantic_search::semantic::versioning::ModelIdentity;
+use otzaria_semantic_search::semantic::embedding::mock;
+use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
+use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+use otzaria_semantic_search::semantic::segment_set::{
+    install_package, InstallExpectation, InstallSource,
+};
+use otzaria_semantic_search::semantic::versioning::{IndexVersion, ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::SearchEngine;
 use search_engine::semantic_corpus::TantivyCorpus;
 use std::path::Path;
@@ -24,7 +32,8 @@ use tempfile::TempDir;
 
 const GENESIS: &str = "/books/genesis.txt";
 const BERACHOT: &str = "/books/berachot.txt";
-const LIBRARY_VERSION: &str = "otzaria-library-2026-08";
+/// The library edition the build is told the index holds, as `--library-version` takes it.
+const LIBRARY_VERSION: &str = "30";
 
 /// The third line is under `min_embeddable_chars`, so the recipe skips it — and an artifact
 /// that skips it is complete rather than short. Without a line like it, a build that ignored
@@ -68,17 +77,29 @@ fn write_index(dir: &Path) {
 
 fn model_identity(checksum: &str, chunking: &ChunkerConfig) -> ModelIdentity {
     ModelIdentity {
-        model_id: "EMD123/Otzaria-Embedding-V1-Flash-0.6B".to_string(),
-        model_checksum: checksum.to_string(),
-        model_quantization: "Q4_K_M".to_string(),
-        embedding_backend: "mock-hash-v1".to_string(),
+        family_id: "test-mock@0000000".to_string(),
+        tokenizer_checksum: mock::stub_tokenizer_checksum(),
         embedding_dim: 64,
-        pooling: "last-token".to_string(),
+        pooling: "in-graph".to_string(),
         max_tokens: 512,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
         chunking_identity: chunking.identity(),
+        query_packages: vec![ModelPackage {
+            checksum: checksum.to_string(),
+            quantization: "int8".to_string(),
+        }],
     }
+}
+
+/// The folder the stub ONNX package is written into, under `work`.
+fn model_dir(work: &Path) -> std::path::PathBuf {
+    work.join("model")
+}
+
+/// The graph of the stub ONNX package under `work`: what `--model-file` names.
+fn model_file(work: &Path) -> std::path::PathBuf {
+    model_dir(work).join("model.onnx")
 }
 
 /// Index, model and recipe on disk; every path the binary needs.
@@ -95,9 +116,9 @@ fn fixture() -> Fixture {
 
     let work = TempDir::new().unwrap();
     let chunking = ChunkerConfig::default();
-    let model_file = work.path().join("model.gguf");
-    mock::write_stub_gguf(&model_file, 3).unwrap();
-    let model = model_identity(&validate_and_checksum_gguf(&model_file).unwrap(), &chunking);
+    let graph = mock::write_stub_onnx_package(&model_dir(work.path()));
+    let package = validate_onnx_package(&graph).unwrap();
+    let model = model_identity(package.checksum(), &chunking);
 
     std::fs::write(
         work.path().join("chunking.json"),
@@ -129,7 +150,7 @@ fn run(fixture: &Fixture, out: &Path, extra: &[&str]) -> std::process::Output {
         "--model",
         work.join("model.json").to_str().unwrap(),
         "--model-file",
-        work.join("model.gguf").to_str().unwrap(),
+        model_file(work).to_str().unwrap(),
         "--chunking",
         work.join("chunking.json").to_str().unwrap(),
         "--out",
@@ -143,12 +164,15 @@ fn run(fixture: &Fixture, out: &Path, extra: &[&str]) -> std::process::Output {
     command.output().expect("the build binary runs")
 }
 
-/// The stage's claim, as a command: an index directory and a model in, a verified artifact
-/// out — and what it wrote verifies again against the same index, from a separate process.
+/// The stage's claim, as a command: an index directory and a model in, a base package out —
+/// and what it wrote installs into a vector set against the digest it announced, from a
+/// separate process.
 #[test]
-fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
+fn the_build_binary_turns_an_index_and_a_model_into_a_package_that_installs() {
+    use sha2::Digest;
+
     let fixture = fixture();
-    let out = fixture.work.path().join("artifact");
+    let out = fixture.work.path().join("package");
 
     let built = run(&fixture, &out, &["--allow-non-semantic"]);
     assert!(
@@ -159,26 +183,50 @@ fn the_build_binary_turns_an_index_and_a_model_into_a_verified_artifact() {
     );
     let stdout = String::from_utf8_lossy(&built.stdout);
     assert!(
-        stdout.contains(&format!("Vectors:       {EMBEDDED}")),
+        stdout.contains(&format!("Vectors:          {EMBEDDED}")),
         "the line below min_embeddable_chars must not get a vector:\n{stdout}"
     );
 
-    // Verified independently, against the index the artifact names — a second open of the
-    // same directory, in this process, with nothing carried over from the build.
-    let engine = SearchEngine::new(fixture.index.path().to_str().unwrap());
-    let corpus =
-        TantivyCorpus::from_engine(&engine, LIBRARY_VERSION, fixture.chunking.clone()).unwrap();
-    let report = validate_artifact(&out, &fixture.model, &corpus).unwrap();
-    assert_eq!(report.vector_count, EMBEDDED);
-    assert_eq!(report.identity.corpus, corpus.identity().unwrap());
-
-    // The digest the build published is the one a fresh verification arrives at.
+    // The digest the build announced is the manifest's, and the package installs against
+    // it, as a device installs a release.
     let published = stdout
         .lines()
-        .find_map(|line| line.strip_prefix("Digest:"))
-        .expect("the binary reports a digest")
-        .trim();
-    assert_eq!(report.digest, published);
+        .find_map(|line| line.strip_prefix("Manifest SHA-256:"))
+        .expect("the binary reports the manifest's digest")
+        .trim()
+        .to_string();
+    let manifest_json = std::fs::read_to_string(out.join(RELEASE_MANIFEST_FILENAME)).unwrap();
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(manifest_json.as_bytes())),
+        published
+    );
+    let engine = SearchEngine::new(fixture.index.path().to_str().unwrap());
+    let corpus = TantivyCorpus::from_engine(
+        &engine,
+        LIBRARY_VERSION.parse().unwrap(),
+        "",
+        fixture.chunking.clone(),
+    )
+    .unwrap();
+    let applied = install_package(
+        &fixture.work.path().join("vectors"),
+        &InstallSource {
+            segment: &out.join(SEGMENT_FILENAME),
+            manifest_json: &manifest_json,
+        },
+        &InstallExpectation {
+            identity: IndexVersion {
+                text: corpus.identity().unwrap().text,
+                model: fixture.model.clone(),
+                store: readable_store_identity(),
+            },
+            published_manifest_sha256: Some(published),
+        },
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(applied.slots_added, u64::from(EMBEDDED));
+    assert_eq!(applied.library_version, 30);
 }
 
 /// The stand-in's vectors carry no meaning, and an artifact built from them passes every
@@ -241,7 +289,7 @@ fn the_build_leaves_the_index_byte_for_byte_untouched() {
 
     let ok = run(
         &fixture,
-        &fixture.work.path().join("artifact"),
+        &fixture.work.path().join("package"),
         &["--allow-non-semantic"],
     );
     assert!(ok.status.success());
@@ -281,7 +329,7 @@ fn a_path_that_holds_no_index_is_reported_rather_than_populated() {
             "--model",
             work.join("model.json").to_str().unwrap(),
             "--model-file",
-            work.join("model.gguf").to_str().unwrap(),
+            model_file(work).to_str().unwrap(),
             "--chunking",
             work.join("chunking.json").to_str().unwrap(),
             "--out",

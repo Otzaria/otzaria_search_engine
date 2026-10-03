@@ -105,7 +105,7 @@ jobs:
             --manifest-dir ../../rust \
             --android-sdk-location "${ANDROID_SDK_ROOT}" \
             --android-ndk-version "${ANDROID_NDK_VERSION}" \
-            --android-min-sdk-version 23 \
+            --android-min-sdk-version 21 \
             --target x86_64-apple-darwin \
             --target aarch64-apple-darwin \
             --target aarch64-apple-ios \
@@ -137,8 +137,8 @@ jobs:
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            binutils build-essential ca-certificates cmake curl git libclang-dev \
-            pkg-config unzip xz-utils
+            binutils build-essential ca-certificates curl git pkg-config unzip \
+            xz-utils
           git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v5
@@ -181,22 +181,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # llama.cpp rejects the Visual Studio/MSVC compiler for Windows ARM.
-      # The hosted ARM image includes LLVM and Ninja; selecting them here
-      # makes cmake-rs invoke clang-cl instead of its MSVC default.
-      - name: Configure LLVM for Windows ARM
+      # The C dependencies (the bundled SQLite, zstd) are compiled by cc-rs
+      # with the hosted ARM image's clang-cl rather than its MSVC default, the
+      # compiler the published Windows ARM binaries have always been built
+      # with. Nothing in the build is C++ or goes through CMake any more, so
+      # the C compiler is all there is to choose.
+      - name: Configure clang-cl for Windows ARM
         if: matrix.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: |
           clang-cl --version
-          ninja --version
-          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
           "CC=clang-cl" >> $env:GITHUB_ENV
-          "CXX=clang-cl" >> $env:GITHUB_ENV
-          # clang-cl, unlike MSVC, does not enable C++ exceptions by default.
-          # llama.cpp's GGUF reader uses try/catch, so pass the MSVC-compatible
-          # switch through cc-rs to CMake's C++ compilation flags.
-          "CXXFLAGS=/EHsc" >> $env:GITHUB_ENV
 
       - name: Install build tool dependencies
         working-directory: cargokit/build_tool
