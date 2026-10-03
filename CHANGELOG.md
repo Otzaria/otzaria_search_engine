@@ -265,9 +265,9 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at 04a2cc9, its `onnx-backend` with the `store-v2` branch, its two rounds of
-  audit fixes and `scan-with` merged, which keys a vector by the text it was
-  embedded from, so a set's
+  at bf45795, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  audit fixes, `scan-with` and `open-without-recovery` merged, which keys a
+  vector by the text it was embedded from, so a set's
   identity is a line recipe and a model family, with nothing positional in it:
   - The text half is the line recipe of the index, which this plugin declares
     as `LINE_TEXT_VERSION` 1: split on `\n`, `normalize_text_for_indexing`, a
