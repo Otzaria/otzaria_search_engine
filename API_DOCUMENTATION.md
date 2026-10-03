@@ -346,9 +346,10 @@ its hits against the index that is open, by the key of each line's text, which a
 new index keeps in its `chunkKey` column. A commit after opening leaves the set
 serving. A line that moved is found where it is now; a text a book holds in
 several places is a line for each, so ungrouped every one is a result. A hit
-is at most 32 lines: first one for each book the set records its text in (and
-under a filter, each admitted book it arrived in), then those books' other
-lines of it, in that order, while the 32 last; lines past them are not
+is at most 32 lines: first one for each book that holds its text — each book
+the set records it in, or, when it left them, each book the index holds it in
+now; under a filter, also each admitted book it arrived in — then those books'
+other lines of it, in that order, while the 32 last; lines past them are not
 semantic results of that hit, though lexical search still finds every one. A line
 whose text is gone, or whose embedded text changed with its neighbours, is not
 shown; and every line a search returns, grouped siblings included, is checked
