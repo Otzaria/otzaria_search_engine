@@ -22,7 +22,10 @@
 //!   index — or with one written under another recipe: the key of the line at each hint,
 //!   and then of the lines within [`RECOMPUTE_REACH`] of a hint that does not hold it, from
 //!   their text and sections. No pass over the whole index: a moved text is found near where
-//!   it was, or not at all.
+//!   it was, or not at all. A book's other lines of a text are the lines of its `lineHash`;
+//!   a short line's key spans its neighbours, so a line among them is recomputed only when
+//!   its window's `lineHash`es can spell the text ([`KeySpan`]), and a hit stops after
+//!   [`MAX_FAILED_REPEATS`] lines recomputed that did not hold its key.
 //!
 //! # Every occurrence, and only the text's
 //!
@@ -59,7 +62,7 @@
 //! [`PLAN_CACHE`] filters searched with last. A book's arrivals are kept with the set's
 //! view, under the book's postings and its text hash, across generations.
 
-use crate::semantic_keys::recompute_chunk_keys;
+use crate::semantic_keys::{context_window, production_chunking, recompute_chunk_keys, KeySpan};
 use crate::semantic_moves::{Arrival, Postings, SetView};
 use lru::LruCache;
 use otzaria_semantic_search::cancellation::CancellationToken;
@@ -107,6 +110,13 @@ pub(crate) const RECOMPUTE_REACH: usize = 16;
 /// times, lexical search still finds every one, and a semantic result needs a handful.
 pub(crate) const MAX_LINES_PER_HIT: usize = MAX_RECORDS_PER_HIT;
 
+/// The most lines the search for a hit's other lines may recompute a key for, without the
+/// column, and find that they do not hold it: the backstop behind [`KeySpan`], for a text
+/// whose windows the `lineHash` column cannot tell apart — a short line among blank or short
+/// neighbours, or after a line the cap cuts. A hit that reaches it shows the lines found by
+/// then.
+pub(crate) const MAX_FAILED_REPEATS: usize = 16;
+
 /// Where a resolved line is: what the page a search shows is hydrated from. The line was
 /// held to its hit's whole key before it was resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +142,14 @@ pub(crate) struct ResolverCache {
     /// How many passes over the whole column searches made in this generation.
     #[cfg(test)]
     pub(crate) passes: u64,
+    /// How many keys the search for a text's other lines recomputed, without the column, in
+    /// this generation.
+    #[cfg(test)]
+    pub(crate) recomputes: u64,
+    /// The most keys one hit's search for a text's other lines recomputed and found not
+    /// held, in this generation.
+    #[cfg(test)]
+    pub(crate) worst_failures: usize,
 }
 
 /// What a scan plan is of: a generation of one set, and a filter.
@@ -250,6 +268,7 @@ pub(crate) struct LiveResolver<'a> {
     /// Whether the `chunkKey` column is one this build uses; otherwise keys are recomputed.
     column: bool,
     file_path: Field,
+    text: Field,
     columns: Vec<SegmentColumns>,
     cache: &'a Mutex<ResolverCache>,
     /// Every line this search resolved, by `(file_path, line_id)`, for its page.
@@ -279,6 +298,7 @@ impl<'a> LiveResolver<'a> {
     ) -> Result<Self, ResolveError> {
         let schema = searcher.schema();
         let file_path = schema.get_field("filePath").map_err(index_error)?;
+        let text = schema.get_field("text").map_err(index_error)?;
         let chunk_key_name = chunk_key.map(|field| schema.get_field_name(field).to_string());
         let columns = searcher
             .segment_readers()
@@ -301,6 +321,7 @@ impl<'a> LiveResolver<'a> {
             searcher,
             column: chunk_key.is_some(),
             file_path,
+            text,
             columns,
             cache,
             records: Mutex::new(HashMap::new()),
@@ -601,6 +622,16 @@ impl<'a> LiveResolver<'a> {
     /// The other lines of `book` that hold `key` as its line at `position` does, in order,
     /// at most `limit` and none `taken`: a text the book holds more than once is recorded
     /// once, at its first line, and each of its lines is a line of the hit's.
+    ///
+    /// Without the column the lines that share the line's `lineHash` are the candidates, and
+    /// a short line's key spans its neighbours: a text that recurs throughout a book among
+    /// other neighbours each time has hundreds of candidates and few lines holding its key.
+    /// So once a candidate is recomputed and found not to hold the key, the line's span is
+    /// read, and every later candidate whose window's `lineHash`es cannot spell the key's
+    /// text is passed over unread ([`KeySpan`]); a text whose candidates hold it, the common
+    /// case, reads nothing more. Each candidate found not to hold the key spends one of the
+    /// hit's `budget`, [`MAX_FAILED_REPEATS`] in all: once it is spent, nothing more is
+    /// recomputed.
     fn repeats_of(
         &self,
         book: &BookLines,
@@ -608,6 +639,7 @@ impl<'a> LiveResolver<'a> {
         key: ChunkKey,
         limit: usize,
         taken: &HashSet<DocAddress>,
+        budget: &mut usize,
     ) -> Result<Vec<usize>, ResolveError> {
         let Some(value) = self.repeat_value(book.docs[position]) else {
             return Ok(Vec::new());
@@ -615,6 +647,8 @@ impl<'a> LiveResolver<'a> {
         let Some(positions) = self.repeats(book).get(&value) else {
             return Ok(Vec::new());
         };
+        // The line's span, once a candidate has failed: `Some(None)` when it cannot be read.
+        let mut span: Option<Option<KeySpan>> = None;
         let mut found = Vec::new();
         for &other in positions.iter() {
             if found.len() == limit {
@@ -627,13 +661,102 @@ impl<'a> LiveResolver<'a> {
             let holds = if self.column {
                 self.verified(book, other, key)?
             } else {
-                self.holds(book, other, key)?
+                if let Some(Some(span)) = &span {
+                    if self
+                        .window_hashes(book, other)
+                        .is_some_and(|window| !span.admits(&window))
+                    {
+                        continue;
+                    }
+                }
+                if *budget == 0 {
+                    break;
+                }
+                #[cfg(test)]
+                {
+                    self.cache
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .at(self.generation_id())
+                        .recomputes += 1;
+                }
+                let holds = self.holds(book, other, key)?;
+                if !holds {
+                    *budget -= 1;
+                    if span.is_none() {
+                        span = Some(self.key_span(book, position)?);
+                    }
+                }
+                holds
             };
             if holds {
                 found.push(other);
             }
         }
         Ok(found)
+    }
+
+    /// The stored text of the line at `address`.
+    fn stored_text(&self, address: DocAddress) -> Result<String, ResolveError> {
+        let document: TantivyDocument = self.searcher.doc(address).map_err(index_error)?;
+        Ok(document
+            .get_first(self.text)
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    fn section_of(&self, address: DocAddress) -> Option<u64> {
+        self.columns[address.segment_ord as usize]
+            .section
+            .first(address.doc_id)
+    }
+
+    fn line_hash_of(&self, address: DocAddress) -> Option<u64> {
+        self.columns[address.segment_ord as usize]
+            .line_hash
+            .first(address.doc_id)
+    }
+
+    /// The span of the key the line at `position` of `book` holds: from its stored text, and
+    /// for a short line its window's — at most five documents, read at most once per line
+    /// whose repeats are looked for — and their `lineHash`es. `None` when a column the window
+    /// needs cannot be read: every candidate is then recomputed, within the budget.
+    fn key_span(&self, book: &BookLines, position: usize) -> Result<Option<KeySpan>, ResolveError> {
+        let own = self.stored_text(book.docs[position])?;
+        if own.trim().chars().count() >= production_chunking().min_meaningful_chars {
+            return Ok(Some(KeySpan::Alone));
+        }
+        let Some(window) = context_window(book.docs.len(), position, |at| {
+            self.section_of(book.docs[at])
+        }) else {
+            return Ok(None);
+        };
+        let mut texts = Vec::with_capacity(5);
+        let mut hashes = Vec::with_capacity(5);
+        for at in window {
+            texts.push(if at == position {
+                own.clone()
+            } else {
+                self.stored_text(book.docs[at])?
+            });
+            let Some(hash) = self.line_hash_of(book.docs[at]) else {
+                return Ok(None);
+            };
+            hashes.push(hash);
+        }
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        Ok(Some(KeySpan::joined(&texts, &hashes)))
+    }
+
+    /// The `lineHash`es of the window the line at `position` of `book` is keyed over were it
+    /// short, from the columns alone; `None` when they cannot say.
+    fn window_hashes(&self, book: &BookLines, position: usize) -> Option<Vec<u64>> {
+        context_window(book.docs.len(), position, |at| {
+            self.section_of(book.docs[at])
+        })?
+        .map(|at| self.line_hash_of(book.docs[at]))
+        .collect()
     }
 
     /// The position of `book` the record at `hint` names, when that line holds `key` by
@@ -1386,16 +1509,25 @@ impl CandidateResolver for LiveResolver<'_> {
                 }
             }
             // Then each book's other lines of the text, in the order its first was found.
+            let mut budget = MAX_FAILED_REPEATS;
             for (book, position) in &found {
                 if emitted == MAX_LINES_PER_HIT {
                     break;
                 }
                 let limit = MAX_LINES_PER_HIT - emitted;
-                for other in self.repeats_of(book, *position, hit.key, limit, &taken)? {
+                for other in
+                    self.repeats_of(book, *position, hit.key, limit, &taken, &mut budget)?
+                {
                     taken.insert(book.docs[other]);
                     lines.push(self.describe(hit_index, book, other)?);
                     emitted += 1;
                 }
+            }
+            #[cfg(test)]
+            {
+                let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+                let cache = cache.at(self.generation_id());
+                cache.worst_failures = cache.worst_failures.max(MAX_FAILED_REPEATS - budget);
             }
             if emitted == 0 && !hit.records.is_empty() {
                 unresolved.push(hit_index);

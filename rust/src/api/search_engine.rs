@@ -21365,6 +21365,7 @@ mod tests {
         use super::*;
         use crate::semantic_corpus::TantivyCorpus;
         use crate::semantic_keys::production_chunking;
+        use crate::semantic_resolver::MAX_FAILED_REPEATS;
         use otzaria_semantic_search::cancellation::CancellationToken;
         use otzaria_semantic_search::distribution::builder::{
             build, BuildRequest, RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME,
@@ -21394,7 +21395,11 @@ mod tests {
 
         /// An index of one book, a vector set built from it and installed, and the set open.
         fn opened(dir: &TempDir) -> SearchEngine {
-            let built = built(dir);
+            open(dir, built(dir))
+        }
+
+        /// `built` installed into `dir`'s vector set, and the set open.
+        fn open(dir: &TempDir, built: Built) -> SearchEngine {
             let vectors = dir.path().join("vectors");
             install_package(
                 &vectors,
@@ -21427,9 +21432,24 @@ mod tests {
 
         /// [`Built`]: the index and the package, nothing installed.
         fn built(dir: &TempDir) -> Built {
+            built_of(
+                dir,
+                false,
+                format!("בראשית ברא אלהים את השמים ואת הארץ\n{PROBE}"),
+            )
+        }
+
+        /// [`Built`] of `text` as the one book [`BOOK`], in an index of schema version 4 —
+        /// no `chunkKey` column — when `version_4` asks.
+        fn built_of(dir: &TempDir, version_4: bool, text: String) -> Built {
             let index = dir.path().join("index");
             fs::create_dir_all(&index).unwrap();
+            if version_4 {
+                Index::create_in_dir(&index, schema_of_version(4).unwrap()).unwrap();
+                write_index_metadata(&index, &index_metadata(4, None)).unwrap();
+            }
             let mut engine = SearchEngine::new(index.to_str().unwrap());
+            assert_eq!(engine.chunk_key_field.is_none(), version_4);
             engine
                 .add_text_book(
                     "בראשית".to_string(),
@@ -21437,7 +21457,7 @@ mod tests {
                     BOOK.to_string(),
                     0,
                     0,
-                    format!("בראשית ברא אלהים את השמים ואת הארץ\n{PROBE}"),
+                    text,
                     None,
                 )
                 .unwrap();
@@ -21597,6 +21617,143 @@ mod tests {
                     .is_some_and(|reason| reason.contains("were not shown as such")),
                 "{:?}",
                 response.fallback_reason
+            );
+        }
+
+        /// A short line, under the 20 characters a line stands alone at, with letters enough
+        /// for a `lineHash`.
+        const SHORT: &str = "ויאמר משה אל העם";
+        /// How many times the books below hold [`SHORT`] among lines of their own.
+        const RECURS: usize = 300;
+
+        /// One book of five-line blocks, each [`SHORT`] with two lines on either side — the
+        /// window its key spans: the first block's own, `RECURS` blocks of `neighbour(n)`, and
+        /// the first block again, a real repeat of its text.
+        fn recurring(neighbour: impl Fn(usize) -> String) -> String {
+            let first = [
+                "ויקרא משה אל כל ישראל ויאמר אליהם",
+                "שמע ישראל את החוקים ואת המשפטים",
+                SHORT,
+                "אשר אנכי דובר באזניכם היום",
+                "ולמדתם אותם ושמרתם לעשותם",
+            ]
+            .join("\n");
+            let blocks = (0..RECURS).map(|block| {
+                let n = 4 * block;
+                [
+                    neighbour(n),
+                    neighbour(n + 1),
+                    SHORT.to_string(),
+                    neighbour(n + 2),
+                    neighbour(n + 3),
+                ]
+                .join("\n")
+            });
+            std::iter::once(first.clone())
+                .chain(blocks)
+                .chain(std::iter::once(first))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        /// The text of `block`'s short line as it is embedded: what a query must repeat for
+        /// that line's vector to come first.
+        fn window(text: &str, block: usize) -> String {
+            text.lines()
+                .skip(5 * block)
+                .take(5)
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        fn resolver_counts(engine: &SearchEngine) -> (u64, usize) {
+            let cache = engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            (cache.recomputes, cache.worst_failures)
+        }
+
+        fn semantic_page(engine: &SearchEngine, query: &str, limit: u32) -> SemanticSearchResponse {
+            engine
+                .search_semantic(
+                    query.to_string(),
+                    Vec::new(),
+                    limit,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::SemanticOnly,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        }
+
+        /// R2 of the acceptance run. Without the column a short line's repeats are the lines
+        /// of its `lineHash` — here three hundred and one — and its key spans its neighbours,
+        /// which differ at all but one. A hit recomputes one line that does not hold its key,
+        /// then reads its span, and the others' windows cannot spell the text: all the hits a
+        /// page of ten scans for recompute fewer lines together than one of them did alone,
+        /// three hundred. The real repeat, neighbours and all, is still a result.
+        #[test]
+        fn a_short_line_recurring_among_other_lines_is_bounded_and_keeps_its_real_repeat() {
+            let dir = TempDir::new().unwrap();
+            let text = recurring(|n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"));
+            let engine = open(&dir, built_of(&dir, true, text.clone()));
+
+            let response = semantic_page(&engine, &window(&text, 0), 10);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let shorts: Vec<u64> = response
+                .results
+                .iter()
+                .filter(|result| result.snippet_html == SHORT)
+                .map(|result| result.segment)
+                .collect();
+            let repeat = 5 * (RECURS as u64 + 1) + 2;
+            assert_eq!(
+                shorts[..2],
+                [2, repeat],
+                "the line and its real repeat, first"
+            );
+
+            let (recomputes, worst) = resolver_counts(&engine);
+            assert!(
+                worst <= 1,
+                "a hit recomputed {worst} lines that did not hold its key"
+            );
+            assert!(recomputes < RECURS as u64, "{recomputes} keys recomputed");
+        }
+
+        /// Neighbours with no `lineHash` — under twelve letters — leave the windows nothing to
+        /// tell apart, and every block's line is a candidate for every other's. A hit then
+        /// stops after [`MAX_FAILED_REPEATS`] lines recomputed that did not hold its key: a
+        /// page of one scans for four hits, and recomputes at most four budgets' worth, where
+        /// each hit read three hundred lines before.
+        #[test]
+        fn a_short_line_whose_windows_cannot_be_told_apart_stops_at_the_budget() {
+            let dir = TempDir::new().unwrap();
+            let text = recurring(|n| format!("פסוק {n}"));
+            let engine = open(&dir, built_of(&dir, true, text.clone()));
+
+            let response = semantic_page(&engine, &window(&text, 1), 1);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let (recomputes, worst) = resolver_counts(&engine);
+            assert_eq!(worst, MAX_FAILED_REPEATS, "every hit reached the budget");
+            assert!(
+                recomputes <= 4 * MAX_FAILED_REPEATS as u64,
+                "{recomputes} keys recomputed"
             );
         }
 
