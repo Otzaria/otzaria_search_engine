@@ -1012,35 +1012,20 @@ impl LiveResolver<'_> {
 
         // An arrival some admitted book's live records reach is scanned already; the vectors
         // of the others are weighed besides the scan.
-        let mut unreached_values: HashSet<u64> = arrivals.keys().copied().collect();
-        if !unreached_values.is_empty() {
-            let mut records = Vec::new();
-            for name in &admitted {
-                if unreached_values.is_empty() {
-                    break;
-                }
-                if cancel.is_cancelled() {
-                    return Err(ResolveError::Cancelled);
-                }
-                view.recorded(name, &mut records);
-                for (key, _) in &records {
-                    unreached_values.remove(&key.column_value());
-                }
-            }
+        let mut unreached: Vec<SlotRef> = slots.into_values().flatten().collect();
+        if !unreached.is_empty() {
+            let admitted_names: HashSet<&str> = admitted.iter().map(|name| name.as_ref()).collect();
+            let reached = view.reached(&unreached, &|book| admitted_names.contains(book));
+            unreached.retain(|slot| !reached.contains(&slot.key));
         }
-        let mut unreached: Vec<SlotRef> = unreached_values
-            .iter()
-            .flat_map(|value| slots[value].iter().copied())
-            .collect();
         unreached.sort_unstable();
         unreached.dedup();
         if !unreached.is_empty() {
             log::info!(
-                "{} text(s) that the {} book(s) a filter admits hold are recorded in none of \
-                 them; their {} vector(s) are weighed besides the scan of those books",
-                unreached_values.len(),
-                admitted.len(),
-                unreached.len()
+                "{} vector(s) of texts that the {} book(s) a filter admits hold, recorded in \
+                 none of them, are weighed besides the scan of those books",
+                unreached.len(),
+                admitted.len()
             );
         }
         let plan = Arc::new(ScanPlan {

@@ -108,6 +108,72 @@ impl SetView {
         book_records(&self.set, book, out);
     }
 
+    /// Of `slots` — live slots that hold arrivals' keys — the keys a filtered scan of the
+    /// books `admitted` says yes to reaches already: as the sidecar's book filter visits a
+    /// slot, through the primary record or an extra of an admitted book, or a foreign record
+    /// of one that resolves to it. Read from the slots' own records, so the cost is the
+    /// arrivals', not the admitted books': the primary record and the extras from the slot,
+    /// and a foreign record — whether its link resolves is the generation's — by the
+    /// sidecar's count of the few admitted books that hold one of the key.
+    pub(crate) fn reached(
+        &self,
+        slots: &[SlotRef],
+        admitted: &dyn Fn(&str) -> bool,
+    ) -> HashSet<ChunkKey> {
+        let segments = self.set.segments();
+        let mut reached = HashSet::new();
+        let mut unsure = HashSet::new();
+        for slot in slots {
+            let Some(segment) = segments.get(slot.seg as usize) else {
+                continue;
+            };
+            let books = segment.books();
+            let through_extra = || {
+                segment.has_extras(slot.slot)
+                    && segment
+                        .extras_of_slot(slot.slot)
+                        .any(|extra| admitted(&books[segment.book_of_extra(extra)].name))
+            };
+            if admitted(&books[segment.book_of_slot(slot.slot)].name) || through_extra() {
+                reached.insert(slot.key);
+            } else {
+                unsure.insert(slot.key);
+            }
+        }
+        unsure.retain(|key| !reached.contains(key));
+        if unsure.is_empty() {
+            return reached;
+        }
+        let mut holders: Vec<Arc<str>> = Vec::new();
+        for segment in segments {
+            for entry in segment.books() {
+                if entry.foreign.is_empty() || !admitted(&entry.name) {
+                    continue;
+                }
+                if entry
+                    .foreign
+                    .clone()
+                    .any(|index| unsure.contains(&segment.foreign_record(index).0))
+                {
+                    holders.push(Arc::clone(&entry.name));
+                }
+            }
+        }
+        holders.sort();
+        holders.dedup();
+        let mut records = Vec::new();
+        for book in holders {
+            book_records(&self.set, &book, &mut records);
+            reached.extend(
+                records
+                    .iter()
+                    .map(|(key, _)| *key)
+                    .filter(|key| unsure.contains(key)),
+            );
+        }
+        reached
+    }
+
     /// The live slots that hold a key of each of `values`, sorted: one pass over every slot
     /// of the set, looking at `cancel` as it goes. A value no live slot holds is absent.
     pub(crate) fn live_slots(
