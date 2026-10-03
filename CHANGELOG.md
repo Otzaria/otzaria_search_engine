@@ -620,7 +620,9 @@ are now documented as development and testing scaffolding, not for the library.
   it. Both are removed when the install returns, installed or not; the next
   install of a set removes what a stopped process left there (a lock file
   nothing holds), and an expansion file with no lock file once it is an hour
-  old.
+  old. A lock file another process's cleanup takes in the instant between its
+  creation and its locking is given up for a new one, up to three times
+  before the install is refused as `vectorsBusy`.
 
 ## 0.9.0 – 2026-10-04
 
