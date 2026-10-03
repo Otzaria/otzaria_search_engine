@@ -12815,8 +12815,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
   /// compaction leaves the set as it was. It refuses to start without
-  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
-  /// An open session on the same set is moved onto the compacted generation.
+  /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
+  /// and while another install or compaction of the set runs, as `VectorsBusy` about
+  /// `vectors_dir`. An open session on the same set is moved onto the compacted
+  /// generation.
   Future<SemanticCompactionReport> compactSemanticVectors({
     required String vectorsDir,
     int? liveLibraryVersion,
@@ -13617,15 +13619,23 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// The set is locked throughout, and the new generation goes live in one flip: a
   /// release that is refused, cancelled through `cancellation`, or cut off by a crash
   /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-  /// the set's `incoming/` folder first, so it needs its expanded size free besides what
-  /// the install needs. An open session on the same set is moved onto the new
-  /// generation before this returns.
+  /// a file of the install's own in the set's `incoming/` folder first, beside a lock file
+  /// the install holds until it returns, so it needs its expanded size free besides what
+  /// the install needs; both are gone when this returns, installed or not. An open session
+  /// on the same set is moved onto the new generation before this returns.
+  ///
+  /// One install or compaction of a set runs at a time. While another runs in this
+  /// process, this one is refused before it reads anything; while one runs in another
+  /// process, once it reaches the set's lock. Either way the refusal is `VectorsBusy`
+  /// about `vectors_dir`: nothing was changed, an open session keeps serving, and the
+  /// install can be tried again once the other has finished.
   ///
   /// Refusals are [`SemanticError`]s of the kinds in the table on
   /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
   /// published one, `ArtifactIncompatible` for a release of another identity or a delta
   /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
-  /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+  /// its manifest describes, `InsufficientDiskSpace`, `VectorsBusy`, and
+  /// `Cancelled`.
   ///
   /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
   /// engine's write lock while it copies a segment of hundreds of megabytes.
@@ -14479,8 +14489,16 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// that many bytes takes, and stops at a cancel.
   ///
   /// A damaged segment is marked so that every later open refuses it, and this returns
-  /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
-  /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+  /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
+  /// again if it is gone. On Windows a repair under the same segment fails while a
+  /// session holds the set open, since a mapped file cannot be replaced: close the session
+  /// (`disable_semantic`) before installing it. An open session keeps what it has mapped
+  /// until it is closed. `ArtifactMissing` when nothing is installed there.
+  ///
+  /// An install that replaced bytes the verification had read, while it read them, is
+  /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`
+  /// — verify again once the install has finished. A cancelled verification records
+  /// nothing.
   Future<SemanticVectorsVerification> verifySemanticVectors({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,

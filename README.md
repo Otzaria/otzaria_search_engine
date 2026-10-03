@@ -118,13 +118,41 @@ agree with:
 | a delta's starting point | the build | the library version the set stands at | a delta that does not follow the set: install the base, or the deltas in between |
 
 Nothing ties a set to one index: every search resolves the set's hits against
-the index that is open, by the key of each line's text, which a new index keeps
-in its `chunkKey` column. A commit after opening leaves the set serving; a line
-that moved is found where it is now, in its book or in another; a line whose
-text is gone, or whose embedded text changed with its neighbours, is not shown,
-and every line shown is checked by recomputing its key from the text the index
-holds. An index of schema version 4, without the column, is served the same way,
-by recomputing the keys of the books a hit names, which is slower.
+the index that is open, by the key of each line's text. What it can find depends
+on the index's schema version.
+
+On an index of schema version 5, which keeps that key in its `chunkKey` column,
+a commit after opening leaves the set serving; a line that moved is found where
+it is now, in its book or in another; a text a book holds in several places is a
+line for each, up to 32 lines a hit — one for each book that holds it first,
+then those books' other lines of it; a line whose text is gone, or whose
+embedded text changed with its neighbours, is not shown; and every line a search
+returns, a grouped sibling as much as a result, is checked by recomputing its key
+from the text the index holds. Under a filter, a text that moved or was copied
+into a book the filter admits since the set was built is found there, and only
+there: its vector is weighed at its own score beside the scan of the admitted
+books, which is not widened, so their results are exactly what they would be
+had nothing moved.
+
+An index of schema version 4 has no `chunkKey` column — the published v30
+library index is one — and gets less. Keys are recomputed from the stored text,
+which is slower. Every line a search returns is still held to its whole key,
+and a passage a book holds in several places is still a line for each, found by
+its `lineHash`. But a record's line is found only at the line the set recorded,
+or within 16 lines of it in the same book, so on version 4:
+
+- a line that moved further within its book is not found;
+- a text that moved to another book is not found, filtered or not;
+- a filter scans the books it admits alone, so a text moved or copied into one
+  of them is not found under it;
+- compaction keeps the set's records as they are: re-anchoring them needs the
+  column.
+
+All of this needs schema version 5, which a rebuild by this engine gives. It
+matters only while the index and the vectors are of different library versions,
+or after the index was changed on the device — a book added, reindexed or
+moved: an index and a set of the same library version agree line for line, and
+every record is at its line.
 
 Keeping the set, all on `SearchEngine` and all cheap except where noted:
 
@@ -170,15 +198,16 @@ On the application's path:
 | kind | reported by | means, and what to do |
 | --- | --- | --- |
 | `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing installed at `vectorsDir`: download and install the vectors |
-| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: download it again |
+| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: install the release again, which repairs the set, downloading it again if it is gone. On Windows, close the session first: a mapped segment cannot be replaced |
 | `artifactNotPublished` | `installSemanticVectors` | not the release whose manifest digest was published: download the official one |
-| `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application |
+| `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application. With `field` `segment_id`, installing: a version the set has installed, published again with other bytes; the set is sound and keeps serving it. Do not download it again: keep the set, or install the release into a new, empty `vectorsDir` |
 | `insufficientDiskSpace` | installing, compacting | not enough free space: free some, and try again |
 | `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package. `modelInvalid` with `field` `model_path` is a path that names no ONNX graph, such as a GGUF: point `modelPath` at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
 | `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
+| `vectorsBusy` | installing, compacting, verifying | another install or compaction of the set is running, with `field` `vectors_dir`: nothing was changed, and an open session keeps serving; try again once it has finished. Verifying, an install replaced what the check read: nothing was condemned, verify again |
 | `readOnlySession` | the calls that build vectors | refused on an opened set; nothing to fix |
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
@@ -359,13 +388,18 @@ The application's installation, and what each input names:
 The vector set is a folder of its own beside `index/`, which installing creates
 and keeps: `CURRENT` and `PREVIOUS` name its live generation and the one before
 it, `segments/` holds the vectors, and `incoming/` is where a download can be
-left for an install to move in rather than copy. The runtime either ships
-with the application, which passes its path as `onnxRuntimePath` (on macOS
-from inside the signed application bundle, below), or sits in `<model>/` beside
-the graph under the platform's file name, where it is found with no path
-passed; it must then be the build for that machine's operating system and
-architecture. Neither the identity file nor a runtime in that folder is part of
-the model package's checksum: the runtime is code, not model data.
+left for an install to move in rather than copy — moved when the install
+succeeds, left where it is when it fails, and on Windows copied when it is
+read-only — and where an install expands a compressed one, into a file of its
+own beside a lock file it holds, both gone when the install returns.
+One install or compaction of a set runs at a time: a second is refused at once.
+The runtime either ships with the application, which passes its path as
+`onnxRuntimePath` (on macOS from inside the signed application bundle, below),
+or sits in `<model>/` beside the graph under the platform's file name, where it
+is found with no path passed; it must then be the build for that machine's
+operating system and architecture. Neither the identity file nor a runtime in
+that folder is part of the model package's checksum: the runtime is code, not
+model data.
 
 The reference runtime is Microsoft's official ONNX Runtime 1.28.0 release on
 GitHub, and the oldest runtime API accepted is ONNX Runtime 1.17's.
@@ -430,6 +464,48 @@ semantic-only requests never masquerade as lexical results.
 `countsAreExact` is false for sidecar-backed responses; callers must not use
 them as a corpus-wide semantic result count. `candidateWindowTruncated`
 separately reports the hard candidate-window cap.
+
+### Validating a vector set before it is published
+
+`validate_semantic_vectors` is the publishing pipeline's last gate on a release:
+it opens the release index read-only, installs the releases into a set of its
+own as a device installs them, and checks what `assemble --verify` in the
+sidecar cannot, because it needs the index. Build it with `--features semantic`
+(the retrieval gate loads the query model):
+
+```text
+validate_semantic_vectors --index ./index --release ./published --release ./new \
+    --plan ./plan --warehouse ./warehouse --model seforim-embed-round2-int8.onnx \
+    --model-identity model.json --report gates.json
+```
+
+`--release` names an assembled release directory (its `segment.oxv` and
+`release.json`), once per release, the published state first and the new
+release last; the set they install into is removed after. `--vectors` takes a
+set installed already instead.
+
+| gate | runs with | passes when |
+| --- | --- | --- |
+| G3, coverage | always; `--plan` adds to it | every line of the index the recipe embeds has its text recorded by the set in its own book, by all 128 bits of its key; and with `--plan`, every record of the plan the set was assembled from is reachable in the set |
+| G4, resolution | always | every record resolves on the index, by all 128 bits of its key, and every line's `chunkKey` column is its text's; records off their hint are reported, and fail it only past `--max-stale-hints <fraction>` |
+| G6, retrieval | `--warehouse`, `--model`, `--model-identity` | the set's scan, as a device runs it, reaches mean recall@10 of `--min-recall-10` (0.98) and recall@50 of `--min-recall-50` (0.99) against the exact `f32` scan of the warehouse's vectors, on the same query vectors |
+
+G6's queries are `--queries <file>`, one per line, or else `--sample-queries`
+(200; from 1 to 100,000) spans of the index's lines drawn with a fixed seed, embedded by the
+runtime query model (`--onnx-runtime`, or `OTZARIA_ONNX_RUNTIME`). Recall is
+counted over keys, which are distinct texts, since that is what a scan returns:
+a text in many books is one hit, so repeated texts cannot take the top 50 here
+as they do on a results page.
+
+A release passes when every gate ran and passed. A gate whose inputs are not
+given has not run, and fails the release like a gate that failed, unless it is
+skipped by name with `--skip <gate>` (G3, G4 or G6, once per gate), which the
+output and the report record; skipping all three is a wrong argument. The exit status is 0 when every gate passed or
+was skipped so, 1 when one failed or did not run, and 2 when the arguments are
+wrong or an input does not read. `--report` writes `{tool, reportVersion,
+passed, index, vectors, releases, skipped, set, gates: [{gate, name, status,
+detail, metrics}]}`, `status` being `passed`, `failed`, `skipped` (by
+`--skip`) or `notRun` (no inputs); `--help` lists every flag.
 
 ### Development and testing: vectors built on the device
 

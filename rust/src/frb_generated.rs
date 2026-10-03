@@ -7748,6 +7748,7 @@ impl SseDecode for crate::api::search_engine::SemanticErrorKind {
             18 => crate::api::search_engine::SemanticErrorKind::Cancelled,
             19 => crate::api::search_engine::SemanticErrorKind::InvalidInput,
             20 => crate::api::search_engine::SemanticErrorKind::Internal,
+            21 => crate::api::search_engine::SemanticErrorKind::VectorsBusy,
             _ => unreachable!("Invalid variant for SemanticErrorKind: {}", inner),
         };
     }
@@ -9324,6 +9325,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticErrorK
             Self::Cancelled => 18.into_dart(),
             Self::InvalidInput => 19.into_dart(),
             Self::Internal => 20.into_dart(),
+            Self::VectorsBusy => 21.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -10994,6 +10996,7 @@ impl SseEncode for crate::api::search_engine::SemanticErrorKind {
                 crate::api::search_engine::SemanticErrorKind::Cancelled => 18,
                 crate::api::search_engine::SemanticErrorKind::InvalidInput => 19,
                 crate::api::search_engine::SemanticErrorKind::Internal => 20,
+                crate::api::search_engine::SemanticErrorKind::VectorsBusy => 21,
                 _ => {
                     unimplemented!("");
                 }

@@ -705,8 +705,8 @@ pub struct SemanticCoverage {
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | download the vectors again | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
-/// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed | install the vectors built for this application and this model | `open_semantic_artifact`, installing |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
+/// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed. With `field` `segment_id`, installing: the release is a version the set has installed, published again with other bytes — a sound release, and a sound set, which keeps what it serves | install the vectors built for this application and this model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectors_dir` and open that | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
 /// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
@@ -723,6 +723,7 @@ pub struct SemanticCoverage {
 /// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
+/// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read while it read them, and nothing was condemned | try again once it has finished; never `disable_semantic` for it | installing, compacting, verifying |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SemanticErrorKind {
     /// No semantic session is open.
@@ -767,6 +768,9 @@ pub enum SemanticErrorKind {
     InvalidInput,
     /// Anything else; the message says what.
     Internal,
+    /// Another install or compaction of the same vector set is running; nothing was read or
+    /// changed, and an open session keeps serving. Try again once it has finished.
+    VectorsBusy,
 }
 
 /// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
@@ -780,10 +784,11 @@ pub enum SemanticErrorKind {
 ///
 /// | kind | `field` |
 /// | --- | --- |
-/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version` |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version`; `segment_id`, installing a version the set has installed that was published again with other bytes |
 /// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
 /// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
 /// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
+/// | `VectorsBusy` | `vectors_dir`: the vector set another install or compaction is running on |
 /// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say; for a compaction, `policy.` and the [`SemanticCompactionPolicy`] option |
 ///
 /// It is `None` for every other kind, and wherever the failure does not say.
@@ -1562,22 +1567,228 @@ fn package_kind(
     }
 }
 
-/// A zstd-compressed segment expanded into the set's `incoming/` folder, from which an
-/// install moves it into the set: the path of the expanded file. Looks at `cancel` between
-/// blocks of 1 MiB, and leaves nothing behind when it fails; `refused` words the failure.
+/// The vector sets an install or a compaction in this process is working on, by their
+/// directories as resolved: see [`VectorSetWork`].
+#[cfg(feature = "semantic-integration")]
+static VECTOR_SET_WORK: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// An install's or a compaction's hold on one vector set in this process, taken before
+/// either reads anything and let go when dropped: one of them at a time per set, and a
+/// second is refused at once.
+///
+/// The sidecar locks a set itself, but an install takes that lock only once it has its
+/// segment in hand, and a compressed release is expanded before that. Two installs of one
+/// set would otherwise both expand, and the second would meet the first at the sidecar's
+/// lock only after spending the time and the space. Another process's install still meets
+/// this one at the sidecar's lock, which is refused the same way.
+#[cfg(feature = "semantic-integration")]
+struct VectorSetWork {
+    dir: PathBuf,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl VectorSetWork {
+    /// Hold the set at `vectors_dir` for `doing`, or refuse while something else does.
+    fn take(vectors_dir: &Path, doing: &str) -> Result<Self, SemanticError> {
+        let dir = resolved_dir(vectors_dir);
+        let mut work = VECTOR_SET_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if work.contains(&dir) {
+            return Err(vector_set_busy(vectors_dir, doing));
+        }
+        work.push(dir.clone());
+        Ok(Self { dir })
+    }
+}
+
+#[cfg(feature = "semantic-integration")]
+impl Drop for VectorSetWork {
+    fn drop(&mut self) {
+        VECTOR_SET_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|dir| *dir != self.dir);
+    }
+}
+
+/// `dir` as one path names it whatever way it is written: resolved when it exists, and
+/// otherwise, as before a first install creates it, its parent resolved and its name.
+#[cfg(feature = "semantic-integration")]
+fn resolved_dir(dir: &Path) -> PathBuf {
+    fs::canonicalize(dir).unwrap_or_else(|_| {
+        match (
+            dir.parent()
+                .and_then(|parent| fs::canonicalize(parent).ok()),
+            dir.file_name(),
+        ) {
+            (Some(parent), Some(name)) => parent.join(name),
+            _ => std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()),
+        }
+    })
+}
+
+/// What a scrub of the set at `vectors_dir` reports, as `verify_semantic_vectors` answers it:
+/// the verification, or `VectorsBusy` when an install replaced bytes the scrub had read while
+/// it read them — nothing was condemned, and what the set holds now was not checked.
+#[cfg(feature = "semantic-integration")]
+fn verification_of(
+    report: &otzaria_semantic_search::semantic::segment_set::ScrubReport,
+    vectors_dir: &Path,
+) -> Result<SemanticVectorsVerification, SemanticError> {
+    if report.superseded {
+        return Err(SemanticError::new(
+            SemanticErrorKind::VectorsBusy,
+            format!(
+                "the semantic vectors at {} changed while they were verified: an install \
+                 replaced bytes the check had read. Nothing was condemned; verify them again \
+                 once the install has finished",
+                vectors_dir.display()
+            ),
+        )
+        .with_field("vectors_dir"));
+    }
+    Ok(SemanticVectorsVerification {
+        generation: report.generation,
+        segments: report.segments,
+        bytes_checked: report.bytes_checked,
+        elapsed_ms: report.elapsed_ms,
+    })
+}
+
+/// What an install or a compaction of the set at `vectors_dir` is refused with while
+/// another of either runs: in this process ([`VectorSetWork`]), or in another, which the
+/// sidecar's lock on the set says. `VectorsBusy` about `vectors_dir`.
+#[cfg(feature = "semantic-integration")]
+fn vector_set_busy(vectors_dir: &Path, doing: &str) -> SemanticError {
+    SemanticError::new(
+        SemanticErrorKind::VectorsBusy,
+        format!(
+            "{doing} was refused: another install or compaction of the vector set at {} is \
+             running, and one finishes before the next starts. Nothing was read or changed; \
+             try again once it has finished",
+            vectors_dir.display()
+        ),
+    )
+    .with_field("vectors_dir")
+}
+
+/// What an expansion is named in the set's `incoming/` folder: this prefix and a name of its
+/// own, with `.oxv` for the segment and [`EXPANSION_LOCK`] for its lock file.
+#[cfg(feature = "semantic-integration")]
+const EXPANDING_PREFIX: &str = ".expanding-";
+
+/// The suffix of an expansion's lock file, which its install holds locked from before the
+/// segment is written until the install returns, whatever the sidecar did with the segment.
+#[cfg(feature = "semantic-integration")]
+const EXPANSION_LOCK: &str = ".lock";
+
+/// How many lock files an expansion creates, each taken by another process's cleanup in the
+/// instant before it was locked, before the install is refused as busy.
+#[cfg(feature = "semantic-integration")]
+const EXPANSION_LOCK_ATTEMPTS: u32 = 3;
+
+/// How old an expansion's segment with no lock file beside it must be before an install
+/// removes it. A segment always has one while its install runs, so one without is debris;
+/// the age spares a segment whose lock file another process removed in the instant between
+/// its creation and its locking.
+#[cfg(feature = "semantic-integration")]
+const STRAY_EXPANSION_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Remove what expansions that never finished left in `incoming/`. An expansion's lock
+/// file that nothing holds locked is a process gone: its segment and the lock file go. One
+/// that is locked is an install still running — writing, or waiting for the sidecar to take
+/// what it wrote — and its files stay. A segment with no lock file goes once it is old. Best
+/// effort.
+#[cfg(feature = "semantic-integration")]
+fn remove_abandoned_expansions(incoming: &Path) {
+    let Ok(entries) = fs::read_dir(incoming) else {
+        return;
+    };
+    let names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(EXPANDING_PREFIX))
+        .collect();
+    let remove = |path: &Path| {
+        if let Err(err) = fs::remove_file(path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                debug!(
+                    "an abandoned expansion stays for now: {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    };
+    for name in &names {
+        let path = incoming.join(name);
+        if let Some(stem) = name.strip_suffix(EXPANSION_LOCK) {
+            let Ok(lock) = fs::OpenOptions::new().write(true).open(&path) else {
+                continue;
+            };
+            if lock.try_lock().is_ok() {
+                remove(&incoming.join(format!("{stem}.oxv")));
+                remove(&path);
+            }
+            continue;
+        }
+        let stem = name.strip_suffix(".oxv").unwrap_or(name);
+        if names.contains(&format!("{stem}{EXPANSION_LOCK}")) {
+            continue;
+        }
+        let old = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| {
+                modified
+                    .elapsed()
+                    .is_ok_and(|age| age > STRAY_EXPANSION_AGE)
+            });
+        if old {
+            remove(&path);
+        }
+    }
+}
+
+/// What a test runs with each expansion's lock file: see [`AFTER_EXPANSION_LOCK_FILE`].
+#[cfg(all(test, feature = "semantic-integration"))]
+type ExpansionLockHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(all(test, feature = "semantic-integration"))]
+thread_local! {
+    /// Called with each expansion's lock file as soon as it is created, before it is locked:
+    /// what a test does there is what another process's cleanup could do in that instant.
+    static AFTER_EXPANSION_LOCK_FILE: std::cell::RefCell<Option<ExpansionLockHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A segment expanded for an install, and the lock that keeps it the install's: dropping
+/// this removes the segment and then the lock file, after the install has returned,
+/// whatever the sidecar did with the segment.
+#[cfg(feature = "semantic-integration")]
+struct Expansion {
+    segment: tempfile::TempPath,
+    /// Locked from before the segment was created, so an install in another process never
+    /// takes the segment for abandoned: not while it is written, and not after it is
+    /// closed, while the sidecar verifies it and moves it into the set.
+    _lock: tempfile::NamedTempFile,
+}
+
+/// A zstd-compressed segment expanded into a file of its own in the set's `incoming/`
+/// folder, from which an install moves it into the set.
+///
+/// The name is the expansion's own, never the download's, so two expansions into one set
+/// cannot write one file. Its lock file is created and locked first and held until the
+/// [`Expansion`] is dropped. Looks at `cancel` between blocks of 1 MiB; `refused` words a
+/// failure.
 #[cfg(feature = "semantic-integration")]
 fn expand_segment(
     compressed: &Path,
     vectors_dir: &Path,
     cancel: &SearchCancellation,
     refused: &dyn Fn(&dyn std::fmt::Display) -> String,
-) -> Result<PathBuf, SemanticError> {
+) -> Result<Expansion, SemanticError> {
     use std::io::{Read, Write};
     let incoming = otzaria_semantic_search::semantic::segment_set::incoming_dir(vectors_dir);
-    let name = compressed
-        .file_stem()
-        .map_or_else(|| "segment.oxv".into(), |stem| stem.to_os_string());
-    let expanded = incoming.join(name);
     // Writing it is the one step here that a full disk stops.
     let writing = |err: std::io::Error| {
         let kind = match err.kind() {
@@ -1588,55 +1799,108 @@ fn expand_segment(
         };
         SemanticError::new(
             kind,
-            refused(&format!("expanding into {}: {err}", expanded.display())),
+            refused(&format!("expanding into {}: {err}", incoming.display())),
         )
     };
-    let result = (|| -> Result<(), SemanticError> {
-        fs::create_dir_all(&incoming).map_err(writing)?;
-        let source = fs::File::open(compressed).map_err(|err| {
-            SemanticError::new(
-                SemanticErrorKind::Internal,
-                refused(&format!("reading {}: {err}", compressed.display())),
-            )
-        })?;
-        let damaged = |err: std::io::Error| {
-            SemanticError::new(
-                SemanticErrorKind::ArtifactCorrupt,
+    fs::create_dir_all(&incoming).map_err(writing)?;
+    remove_abandoned_expansions(&incoming);
+    let source = fs::File::open(compressed).map_err(|err| {
+        SemanticError::new(
+            SemanticErrorKind::Internal,
+            refused(&format!("reading {}: {err}", compressed.display())),
+        )
+    })?;
+    let damaged = |err: std::io::Error| {
+        SemanticError::new(
+            SemanticErrorKind::ArtifactCorrupt,
+            refused(&format!(
+                "{} does not expand as zstd: {err}",
+                compressed.display()
+            )),
+        )
+    };
+    let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
+    // Another process's cleanup can take a lock file in the instant between its creation and
+    // its locking — find it unlocked, take it for a process gone, and remove it. A lock file
+    // that cannot be locked, or is gone once it is, is given up for a new one.
+    let mut attempts = 0;
+    let lock = loop {
+        attempts += 1;
+        let lock = tempfile::Builder::new()
+            .prefix(EXPANDING_PREFIX)
+            .suffix(EXPANSION_LOCK)
+            .tempfile_in(&incoming)
+            .map_err(writing)?;
+        #[cfg(test)]
+        AFTER_EXPANSION_LOCK_FILE.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(lock.path());
+            }
+        });
+        let locked = match lock.as_file().try_lock() {
+            Ok(()) => lock.path().exists(),
+            Err(std::fs::TryLockError::WouldBlock) => false,
+            Err(std::fs::TryLockError::Error(err)) => return Err(writing(err)),
+        };
+        if locked {
+            break lock;
+        }
+        if attempts == EXPANSION_LOCK_ATTEMPTS {
+            return Err(SemanticError::new(
+                SemanticErrorKind::VectorsBusy,
                 refused(&format!(
-                    "{} does not expand as zstd: {err}",
-                    compressed.display()
+                    "another install's cleanup of {} took this one's expansion lock {attempts} \
+                     times; try again once it has finished",
+                    incoming.display()
                 )),
             )
-        };
-        let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
-        let mut sink = std::io::BufWriter::new(fs::File::create(&expanded).map_err(writing)?);
-        let mut buffer = vec![0u8; 1 << 20];
-        loop {
-            if cancel.is_cancelled() {
-                return Err(SemanticError::new(
-                    SemanticErrorKind::Cancelled,
-                    "installing the vectors was cancelled before it finished; the set is as \
-                     it was",
-                ));
-            }
-            let read = decoder.read(&mut buffer).map_err(damaged)?;
-            if read == 0 {
-                break;
-            }
-            sink.write_all(&buffer[..read]).map_err(writing)?;
+            .with_field("vectors_dir"));
         }
-        sink.into_inner()
-            .map_err(|err| writing(err.into_error()))?
-            .sync_all()
-            .map_err(writing)
-    })();
-    match result {
-        Ok(()) => Ok(expanded),
+    };
+    let stem = lock
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(EXPANSION_LOCK))
+        .expect("the lock file is named by its builder")
+        .to_owned();
+    let path = incoming.join(format!("{stem}.oxv"));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(writing)?;
+    let segment = match tempfile::TempPath::try_from_path(&path) {
+        Ok(segment) => segment,
         Err(err) => {
-            let _ = fs::remove_file(&expanded);
-            Err(err)
+            let _ = fs::remove_file(&path);
+            return Err(writing(err));
         }
+    };
+    let expansion = Expansion {
+        segment,
+        _lock: lock,
+    };
+    let mut sink = std::io::BufWriter::new(file);
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(SemanticError::new(
+                SemanticErrorKind::Cancelled,
+                "installing the vectors was cancelled before it finished; the set is as it was",
+            ));
+        }
+        let read = decoder.read(&mut buffer).map_err(damaged)?;
+        if read == 0 {
+            break;
+        }
+        sink.write_all(&buffer[..read]).map_err(writing)?;
     }
+    sink.into_inner()
+        .map_err(|err| writing(err.into_error()))?
+        .sync_all()
+        .map_err(writing)?;
+    Ok(expansion)
 }
 
 /// The package of the family `model_identity_json` declares that the graph at `model_path` is,
@@ -1791,6 +2055,8 @@ struct OpenSession {
     coordinator: Arc<HybridCoordinator>,
     model_path: PathBuf,
     onnx_runtime: Option<PathBuf>,
+    /// The vector set an opened artifact serves; `None` for a session built on this device.
+    vectors_dir: Option<PathBuf>,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -3418,6 +3684,11 @@ pub struct SearchEngine {
     /// the next, for one generation of it: see [`crate::semantic_resolver`].
     #[cfg(feature = "semantic-integration")]
     semantic_resolver: Mutex<crate::semantic_resolver::ResolverCache>,
+    /// The open vector set's generation as a filtered search plans its scan against it: see
+    /// [`crate::semantic_moves`]. Opened on the first filtered search of a generation, and
+    /// let go when the session moves to another or closes.
+    #[cfg(feature = "semantic-integration")]
+    semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -3549,6 +3820,8 @@ impl SearchEngine {
             semantic_runtime: (),
             #[cfg(feature = "semantic-integration")]
             semantic_resolver: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_set_view: Mutex::default(),
         }
     }
 
@@ -4021,6 +4294,7 @@ impl SearchEngine {
                 .semantic_runtime
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner) = None;
+            self.forget_set_view();
         }
     }
 
@@ -4037,6 +4311,10 @@ impl SearchEngine {
                 coordinator: Arc::clone(&active.coordinator),
                 model_path: active.model_path().to_path_buf(),
                 onnx_runtime: active.onnx_runtime().map(Path::to_path_buf),
+                vectors_dir: match &active.source {
+                    SemanticSource::Artifact(opened) => Some(opened.key.vectors_dir.clone()),
+                    SemanticSource::SelfBuilt(_) => None,
+                },
             })
     }
 
@@ -4114,15 +4392,23 @@ impl SearchEngine {
     /// The set is locked throughout, and the new generation goes live in one flip: a
     /// release that is refused, cancelled through `cancellation`, or cut off by a crash
     /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-    /// the set's `incoming/` folder first, so it needs its expanded size free besides what
-    /// the install needs. An open session on the same set is moved onto the new
-    /// generation before this returns.
+    /// a file of the install's own in the set's `incoming/` folder first, beside a lock file
+    /// the install holds until it returns, so it needs its expanded size free besides what
+    /// the install needs; both are gone when this returns, installed or not. An open session
+    /// on the same set is moved onto the new generation before this returns.
+    ///
+    /// One install or compaction of a set runs at a time. While another runs in this
+    /// process, this one is refused before it reads anything; while one runs in another
+    /// process, once it reaches the set's lock. Either way the refusal is `VectorsBusy`
+    /// about `vectors_dir`: nothing was changed, an open session keeps serving, and the
+    /// install can be tried again once the other has finished.
     ///
     /// Refusals are [`SemanticError`]s of the kinds in the table on
     /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
     /// published one, `ArtifactIncompatible` for a release of another identity or a delta
     /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
-    /// its manifest describes, `InsufficientDiskSpace`, and `Cancelled`.
+    /// its manifest describes, `InsufficientDiskSpace`, `VectorsBusy`, and
+    /// `Cancelled`.
     ///
     /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
     /// engine's write lock while it copies a segment of hundreds of megabytes.
@@ -4169,16 +4455,24 @@ impl SearchEngine {
                 .with_field("manifest_json"));
             }
             let cancel = &cancellation.flag;
+            // Held until the session is on the new generation: nothing else installs into
+            // or compacts this set meanwhile, in this process.
+            let _work = VectorSetWork::take(&vectors_dir, "installing the vectors")?;
             let compressed = downloaded.extension().is_some_and(|ext| ext == "zst");
-            let segment = if compressed {
-                expand_segment(&downloaded, &vectors_dir, cancel, &refused)?
+            // An expansion, removed when this is dropped — its segment, and then the lock
+            // that kept it this install's: an install moves the segment into the set, and a
+            // refused one leaves it where it was.
+            let expanded = if compressed {
+                Some(expand_segment(&downloaded, &vectors_dir, cancel, &refused)?)
             } else {
-                downloaded
+                None
             };
             let installed = segment_set::install_package(
                 &vectors_dir,
                 &InstallSource {
-                    segment: &segment,
+                    segment: expanded
+                        .as_ref()
+                        .map_or(downloaded.as_path(), |expansion| &expansion.segment),
                     manifest_json: &input.manifest_json,
                 },
                 &InstallExpectation {
@@ -4187,10 +4481,7 @@ impl SearchEngine {
                 },
                 cancel,
             );
-            if compressed {
-                // An install moves it into the set; a refused one leaves it in `incoming/`.
-                let _ = fs::remove_file(&segment);
-            }
+            drop(expanded);
             let report = installed.map_err(|err| {
                 vector_set_error(&err, &vectors_dir, refused(&err), "installing the vectors")
             })?;
@@ -4231,8 +4522,10 @@ impl SearchEngine {
     ///
     /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
     /// compaction leaves the set as it was. It refuses to start without
-    /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`.
-    /// An open session on the same set is moved onto the compacted generation.
+    /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
+    /// and while another install or compaction of the set runs, as `VectorsBusy` about
+    /// `vectors_dir`. An open session on the same set is moved onto the compacted
+    /// generation.
     pub fn compact_semantic_vectors(
         &self,
         vectors_dir: String,
@@ -4259,6 +4552,8 @@ impl SearchEngine {
             };
             let policy =
                 compaction_policy(policy.unwrap_or_else(SemanticCompactionPolicy::defaults))?;
+            // As an install holds it, and for as long.
+            let _work = VectorSetWork::take(&vectors_dir, "compacting the vectors")?;
             let resolver = LiveResolver::new(
                 self.index_reader.searcher(),
                 self.chunk_key_field,
@@ -4337,8 +4632,16 @@ impl SearchEngine {
     /// that many bytes takes, and stops at a cancel.
     ///
     /// A damaged segment is marked so that every later open refuses it, and this returns
-    /// `ArtifactCorrupt`: download the vectors again. An open session keeps what it has
-    /// mapped until it is closed. `ArtifactMissing` when nothing is installed there.
+    /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
+    /// again if it is gone. On Windows a repair under the same segment fails while a
+    /// session holds the set open, since a mapped file cannot be replaced: close the session
+    /// (`disable_semantic`) before installing it. An open session keeps what it has mapped
+    /// until it is closed. `ArtifactMissing` when nothing is installed there.
+    ///
+    /// An install that replaced bytes the verification had read, while it read them, is
+    /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`
+    /// — verify again once the install has finished. A cancelled verification records
+    /// nothing.
     pub fn verify_semantic_vectors(
         &self,
         vectors_dir: String,
@@ -4362,12 +4665,7 @@ impl SearchEngine {
                     "verifying the vectors",
                 )
             })?;
-            Ok(SemanticVectorsVerification {
-                generation: report.generation,
-                segments: report.segments,
-                bytes_checked: report.bytes_checked,
-                elapsed_ms: report.elapsed_ms,
-            })
+            verification_of(&report, &vectors_dir)
         }
 
         #[cfg(not(feature = "semantic-integration"))]
@@ -4479,6 +4777,9 @@ impl SearchEngine {
                 _ => return Ok(()),
             }
         };
+        // The view of the generation the session leaves, which on Windows would keep its
+        // segments from being removed.
+        self.forget_set_view();
         coordinator
             .reload_semantic_vectors()
             .map(drop)
@@ -4494,6 +4795,49 @@ impl SearchEngine {
                     "reloading the vectors",
                 )
             })
+    }
+
+    /// The view a filtered search plans its scan by, of the set at `vectors_dir` as its
+    /// generation `generation` is: the one kept, or one opened now. `None` when the set has
+    /// moved on from that generation — the session follows it, and a later search plans
+    /// against it — or its segments do not open, which the session's own open would have
+    /// refused; the search then scans the admitted books alone.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_set_view(
+        &self,
+        vectors_dir: &Path,
+        generation: u64,
+    ) -> Option<Arc<crate::semantic_moves::SetView>> {
+        let mut kept = self
+            .semantic_set_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(view) = kept.as_ref() {
+            if view.generation() == generation && same_directory(view.dir(), vectors_dir) {
+                return Some(Arc::clone(view));
+            }
+        }
+        *kept = match crate::semantic_moves::SetView::open(vectors_dir, generation) {
+            Ok(view) => view.map(Arc::new),
+            Err(err) => {
+                warn!(
+                    "the vector set at {} could not be read to plan filtered searches, which \
+                     scan the books they admit alone: {err}",
+                    vectors_dir.display()
+                );
+                None
+            }
+        };
+        kept.clone()
+    }
+
+    /// Let go of the kept view: the session moved to another generation, or closed.
+    #[cfg(feature = "semantic-integration")]
+    fn forget_set_view(&self) {
+        *self
+            .semantic_set_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     #[cfg(not(feature = "semantic-integration"))]
@@ -4872,17 +5216,57 @@ impl SearchEngine {
             };
             // The live index a vector set's hits are resolved against, at the generation this
             // search reads. A session built on this device never asks it.
-            let resolver = crate::semantic_resolver::LiveResolver::new(
-                self.index_reader.searcher(),
-                self.chunk_key_field,
-                &self.semantic_resolver,
-            )
-            .map_err(|err| {
+            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
+                if err == otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled {
+                    return SemanticError::cancelled();
+                }
                 SemanticError::new(
                     SemanticErrorKind::Internal,
                     format!("the index could not be read to resolve semantic results: {err}"),
                 )
-            })?;
+            };
+            let mut resolver = crate::semantic_resolver::LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .map_err(unreadable)?;
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: (!facets.is_empty()).then_some(facets),
+                include_pdf: None,
+            };
+            // A filtered search of an opened vector set is planned against the generation the
+            // session serves: texts that moved into an admitted book since the set was built
+            // are looked for there, and the vectors of those no admitted book's records reach
+            // are weighed besides the scan of the admitted books, which is not widened.
+            if let (Some(vectors_dir), false) = (
+                &session.vectors_dir,
+                matches!(retrieval_mode, SemanticRetrievalMode::LexicalOnly),
+            ) {
+                if filters.compile().is_some() {
+                    if let Some(view) = session
+                        .coordinator
+                        .vector_set_info()
+                        .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
+                    {
+                        // A plan that cannot be made fails the semantic half alone, which
+                        // falls back to the lexical results with the reason.
+                        match resolver.plan(&filters, &view, cancel) {
+                            Ok(_) => {}
+                            Err(
+                                otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled,
+                            ) => {
+                                return Err(SemanticError::cancelled());
+                            }
+                            Err(error) => {
+                                warn!("a filtered semantic search could not be planned: {error}");
+                                resolver.fail(error);
+                            }
+                        }
+                    }
+                }
+            }
             // The sidecar's first act is to look at the token, so this crate does not look
             // here itself; a test is told how far the search got.
             search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
@@ -4900,11 +5284,7 @@ impl SearchEngine {
                                 SidecarGroupingMode::IdenticalText
                             }
                         }),
-                        filters: Some(SidecarSearchFilters {
-                            book_paths: None,
-                            facets: (!facets.is_empty()).then_some(facets),
-                            include_pdf: None,
-                        }),
+                        filters: Some(filters),
                         force_mode: Some(match retrieval_mode {
                             SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
                             SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
@@ -4936,45 +5316,24 @@ impl SearchEngine {
                 .map(|_| SemanticErrorKind::QueryFailed);
 
             // Every line a vector set's hit was resolved to, by (book, id): where it is in
-            // the searcher the resolver read, and the key it was resolved by. Empty for a
-            // session built on this device, whose lines are hydrated by id.
+            // the searcher the resolver read. Empty for a session built on this device, whose
+            // lines are hydrated by book and id.
             let records = resolver.records();
-            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
-                SemanticError::new(
-                    SemanticErrorKind::Internal,
-                    format!("the index could not be read to check semantic results: {err}"),
-                )
-            };
+            // A semantic match is a line that holds the text its vector was embedded from by
+            // all 128 bits of the key: the resolver checks every line it returns, primaries
+            // and grouped siblings alike, before fusion sees any, and counts those it drops.
+            // One lexical search also found is still a lexical result.
+            let unverified = resolver.unverified();
 
-            // Phase 1 — hydrate and check the whole window, keeping the hydrated document
-            // so the surviving page needs no second lookup. Only a `needs_hydration` item
-            // can be stale: a lexical candidate came from this same index in this same
-            // request, so it is live by construction.
-            //
-            // A semantic match is shown only for a line that still holds the text its
-            // vector was embedded from, by all 128 bits of the key: a semantic-only item
-            // that fails is dropped, and one lexical search also found keeps its lexical
-            // half alone. This has to precede pagination, or a dropped item would leave a
-            // hole on one page and shift the next.
+            // Phase 1 — hydrate the whole window, keeping the hydrated document so the
+            // surviving page needs no second lookup. Only a `needs_hydration` item can be
+            // stale: a lexical candidate came from this same index in this same request, so
+            // it is live by construction. This has to precede pagination, or a dropped item
+            // would leave a hole on one page and shift the next.
             let mut surviving = Vec::with_capacity(result.results.len());
             let mut stale_primaries_dropped = 0u32;
-            let mut unverified = 0u32;
-            for mut item in result.results {
+            for item in result.results {
                 let record = records.get(&(item.file_path.clone(), item.id)).copied();
-                if let Some(record) = &record {
-                    if item.semantic_score.is_some()
-                        && !resolver
-                            .verify(&item.file_path, record)
-                            .map_err(unreadable)?
-                    {
-                        unverified = unverified.saturating_add(1);
-                        if item.lexical_score.is_none() {
-                            continue;
-                        }
-                        item.semantic_score = None;
-                        item.source = SidecarResultSource::Lexical;
-                    }
-                }
                 if !item.needs_hydration {
                     surviving.push((item, None));
                     continue;
@@ -4985,7 +5344,9 @@ impl SearchEngine {
                     Some(record) => {
                         Some(self.document_at(resolver.searcher(), record.address, item.id)?)
                     }
-                    None => self.get_document_by_id(item.id)?,
+                    // A line no vector set resolved, by its book and its id together, for
+                    // the same reason.
+                    None => self.document_in_book(resolver.searcher(), &item.file_path, item.id)?,
                 };
                 match hydrated {
                     Some(document) => surviving.push((item, Some(document))),
@@ -5032,7 +5393,13 @@ impl SearchEngine {
                             record.address,
                             sibling.id,
                         )?),
-                        None => self.get_document_by_id(sibling.id)?,
+                        // A sibling only lexical search found is of the group's book too:
+                        // hydrated by that book and its id, never by the id alone.
+                        None => self.document_in_book(
+                            resolver.searcher(),
+                            &sibling.file_path,
+                            sibling.id,
+                        )?,
                     };
                     match hydrated {
                         Some(document) => merged.push(MergedSibling {
@@ -6464,6 +6831,36 @@ impl SearchEngine {
             return Ok(None);
         };
         self.document_at(&searcher, addr, id).map(Some)
+    }
+
+    /// The line `id` of the book `file_path` in `searcher`, as [`Self::get_document_by_id`]
+    /// reads a line: found by the book and the id together, because two books' lines can
+    /// share an id — an index updated book by book can give two books one catalogue
+    /// position. `None` when the book holds no such line.
+    #[cfg(feature = "semantic-integration")]
+    fn document_in_book(
+        &self,
+        searcher: &Searcher,
+        file_path: &str,
+        id: u64,
+    ) -> Result<Option<SearchResult>> {
+        let book = TermQuery::new(
+            Term::from_field_text(self.schema.get_field("filePath")?, file_path),
+            IndexRecordOption::Basic,
+        );
+        let line = TermQuery::new(
+            Term::from_field_u64(self.schema.get_field("id")?, id),
+            IndexRecordOption::Basic,
+        );
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, Box::new(book) as Box<dyn Query>),
+            (Occur::Must, Box::new(line) as Box<dyn Query>),
+        ]);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
+        let Some((_, address)) = top_docs.into_iter().next() else {
+            return Ok(None);
+        };
+        self.document_at(searcher, address, id).map(Some)
     }
 
     /// The stored fields of the document at `address` in `searcher`, as a result: what a
@@ -20928,6 +21325,38 @@ mod tests {
         }
     }
 
+    /// A verification that an install overtook — it read bytes the install has since
+    /// replaced — condemned nothing, and is answered as a busy set, to verify again; one
+    /// that was not is the report.
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn a_verification_an_install_overtook_is_busy_and_not_damage() {
+        use otzaria_semantic_search::semantic::segment_set::ScrubReport;
+        let report = |superseded| ScrubReport {
+            generation: 3,
+            segments: 2,
+            bytes_checked: 10,
+            elapsed_ms: 1,
+            superseded,
+        };
+        let verified = verification_of(&report(false), Path::new("/vectors")).unwrap();
+        assert_eq!(
+            (
+                verified.generation,
+                verified.segments,
+                verified.bytes_checked
+            ),
+            (3, 2, 10)
+        );
+        let Err(overtaken) = verification_of(&report(true), Path::new("/vectors")) else {
+            panic!("a verification an install overtook is no report of the set");
+        };
+        assert_eq!(
+            (overtaken.kind, overtaken.field.as_deref()),
+            (SemanticErrorKind::VectorsBusy, Some("vectors_dir"))
+        );
+    }
+
     /// A displayed semantic result is checked against its vector by the full 128-bit key,
     /// recomputed from the line's text: a line whose column agrees by 64 bits and whose
     /// text does not is not shown as a semantic match.
@@ -20952,8 +21381,52 @@ mod tests {
         const BOOK: &str = "/books/genesis.txt";
         const PROBE: &str = "ויאמר אלהים יהי אור ויהי אור";
 
+        /// An index of one book, and a base package built from it: what a release is made of.
+        struct Built {
+            engine: SearchEngine,
+            model: ModelIdentity,
+            model_file: PathBuf,
+            /// The package: its segment and its release manifest.
+            package: PathBuf,
+            manifest_sha256: String,
+            identity: IndexVersion,
+        }
+
         /// An index of one book, a vector set built from it and installed, and the set open.
         fn opened(dir: &TempDir) -> SearchEngine {
+            let built = built(dir);
+            let vectors = dir.path().join("vectors");
+            install_package(
+                &vectors,
+                &InstallSource {
+                    segment: &built.package.join(SEGMENT_FILENAME),
+                    manifest_json: &fs::read_to_string(
+                        built.package.join(RELEASE_MANIFEST_FILENAME),
+                    )
+                    .unwrap(),
+                },
+                &InstallExpectation {
+                    identity: built.identity.clone(),
+                    published_manifest_sha256: Some(built.manifest_sha256.clone()),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            built
+                .engine
+                .open_semantic_artifact(SemanticArtifactInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    model_path: built.model_file.to_string_lossy().into_owned(),
+                    model_identity_json: serde_json::to_string(&built.model).unwrap(),
+                    onnx_runtime_path: None,
+                    scan_threads: None,
+                })
+                .unwrap();
+            built.engine
+        }
+
+        /// [`Built`]: the index and the package, nothing installed.
+        fn built(dir: &TempDir) -> Built {
             let index = dir.path().join("index");
             fs::create_dir_all(&index).unwrap();
             let mut engine = SearchEngine::new(index.to_str().unwrap());
@@ -21005,36 +21478,20 @@ mod tests {
                 &corpus,
             )
             .unwrap();
-            let vectors = dir.path().join("vectors");
-            install_package(
-                &vectors,
-                &InstallSource {
-                    segment: &package.join(SEGMENT_FILENAME),
-                    manifest_json: &fs::read_to_string(package.join(RELEASE_MANIFEST_FILENAME))
-                        .unwrap(),
-                },
-                &InstallExpectation {
-                    identity: IndexVersion {
-                        text: corpus.identity().unwrap().text,
-                        model: model.clone(),
-                        store: readable_store_identity(),
-                    },
-                    published_manifest_sha256: Some(report.manifest_sha256),
-                },
-                &CancellationToken::new(),
-            )
-            .unwrap();
+            let identity = IndexVersion {
+                text: corpus.identity().unwrap().text,
+                model: model.clone(),
+                store: readable_store_identity(),
+            };
             drop(corpus);
-            engine
-                .open_semantic_artifact(SemanticArtifactInput {
-                    vectors_dir: vectors.to_string_lossy().into_owned(),
-                    model_path: model_file.to_string_lossy().into_owned(),
-                    model_identity_json: serde_json::to_string(&model).unwrap(),
-                    onnx_runtime_path: None,
-                    scan_threads: None,
-                })
-                .unwrap();
-            engine
+            Built {
+                engine,
+                model,
+                model_file,
+                package,
+                manifest_sha256: report.manifest_sha256,
+                identity,
+            }
         }
 
         /// The probe line's id and the value its `chunkKey` column holds.
@@ -21141,6 +21598,227 @@ mod tests {
                 "{:?}",
                 response.fallback_reason
             );
+        }
+
+        /// A filtered search after a commit that left the book it admits alone plans again —
+        /// a commit is a new generation of the index — and reads none of the book's lines:
+        /// its postings are the segments they were, so the arrivals the view keeps for them
+        /// hold.
+        #[test]
+        fn a_plan_after_a_commit_that_left_its_book_alone_reads_none_of_it() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let filtered = |engine: &SearchEngine| {
+                engine
+                    .search_semantic(
+                        PROBE.to_string(),
+                        vec!["/root".to_string()],
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let walks = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .walks
+            };
+            assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
+            assert_eq!(walks(&engine), 1, "the first plan reads the book");
+            engine
+                .add_text_book(
+                    "ספר אחר".to_string(),
+                    "/other".to_string(),
+                    "/books/other.txt".to_string(),
+                    1,
+                    0,
+                    "שורה בספר אחר ארוכה דיה לעמוד לבדה".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
+            assert_eq!(
+                walks(&engine),
+                0,
+                "a plan of the new generation reads none of the book it admits"
+            );
+        }
+
+        /// A vector whose line's column is stale resolves nowhere: its record's line and every
+        /// line its column value is found at hold another key. That is looked for across the
+        /// whole index once in a generation of it, not by every search that hits the vector.
+        #[test]
+        fn a_key_only_a_stale_column_holds_is_looked_for_once_a_generation() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, "שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+            let passes = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .passes
+            };
+            // Two queries, so that the second is not answered from the query cache: the set
+            // holds two vectors, and every search scans both.
+            for (query, expected) in [(PROBE, 1), ("בראשית ברא אלהים", 1)] {
+                let response = engine
+                    .search_semantic(
+                        query.to_string(),
+                        Vec::new(),
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap();
+                assert!(
+                    response
+                        .results
+                        .iter()
+                        .all(|result| result.file_path != BOOK || result.segment != 1),
+                    "{query}: the stale line is not the vector's"
+                );
+                assert_eq!(passes(&engine), expected, "{query}");
+            }
+        }
+
+        /// A filtered search that cannot be planned — the index could not be read for it —
+        /// is a semantic half that failed, as one whose resolver cannot read the index is:
+        /// the lexical results are served, with the reason, and the next search is planned.
+        #[test]
+        fn a_filtered_search_that_cannot_be_planned_falls_back_with_a_reason() {
+            let dir = TempDir::new().unwrap();
+            let engine = opened(&dir);
+            let filtered = |query: &str| {
+                engine.search_semantic(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::Hybrid,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+            };
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
+            let failed = filtered(PROBE);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
+            let failed = failed.expect("a fallback, not an error of the call");
+            assert!(!failed.semantic_available);
+            assert_eq!(failed.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+            assert!(
+                failed
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("a test made planning fail")),
+                "{:?}",
+                failed.fallback_reason
+            );
+            assert!(
+                failed
+                    .results
+                    .iter()
+                    .any(|result| result.snippet_html.contains("ויאמר")
+                        && result.source == SemanticResultSource::Lexical),
+                "the lexical results are served"
+            );
+
+            let planned = filtered("ויאמר אלהים יהי אור").unwrap();
+            assert!(planned.semantic_available, "{:?}", planned.fallback_reason);
+            assert_eq!(planned.fallback_kind, None);
+        }
+
+        /// Another process's cleanup can take an expansion's lock file in the instant between
+        /// its creation and its locking: lock it, take it for a process gone, and remove it.
+        /// The install then takes a lock file of its own again and goes on — whether the
+        /// cleaner still holds the one it took, or has removed it and let go — and leaves
+        /// nothing in `incoming/`.
+        #[test]
+        fn an_expansion_lock_another_cleanup_takes_first_is_taken_again() {
+            use std::sync::{Arc, Mutex};
+            let dir = TempDir::new().unwrap();
+            let built = built(&dir);
+            let compressed = dir.path().join("segment.oxv.zst");
+            fs::write(
+                &compressed,
+                zstd::stream::encode_all(
+                    fs::File::open(built.package.join(SEGMENT_FILENAME)).unwrap(),
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let vectors = dir.path().join("vectors");
+            // The cleaner: the first lock file it holds and removes, the second it removes
+            // and lets go of, the rest it leaves alone.
+            let calls = Arc::new(Mutex::new(0u32));
+            let held: Arc<Mutex<Option<fs::File>>> = Arc::new(Mutex::new(None));
+            {
+                let (calls, held) = (Arc::clone(&calls), Arc::clone(&held));
+                super::AFTER_EXPANSION_LOCK_FILE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+                        let mut calls = calls.lock().unwrap();
+                        *calls += 1;
+                        if *calls <= 2 {
+                            let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+                            file.try_lock().unwrap();
+                            fs::remove_file(path).unwrap();
+                            *held.lock().unwrap() = (*calls == 1).then_some(file);
+                        }
+                    }));
+                });
+            }
+            let installed = built.engine.install_semantic_vectors(
+                SemanticVectorsInstallInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    segment_path: compressed.to_string_lossy().into_owned(),
+                    manifest_json: fs::read_to_string(
+                        built.package.join(RELEASE_MANIFEST_FILENAME),
+                    )
+                    .unwrap(),
+                    published_manifest_sha256: Some(built.manifest_sha256.clone()),
+                    model_identity_json: serde_json::to_string(&built.model).unwrap(),
+                },
+                &SemanticCancellationToken::new(),
+            );
+            super::AFTER_EXPANSION_LOCK_FILE.with(|hook| *hook.borrow_mut() = None);
+            drop(held.lock().unwrap().take());
+            if let Err(error) = &installed {
+                panic!("the install is not refused: {error:?}");
+            }
+            assert_eq!(*calls.lock().unwrap(), 3, "a lock file a third time");
+            let left: Vec<String> = fs::read_dir(vectors.join("incoming"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert_eq!(left, Vec::<String>::new());
         }
 
         /// One lexical search also found keeps its lexical half alone.
