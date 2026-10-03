@@ -1683,6 +1683,11 @@ const EXPANDING_PREFIX: &str = ".expanding-";
 #[cfg(feature = "semantic-integration")]
 const EXPANSION_LOCK: &str = ".lock";
 
+/// How many lock files an expansion creates, each taken by another process's cleanup in the
+/// instant before it was locked, before the install is refused as busy.
+#[cfg(feature = "semantic-integration")]
+const EXPANSION_LOCK_ATTEMPTS: u32 = 3;
+
 /// How old an expansion's segment with no lock file beside it must be before an install
 /// removes it. A segment always has one while its install runs, so one without is debris;
 /// the age spares a segment whose lock file another process removed in the instant between
@@ -1744,6 +1749,18 @@ fn remove_abandoned_expansions(incoming: &Path) {
     }
 }
 
+/// What a test runs with each expansion's lock file: see [`AFTER_EXPANSION_LOCK_FILE`].
+#[cfg(all(test, feature = "semantic-integration"))]
+type ExpansionLockHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(all(test, feature = "semantic-integration"))]
+thread_local! {
+    /// Called with each expansion's lock file as soon as it is created, before it is locked:
+    /// what a test does there is what another process's cleanup could do in that instant.
+    static AFTER_EXPANSION_LOCK_FILE: std::cell::RefCell<Option<ExpansionLockHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// A segment expanded for an install, and the lock that keeps it the install's: dropping
 /// this removes the segment and then the lock file, after the install has returned,
 /// whatever the sidecar did with the segment.
@@ -1803,14 +1820,43 @@ fn expand_segment(
         )
     };
     let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
-    let lock = tempfile::Builder::new()
-        .prefix(EXPANDING_PREFIX)
-        .suffix(EXPANSION_LOCK)
-        .tempfile_in(&incoming)
-        .map_err(writing)?;
-    lock.as_file()
-        .try_lock()
-        .map_err(|err| writing(std::io::Error::other(err)))?;
+    // Another process's cleanup can take a lock file in the instant between its creation and
+    // its locking — find it unlocked, take it for a process gone, and remove it. A lock file
+    // that cannot be locked, or is gone once it is, is given up for a new one.
+    let mut attempts = 0;
+    let lock = loop {
+        attempts += 1;
+        let lock = tempfile::Builder::new()
+            .prefix(EXPANDING_PREFIX)
+            .suffix(EXPANSION_LOCK)
+            .tempfile_in(&incoming)
+            .map_err(writing)?;
+        #[cfg(test)]
+        AFTER_EXPANSION_LOCK_FILE.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(lock.path());
+            }
+        });
+        let locked = match lock.as_file().try_lock() {
+            Ok(()) => lock.path().exists(),
+            Err(std::fs::TryLockError::WouldBlock) => false,
+            Err(std::fs::TryLockError::Error(err)) => return Err(writing(err)),
+        };
+        if locked {
+            break lock;
+        }
+        if attempts == EXPANSION_LOCK_ATTEMPTS {
+            return Err(SemanticError::new(
+                SemanticErrorKind::VectorsBusy,
+                refused(&format!(
+                    "another install's cleanup of {} took this one's expansion lock {attempts} \
+                     times; try again once it has finished",
+                    incoming.display()
+                )),
+            )
+            .with_field("vectors_dir"));
+        }
+    };
     let stem = lock
         .path()
         .file_name()
@@ -21335,8 +21381,52 @@ mod tests {
         const BOOK: &str = "/books/genesis.txt";
         const PROBE: &str = "ויאמר אלהים יהי אור ויהי אור";
 
+        /// An index of one book, and a base package built from it: what a release is made of.
+        struct Built {
+            engine: SearchEngine,
+            model: ModelIdentity,
+            model_file: PathBuf,
+            /// The package: its segment and its release manifest.
+            package: PathBuf,
+            manifest_sha256: String,
+            identity: IndexVersion,
+        }
+
         /// An index of one book, a vector set built from it and installed, and the set open.
         fn opened(dir: &TempDir) -> SearchEngine {
+            let built = built(dir);
+            let vectors = dir.path().join("vectors");
+            install_package(
+                &vectors,
+                &InstallSource {
+                    segment: &built.package.join(SEGMENT_FILENAME),
+                    manifest_json: &fs::read_to_string(
+                        built.package.join(RELEASE_MANIFEST_FILENAME),
+                    )
+                    .unwrap(),
+                },
+                &InstallExpectation {
+                    identity: built.identity.clone(),
+                    published_manifest_sha256: Some(built.manifest_sha256.clone()),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            built
+                .engine
+                .open_semantic_artifact(SemanticArtifactInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    model_path: built.model_file.to_string_lossy().into_owned(),
+                    model_identity_json: serde_json::to_string(&built.model).unwrap(),
+                    onnx_runtime_path: None,
+                    scan_threads: None,
+                })
+                .unwrap();
+            built.engine
+        }
+
+        /// [`Built`]: the index and the package, nothing installed.
+        fn built(dir: &TempDir) -> Built {
             let index = dir.path().join("index");
             fs::create_dir_all(&index).unwrap();
             let mut engine = SearchEngine::new(index.to_str().unwrap());
@@ -21388,36 +21478,20 @@ mod tests {
                 &corpus,
             )
             .unwrap();
-            let vectors = dir.path().join("vectors");
-            install_package(
-                &vectors,
-                &InstallSource {
-                    segment: &package.join(SEGMENT_FILENAME),
-                    manifest_json: &fs::read_to_string(package.join(RELEASE_MANIFEST_FILENAME))
-                        .unwrap(),
-                },
-                &InstallExpectation {
-                    identity: IndexVersion {
-                        text: corpus.identity().unwrap().text,
-                        model: model.clone(),
-                        store: readable_store_identity(),
-                    },
-                    published_manifest_sha256: Some(report.manifest_sha256),
-                },
-                &CancellationToken::new(),
-            )
-            .unwrap();
+            let identity = IndexVersion {
+                text: corpus.identity().unwrap().text,
+                model: model.clone(),
+                store: readable_store_identity(),
+            };
             drop(corpus);
-            engine
-                .open_semantic_artifact(SemanticArtifactInput {
-                    vectors_dir: vectors.to_string_lossy().into_owned(),
-                    model_path: model_file.to_string_lossy().into_owned(),
-                    model_identity_json: serde_json::to_string(&model).unwrap(),
-                    onnx_runtime_path: None,
-                    scan_threads: None,
-                })
-                .unwrap();
-            engine
+            Built {
+                engine,
+                model,
+                model_file,
+                package,
+                manifest_sha256: report.manifest_sha256,
+                identity,
+            }
         }
 
         /// The probe line's id and the value its `chunkKey` column holds.
@@ -21675,6 +21749,76 @@ mod tests {
             let planned = filtered("ויאמר אלהים יהי אור").unwrap();
             assert!(planned.semantic_available, "{:?}", planned.fallback_reason);
             assert_eq!(planned.fallback_kind, None);
+        }
+
+        /// Another process's cleanup can take an expansion's lock file in the instant between
+        /// its creation and its locking: lock it, take it for a process gone, and remove it.
+        /// The install then takes a lock file of its own again and goes on — whether the
+        /// cleaner still holds the one it took, or has removed it and let go — and leaves
+        /// nothing in `incoming/`.
+        #[test]
+        fn an_expansion_lock_another_cleanup_takes_first_is_taken_again() {
+            use std::sync::{Arc, Mutex};
+            let dir = TempDir::new().unwrap();
+            let built = built(&dir);
+            let compressed = dir.path().join("segment.oxv.zst");
+            fs::write(
+                &compressed,
+                zstd::stream::encode_all(
+                    fs::File::open(built.package.join(SEGMENT_FILENAME)).unwrap(),
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let vectors = dir.path().join("vectors");
+            // The cleaner: the first lock file it holds and removes, the second it removes
+            // and lets go of, the rest it leaves alone.
+            let calls = Arc::new(Mutex::new(0u32));
+            let held: Arc<Mutex<Option<fs::File>>> = Arc::new(Mutex::new(None));
+            {
+                let (calls, held) = (Arc::clone(&calls), Arc::clone(&held));
+                super::AFTER_EXPANSION_LOCK_FILE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+                        let mut calls = calls.lock().unwrap();
+                        *calls += 1;
+                        if *calls <= 2 {
+                            let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+                            file.try_lock().unwrap();
+                            fs::remove_file(path).unwrap();
+                            *held.lock().unwrap() = (*calls == 1).then_some(file);
+                        }
+                    }));
+                });
+            }
+            let installed = built.engine.install_semantic_vectors(
+                SemanticVectorsInstallInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    segment_path: compressed.to_string_lossy().into_owned(),
+                    manifest_json: fs::read_to_string(
+                        built.package.join(RELEASE_MANIFEST_FILENAME),
+                    )
+                    .unwrap(),
+                    published_manifest_sha256: Some(built.manifest_sha256.clone()),
+                    model_identity_json: serde_json::to_string(&built.model).unwrap(),
+                },
+                &SemanticCancellationToken::new(),
+            );
+            super::AFTER_EXPANSION_LOCK_FILE.with(|hook| *hook.borrow_mut() = None);
+            drop(held.lock().unwrap().take());
+            if let Err(error) = &installed {
+                panic!("the install is not refused: {error:?}");
+            }
+            assert_eq!(*calls.lock().unwrap(), 3, "a lock file a third time");
+            let left: Vec<String> = fs::read_dir(vectors.join("incoming"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert_eq!(left, Vec::<String>::new());
         }
 
         /// One lexical search also found keeps its lexical half alone.
