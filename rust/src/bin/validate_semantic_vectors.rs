@@ -88,7 +88,7 @@ mod gates {
     use otzaria_semantic_search::semantic::segment_set::SegmentSet;
     use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
     use search_engine::semantic_plan::{
-        installation_identity, sample_queries, validate, Validation,
+        installation_identity, sample_queries, validate, Validation, MAX_SAMPLED_QUERIES,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -320,6 +320,13 @@ mod gates {
         let max_stale_hints = args.ratio("--max-stale-hints")?;
         let min_recall_10 = args.ratio("--min-recall-10")?.unwrap_or(MIN_RECALL_AT_10);
         let min_recall_50 = args.ratio("--min-recall-50")?.unwrap_or(MIN_RECALL_AT_50);
+        let sample = match args.number::<u64>("--sample-queries")? {
+            Some(count) if !(1..=MAX_SAMPLED_QUERIES as u64).contains(&count) => bail!(
+                "--sample-queries is {count}, and it is a count from 1 to {MAX_SAMPLED_QUERIES}"
+            ),
+            Some(count) => count as usize,
+            None => SAMPLED_QUERIES,
+        };
         let threads = match args.number::<usize>("--threads")? {
             Some(0) => bail!("--threads is 0, and a scan needs one"),
             Some(threads) => threads,
@@ -377,9 +384,7 @@ mod gates {
                     identity: Path::new(identity),
                     onnx_runtime: args.get("--onnx-runtime").map(PathBuf::from),
                     queries: args.get("--queries").map(PathBuf::from),
-                    sample: args
-                        .number::<usize>("--sample-queries")?
-                        .unwrap_or(SAMPLED_QUERIES),
+                    sample,
                     min_recall_10,
                     min_recall_50,
                     threads,
@@ -781,7 +786,8 @@ G6, retrieval — recall of the set's scan against the exact f32 scan:
   --onnx-runtime <file>     The ONNX Runtime library (default: OTZARIA_ONNX_RUNTIME, then
                             the one beside the model)
   --queries <file>          The queries, one per line (default: drawn from the index)
-  --sample-queries <n>      How many to draw from the index without --queries (default 200)
+  --sample-queries <n>      How many to draw from the index without --queries, from 1 to
+                            100000 (default 200)
   --min-recall-10 <r>       The least mean recall@10 (default 0.98)
   --min-recall-50 <r>       The least mean recall@50, over distinct texts (default 0.99)
   --threads <n>             Threads to scan with (default: every core)

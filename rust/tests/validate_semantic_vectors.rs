@@ -685,6 +685,21 @@ fn a_warehouse_the_set_was_not_assembled_from_fails_retrieval() {
     assert_eq!(gate(&report, "G4").0, "passed");
 }
 
+/// A number of queries to draw that no index could give, or none at all, is a wrong
+/// argument: exit 2, as for any, not a crash.
+#[test]
+fn a_sample_of_queries_out_of_range_is_a_wrong_argument() {
+    let release = release(&books());
+    let out = release.path("report.json");
+    for count in ["18446744073709551615", "100000000", "0"] {
+        let mut args = all_gates(&release, &release.warehouse, &out);
+        args.extend(["--sample-queries".to_string(), count.to_string()]);
+        let (code, printed) = validate(&as_args(&args));
+        assert_eq!(code, 2, "--sample-queries {count}: {printed}");
+        assert!(printed.contains("--sample-queries"), "{printed}");
+    }
+}
+
 /// Arguments that are wrong, and inputs that do not read, exit 2 without a verdict.
 #[test]
 fn wrong_arguments_and_unreadable_inputs_exit_2() {
