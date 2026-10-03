@@ -400,8 +400,10 @@ are now documented as development and testing scaffolding, not for the library.
   the release index. It installs the releases given with `--release` (the
   published chain first, the new one last) into a set of its own as a device
   installs them, or takes one installed already with `--vectors`, and checks
-  **G3**, with `--plan`: every record of the plan is reachable in the set;
-  **G4**: every record resolves on the index by all 128 bits of its key, a
+  **G3**: every line of the index the recipe embeds has its text recorded by
+  the set in its own book, by all 128 bits of the key, and with `--plan`
+  every record of the plan is reachable in the set; **G4**: every record
+  resolves on the index by all 128 bits of its key, a
   record of a book the index lacks counting as unresolved, and every line's
   `chunkKey` column is its text's, with records off their hint reported and
   failing it only past `--max-stale-hints`; and **G6**, with `--warehouse`,
@@ -412,14 +414,19 @@ are now documented as development and testing scaffolding, not for the library.
   line, or 200 spans of the index's lines drawn with a fixed seed. Recall is
   counted over keys, which are distinct texts: a scan returns a text once,
   however many books hold it, so repeated texts cannot take the top 50 as they
-  do on a page of lines. Exit 0 when every gate that ran passed, 1 when one
-  failed, 2 for wrong arguments or inputs that do not read; `--report` writes
-  every gate's verdict and numbers as JSON. On the v30 set a scratch harness of
+  do on a page of lines. A release passes when every gate ran and passed: a
+  gate whose inputs are not given has not run, which fails it, unless the
+  caller skips that gate by name (`--skip G6`), which the output and the
+  report record. Exit 0 when every gate passed or was skipped so, 1 when one
+  failed or did not run, 2 for wrong arguments or inputs that do not read;
+  `--report` writes every gate's verdict and numbers as JSON. On the v30 set a scratch harness of
   the same measurement gave recall@10 0.987 to 0.994 and recall@50, over
   distinct texts, 0.993 to 0.995. Tested through the pipeline itself: a plan,
   a warehouse of the stand-in's vectors, a base assembled and installed, which
-  passes; and a book gone, stale hints past the limit, a plan the set does not
-  reach, a warehouse of other vectors and wrong arguments, which each fail.
+  passes; and a book gone, stale hints past the limit, a line of the index the
+  set does not cover (with no plan and no warehouse given), a plan the set
+  does not reach, a warehouse of other vectors and wrong arguments, which each
+  fail.
 - **Tests of the vector-set path with the stand-in**, `rust/tests/semantic_artifact.rs`:
   a base package built by the binary from a small index, installed by the
   binary and through the API, plain and compressed, opened, searched both ways
