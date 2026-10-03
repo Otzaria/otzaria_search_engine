@@ -67,6 +67,7 @@ fn main() {
     };
 
     let index_path = required("--index");
+    let seforim_db = flag("--seforim-db");
     let out = PathBuf::from(required("--out"));
     let library_version = required("--library-version");
     let vectors = required("--vectors");
@@ -85,12 +86,16 @@ fn main() {
                 process::exit(1);
             });
 
-    let corpus =
-        TantivyCorpus::from_index_path(Path::new(&index_path), library_version, chunking.clone())
-            .unwrap_or_else(|error| {
-                eprintln!("Could not read the corpus at {index_path}: {error:#}");
-                process::exit(1);
-            });
+    let corpus = TantivyCorpus::from_index_path(
+        Path::new(&index_path),
+        seforim_db.as_deref().map(Path::new),
+        library_version,
+        chunking.clone(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the corpus at {index_path}: {error:#}");
+        process::exit(1);
+    });
     println!(
         "Corpus: {} line(s) across {} book(s)\ncorpus_id: {}",
         corpus.line_count(),
@@ -202,6 +207,8 @@ Usage:
   --model            JSON ModelIdentity
   --chunking         JSON ChunkerConfig; its hash must be the model's chunking_identity
   --out              Output directory; must not exist, or be empty
+  --seforim-db       Optional: the library database official books' line text is read
+                     from (read-only); required when the index keeps that text there
 
 Every check happens here: each record's source digest against the line the index holds,
 and the whole id set against the one the recipe embeds.";

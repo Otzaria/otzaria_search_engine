@@ -8,6 +8,7 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
    - [SearchEngine](#searchengine)
 2. [Top-Level Functions](#top-level-functions)
   - [checkIndexCompatibility](#checkindexcompatibility)
+  - [Library line source](#library-line-source)
 3. [Data Models](#data-models)
    - [SearchResult](#searchresult)
   - [IndexCompatibility](#indexcompatibility)
@@ -253,6 +254,58 @@ Common `status` values:
 - `missing_index`: The index directory does not exist
 - `invalid_index_path`: The given path is not a valid directory path
 
+### Library line source
+
+Since schema 5 the index does not have to store the text of official books. A book
+indexed with `textStorage: TextStorage.libraryDb` keeps its lines in the inverted index
+only; when results are built, the engine reads each line back from the library database
+(`seforim.db`) and prepares it exactly as indexing did, so `SearchResult.text` is
+unchanged. Everything else (`TextStorage.inIndex`, the default) is stored as before.
+
+```dart
+// Once, before the engine touches SQLite (app builds share Dart's SQLite):
+final entry = sqliteHostEntryAddress();          // BigInt; 0 = SQLite is bundled
+// if (entry != BigInt.zero) register Pointer.fromAddress(entry.toInt()) with
+// sqlite3_auto_extension, then open any connection. The entry stays registered (it only
+// returns SQLITE_OK after the first open); the app may sqlite3_cancel_auto_extension it
+// after that first open. It never cancels itself: doing so inside the callback would make
+// that open skip the next registered extension.
+
+Future<void> configureLineSource({required String dbPath}); // lazy; new path drops caches
+Future<void> suspendLineSource();  // closes the file; waits for a running window
+Future<void> resumeLineSource();   // undoes one suspend; the last drops all caches
+Future<LineSourceStatus> lineSourceStatus(); // ..., generation, libraryFallbacks
+```
+
+- `addTextBook` / `addTextBookBytes` take `required TextStorage textStorage`. Pass
+  `TextStorage.libraryDb` only when the text is the `\n`-joined rows of an official book
+  read from the library database; `filePath` must then be `id:<bookId>`. A document's
+  `segment` is its row's 0-based position in the book's `lineIndex` order.
+- `libraryDb` needs the line source configured while indexing: the book's text is split
+  into lines and their count is compared with the book's rows in the database. When they
+  differ (a row containing `\n`, another database) or the source cannot be read
+  (unconfigured, suspended, or busy past the 100 ms timeout), the book is indexed as
+  `inIndex` instead — its text is stored and its results are always `ok` — a warning is
+  logged and `LineSourceStatus.libraryFallbacks` grows by one. The return value is
+  unchanged. Indexing does not honor a window's busy backoff (below).
+- `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
+  `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
+  ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
+- Each library line carries `lineCheck`, a CRC-32 of its exact text (spacing, punctuation,
+  nikud and markup included). Every library row of one result window is read in a single
+  read transaction and must match its `lineCheck`, and its `lineHash` when that is not 0;
+  see `TextStatus` below. A line is read first at `lineIndex = segment`; only when that
+  row does not match is the book's row order mapped (and cached) to find it by position.
+- `suspendLineSource` must be called before the database file is renamed or replaced
+  (Windows cannot replace an open file); while suspended, library results are
+  `TextStatus.unavailable`. A write by another connection without a suspend is noticed
+  (`PRAGMA data_version`) by the next window, which drops its cached lookups first.
+- While another connection holds a write lock on the database, a window waits at most
+  100 ms, its library results are `unavailable`, and the next second of windows does not
+  touch the database at all.
+- The database is opened by its plain path, read-only, so UNC paths (`\\server\share\...`)
+  work.
+
 ---
 
 ## Data Models
@@ -271,8 +324,20 @@ class SearchResult {
   int segment;         // Segment number (u64)
   bool isPdf;          // Whether document is PDF
   String filePath;     // Path to document file
+  TextStatus textStatus; // ok | stale | unavailable
 }
 ```
+
+`textStatus` is always `ok` for text stored in the index. For `TextStorage.libraryDb`
+documents, `ok` means the displayed text is exactly the text that was indexed — not that
+it came from the same database row: identical lines can trade places, and a line still at
+its `lineIndex` after an earlier row was deleted without renumbering reads `ok`.
+`stale` — the database no longer holds the indexed line (changed in any way, moved or
+deleted); `text` is the database's current line at that position, HTML-escaped and
+unhighlighted (empty when the row is gone), and reindexing the book fixes it.
+`unavailable` — the line source is unconfigured, suspended, busy or unreadable; `text` is
+empty.
+`SemanticSearchResult` carries the same field.
 
 **Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags by default (configurable via `HighlightConfig`). If no snippet is generated, it contains the full document text.
 

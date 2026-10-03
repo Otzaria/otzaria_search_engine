@@ -1,12 +1,14 @@
 # Must point at the repository whose Precompiled Binaries workflow publishes
 # the release assets (the workflow publishes to its own github.repository).
+# The app shares Dart's SQLite (`sqlite-host`), so the bundled default is turned
+# off; the two features must never combine. Precompiled binaries use `release`.
 cargo:
   debug:
-    extra_flags: ["--features", "semantic"]
+    extra_flags: ["--no-default-features", "--features", "semantic,sqlite-host"]
   profile:
-    extra_flags: ["--features", "semantic"]
+    extra_flags: ["--no-default-features", "--features", "semantic,sqlite-host"]
   release:
-    extra_flags: ["--features", "semantic"]
+    extra_flags: ["--no-default-features", "--features", "semantic,sqlite-host"]
 
 precompiled_binaries:
   url_prefix: https://github.com/otzaria/otzaria_search_engine/releases/download/precompiled_

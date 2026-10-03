@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.9.0 – 2026-10-02
+
+### Changed (breaking — the index must be rebuilt)
+
+- **Official books keep their line text in the library database, not in the
+  index.** `addTextBook`/`addTextBookBytes` take a required `textStorage`, and
+  `DocumentInput` an optional one. With `TextStorage.libraryDb` (only for the
+  rows of an official book read from `seforim.db`, `filePath` `id:<bookId>`) the
+  text is indexed but not stored; results read each line back from the
+  database and prepare it exactly as indexing did — BOM handling, `data:` URI
+  removal, normalization, the vocalized rendering — so snippets, highlights and
+  `SearchResult` are unchanged. On the full library the index shrinks from
+  ~4.4 GB to ~2 GB. `TextStorage.inIndex` (PDF, file-backed, personal and
+  attached books, empty-book markers, and the default) stores text as before.
+  `libraryDb` needs the line source configured while indexing: a book whose
+  line count differs from its rows in the database (a row containing `\n`), or
+  that the source cannot read, is indexed as `inIndex` instead, with a logged
+  warning. `DocumentInput` refuses `libraryDb`.
+- **Schema 5.** `text` and `textVocalized` are no longer stored; their display
+  copies moved to the stored-only `textStored`/`textVocalizedStored`, written
+  for `inIndex` documents only. The new FAST `lineCheck` (CRC-32 of a library
+  line's exact text, ~4 bytes a line) is written for `libraryDb` documents only.
+  Indexing options, tokenizers and positions are unchanged.
+  `checkIndexCompatibility` reports `rebuild_required` for schema 4.
+- **App builds share Dart's SQLite.** The crate has two exclusive features:
+  `sqlite-bundled` (the default: tests, CLI and semantic build tools) and
+  `sqlite-host` (the app: no SQLite inside; calls go through the API table of the
+  library Dart loaded). `cargokit.yaml` builds with
+  `--no-default-features --features semantic,sqlite-host`. Dart must register
+  `sqliteHostEntryAddress()` with `sqlite3_auto_extension` and open a connection
+  before the engine uses SQLite; until then every SQLite use (the line source and
+  the lexical dictionary) fails with a defined error instead of panicking. The
+  entry never unregisters itself (that would make the open in progress skip the
+  next registered extension); the app may cancel it after its first open.
+
+### Added
+
+- `configureLineSource`, `suspendLineSource`, `resumeLineSource`,
+  `lineSourceStatus` and the synchronous `sqliteHostEntryAddress`. The source
+  opens lazily, read-only (`SQLITE_OPEN_READONLY` on the plain path, so UNC
+  paths work; `query_only`); every result window reads its rows in one read
+  transaction and nothing holds a transaction between windows. A line is read
+  at `lineIndex = segment` through `idx_line_book_index` and kept only when it
+  matches its `lineCheck`; a book where that fails gets a cached ordinal-to-rowid
+  map (bounded at 16 MiB, ~4 bytes a row), so a cold window costs ~13 ms even
+  over the 100 largest books. A commit by another connection
+  (`PRAGMA data_version`) drops the cached lookups and maps. A busy database
+  costs a window one 100 ms wait, then windows skip it for a second; indexing
+  ignores that backoff. `suspendLineSource` waits for a running window and
+  returns once the file is closed, so the database can be replaced.
+- `LineSourceStatus.libraryFallbacks`: how many books asked for as `libraryDb`
+  were stored `inIndex` in this process.
+- `TextStatus` on `SearchResult` and `SemanticSearchResult`: `ok` when the text
+  is exactly what was indexed (its `lineCheck`, and its `lineHash` when not 0);
+  `stale` when the database no longer holds the indexed line — the text is then
+  the current line, escaped and unhighlighted;
+  `unavailable` when the source is unconfigured, suspended, busy or unreadable
+  — the text is empty.
+- Rows stored as zstd frames (`line_content` BLOBs with a `zstd_dict` table,
+  Otzaria/otzaria#1699) are decoded; TEXT rows are read as they are. Books whose
+  `lineIndex` has gaps are mapped through their sorted row order.
+- The semantic build tools take `--seforim-db <path>` and read library text from
+  it, verified against the index, so `CorpusLine.text` and `corpus_id` are
+  identical to a build over an index that stored the text.
+
 ## 0.8.7 – 2026-09-29
 
 ### Fixed

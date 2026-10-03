@@ -1,13 +1,24 @@
 [package]
 name = "search_engine"
-version = "0.8.7"
+version = "0.9.0"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-default = []
+# SQLite comes from exactly one of the two features below; enabling both or
+# neither is a compile error (see `src/sqlite_host.rs`). libsqlite3-sys lets
+# `loadable_extension` silently win over `bundled`, so app builds must use
+# `--no-default-features --features sqlite-host` rather than adding to the
+# default.
+default = ["sqlite-bundled"]
+# CLI binaries, tests and build tools: SQLite compiled into this crate.
+sqlite-bundled = ["rusqlite/bundled"]
+# The app: no SQLite inside the library. Every call goes through the API table
+# of the SQLite instance Dart already loaded, handed over by
+# `sqlite3_auto_extension(sqlite_host_entry_address())`.
+sqlite-host = ["rusqlite/loadable_extension"]
 # Keep the inference backend opt-in for the application, but make the feature
 # boundary explicit: enabling our semantic integration must enable the only
 # production embedding backend in the sidecar as well.  The sidecar deliberately
@@ -69,9 +80,16 @@ serde_json = "1.0.150"
 htmlescape = "0.3.1"
 log = "0.4.32"
 unicode-segmentation = "1.13.3"
-# Lexical (MagicDictionary) approximate-search path. `bundled` compiles SQLite
-# from source so there is no system libsqlite dependency on Android/iOS.
-rusqlite = { version = "0.32", features = ["bundled"] }
+# Lexical (MagicDictionary) approximate-search path and the library line source.
+# Which SQLite it binds to is chosen by the `sqlite-bundled`/`sqlite-host`
+# features. No other rusqlite features: the host's SQLite (Dart's build) omits
+# trace, progress handler, decltype and the authorizer.
+rusqlite = { version = "0.32", default-features = false }
+# Per-row zstd frames of `line_content.content` (schema 6 with `zstd_dict`).
+# Already compiled for tantivy-sstable; same version and features.
+zstd = "0.13"
+# CRC-32 of a line for `lineCheck` (hardware-accelerated; already built for tantivy).
+crc32fast = "1.5"
 lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.

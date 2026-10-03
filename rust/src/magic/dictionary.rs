@@ -78,6 +78,7 @@ impl MagicDictionary {
     /// Opens `lexical.db` read-only. Fails if the file is missing or not a
     /// valid SQLite database — the caller treats that as "no dictionary".
     pub fn open(path: &Path) -> Result<Self> {
+        crate::sqlite_host::ensure_ready()?;
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,

@@ -171,6 +171,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextStorage dco_decode_box_autoadd_text_storage(dynamic raw);
+
+  @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
@@ -213,7 +216,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_i_32(dynamic raw);
 
   @protected
+  PlatformInt64 dco_decode_i_64(dynamic raw);
+
+  @protected
   IndexCompatibility dco_decode_index_compatibility(dynamic raw);
+
+  @protected
+  LineSourceStatus dco_decode_line_source_status(dynamic raw);
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
@@ -333,6 +342,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextStorage? dco_decode_opt_box_autoadd_text_storage(dynamic raw);
+
+  @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
@@ -438,6 +450,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
+
+  @protected
+  TextStatus dco_decode_text_status(dynamic raw);
+
+  @protected
+  TextStorage dco_decode_text_storage(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -617,6 +635,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextStorage sse_decode_box_autoadd_text_storage(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
@@ -663,9 +684,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
+  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
   IndexCompatibility sse_decode_index_compatibility(
     SseDeserializer deserializer,
   );
+
+  @protected
+  LineSourceStatus sse_decode_line_source_status(SseDeserializer deserializer);
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
@@ -827,6 +854,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextStorage? sse_decode_opt_box_autoadd_text_storage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
@@ -968,6 +1000,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
+
+  @protected
+  TextStatus sse_decode_text_status(SseDeserializer deserializer);
+
+  @protected
+  TextStorage sse_decode_text_storage(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -1188,6 +1226,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_text_storage(
+    TextStorage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -1248,8 +1292,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
   void sse_encode_index_compatibility(
     IndexCompatibility self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_line_source_status(
+    LineSourceStatus self,
     SseSerializer serializer,
   );
 
@@ -1444,6 +1497,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_text_storage(
+    TextStorage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
@@ -1622,6 +1681,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_test_case(TestCase self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_text_status(TextStatus self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_text_storage(TextStorage self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
