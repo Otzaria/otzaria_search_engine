@@ -287,6 +287,13 @@ session keeps serving; try again once the other has finished.
 | `publishedManifestSha256` | optional: the manifest's SHA-256 as the release publishes it outside the manifest; without it an install detects damage and the wrong release, not one rebuilt to match |
 | `modelIdentityJson` | the model identity this installation queries with, as for opening: a release it would not open is not installed |
 
+A release manifest's `requires` (`indexSchemaVersion`, `lineTextVersion`,
+`keyVersion`) and `builtBy` are information, and nothing checks them: the
+release's identity is what an install and an open check. The published v30
+release says `indexSchemaVersion: 5`, the schema whose `chunkKey` column its
+records are resolved by, and installs, opens and searches on a version 4 index
+all the same, with version 4's limits (below).
+
 The report says what the release was (`kind`: `base`, `delta` or `compacted`),
 the library version and generation the set stands at, the vectors it added and
 the older ones it deleted, the set's size, and whether it wants compacting.
