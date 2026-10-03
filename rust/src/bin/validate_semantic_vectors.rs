@@ -33,7 +33,8 @@
 //!
 //! A release passes when every gate ran and passed. A gate whose inputs are not given has
 //! not run, which fails the release like a gate that failed, unless the caller skips it by
-//! name (`--skip G6`), which the output and the report record. Exit 0 when every gate
+//! name (`--skip G6`), which the output and the report record; skipping every gate is a
+//! wrong argument. Exit 0 when every gate
 //! passed or was skipped so, 1 when one failed or did not run, 2 when the inputs could not
 //! be read or the arguments are wrong. `--report` writes every gate's verdict and numbers as
 //! JSON, whatever the outcome when the gates ran.
@@ -176,6 +177,9 @@ mod gates {
                 }
             }
             skipped.sort_unstable();
+            if skipped.len() == GATES.len() {
+                bail!("--skip names every gate, which leaves nothing to validate\n\n{USAGE}");
+            }
             Ok(Some(Self {
                 values,
                 releases,
@@ -795,7 +799,8 @@ G6, retrieval — recall of the set's scan against the exact f32 scan:
   --skip <gate>             Do not run G3, G4 or G6, and do not hold the release to it;
                             given once per gate, and recorded in the output and the report.
                             A gate whose inputs are not given, and is not skipped, has not
-                            run, and fails the release
+                            run, and fails the release. At least one gate runs: skipping
+                            all three is a wrong argument
   --report <file>           Write every gate's verdict and numbers as JSON
 
 Exit status: 0 when every gate passed or was skipped, 1 when one failed or did not run,
