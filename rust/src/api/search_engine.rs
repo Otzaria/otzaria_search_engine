@@ -1673,58 +1673,103 @@ fn vector_set_busy(vectors_dir: &Path, doing: &str) -> SemanticError {
     .with_field("vectors_dir")
 }
 
-/// What an expansion in progress is named in the set's `incoming/` folder: this prefix, a
-/// name of its own, and `.oxv`.
+/// What an expansion is named in the set's `incoming/` folder: this prefix and a name of its
+/// own, with `.oxv` for the segment and [`EXPANSION_LOCK`] for its lock file.
 #[cfg(feature = "semantic-integration")]
 const EXPANDING_PREFIX: &str = ".expanding-";
 
-/// Remove what expansions that never finished left in `incoming/`: the file of a process
-/// that stopped while expanding, which nothing holds a lock on any more. One another
-/// process is writing is locked while it does, and stays. Best effort.
+/// The suffix of an expansion's lock file, which its install holds locked from before the
+/// segment is written until the install returns, whatever the sidecar did with the segment.
+#[cfg(feature = "semantic-integration")]
+const EXPANSION_LOCK: &str = ".lock";
+
+/// How old an expansion's segment with no lock file beside it must be before an install
+/// removes it. A segment always has one while its install runs, so one without is debris;
+/// the age spares a segment whose lock file another process removed in the instant between
+/// its creation and its locking.
+#[cfg(feature = "semantic-integration")]
+const STRAY_EXPANSION_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Remove what expansions that never finished left in `incoming/`. An expansion's lock
+/// file that nothing holds locked is a process gone: its segment and the lock file go. One
+/// that is locked is an install still running — writing, or waiting for the sidecar to take
+/// what it wrote — and its files stay. A segment with no lock file goes once it is old. Best
+/// effort.
 #[cfg(feature = "semantic-integration")]
 fn remove_abandoned_expansions(incoming: &Path) {
     let Ok(entries) = fs::read_dir(incoming) else {
         return;
     };
-    for entry in entries.flatten() {
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(EXPANDING_PREFIX)
-        {
-            continue;
-        }
-        let path = entry.path();
-        let abandoned = fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .is_ok_and(|file| file.try_lock().is_ok());
-        if abandoned {
-            if let Err(err) = fs::remove_file(&path) {
+    let names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(EXPANDING_PREFIX))
+        .collect();
+    let remove = |path: &Path| {
+        if let Err(err) = fs::remove_file(path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
                 debug!(
                     "an abandoned expansion stays for now: {}: {err}",
                     path.display()
                 );
             }
         }
+    };
+    for name in &names {
+        let path = incoming.join(name);
+        if let Some(stem) = name.strip_suffix(EXPANSION_LOCK) {
+            let Ok(lock) = fs::OpenOptions::new().write(true).open(&path) else {
+                continue;
+            };
+            if lock.try_lock().is_ok() {
+                remove(&incoming.join(format!("{stem}.oxv")));
+                remove(&path);
+            }
+            continue;
+        }
+        let stem = name.strip_suffix(".oxv").unwrap_or(name);
+        if names.contains(&format!("{stem}{EXPANSION_LOCK}")) {
+            continue;
+        }
+        let old = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| {
+                modified
+                    .elapsed()
+                    .is_ok_and(|age| age > STRAY_EXPANSION_AGE)
+            });
+        if old {
+            remove(&path);
+        }
     }
 }
 
+/// A segment expanded for an install, and the lock that keeps it the install's: dropping
+/// this removes the segment and then the lock file, after the install has returned,
+/// whatever the sidecar did with the segment.
+#[cfg(feature = "semantic-integration")]
+struct Expansion {
+    segment: tempfile::TempPath,
+    /// Locked from before the segment was created, so an install in another process never
+    /// takes the segment for abandoned: not while it is written, and not after it is
+    /// closed, while the sidecar verifies it and moves it into the set.
+    _lock: tempfile::NamedTempFile,
+}
+
 /// A zstd-compressed segment expanded into a file of its own in the set's `incoming/`
-/// folder, from which an install moves it into the set: the file's path, which removes the
-/// file when it is dropped, so whatever the install does with it, nothing stays behind.
+/// folder, from which an install moves it into the set.
 ///
 /// The name is the expansion's own, never the download's, so two expansions into one set
-/// cannot write one file, and the file is locked while it is written, so an install in
-/// another process does not take it for abandoned. Looks at `cancel` between blocks of
-/// 1 MiB; `refused` words a failure.
+/// cannot write one file. Its lock file is created and locked first and held until the
+/// [`Expansion`] is dropped. Looks at `cancel` between blocks of 1 MiB; `refused` words a
+/// failure.
 #[cfg(feature = "semantic-integration")]
 fn expand_segment(
     compressed: &Path,
     vectors_dir: &Path,
     cancel: &SearchCancellation,
     refused: &dyn Fn(&dyn std::fmt::Display) -> String,
-) -> Result<tempfile::TempPath, SemanticError> {
+) -> Result<Expansion, SemanticError> {
     use std::io::{Read, Write};
     let incoming = otzaria_semantic_search::semantic::segment_set::incoming_dir(vectors_dir);
     // Writing it is the one step here that a full disk stops.
@@ -1758,17 +1803,39 @@ fn expand_segment(
         )
     };
     let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
-    let mut expanded = tempfile::Builder::new()
+    let lock = tempfile::Builder::new()
         .prefix(EXPANDING_PREFIX)
-        .suffix(".oxv")
+        .suffix(EXPANSION_LOCK)
         .tempfile_in(&incoming)
         .map_err(writing)?;
-    // Released when the file is closed, below, before the install takes it.
-    expanded
-        .as_file()
+    lock.as_file()
         .try_lock()
         .map_err(|err| writing(std::io::Error::other(err)))?;
-    let mut sink = std::io::BufWriter::new(expanded.as_file_mut());
+    let stem = lock
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(EXPANSION_LOCK))
+        .expect("the lock file is named by its builder")
+        .to_owned();
+    let path = incoming.join(format!("{stem}.oxv"));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(writing)?;
+    let segment = match tempfile::TempPath::try_from_path(&path) {
+        Ok(segment) => segment,
+        Err(err) => {
+            let _ = fs::remove_file(&path);
+            return Err(writing(err));
+        }
+    };
+    let expansion = Expansion {
+        segment,
+        _lock: lock,
+    };
+    let mut sink = std::io::BufWriter::new(file);
     let mut buffer = vec![0u8; 1 << 20];
     loop {
         if cancel.is_cancelled() {
@@ -1787,7 +1854,7 @@ fn expand_segment(
         .map_err(|err| writing(err.into_error()))?
         .sync_all()
         .map_err(writing)?;
-    Ok(expanded.into_temp_path())
+    Ok(expansion)
 }
 
 /// The package of the family `model_identity_json` declares that the graph at `model_path` is,
@@ -4279,10 +4346,10 @@ impl SearchEngine {
     /// The set is locked throughout, and the new generation goes live in one flip: a
     /// release that is refused, cancelled through `cancellation`, or cut off by a crash
     /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-    /// a file of the install's own in the set's `incoming/` folder first, so it needs its
-    /// expanded size free besides what the install needs; the file is gone when this
-    /// returns, installed or not. An open session on the same set is moved onto the new
-    /// generation before this returns.
+    /// a file of the install's own in the set's `incoming/` folder first, beside a lock file
+    /// the install holds until it returns, so it needs its expanded size free besides what
+    /// the install needs; both are gone when this returns, installed or not. An open session
+    /// on the same set is moved onto the new generation before this returns.
     ///
     /// One install or compaction of a set runs at a time. While another runs in this
     /// process, this one is refused before it reads anything; while one runs in another
@@ -4346,8 +4413,9 @@ impl SearchEngine {
             // or compacts this set meanwhile, in this process.
             let _work = VectorSetWork::take(&vectors_dir, "installing the vectors")?;
             let compressed = downloaded.extension().is_some_and(|ext| ext == "zst");
-            // An expansion's file, removed when this is dropped: an install moves it into the
-            // set, and a refused one leaves it where it was.
+            // An expansion, removed when this is dropped — its segment, and then the lock
+            // that kept it this install's: an install moves the segment into the set, and a
+            // refused one leaves it where it was.
             let expanded = if compressed {
                 Some(expand_segment(&downloaded, &vectors_dir, cancel, &refused)?)
             } else {
@@ -4356,7 +4424,9 @@ impl SearchEngine {
             let installed = segment_set::install_package(
                 &vectors_dir,
                 &InstallSource {
-                    segment: expanded.as_deref().unwrap_or(&downloaded),
+                    segment: expanded
+                        .as_ref()
+                        .map_or(downloaded.as_path(), |expansion| &expansion.segment),
                     manifest_json: &input.manifest_json,
                 },
                 &InstallExpectation {
