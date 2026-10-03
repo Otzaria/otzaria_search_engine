@@ -349,9 +349,10 @@ operating system and architecture.
 
 A set's vectors are keyed by the text each was embedded from, not by where it
 sits in an index, so nothing ties the set to one index: every search resolves
-its hits against the index that is open, by the key of each line's text, which a
-new index keeps in its `chunkKey` column. A commit after opening leaves the set
-serving. A line that moved is found where it is now; a text a book holds in
+its hits against the index that is open, by the key of each line's text, which
+an index of schema version 5 keeps in its `chunkKey` column. A commit after
+opening leaves the set serving. On version 5 a line that moved is found where it
+is now, in its book or in another (version 4: see below); a text a book holds in
 several places is a line for each, so ungrouped every one is a result. A hit
 is at most 32 lines: first one for each book that holds its text — each book
 the set records it in, or, when it left them, each book the index holds it in
@@ -366,10 +367,21 @@ shown as a lexical result; `fallbackReason` counts them. Under a filter, a text
 that moved or was copied into an admitted book since the set was built is found
 there, and only there: its vector is weighed at its own score beside the scan of
 the admitted books, whose results are exactly what they would be had nothing
-moved. An index of schema
-version 4, without the column, is resolved by recomputing the keys of the books
-a hit names, which is slower, and a filter there scans the books it admits
-alone. On an opened set the calls that build vectors are refused as
+moved; that needs version 5 too.
+
+An index of schema version 4 has no `chunkKey` column — the published v30
+library index is one. Keys are recomputed from the stored text, which is
+slower; every line returned is still held to its whole key, and a passage a book
+repeats is still a line for each, by its `lineHash`. But a record's line is found
+only at the line the set recorded or within 16 lines of it in the same book: a
+line moved further within its book, or a text moved to another book, is not
+found, filtered or not; a filter scans the books it admits alone, so a text
+moved or copied into one of them is not found under it; and compaction keeps
+records as they are (re-anchoring needs the column). This matters only while
+the index and the vectors are of different library versions, or after the index
+changed on the device (a book added, reindexed or moved); an index and a set of
+the same library version agree line for line. A rebuild by this engine gives
+version 5. On an opened set the calls that build vectors are refused as
 read-only. `SemanticStatus` reports the open set's `vectorsLibraryVersion`,
 `vectorSegments` and `needsCompaction`. INT8 vectors from x86 and ARM CPUs meet
 at about cosine 0.999, the same order as INT8 against fp32.

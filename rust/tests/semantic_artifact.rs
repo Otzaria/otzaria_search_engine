@@ -923,6 +923,63 @@ fn a_line_inserted_above_is_found_where_it_moved() {
     }
 }
 
+/// What an index of schema version 4 — no `chunkKey` column, as the published v30 library
+/// index is — does not find, as the README says: a line the set recorded, once it is more
+/// than 16 lines from there, and a text that moved to another book, filtered or not. The
+/// same changes on version 5 are found (the tests around this one).
+#[test]
+fn a_version_4_index_finds_a_line_only_near_where_the_set_recorded_it() {
+    let library = build_library_of(&default_books(), true);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let probe_found = |engine: &SearchEngine, facets: &[&str]| {
+        semantic_lines(engine, PROBE_LINE, facets)
+            .iter()
+            .any(|(_, text, _)| text == PROBE_LINE)
+    };
+    assert!(probe_found(&engine, &[]), "where the set recorded it");
+
+    // Forty lines inserted above it: beyond the 16 recomputed around the hint.
+    let above: Vec<String> = (0..40)
+        .map(|n| format!("שורה חדשה בראש הספר מספר {n} ארוכה דיה לעמוד לבדה"))
+        .collect();
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("{}\n{GENESIS_TEXT}", above.join("\n")),
+        ),
+    );
+    assert!(!probe_found(&engine, &[]), "a line moved beyond reach");
+
+    // The text left its book for one of another category.
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            "בראשית ברא אלהים את השמים ואת הארץ".to_owned(),
+        ),
+    );
+    add_books(
+        &mut engine,
+        &[("חדש", "/חדש", "/books/new.txt", 2, PROBE_LINE.to_owned())],
+    );
+    assert!(
+        !probe_found(&engine, &[]),
+        "a text in another book, unfiltered"
+    );
+    assert!(
+        !probe_found(&engine, &["/חדש"]),
+        "a text in another book, under its filter"
+    );
+}
+
 /// A text that left its book for another is found in the other one: the column is passed
 /// over once for every hit its own books no longer hold.
 #[test]

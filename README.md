@@ -118,21 +118,41 @@ agree with:
 | a delta's starting point | the build | the library version the set stands at | a delta that does not follow the set: install the base, or the deltas in between |
 
 Nothing ties a set to one index: every search resolves the set's hits against
-the index that is open, by the key of each line's text, which a new index keeps
-in its `chunkKey` column. A commit after opening leaves the set serving; a line
-that moved is found where it is now, in its book or in another; a text a book
-holds in several places is a line for each, up to 32 lines a hit — one for each
-book that holds it first, then those books' other lines of it; a line whose text
-is gone, or whose
+the index that is open, by the key of each line's text. What it can find depends
+on the index's schema version.
+
+On an index of schema version 5, which keeps that key in its `chunkKey` column,
+a commit after opening leaves the set serving; a line that moved is found where
+it is now, in its book or in another; a text a book holds in several places is a
+line for each, up to 32 lines a hit — one for each book that holds it first,
+then those books' other lines of it; a line whose text is gone, or whose
 embedded text changed with its neighbours, is not shown; and every line a search
 returns, a grouped sibling as much as a result, is checked by recomputing its key
 from the text the index holds. Under a filter, a text that moved or was copied
 into a book the filter admits since the set was built is found there, and only
 there: its vector is weighed at its own score beside the scan of the admitted
 books, which is not widened, so their results are exactly what they would be
-had nothing moved. An index of schema version 4, without the column, is served the
-same way, by recomputing the keys of the books a hit names, which is slower; a
-filter there scans the books it admits alone.
+had nothing moved.
+
+An index of schema version 4 has no `chunkKey` column — the published v30
+library index is one — and gets less. Keys are recomputed from the stored text,
+which is slower. Every line a search returns is still held to its whole key,
+and a passage a book holds in several places is still a line for each, found by
+its `lineHash`. But a record's line is found only at the line the set recorded,
+or within 16 lines of it in the same book, so on version 4:
+
+- a line that moved further within its book is not found;
+- a text that moved to another book is not found, filtered or not;
+- a filter scans the books it admits alone, so a text moved or copied into one
+  of them is not found under it;
+- compaction keeps the set's records as they are: re-anchoring them needs the
+  column.
+
+All of this needs schema version 5, which a rebuild by this engine gives. It
+matters only while the index and the vectors are of different library versions,
+or after the index was changed on the device — a book added, reindexed or
+moved: an index and a set of the same library version agree line for line, and
+every record is at its line.
 
 Keeping the set, all on `SearchEngine` and all cheap except where noted:
 

@@ -294,9 +294,15 @@ are now documented as development and testing scaffolding, not for the library.
   pass, and remembers what it found nowhere until the index changes. On an index
   without the column it recomputes the keys around the hint from the stored
   text instead. Filters are applied by book, from a directory of the index's
-  books built once per index generation. A line that moved is found where it is
-  now; a text that left its book for another is found there; a line whose text
-  is gone, or whose embedded text changed with its neighbours, is not shown.
+  books built once per index generation. On an index with the column (schema
+  version 5) a line that moved is found where it is now, and a text that left
+  its book for another is found there. On one of version 4 — the published v30
+  library index is one — a line is found only within 16 lines of where the set
+  recorded it, in the same book: not a line moved further, and not a text in
+  another book. That matters only while the index and the vectors are of
+  different library versions, or after the index changed on the device. A
+  line whose text is gone, or whose embedded text changed with its neighbours,
+  is not shown.
   Results hydrate by their address in the index the search read, and every line
   shown is checked first by recomputing its full 128-bit key from the stored
   text: a semantic match that fails is dropped, and one the lexical side found
@@ -433,8 +439,10 @@ are now documented as development and testing scaffolding, not for the library.
   binary and through the API, plain and compressed, opened, searched both ways
   and hydrated; lines inserted above, moved to another book, gone, of a changed
   context, in two books, and in a book moved to another category, on an index
-  with the column and on one of version 4; refusals of every kind of wrong
-  model identity, of another chunking, and of a manifest that is not the
+  with the column; on one of version 4, a line inserted above, a passage
+  repeated, compaction, coverage, and what it does not find (a line moved
+  beyond 16 lines, a text moved to another book, filtered or not); refusals
+  of every kind of wrong model identity, of another chunking, and of a manifest that is not the
   published one; every build-side call refused as read-only; an install and a
   compaction under an open session, which follows them; re-anchoring, which
   needs the column and the set's library version; a damaged block found by
@@ -562,9 +570,11 @@ are now documented as development and testing scaffolding, not for the library.
   generation. A filtered search that cannot be planned, because the index
   could not be read for it, fails its semantic half alone: the lexical
   results are served with the reason, `fallbackKind` `queryFailed`. A version
-  4 index, which has no column, scans the admitted books alone as before; an
-  unfiltered search finds a copied text where the set records it, until the
-  vectors are updated. Measured on 1,050,000 lines in 1,501 books with
+  4 index, which has no column (the published v30 library index is one),
+  scans the admitted books alone as before, so a text moved or copied into an
+  admitted book is not found under the filter there until the index is
+  rebuilt as version 5; an unfiltered search finds a copied text where the
+  set records it, until the vectors are updated. Measured on 1,050,000 lines in 1,501 books with
   1,030,500 vectors (Apple M4, medians of five runs, against the widening this
   replaces): a filter to one six-line book with a line copied into its
   category from a 700-line book of another one keeps all six of its lines,
