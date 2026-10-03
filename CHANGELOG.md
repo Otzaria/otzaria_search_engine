@@ -531,22 +531,22 @@ are now documented as development and testing scaffolding, not for the library.
   and a set's records are where its texts were when it was built, so under the
   filter of the category a text had moved into, it was not there until the
   vectors were updated. A filtered search of an opened set is now planned
-  first, when the index has the `chunkKey` column: an admitted book's live
-  texts that the set records nowhere in it are its arrivals, looked for in it;
-  and when no admitted book records one of them, the books that hold its
-  vector join the scan, which fetches more vectors by how many more it reads
-  (at most the ranking's ceiling, `candidate_window_multiplier` 10). When
-  nothing moved the plan is the admitted books alone, as before. A book's
-  arrivals are kept under its text hash for the set's generation, and a plan
-  per filter for the index's. Measured on 1,050,000 lines in 1,500 books, with
-  1,030,500 vectors: planning a category of 50 books the first time, 15 to
-  30 ms; every book the first time, about 230 ms, against 80 to 150 ms
-  unplanned; after a commit, 40 to 45 ms for a category and 18 to 20 ms for
-  every book; after 50 texts were copied into one book of a category, the
-  category's first search 70 ms (55 to 60 unplanned), and its searches after
-  5.2 ms. A version 4 index, which has no column, scans the admitted books
-  alone as before; an unfiltered search finds a copied text where the set
-  records it, until the vectors are updated.
+  first, when the index has the `chunkKey` column. An admitted book's live
+  texts that no live record of the set places in it are its arrivals, looked
+  for in it and held to their whole key. The vector of an arrival that no
+  admitted book's live records reach is named to the sidecar
+  (`CandidateResolver::unreached`), which weighs it at its own score beside
+  the scan of the admitted books and never in place of one of their hits: the
+  scan is not widened, so the admitted books' results are exactly what they
+  would be had nothing moved. Such a vector is resolved in the admitted books
+  the text arrived in, never in the books its records name. When nothing
+  moved the plan is the admitted books alone, as before. Liveness is the
+  set's own: a record counts when a scan reaches a live slot through it, and
+  a vector when its slot is live. A book's arrivals are kept for the set's
+  generation under its text hash, and a plan per filter for the index's
+  generation. A version 4 index, which has no column, scans the
+  admitted books alone as before; an unfiltered search finds a copied text
+  where the set records it, until the vectors are updated.
 - **One install or compaction of a vector set at a time, and each expansion
   its own.** A compressed release was expanded to `incoming/<download name>`
   before the set was locked, so two installs of one set from downloads of the

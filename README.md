@@ -127,9 +127,10 @@ is gone, or whose
 embedded text changed with its neighbours, is not shown; and every line a search
 returns, a grouped sibling as much as a result, is checked by recomputing its key
 from the text the index holds. Under a filter, a text that moved or was copied
-into a book the filter admits since the set was built is found there: the scan
-then also reads the books that hold its vector, and fetches more vectors to make
-up for them. An index of schema version 4, without the column, is served the
+into a book the filter admits since the set was built is found there, and only
+there: its vector is weighed at its own score beside the scan of the admitted
+books, which is not widened, so their results are exactly what they would be
+had nothing moved. An index of schema version 4, without the column, is served the
 same way, by recomputing the keys of the books a hit names, which is slower; a
 filter there scans the books it admits alone.
 
