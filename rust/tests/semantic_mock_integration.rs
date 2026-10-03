@@ -462,13 +462,16 @@ fn a_lexical_phrase_match_is_still_painted() {
 
 #[test]
 fn stale_primaries_and_grouped_siblings_are_dropped_and_reported_apart() {
+    // The second line is the query's words and more, so it scores below the first
+    // and is the group's sibling by score: which line of a tie represents a group is
+    // the semantic path's order, and not what this test is about.
     let lines = vec![
         line(9_001, "בראשית א:א", "בראשית ברא אלהים", 2),
-        line(9_002, "בראשית א:ב", "בראשית ברא אלהים", 3),
+        line(9_002, "בראשית א:ב", "בראשית ברא אלהים את השמים", 3),
     ];
     let (mut engine, _root) = fixture(&lines);
 
-    // Keep the lower-id group representative live while making its grouped
+    // Keep the better-scored group representative live while making its grouped
     // sibling stale in the semantic sidecar.
     engine.delete_document_by_id(9_002).unwrap();
     engine.commit().unwrap();
