@@ -2090,6 +2090,51 @@ fn a_release_installs_through_the_api_and_reports_itself() {
     );
 }
 
+/// A release manifest's `requires` is information, and nothing reads it: the published v30
+/// release says `indexSchemaVersion: 5` — the schema whose `chunkKey` column it is resolved
+/// through — and a device whose index is still version 4, as the published v30 library
+/// index is, installs, opens and searches it all the same, resolving from the stored text.
+#[test]
+fn a_release_that_requires_schema_5_serves_a_version_4_index() {
+    use sha2::Digest;
+    let library = build_library_of(&default_books(), true);
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, _) = release(&library.package);
+    let mut manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    manifest["requires"] = serde_json::json!({
+        "indexSchemaVersion": 5,
+        "lineTextVersion": 1,
+        "keyVersion": 1,
+    });
+    let manifest = serde_json::to_string_pretty(&manifest).unwrap();
+    let digest = format!("{:x}", sha2::Sha256::digest(manifest.as_bytes()));
+    let vectors = library.package.with_file_name("requires-5");
+    engine
+        .install_semantic_vectors(
+            library.install_input(&vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .expect("a version 4 index installs a release that requires version 5");
+    let status = engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            ..library.input()
+        })
+        .expect("and opens it");
+    assert!(status.available, "{:?}", status.last_error);
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3)),
+        "and serves it"
+    );
+    let metadata: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(library.index.join("otzaria_index_meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["schema_version"], 4, "the index stayed version 4");
+}
+
 /// A segment published compressed is expanded and installed, and nothing of it is left
 /// behind, installed or refused.
 #[test]
