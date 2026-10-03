@@ -83,7 +83,8 @@ pub fn column_values(lines: &[LineRef<'_>]) -> Vec<u64> {
 ///
 /// `book` is the book's documents in line order: the whole book, or any stretch of it that
 /// holds the line and its neighbours on each side within the window — fewer only where the
-/// book ends. Nothing further out is read, so a check costs at most five documents.
+/// book ends. Nothing further out is read, so a check costs at most five documents, and one
+/// for a line long enough to stand alone, which is embedded as its own text.
 ///
 /// For a line `add_text_book` added, under this build's recipe, this is the key whose
 /// [`ChunkKey::column_value`] the `chunkKey` column holds (`0` for `None`). An index with no
@@ -114,6 +115,33 @@ pub fn recompute_chunk_keys(
     let schema = searcher.schema();
     let text_field = schema.get_field("text")?;
     let is_pdf_field = schema.get_field("isPdf")?;
+
+    // One line long enough to stand alone is embedded as its own text, whatever its
+    // neighbours say: what checking a resolved line asks, most of the time, at one document
+    // instead of five.
+    if lines.len() == 1 {
+        let address = book[lines.start];
+        let document: TantivyDocument = searcher
+            .doc(address)
+            .with_context(|| format!("reading the document at {address:?}"))?;
+        if document
+            .get_first(is_pdf_field)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return Ok(vec![None]);
+        }
+        let text = document
+            .get_first(text_field)
+            .and_then(|value| value.as_str())
+            .with_context(|| format!("the document at {address:?} stores no text"))?;
+        if text.trim().chars().count() >= production_chunking().min_meaningful_chars {
+            let alone = [LineRef { text, section: 0 }];
+            return Ok(vec![PRODUCTION_CHUNKER
+                .embedded_text(&alone, 0)
+                .map(|text| ChunkKey::of(&text))]);
+        }
+    }
 
     let reach = production_chunking().context_window_lines;
     let start = lines.start.saturating_sub(reach);

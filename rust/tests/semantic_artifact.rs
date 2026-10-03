@@ -20,9 +20,9 @@ use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage}
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticCompactionPolicy, SemanticConfigInput, SemanticError,
-    SemanticErrorKind, SemanticExecutedMode, SemanticLexicalMode, SemanticResultSource,
-    SemanticRetrievalMode, SemanticSearchResponse, SemanticState, SemanticVectorsInstallInput,
-    SemanticVectorsPackageKind,
+    SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode, SemanticLexicalMode,
+    SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
+    SemanticVectorsInstallInput, SemanticVectorsPackageKind,
 };
 use search_engine::semantic_keys::production_chunking;
 use std::collections::BTreeSet;
@@ -923,6 +923,63 @@ fn a_line_inserted_above_is_found_where_it_moved() {
     }
 }
 
+/// What an index of schema version 4 — no `chunkKey` column, as the published v30 library
+/// index is — does not find, as the README says: a line the set recorded, once it is more
+/// than 16 lines from there, and a text that moved to another book, filtered or not. The
+/// same changes on version 5 are found (the tests around this one).
+#[test]
+fn a_version_4_index_finds_a_line_only_near_where_the_set_recorded_it() {
+    let library = build_library_of(&default_books(), true);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let probe_found = |engine: &SearchEngine, facets: &[&str]| {
+        semantic_lines(engine, PROBE_LINE, facets)
+            .iter()
+            .any(|(_, text, _)| text == PROBE_LINE)
+    };
+    assert!(probe_found(&engine, &[]), "where the set recorded it");
+
+    // Forty lines inserted above it: beyond the 16 recomputed around the hint.
+    let above: Vec<String> = (0..40)
+        .map(|n| format!("שורה חדשה בראש הספר מספר {n} ארוכה דיה לעמוד לבדה"))
+        .collect();
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("{}\n{GENESIS_TEXT}", above.join("\n")),
+        ),
+    );
+    assert!(!probe_found(&engine, &[]), "a line moved beyond reach");
+
+    // The text left its book for one of another category.
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            "בראשית ברא אלהים את השמים ואת הארץ".to_owned(),
+        ),
+    );
+    add_books(
+        &mut engine,
+        &[("חדש", "/חדש", "/books/new.txt", 2, PROBE_LINE.to_owned())],
+    );
+    assert!(
+        !probe_found(&engine, &[]),
+        "a text in another book, unfiltered"
+    );
+    assert!(
+        !probe_found(&engine, &["/חדש"]),
+        "a text in another book, under its filter"
+    );
+}
+
 /// A text that left its book for another is found in the other one: the column is passed
 /// over once for every hit its own books no longer hold.
 #[test]
@@ -1042,6 +1099,428 @@ fn a_text_in_two_books_resolves_in_both() {
     );
 }
 
+/// One page of `query` in `mode`, grouped by `grouping`.
+fn search_page(
+    engine: &SearchEngine,
+    query: &str,
+    limit: u32,
+    offset: u32,
+    mode: SemanticRetrievalMode,
+    grouping: Option<SemanticGroupingMode>,
+) -> SemanticSearchResponse {
+    engine
+        .search_semantic(
+            query.to_string(),
+            Vec::new(),
+            limit,
+            offset,
+            SemanticLexicalMode::Exact,
+            0,
+            mode,
+            grouping,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap()
+}
+
+/// A passage the book holds in two sections is one vector with one record — a set records a
+/// text once per book, at its first line — and each line that holds it is a line of its
+/// own: two results without grouping, two groups by section, one group of two by text, and
+/// one result on each of two pages of one. The same from the column and, in a version 4
+/// index, from the text.
+#[test]
+fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
+    let books = vec![(
+        "בראשית",
+        "/מקרא/תורה",
+        GENESIS,
+        0,
+        format!("<h2>פרק א</h2>\n{PROBE_LINE}\n<h2>פרק ב</h2>\n{PROBE_LINE}"),
+    )];
+    for version_4 in [false, true] {
+        let library = build_library_of(&books, version_4);
+        let engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        let semantic_only = SemanticRetrievalMode::SemanticOnly;
+        let occurrences = |response: &SemanticSearchResponse| -> Vec<(u64, u32)> {
+            response
+                .results
+                .iter()
+                .filter(|hit| hit.snippet_html == PROBE_LINE)
+                .map(|hit| (hit.segment, hit.merged_count))
+                .collect()
+        };
+
+        let ungrouped = search_page(&engine, PROBE_LINE, 10, 0, semantic_only, None);
+        assert_eq!(
+            occurrences(&ungrouped),
+            vec![(1, 1), (3, 1)],
+            "both sections hold the text; version 4: {version_4}"
+        );
+        assert!(
+            ungrouped.fallback_reason.is_none(),
+            "{:?}",
+            ungrouped.fallback_reason
+        );
+
+        // Each section's heading borrows the passage after it, so it is that section's
+        // other line.
+        let by_section = search_page(
+            &engine,
+            PROBE_LINE,
+            10,
+            0,
+            semantic_only,
+            Some(SemanticGroupingMode::SameSection),
+        );
+        let sections: Vec<(u64, Vec<u64>)> = by_section
+            .results
+            .iter()
+            .filter(|hit| hit.snippet_html == PROBE_LINE)
+            .map(|hit| {
+                (
+                    hit.segment,
+                    hit.merged.iter().map(|sibling| sibling.segment).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(sections, vec![(1, vec![0]), (3, vec![2])]);
+
+        let by_text = search_page(
+            &engine,
+            PROBE_LINE,
+            10,
+            0,
+            semantic_only,
+            Some(SemanticGroupingMode::IdenticalText),
+        );
+        let group = by_text
+            .results
+            .iter()
+            .find(|hit| hit.snippet_html == PROBE_LINE)
+            .expect("the repeated text is a group");
+        assert_eq!(group.merged_count, 2);
+        assert_eq!(group.merged.len(), 1);
+        assert_eq!(
+            [group.segment, group.merged[0].segment],
+            [1, 3],
+            "the sibling is the other section's line"
+        );
+
+        // Paged one at a time, the same lines in the same order, none twice.
+        let paged: Vec<(u64, u64)> = (0..ungrouped.results.len() as u32)
+            .map(|offset| {
+                let page = search_page(&engine, PROBE_LINE, 1, offset, semantic_only, None);
+                assert_eq!(page.results.len(), 1, "offset {offset}");
+                (page.results[0].id, page.results[0].segment)
+            })
+            .collect();
+        let whole: Vec<(u64, u64)> = ungrouped
+            .results
+            .iter()
+            .map(|hit| (hit.id, hit.segment))
+            .collect();
+        assert_eq!(paged, whole);
+    }
+}
+
+/// A hit's lines are capped, and the cap does not go to one book first: a passage one book
+/// holds forty times and another once is one vector with a record in each, and each record
+/// is a line of the hit's before any book's other lines of it are: the other book's line,
+/// and 31 of the forty — whichever of the two books comes first by name, and in a version 4
+/// index as from the column.
+#[test]
+fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let repeated = vec![passage; 40].join("\n");
+    for version_4 in [false, true] {
+        for (many, once) in [
+            ("/books/a-many.txt", "/books/z-once.txt"),
+            ("/books/z-many.txt", "/books/a-once.txt"),
+        ] {
+            let books = vec![
+                ("רבים", "/א", many, 0, repeated.clone()),
+                (
+                    "יחיד",
+                    "/ב",
+                    once,
+                    1,
+                    format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+                ),
+            ];
+            let library = build_library_of(&books, version_4);
+            let engine = library.engine();
+            engine.open_semantic_artifact(library.input()).unwrap();
+            let response = search_page(
+                &engine,
+                passage,
+                50,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+            );
+            let of = |book: &str| -> Vec<u64> {
+                response
+                    .results
+                    .iter()
+                    .filter(|hit| hit.file_path == book && hit.snippet_html == passage)
+                    .map(|hit| hit.segment)
+                    .collect()
+            };
+            let context = format!("{many} and {once}, version 4: {version_4}");
+            assert_eq!(
+                of(once),
+                [1],
+                "the other book's record is a line: {context}"
+            );
+            assert_eq!(
+                of(many),
+                (0..31).collect::<Vec<u64>>(),
+                "the rest of the cap, in the book's order: {context}"
+            );
+        }
+    }
+}
+
+/// The cap is shared alike when a text left the book the set records it in: found by the
+/// pass over the whole column, the first line of each book that holds it now is a line of
+/// the hit's before any book's second — the other book's line and 31 of the forty, though
+/// the forty come first in the index.
+#[test]
+fn a_moved_passage_one_book_repeats_leaves_the_other_book_its_line() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let opening = "שורה פותחת בספר הישן ארוכה דיה לעמוד לבדה";
+    let (old, many, once) = ("/books/old.txt", "/books/many.txt", "/books/once.txt");
+    let library = build_library_of(
+        &[("ישן", "/א", old, 0, format!("{opening}\n{passage}"))],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    // The old book loses the passage; one new book holds it forty times, another once.
+    replace_book(&mut engine, ("ישן", "/א", old, 0, opening.to_string()));
+    add_books(
+        &mut engine,
+        &[
+            ("רבים", "/ב", many, 1, vec![passage; 40].join("\n")),
+            (
+                "יחיד",
+                "/ג",
+                once,
+                2,
+                format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+            ),
+        ],
+    );
+    let response = search_page(
+        &engine,
+        passage,
+        50,
+        0,
+        SemanticRetrievalMode::SemanticOnly,
+        None,
+    );
+    let of = |book: &str| -> Vec<u64> {
+        response
+            .results
+            .iter()
+            .filter(|hit| hit.file_path == book && hit.snippet_html == passage)
+            .map(|hit| hit.segment)
+            .collect()
+    };
+    assert_eq!(of(once), [1], "the other book's line");
+    let lines = of(many);
+    assert_eq!(lines.len(), 31, "{lines:?}");
+}
+
+/// A line whose `chunkKey` column holds a vector's key and whose text is another is no line
+/// of that vector's, whatever card it would be on: not a result, not a grouped sibling,
+/// under any grouping and in either mode that searches semantically. The index is edited
+/// below the engine, as a writer that kept a column it should have recomputed leaves it.
+#[test]
+fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
+    use tantivy::schema::{Facet, Value};
+    use tantivy::{doc, DocAddress, Index, TantivyDocument, Term};
+
+    let library = build_library();
+    // Genesis's second line, replaced by a text of no vector's, its columns kept.
+    let replaced = "והארץ היתה תהו ובהו וחשך על פני תהום רבה";
+    let forged_id = {
+        let index = Index::open_in_dir(&library.index).unwrap();
+        for name in ["hebrew", "hebrew_vocalized"] {
+            index.tokenizers().register(
+                name,
+                tantivy::tokenizer::TextAnalyzer::from(
+                    tantivy::tokenizer::SimpleTokenizer::default(),
+                ),
+            );
+        }
+        let searcher = index.reader().unwrap().searcher();
+        let schema = index.schema();
+        let field = |name: &str| schema.get_field(name).unwrap();
+        let address = searcher
+            .segment_readers()
+            .iter()
+            .enumerate()
+            .find_map(|(segment, reader)| {
+                reader.doc_ids_alive().find_map(|doc| {
+                    let address = DocAddress::new(segment as u32, doc);
+                    let stored: TantivyDocument = searcher.doc(address).unwrap();
+                    (stored
+                        .get_first(field("text"))
+                        .and_then(|value| value.as_str())
+                        == Some(replaced))
+                    .then_some(address)
+                })
+            })
+            .expect("the line to replace");
+        let columns = searcher.segment_reader(address.segment_ord).fast_fields();
+        let column = |name: &str| columns.u64(name).unwrap().first(address.doc_id).unwrap();
+        let id = column("id");
+        let mut forged = doc!(
+            field("title") => "בראשית",
+            field("reference") => "",
+            field("text") => "שורה זרה שאינה הטקסט שהווקטור נבנה ממנו",
+            field("id") => id,
+            field("segment") => 1u64,
+            field("isPdf") => false,
+            field("filePath") => GENESIS,
+            field("topics") => Facet::from_text("/מקרא/תורה").unwrap(),
+            field("contentHash") => 0u64,
+            field("textHash") => 0u64,
+            field("sectionId") => column("sectionId"),
+            field("generationSort") => 0u64,
+            field("lineHash") => column("lineHash"),
+        );
+        forged.add_u64(field("chunkKey"), column("chunkKey"));
+        let mut writer = index.writer(15_000_000).unwrap();
+        writer.delete_term(Term::from_field_u64(field("id"), id));
+        writer.add_document(forged).unwrap();
+        writer.commit().unwrap();
+        id
+    };
+
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    for mode in [
+        SemanticRetrievalMode::SemanticOnly,
+        SemanticRetrievalMode::Hybrid,
+    ] {
+        for grouping in [
+            None,
+            Some(SemanticGroupingMode::SameSection),
+            Some(SemanticGroupingMode::IdenticalText),
+        ] {
+            let response = search_page(&engine, PROBE_LINE, 10, 0, mode, grouping);
+            let shown: Vec<(u64, Vec<u64>)> = response
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.id,
+                        hit.merged.iter().map(|sibling| sibling.id).collect(),
+                    )
+                })
+                .collect();
+            assert!(
+                shown
+                    .iter()
+                    .all(|(id, siblings)| *id != forged_id && !siblings.contains(&forged_id)),
+                "{mode:?}, {grouping:?}: {shown:?}"
+            );
+            assert!(
+                response
+                    .results
+                    .iter()
+                    .any(|hit| hit.file_path == GENESIS && hit.segment == 3),
+                "the query's own line is still found: {mode:?}, {grouping:?}"
+            );
+            let reason = response.fallback_reason.unwrap_or_default();
+            assert!(
+                reason.contains("1 semantic match(es) were not shown"),
+                "{mode:?}, {grouping:?}: {reason}"
+            );
+        }
+    }
+}
+
+/// Two books can share ids — an index updated book by book can give two the same catalogue
+/// position, which a release index never has — so a grouped sibling is hydrated as the line
+/// of its own book, never as whichever line has its id. Here the sibling is one lexical
+/// search alone found, a line added after the vectors were built, to a book reindexed at the
+/// catalogue position another book has.
+#[test]
+fn a_grouped_sibling_is_hydrated_from_its_own_book() {
+    let order = 7;
+    let other = "/books/other.txt";
+    let first = "המילה המיוחדת מופיעה כאן בשורה ארוכה דיה לעמוד לבדה";
+    let added = "וגם בשורה הזאת המילה המיוחדת מופיעה בשורה אחרת";
+    let books = vec![
+        (
+            "ספר ראשון",
+            "/ראשון",
+            "/books/first.txt",
+            order,
+            "שורה ראשונה בספר הראשון ארוכה דיה לעמוד לבדה\n\
+             שורה שנייה בספר הראשון ארוכה דיה גם היא\n\
+             שורה שלישית בספר הראשון ארוכה דיה גם היא"
+                .to_string(),
+        ),
+        (
+            "ספר אחר",
+            "/אחר",
+            other,
+            order + 1,
+            format!("<h2>פרק</h2>\n{first}"),
+        ),
+    ];
+    let library = build_library_of(&books, false);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    replace_book(
+        &mut engine,
+        (
+            "ספר אחר",
+            "/אחר",
+            other,
+            order,
+            format!("<h2>פרק</h2>\n{first}\n{added}"),
+        ),
+    );
+
+    for mode in [
+        SemanticRetrievalMode::Hybrid,
+        SemanticRetrievalMode::LexicalOnly,
+    ] {
+        let response = search_page(
+            &engine,
+            "המילה המיוחדת",
+            10,
+            0,
+            mode,
+            Some(SemanticGroupingMode::SameSection),
+        );
+        let group = response
+            .results
+            .iter()
+            .find(|hit| hit.file_path == other && hit.merged_count == 2)
+            .unwrap_or_else(|| panic!("{mode:?}: the section's two lines are one group"));
+        assert_eq!(group.merged.len(), 1, "{mode:?}");
+        let sibling = &group.merged[0];
+        assert_eq!(
+            (sibling.file_path.as_str(), sibling.title.as_str()),
+            (other, "ספר אחר"),
+            "{mode:?}: a sibling of a section's group is of its book"
+        );
+        let mut lines = [group.segment, sibling.segment];
+        lines.sort_unstable();
+        assert_eq!(lines, [1, 2], "{mode:?}: the section's two lines");
+    }
+}
+
 /// A filter admits books by what the live index says of them: a book moved to another
 /// category is found under that one, and not under the one it left.
 #[test]
@@ -1070,6 +1549,330 @@ fn a_book_moved_to_another_category_is_filtered_by_its_new_one() {
         semantic_lines(&engine, PROBE_LINE, &["/אחר/קטגוריה"]).first(),
         Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
     );
+}
+
+/// A text that left its book for one in another category is found under the filter of the
+/// book it moved into, although its vector's records name only the book it left: the vector
+/// is weighed besides the scan of the admitted book, and resolves in that book alone. Under
+/// the filter of the book it left, it is gone. Paged one at a time, the search pages as any.
+#[test]
+fn a_text_moved_into_another_category_is_found_under_its_filter() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    // Genesis loses the probe line, and a book in a category of its own gains it.
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            "בראשית ברא אלהים את השמים ואת הארץ".to_owned(),
+        ),
+    );
+    let new_book = "/books/new.txt";
+    add_books(
+        &mut engine,
+        &[(
+            "חדש",
+            "/חדש",
+            new_book,
+            2,
+            format!("שורה פותחת בספר החדש ארוכה דיה לעמוד\n{PROBE_LINE}"),
+        )],
+    );
+
+    let unfiltered = semantic_lines(&engine, PROBE_LINE, &[]);
+    assert_eq!(
+        unfiltered.first(),
+        Some(&(new_book.to_string(), PROBE_LINE.to_string(), 1)),
+        "{unfiltered:?}"
+    );
+    let filtered = semantic_lines(&engine, PROBE_LINE, &["/חדש"]);
+    assert_eq!(
+        filtered.first(),
+        Some(&(new_book.to_string(), PROBE_LINE.to_string(), 1)),
+        "a live admitted book holds the text: {filtered:?}"
+    );
+    assert!(
+        filtered.iter().all(|(book, _, _)| book == new_book),
+        "the vector weighed for the moved text resolves in the admitted book it arrived in, \
+         and in no book its records name: {filtered:?}"
+    );
+    assert!(
+        !semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+            .iter()
+            .any(|(_, text, _)| text == PROBE_LINE),
+        "the book it left holds it no more"
+    );
+
+    let filtered_page = |limit, offset| {
+        engine
+            .search_semantic(
+                PROBE_LINE.to_string(),
+                vec!["/חדש".to_string()],
+                limit,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap()
+    };
+    let all: Vec<u64> = filtered_page(10, 0)
+        .results
+        .iter()
+        .map(|hit| hit.id)
+        .collect();
+    let paged: Vec<u64> = (0..all.len() as u32)
+        .flat_map(|offset| filtered_page(1, offset).results)
+        .map(|hit| hit.id)
+        .collect();
+    assert_eq!(paged, all);
+}
+
+/// A text copied into an admitted book from a big book of another category is weighed at
+/// its own score, beside the admitted books' hits, which stay exactly as they were: the
+/// filtered scan is not widened by the big book, whose vectors would crowd the small book's
+/// lines out of the candidate window. No line of the big book comes back under the filter.
+#[test]
+fn review_e_widening_crowds_out_the_admitted_books() {
+    let word = |book: usize, n: usize| -> String {
+        // A distinct "word" per (book, n): letters from a small counter.
+        let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+        let mut x = book * 100_000 + n * 7 + 13;
+        let mut word = String::new();
+        for _ in 0..5 {
+            word.push(letters[x % letters.len()]);
+            x /= letters.len();
+        }
+        word
+    };
+    let query = "אלפא ביתא גימלא דלתא";
+    let a_lines: Vec<String> = (0..6)
+        .map(|n| {
+            format!(
+                "{} {} {} {query}",
+                word(1, 3 * n),
+                word(1, 3 * n + 1),
+                word(1, 3 * n + 2)
+            )
+        })
+        .collect();
+    let w_lines: Vec<String> = (0..400)
+        .map(|n| format!("{query} {} {}", word(2, 2 * n), word(2, 2 * n + 1)))
+        .collect();
+    let (a, w, copy) = ("/books/a.txt", "/books/w.txt", "/books/n.txt");
+    let books = vec![
+        ("ספר א", "/א", a, 0, a_lines.join("\n")),
+        ("ספר ב", "/ב", w, 1, w_lines.join("\n")),
+    ];
+    let library = build_library_of(&books, false);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    // (book, line, semantic score), in the order of the results.
+    let results = |engine: &SearchEngine, facets: &[&str]| -> Vec<(String, u64, Option<f32>)> {
+        let response = search(engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        response
+            .results
+            .into_iter()
+            .map(|hit| (hit.file_path, hit.segment, hit.semantic_score))
+            .collect()
+    };
+    let of = |results: &[(String, u64, Option<f32>)], book: &str| -> Vec<(u64, Option<f32>)> {
+        results
+            .iter()
+            .filter(|(of, _, _)| of == book)
+            .map(|(_, line, score)| (*line, *score))
+            .collect()
+    };
+
+    let before = results(&engine, &["/א"]);
+    assert_eq!(of(&before, a).len(), 6, "{before:?}");
+    // One line of the big book copied into a new book of the admitted category.
+    add_books(
+        &mut engine,
+        &[("ספר חדש", "/א", copy, 2, w_lines[0].clone())],
+    );
+    let after = results(&engine, &["/א"]);
+    assert_eq!(
+        of(&after, a),
+        of(&before, a),
+        "the admitted book's hits are the same, in the same order, at the same scores"
+    );
+    let copied = of(&after, copy);
+    assert_eq!(copied.len(), 1, "the copied line is found: {after:?}");
+    assert!(
+        after.iter().all(|(book, _, _)| book == a || book == copy),
+        "no line of a book the filter does not admit: {after:?}"
+    );
+    // At the score its vector has: the one the big book's line, which the set records it
+    // in, has under the big book's own filter.
+    let in_w = engine
+        .search_semantic(
+            query.to_string(),
+            vec!["/ב".to_string()],
+            400,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            SemanticRetrievalMode::SemanticOnly,
+            None,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    let source = in_w
+        .results
+        .iter()
+        .find(|hit| hit.file_path == w && hit.segment == 0)
+        .expect("the big book's line is found under its own filter");
+    assert_eq!(copied[0].1, source.semantic_score);
+}
+
+/// A text copied into a book of another category, and still in its own, is found under
+/// either filter, each in its own book. An unfiltered search finds it where the set records
+/// it until the vectors are updated.
+#[test]
+fn a_text_copied_into_another_category_is_found_under_each_filter() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copy = "/books/copy.txt";
+    add_books(
+        &mut engine,
+        &[("עותק", "/עותקים", copy, 2, BERACHOT_TEXT.to_string())],
+    );
+
+    let copies = semantic_lines(&engine, BERACHOT_TEXT, &["/עותקים"]);
+    assert_eq!(
+        copies.first(),
+        Some(&(copy.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+    assert!(
+        copies.iter().all(|(book, _, _)| book == copy),
+        "the vector's records name berachot, which still holds the text, and which the \
+         filter does not admit: no line of it comes back: {copies:?}"
+    );
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &["/משנה/זרעים"]).first(),
+        Some(&(BERACHOT.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+    assert_eq!(
+        semantic_lines(&engine, BERACHOT_TEXT, &[]).first(),
+        Some(&(BERACHOT.to_string(), BERACHOT_TEXT.to_string(), 0))
+    );
+}
+
+/// A text copied into a book of its own category is an arrival of that book whose vector the
+/// scan reaches already, through the book the set records it in: it is not weighed again,
+/// and both books' lines of it come back under the category's filter.
+#[test]
+fn a_text_copied_within_its_category_is_found_in_both_books() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copy = "/books/copy.txt";
+    add_books(
+        &mut engine,
+        &[("עותק", "/משנה/זרעים", copy, 2, BERACHOT_TEXT.to_string())],
+    );
+    let mut found: Vec<(String, u64)> = semantic_lines(&engine, BERACHOT_TEXT, &["/משנה/זרעים"])
+        .into_iter()
+        .filter(|(_, text, _)| text == BERACHOT_TEXT)
+        .map(|(book, _, line)| (book, line))
+        .collect();
+    found.sort();
+    assert_eq!(found, [(BERACHOT.to_string(), 0), (copy.to_string(), 0)]);
+}
+
+/// A text two admitted books hold, each many times over, and the set records in neither: more
+/// lines of it than a hit resolves to. Which of them come back does not depend on how a map
+/// of books happens to iterate, so it is the same after every commit, each of which plans
+/// the filter afresh.
+#[test]
+fn the_lines_of_a_planned_search_are_the_same_whatever_the_plan_iterates() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copies = |key: &'static str, order: u32| -> Book {
+        (
+            "עותקים",
+            "/עותקים",
+            key,
+            order,
+            vec![BERACHOT_TEXT; 20].join("\n"),
+        )
+    };
+    add_books(
+        &mut engine,
+        &[
+            copies("/books/copies-b.txt", 7),
+            copies("/books/copies-a.txt", 8),
+        ],
+    );
+    let lines = |engine: &SearchEngine| -> Vec<(String, u64)> {
+        let response = engine
+            .search_semantic(
+                BERACHOT_TEXT.to_string(),
+                vec!["/עותקים".to_string()],
+                50,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap();
+        response
+            .results
+            .into_iter()
+            .filter(|hit| hit.snippet_html == BERACHOT_TEXT)
+            .map(|hit| (hit.file_path, hit.segment))
+            .collect()
+    };
+    let first = lines(&engine);
+    assert_eq!(first.len(), 32, "one hit's lines, at most: {first:?}");
+    assert!(
+        first
+            .iter()
+            .filter(|(book, _)| book == "/books/copies-a.txt")
+            .count()
+            == 20,
+        "the admitted books in name order: {first:?}"
+    );
+    for round in 0..6u32 {
+        engine
+            .add_text_book(
+                "ספר נוסף".to_string(),
+                "/אחר".to_string(),
+                format!("/books/another-{round}.txt"),
+                20 + round,
+                0,
+                format!("שורה נוספת ארוכה דיה לעמוד לבדה מספר {round}"),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(lines(&engine), first, "after commit {round}");
+    }
 }
 
 /// A query with nothing to embed fails the semantic half of that one search: the lexical
@@ -1256,6 +2059,430 @@ fn a_compressed_release_is_expanded_and_installed() {
     engine
         .verify_semantic_vectors(dir_string(&vectors), &token)
         .unwrap();
+}
+
+/// Expansions in progress in the set at `vectors`: `(name, bytes)`.
+fn expansions(vectors: &Path) -> Vec<(String, u64)> {
+    std::fs::read_dir(vectors.join("incoming"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        entry.metadata().map_or(0, |meta| meta.len()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A compressed "segment" that expands to 4 GiB of zeros, from 4,096 copies of one frame,
+/// so an install of it is still expanding whenever a test looks.
+fn endless_download(path: &Path) {
+    let frame = zstd::stream::encode_all(&vec![0u8; 1 << 20][..], 1).unwrap();
+    std::fs::write(path, frame.repeat(4096)).unwrap();
+}
+
+fn assert_busy(result: Result<impl Sized, SemanticError>, doing: &str) {
+    match result {
+        Ok(_) => panic!("{doing} must be refused while another runs"),
+        Err(error) => {
+            // A busy set is no session conflict: what an application does about one —
+            // `disableSemantic` — would drop a session that is serving, for an install that
+            // only has to wait.
+            assert_eq!(
+                (error.kind, error.field.as_deref()),
+                (SemanticErrorKind::VectorsBusy, Some("vectors_dir")),
+                "{doing}: {}",
+                error.message
+            );
+        }
+    }
+}
+
+/// One install or compaction of a set at a time. While an install is expanding a
+/// compressed download, a second install of the same set — a valid release — and a
+/// compaction are refused at once as busy, without reading or writing anything; an
+/// install into another set is not held up. The first, cancelled, leaves nothing in
+/// `incoming/` and the set as it was, and the valid release then installs.
+#[test]
+fn a_second_install_of_a_set_while_one_expands_is_refused_and_changes_nothing() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let library = build_library();
+    let downloads = library.work.join("downloads");
+    std::fs::create_dir_all(downloads.join("a")).unwrap();
+    std::fs::create_dir_all(downloads.join("b")).unwrap();
+    let endless = downloads.join("a/segment.oxv.zst");
+    endless_download(&endless);
+    let (segment, manifest, digest) = release(&library.package);
+    // The same file name as the other download, in another folder.
+    let valid = downloads.join("b/segment.oxv.zst");
+    std::fs::write(
+        &valid,
+        zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 1).unwrap(),
+    )
+    .unwrap();
+    let engine = Arc::new(library.engine());
+    let vectors = library.vectors.clone();
+    let before = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+
+    let token = Arc::new(SemanticCancellationToken::new());
+    let first = {
+        let engine = Arc::clone(&engine);
+        let token = Arc::clone(&token);
+        let input = library.install_input(&vectors, &endless, &manifest, Some(digest.clone()));
+        std::thread::spawn(move || engine.install_semantic_vectors(input, &token))
+    };
+    let started = Instant::now();
+    while !expansions(&vectors)
+        .iter()
+        .any(|(name, bytes)| name.starts_with(".expanding-") && *bytes > 1 << 20)
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the first install never started expanding"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    let fresh = SemanticCancellationToken::new();
+    assert_busy(
+        engine.install_semantic_vectors(
+            library.install_input(&vectors, &valid, &manifest, Some(digest.clone())),
+            &fresh,
+        ),
+        "a second install",
+    );
+    assert_busy(
+        engine.compact_semantic_vectors(
+            dir_string(&vectors),
+            None,
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &fresh,
+        ),
+        "a compaction",
+    );
+    // Another set is another set.
+    let elsewhere = library.package.with_file_name("elsewhere");
+    engine
+        .install_semantic_vectors(
+            library.install_input(&elsewhere, &valid, &manifest, Some(digest.clone())),
+            &fresh,
+        )
+        .unwrap();
+    // The first install's expansion, its segment and its lock file, and nothing else.
+    let mut written: Vec<String> = expansions(&vectors)
+        .into_iter()
+        .map(|(name, _)| {
+            name.rsplit_once('.')
+                .map_or(name.clone(), |(_, suffix)| suffix.to_string())
+        })
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        ["lock", "oxv"],
+        "the refused install wrote nothing: {:?}",
+        expansions(&vectors)
+    );
+
+    token.cancel();
+    let error = match first.join().unwrap() {
+        Ok(_) => panic!("4 GiB of zeros is no segment"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::Cancelled,
+        "{}",
+        error.message
+    );
+    assert_eq!(expansions(&vectors), Vec::new(), "nothing is left behind");
+    let after = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+    assert_eq!(
+        (after.generation, after.bytes_on_disk),
+        (before.generation, before.bytes_on_disk)
+    );
+
+    let report = engine
+        .install_semantic_vectors(
+            library.install_input(&vectors, &valid, &manifest, Some(digest)),
+            &fresh,
+        )
+        .unwrap();
+    assert!(report.generation > before.generation);
+    assert_eq!(expansions(&vectors), Vec::new());
+    engine
+        .verify_semantic_vectors(dir_string(&vectors), &fresh)
+        .unwrap();
+}
+
+/// In the other order — the valid release first, a download that is not it second — the
+/// second is refused for what it is and leaves the set as the first made it, and nothing of
+/// either expansion stays behind.
+#[test]
+fn a_refused_install_after_a_valid_one_leaves_the_set_as_it_made_it() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let valid = library.work.join("segment.oxv.zst");
+    std::fs::write(
+        &valid,
+        zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 1).unwrap(),
+    )
+    .unwrap();
+    let zeros = library.work.join("zeros.oxv.zst");
+    std::fs::write(
+        &zeros,
+        zstd::stream::encode_all(&vec![0u8; 1 << 20][..], 1).unwrap(),
+    )
+    .unwrap();
+    let vectors = &library.vectors;
+
+    let installed = engine
+        .install_semantic_vectors(
+            library.install_input(vectors, &valid, &manifest, Some(digest.clone())),
+            &token,
+        )
+        .unwrap();
+    let error = match engine.install_semantic_vectors(
+        library.install_input(vectors, &zeros, &manifest, Some(digest)),
+        &token,
+    ) {
+        Ok(_) => panic!("zeros are no segment"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::ArtifactCorrupt,
+        "{}",
+        error.message
+    );
+    let info = engine.semantic_vectors_info(dir_string(vectors)).unwrap();
+    assert_eq!(info.generation, installed.generation);
+    assert_eq!(expansions(vectors), Vec::new());
+    engine
+        .verify_semantic_vectors(dir_string(vectors), &token)
+        .unwrap();
+}
+
+/// An install or a compaction in another process holds the sidecar's lock on the set, and
+/// meets this one there: refused as busy too, by the kind of the sidecar's refusal.
+#[test]
+fn an_install_or_compaction_under_another_process_lock_is_refused_as_busy() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    // What another process's install holds while it runs.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(library.vectors.join(".lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+
+    assert_busy(
+        engine.install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest.clone())),
+            &token,
+        ),
+        "an install",
+    );
+    assert_busy(
+        engine.compact_semantic_vectors(
+            dir_string(&library.vectors),
+            None,
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        ),
+        "a compaction",
+    );
+
+    drop(lock);
+    engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+}
+
+/// An expansion is its install's until the install returns, though its file is written and
+/// closed before the sidecar takes it: its lock file stays locked all along, so an install
+/// in another process does not take the file for abandoned in between. One whose process is
+/// gone — its lock file unlocked — is removed, lock file and all; an expansion file with no
+/// lock file only once it is old. The application's own files are left alone.
+#[test]
+fn an_expansion_waiting_for_its_install_is_not_taken_for_abandoned() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let compressed = library.work.join("segment.oxv.zst");
+    std::fs::write(
+        &compressed,
+        zstd::stream::encode_all(std::fs::File::open(&segment).unwrap(), 1).unwrap(),
+    )
+    .unwrap();
+    let incoming = library.vectors.join("incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    for name in [
+        // Written and closed, its install in another process not yet returned.
+        ".expanding-waiting.lock",
+        ".expanding-waiting.oxv",
+        // Its process gone.
+        ".expanding-gone.lock",
+        ".expanding-gone.oxv",
+        // No lock file: one a moment old, one an hour and more.
+        ".expanding-stray.oxv",
+        ".expanding-old.oxv",
+        "download.part",
+    ] {
+        std::fs::write(incoming.join(name), b"half").unwrap();
+    }
+    let waiting = std::fs::OpenOptions::new()
+        .write(true)
+        .open(incoming.join(".expanding-waiting.lock"))
+        .unwrap();
+    waiting.try_lock().unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(incoming.join(".expanding-old.oxv"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7_200))
+        .unwrap();
+
+    let install = || {
+        engine
+            .install_semantic_vectors(
+                library.install_input(
+                    &library.vectors,
+                    &compressed,
+                    &manifest,
+                    Some(digest.clone()),
+                ),
+                &token,
+            )
+            .unwrap()
+    };
+    let left = || {
+        let mut left: Vec<String> = expansions(&library.vectors)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        left.sort();
+        left
+    };
+    install();
+    assert_eq!(
+        left(),
+        [
+            ".expanding-stray.oxv",
+            ".expanding-waiting.lock",
+            ".expanding-waiting.oxv",
+            "download.part"
+        ]
+    );
+
+    drop(waiting);
+    install();
+    assert_eq!(left(), [".expanding-stray.oxv", "download.part"]);
+}
+
+/// Planning a filtered search opens the set beside the session without its lock, and
+/// cleans nothing: a garbage generation the first filtered search finds stays where it is,
+/// and installs that run beside filtered searches — each of which plans afresh against the
+/// generation the last install made — are never refused as busy.
+#[test]
+fn a_filtered_search_opens_the_set_without_its_lock_and_cleans_nothing() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let garbage = library.vectors.join("gen-000999");
+    std::fs::create_dir_all(&garbage).unwrap();
+    assert!(semantic_lines(&engine, PROBE_LINE, &["/מקרא/תורה"])
+        .iter()
+        .any(|(book, _, _)| book == GENESIS));
+    assert!(
+        garbage.exists(),
+        "the first filtered search of a generation cleans nothing"
+    );
+
+    // Two releases of the index, alternated, so that each install is a new generation.
+    let releases: Vec<(PathBuf, String, String)> =
+        [(31u32, "v31-20261002000000"), (32, "v32-20261003000000")]
+            .into_iter()
+            .map(|(version, tag)| {
+                let out = library.work.join(format!("package-{version}"));
+                build_package(
+                    &library.index,
+                    &library.work,
+                    &library.model_file,
+                    version,
+                    tag,
+                    &out,
+                    None,
+                );
+                release(&out)
+            })
+            .collect();
+    let searching = std::sync::atomic::AtomicBool::new(true);
+    let (outcomes, searches) = std::thread::scope(|scope| {
+        let searcher = scope.spawn(|| {
+            let mut searches = 0u32;
+            while searching.load(std::sync::atomic::Ordering::Acquire) {
+                search(
+                    &engine,
+                    PROBE_LINE,
+                    &["/מקרא/תורה"],
+                    SemanticRetrievalMode::SemanticOnly,
+                );
+                searches += 1;
+            }
+            searches
+        });
+        let outcomes: Vec<Result<(), (SemanticErrorKind, String)>> = (0..8)
+            .map(|round| {
+                let (segment, manifest, digest) = &releases[round % 2];
+                engine
+                    .install_semantic_vectors(
+                        library.install_input(
+                            &library.vectors,
+                            segment,
+                            manifest,
+                            Some(digest.clone()),
+                        ),
+                        &SemanticCancellationToken::new(),
+                    )
+                    .map(drop)
+                    .map_err(|error| (error.kind, error.message))
+            })
+            .collect();
+        searching.store(false, std::sync::atomic::Ordering::Release);
+        (outcomes, searcher.join().unwrap())
+    });
+    let refused: Vec<&(SemanticErrorKind, String)> = outcomes
+        .iter()
+        .filter_map(|outcome| outcome.as_ref().err())
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "every install went through: {refused:?}"
+    );
+    assert!(searches > 0);
 }
 
 /// A release that is not the one published, or not for this installation, is refused by
