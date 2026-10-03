@@ -561,9 +561,19 @@ are now documented as development and testing scaffolding, not for the library.
   alone reads none of its lines; a plan per filter is kept for the index's
   generation. A filtered search that cannot be planned, because the index
   could not be read for it, fails its semantic half alone: the lexical
-  results are served with the reason, `fallbackKind` `queryFailed`. A version 4 index, which has no column, scans the
-  admitted books alone as before; an unfiltered search finds a copied text
-  where the set records it, until the vectors are updated.
+  results are served with the reason, `fallbackKind` `queryFailed`. A version
+  4 index, which has no column, scans the admitted books alone as before; an
+  unfiltered search finds a copied text where the set records it, until the
+  vectors are updated. Measured on 1,050,000 lines in 1,501 books with
+  1,030,500 vectors (Apple M4, medians of five runs, against the widening this
+  replaces): a filter to one six-line book with a line copied into its
+  category from a 700-line book of another one keeps all six of its lines,
+  where the widened scan lost one, and finds the copy; searches under a
+  category of 50 books take 5.0 ms (6.4), under that one book 0.2 ms (0.4),
+  under a category after 50 texts were copied into one of its books 1.1 to
+  1.3 ms (1.0 to 1.1), and unfiltered 12.5 ms (14.2). The first search under
+  every book after texts moved takes 24 ms (17); the process holds 396 MB
+  after planning (394), the mapped index and vectors nearly all of it.
 - **A version installed already, published again, and a verification an
   install overtook, are not damage.** The sidecar (04a2cc9) refuses a release
   whose segment is a version the set has installed, published again with
