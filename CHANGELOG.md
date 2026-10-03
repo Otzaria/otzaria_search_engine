@@ -592,9 +592,14 @@ are now documented as development and testing scaffolding, not for the library.
   once the other has finished. It is not `sessionConflict`, whose answer —
   `disableSemantic` — would close a session that is serving, for an install
   that only has to wait. A compressed
-  segment is expanded into a file of the install's own, locked while it is
-  written and removed when the install returns, installed or not, and the next
-  install of a set removes what a stopped process left there.
+  segment is expanded into a file of the install's own, beside a lock file
+  the install holds from before the segment is written until it returns, so
+  an install in another process never takes it for abandoned — not while it
+  is written, and not once it is closed and waiting for the sidecar to take
+  it. Both are removed when the install returns, installed or not; the next
+  install of a set removes what a stopped process left there (a lock file
+  nothing holds), and an expansion file with no lock file once it is an hour
+  old.
 
 ## 0.8.7 – 2026-09-29
 

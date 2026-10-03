@@ -13619,10 +13619,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// The set is locked throughout, and the new generation goes live in one flip: a
   /// release that is refused, cancelled through `cancellation`, or cut off by a crash
   /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
-  /// a file of the install's own in the set's `incoming/` folder first, so it needs its
-  /// expanded size free besides what the install needs; the file is gone when this
-  /// returns, installed or not. An open session on the same set is moved onto the new
-  /// generation before this returns.
+  /// a file of the install's own in the set's `incoming/` folder first, beside a lock file
+  /// the install holds until it returns, so it needs its expanded size free besides what
+  /// the install needs; both are gone when this returns, installed or not. An open session
+  /// on the same set is moved onto the new generation before this returns.
   ///
   /// One install or compaction of a set runs at a time. While another runs in this
   /// process, this one is refused before it reads anything; while one runs in another
