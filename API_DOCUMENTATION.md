@@ -276,7 +276,8 @@ flip, so a release refused, cancelled or cut off by a crash leaves the set as it
 was; an open session on the same set is moved onto the new generation before
 the call returns. One install or compaction of a set runs at a time: while
 another runs, in this process or another, the call is refused as
-`sessionConflict` with `field` `vectors_dir`, and the set is as it was.
+`vectorsBusy` with `field` `vectors_dir`, the set is as it was and an open
+session keeps serving; try again once the other has finished.
 
 | field | meaning |
 | --- | --- |
@@ -492,13 +493,14 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `onnxRuntimeMissing` | `openSemanticArtifact`, `semanticIndexBooks` | no runtime where one is looked for: at `onnxRuntimePath` when it is passed | provide ONNX Runtime there |
 | `onnxRuntimeUnusable` | `openSemanticArtifact`, `semanticIndexBooks` | a runtime file that does not load, is too old, or is not the one already loaded | replace it, or restart |
 | `backendNotInBuild` | `openSemanticArtifact`, `semanticIndexBooks` | no ONNX backend in this build, as on Android and iOS | a desktop build |
-| `sessionConflict` | `configureSemantic`, `openSemanticArtifact`, `installSemanticVectors`, `compactSemanticVectors` | another session, or other inputs, is open; installing or compacting, with `field` `vectors_dir`, another install or compaction of the set is running | `disableSemantic` first; for a busy set, try again once the other has finished |
+| `sessionConflict` | `configureSemantic`, `openSemanticArtifact` | another session, or other inputs, is open | `disableSemantic` first |
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex` | a build-side call on an opened vector set | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
 | `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
 | `cancelled` | `searchSemantic`, and the calls that install, compact, verify or count | its `SemanticCancellationToken` was cancelled before it finished | drop it: nothing failed, and nothing changed |
 | `invalidInput` | `configureSemantic`, `openSemanticArtifact`, `installSemanticVectors`, `searchSemantic`, `compactSemanticVectors` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`, a ranking option such as `alpha_by_query_type.short` or `rrf_k`, or `policy.<option>`) | fix the call |
 | `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
+| `vectorsBusy` | `installSemanticVectors`, `compactSemanticVectors` | another install or compaction of the set at `vectorsDir` is running, in this process or another (`field` `vectors_dir`); nothing was read or changed, and an open session keeps serving | try again once it has finished; never `disableSemantic` for it |
 
 ---
 

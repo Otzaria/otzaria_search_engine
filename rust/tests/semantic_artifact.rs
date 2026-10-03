@@ -2010,9 +2010,12 @@ fn assert_busy(result: Result<impl Sized, SemanticError>, doing: &str) {
     match result {
         Ok(_) => panic!("{doing} must be refused while another runs"),
         Err(error) => {
+            // A busy set is no session conflict: what an application does about one —
+            // `disableSemantic` — would drop a session that is serving, for an install that
+            // only has to wait.
             assert_eq!(
                 (error.kind, error.field.as_deref()),
-                (SemanticErrorKind::SessionConflict, Some("vectors_dir")),
+                (SemanticErrorKind::VectorsBusy, Some("vectors_dir")),
                 "{doing}: {}",
                 error.message
             );
