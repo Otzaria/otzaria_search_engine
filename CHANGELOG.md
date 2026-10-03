@@ -265,8 +265,9 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at bf45795, its `onnx-backend` with the `store-v2` branch, its two rounds of
-  audit fixes, `scan-with` and `open-without-recovery` merged, which keys a
+  at 76900fd, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  audit fixes, `scan-with`, `open-without-recovery` and `fusion-tie-order`
+  merged, which keys a
   vector by the text it was embedded from, so a set's
   identity is a line recipe and a model family, with nothing positional in it:
   - The text half is the line recipe of the index, which this plugin declares
@@ -321,7 +322,11 @@ are now documented as development and testing scaffolding, not for the library.
   checksum; and `semanticCoverage` counts the live lines the recipe embeds and
   those the set holds. All are cancellable through a
   `SemanticCancellationToken`, and the set is left as it was by any that is
-  refused, cancelled or cut off. `SemanticStatus` gains `vectorsLibraryVersion`,
+  refused, cancelled or cut off. A manifest's `requires` and `builtBy` are
+  information, and nothing checks them: the published v30 release says
+  `indexSchemaVersion: 5`, and installs, opens and serves on a version 4
+  index, with version 4's limits.
+  `SemanticStatus` gains `vectorsLibraryVersion`,
   `vectorSegments` and `needsCompaction`, and `SemanticErrorKind` gains
   `insufficientDiskSpace`. The decoder is the zstd crate tantivy already builds,
   so `Cargo.lock` gains no crate; `sha2` is now a test dependency only.
@@ -547,7 +552,42 @@ are now documented as development and testing scaffolding, not for the library.
   lasts. So a book that repeats a passage forty times takes 31 of the 32 and
   never the line of another book that holds it once. Without grouping each is
   a result; grouped by section they head their sections' groups, and grouped
-  by text they are one group. Pagination is unchanged by it.
+  by text they are one group. Pagination is unchanged by it. A hit's lines
+  score alike, and an ungrouped page shows them in that order, every book's
+  line before any book's second: the sidecar (76900fd) breaks a tie in score
+  by the order the resolver returned the lines in, where it broke it by id.
+  By id, the repeats of the book first in the catalogue, numbered in a row,
+  came ahead of every other book's line. In the acceptance run on the
+  published v30 library, 9 of 200 unfiltered pages of twenty showed a repeat
+  before another book's line of the same text, and 3 were one text of one
+  book; now none are, and 1 is, a text whose hit found it in one book only.
+  On a session built on the device (the development path), ties now follow
+  the store's order, which is by semantic id.
+- **A short line a version 4 index holds in many places no longer slows a
+  search.** On an index without the `chunkKey` column, such as the published
+  v30 library index, a book's other lines of a hit's text are the lines of its
+  `lineHash`, and each was recomputed to see whether it holds the key. A line
+  under 20 characters is keyed with up to two neighbours on each side, so a
+  short text that recurs throughout a big book matched 119 to 949 lines by
+  `lineHash` and almost none by key. Each of them cost five documents read.
+  Once one of them is found not to hold the key, the others are recomputed
+  only when the `lineHash`es of their windows, which the columns give
+  without reading them, can spell the hit's text. A text whose lines hold
+  it, the common case, reads nothing more than before. Behind that, a hit
+  stops after 16 lines that were recomputed and did not hold its key: that
+  takes windows the column cannot tell apart, with neighbours under 12
+  Hebrew letters or one that fills the 512-character cap alone. A real
+  repeat, neighbours and all, is still found. On the published v30 index and
+  release, with 200 queries, a page of 20 and the query embedding cached, on
+  Apple M4, p50/p95/max in ms:
+
+  | search | this change | 1c27820 | bb57300 |
+  | --- | --- | --- | --- |
+  | unfiltered | 36.1/50.5/78 | 36.7/66.3/155 | 37.8/52.4/77 |
+  | under a category of 2,132 books | 12.2/53.8/282 | 12.2/53.2/277 | 22.6/63.7/286 |
+  | in one book | 2.7/4.2/6 | 2.7/4.2/6 | 14.9/15.6/19 |
+
+  Every line shown still holds its vector's text.
 - **A filtered search finds a text that moved, or was copied, into a book it
   admits.** The scan reads only the vectors with a record in an admitted book,
   and a set's records are where its texts were when it was built, so under the
