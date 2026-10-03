@@ -1170,6 +1170,64 @@ fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
     }
 }
 
+/// A hit's lines are capped, and the cap does not go to one book first: a passage one book
+/// holds forty times and another once is one vector with a record in each, and each record
+/// is a line of the hit's before any book's other lines of it are: the other book's line,
+/// and 31 of the forty — whichever of the two books comes first by name, and in a version 4
+/// index as from the column.
+#[test]
+fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let repeated = vec![passage; 40].join("\n");
+    for version_4 in [false, true] {
+        for (many, once) in [
+            ("/books/a-many.txt", "/books/z-once.txt"),
+            ("/books/z-many.txt", "/books/a-once.txt"),
+        ] {
+            let books = vec![
+                ("רבים", "/א", many, 0, repeated.clone()),
+                (
+                    "יחיד",
+                    "/ב",
+                    once,
+                    1,
+                    format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+                ),
+            ];
+            let library = build_library_of(&books, version_4);
+            let engine = library.engine();
+            engine.open_semantic_artifact(library.input()).unwrap();
+            let response = search_page(
+                &engine,
+                passage,
+                50,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+            );
+            let of = |book: &str| -> Vec<u64> {
+                response
+                    .results
+                    .iter()
+                    .filter(|hit| hit.file_path == book && hit.snippet_html == passage)
+                    .map(|hit| hit.segment)
+                    .collect()
+            };
+            let context = format!("{many} and {once}, version 4: {version_4}");
+            assert_eq!(
+                of(once),
+                [1],
+                "the other book's record is a line: {context}"
+            );
+            assert_eq!(
+                of(many),
+                (0..31).collect::<Vec<u64>>(),
+                "the rest of the cap, in the book's order: {context}"
+            );
+        }
+    }
+}
+
 /// A line whose `chunkKey` column holds a vector's key and whose text is another is no line
 /// of that vector's, whatever card it would be on: not a result, not a grouped sibling,
 /// under any grouping and in either mode that searches semantically. The index is edited
