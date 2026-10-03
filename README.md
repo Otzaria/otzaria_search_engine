@@ -178,16 +178,16 @@ On the application's path:
 | kind | reported by | means, and what to do |
 | --- | --- | --- |
 | `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing installed at `vectorsDir`: download and install the vectors |
-| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: download it again |
+| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: install the release again, which repairs the set, downloading it again if it is gone. On Windows, close the session first: a mapped segment cannot be replaced |
 | `artifactNotPublished` | `installSemanticVectors` | not the release whose manifest digest was published: download the official one |
-| `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application |
+| `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application. With `field` `segment_id`, installing: a version the set has installed, published again with other bytes; the set is sound and keeps serving it. Do not download it again: keep the set, or install the release into a new, empty `vectorsDir` |
 | `insufficientDiskSpace` | installing, compacting | not enough free space: free some, and try again |
 | `modelMissing`, `tokenizerMissing`, `modelInvalid` | `openSemanticArtifact` | no model, an ONNX graph without its `tokenizer.json`, or a file that is not a usable model: download the model's package. `modelInvalid` with `field` `model_path` is a path that names no ONNX graph, such as a GGUF: point `modelPath` at the package's `.onnx` graph |
 | `modelIdentityMismatch` | `openSemanticArtifact` | `modelIdentityJson` does not describe the model at `modelPath`; `field` says which value |
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
 | `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
-| `vectorsBusy` | installing, compacting | another install or compaction of the set is running, with `field` `vectors_dir`: nothing was changed, and an open session keeps serving; try again once it has finished |
+| `vectorsBusy` | installing, compacting, verifying | another install or compaction of the set is running, with `field` `vectors_dir`: nothing was changed, and an open session keeps serving; try again once it has finished. Verifying, an install replaced what the check read: nothing was condemned, verify again |
 | `readOnlySession` | the calls that build vectors | refused on an opened set; nothing to fix |
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
@@ -368,8 +368,10 @@ The application's installation, and what each input names:
 The vector set is a folder of its own beside `index/`, which installing creates
 and keeps: `CURRENT` and `PREVIOUS` name its live generation and the one before
 it, `segments/` holds the vectors, and `incoming/` is where a download can be
-left for an install to move in rather than copy, and where an install expands a
-compressed one, into a file of its own that is gone when the install returns.
+left for an install to move in rather than copy — moved when the install
+succeeds, left where it is when it fails, and on Windows copied when it is
+read-only — and where an install expands a compressed one, into a file of its
+own that is gone when the install returns.
 One install or compaction of a set runs at a time: a second is refused at once.
 The runtime either ships with the application, which passes its path as
 `onnxRuntimePath` (on macOS from inside the signed application bundle, below),

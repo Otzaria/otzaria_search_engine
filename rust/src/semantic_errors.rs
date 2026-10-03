@@ -482,6 +482,12 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
         ArtifactError::DeltaDoesNotApply { field, .. } => {
             (K::ArtifactIncompatible, Some((*field).to_string()))
         }
+        // A version the set has installed, published again with other bytes: a sound
+        // release, and a sound set that keeps what it serves. Not damage — downloading it
+        // again would be refused the same way, every time.
+        ArtifactError::SegmentIdTaken { .. } => {
+            (K::ArtifactIncompatible, Some("segment_id".to_string()))
+        }
         // The device ran out of room installing or compacting a vector set: the one state
         // the application can do something about that no other kind names.
         ArtifactError::InsufficientSpace { .. } => (K::InsufficientDiskSpace, None),
@@ -992,6 +998,18 @@ mod tests {
                 installed.path(),
                 K::ArtifactIncompatible,
                 Some("delta.from_library_version"),
+            ),
+            // A version installed already, published again with other bytes: a sound set
+            // and a sound release, never damage to download again.
+            (
+                ArtifactError::SegmentIdTaken {
+                    id: "0123456789abcdef0123456789abcdef".into(),
+                    installed_sha256: "a".repeat(64),
+                    offered_sha256: "b".repeat(64),
+                },
+                installed.path(),
+                K::ArtifactIncompatible,
+                Some("segment_id"),
             ),
             (
                 ArtifactError::InsufficientSpace {
