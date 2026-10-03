@@ -564,7 +564,10 @@ are now documented as development and testing scaffolding, not for the library.
   the text arrived in, never in the books its records name. When nothing
   moved the plan is the admitted books alone, as before. Liveness is the
   set's own: a record counts when a scan reaches a live slot through it, and
-  a vector when its slot is live. A book's arrivals are kept for the set's
+  a vector when its slot is live. The set is opened for it beside the session
+  without the set's lock and without recovery (the sidecar's
+  `open_without_recovery`), so planning never makes an install wait and never
+  cleans up on a search's thread. A book's arrivals are kept for the set's
   generation under its postings (the segments that hold its lines, and their
   deletions) and its text hash, so a plan after a commit that left a book
   alone reads none of its lines; a plan per filter is kept for the index's
