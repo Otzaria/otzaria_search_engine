@@ -32,6 +32,9 @@ mod lexicons;
 mod external_text_tests;
 mod line_source;
 mod sqlite_host;
+// Real-data benchmark of smart search, opened read-only; outside `api` so FRB ignores it.
+#[cfg(test)]
+mod smart_search_bench;
 // The lexical index seen as the semantic builder's corpus (S4b). At the crate root, not
 // under `api`: it is a Rust-to-Rust port between this engine and the semantic sidecar, and
 // flutter_rust_bridge must not generate bindings for it — Dart never supplies a corpus.
