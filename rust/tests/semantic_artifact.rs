@@ -2002,6 +2002,56 @@ fn a_text_copied_into_a_new_book_is_found_unfiltered_where_its_filter_finds_it()
     }
 }
 
+/// A set removed and installed again at its directory starts its generations over; plans
+/// made with the set it replaced are not used for it.
+#[test]
+fn a_set_installed_again_at_its_directory_is_planned_afresh() {
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let copy = "/books/copy.txt";
+    let mut books = default_books();
+    books.push((
+        "עותק",
+        "/עותקים",
+        copy,
+        5,
+        format!("פתיחה לספר העותק ארוכה דיה\n{BERACHOT_TEXT}"),
+    ));
+    let old = build_library_of(&books, false);
+    let other = build_library_of(&default_books(), false);
+    let mut engine = old.engine();
+    let lines = |engine: &SearchEngine, facets: &[&str]| -> BTreeSet<(String, u64)> {
+        semantic_lines(engine, BERACHOT_TEXT, facets)
+            .into_iter()
+            .filter(|(_, text, _)| text == BERACHOT_TEXT)
+            .map(|(book, _, line)| (book, line))
+            .collect()
+    };
+    let both = BTreeSet::from([(BERACHOT.to_string(), 0), (copy.to_string(), 1)]);
+    engine.open_semantic_artifact(old.input()).unwrap();
+    assert_eq!(lines(&engine, &[]), both);
+
+    // The set that does not record the copy, at the same directory and generation.
+    engine.disable_semantic();
+    std::fs::remove_dir_all(&old.vectors).unwrap();
+    copy_dir(&other.vectors, &old.vectors);
+    engine.open_semantic_artifact(old.input()).unwrap();
+    let filtered = lines(&engine, &["/עותקים"]);
+    let unfiltered = lines(&engine, &[]);
+    assert_eq!(filtered, BTreeSet::from([(copy.to_string(), 1)]));
+    assert_eq!(unfiltered, both, "the copy is an arrival of the new set's");
+}
+
 /// A text two admitted books hold, each many times over, and the set records in neither: more
 /// lines of it than a hit resolves to. Which of them come back does not depend on how a map
 /// of books happens to iterate, so it is the same after every commit, each of which plans

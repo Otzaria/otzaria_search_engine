@@ -23,7 +23,7 @@
 //! at its own score and none in place of one of the admitted books' hits
 //! (`CandidateResolver::unreached`), and the resolver looks for each in the admitted books
 //! it arrived in, held to its whole key, and in no other book. An unfiltered search plans
-//! every book this way, with nothing unreached: the scan reads every vector.
+//! every book, with nothing unreached.
 //!
 //! Liveness is the set's own. A record counts only when a scan of its book reaches a live
 //! slot through it — the sidecar's `book_records`, which reads the generation's deletions
@@ -43,6 +43,7 @@ use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tantivy::index::SegmentId;
 
@@ -52,6 +53,8 @@ const SLOTS_PER_CHECK: u32 = 65_536;
 /// One generation of an installed vector set as a plan reads it, kept by the session for
 /// as long as it serves that generation.
 pub(crate) struct SetView {
+    /// Unique to this open: a plan made with another view is not this one's.
+    id: u64,
     dir: PathBuf,
     set: SegmentSet,
     /// Each book's arrivals, and what they were computed for.
@@ -71,15 +74,24 @@ pub(crate) struct Arrival {
     pub(crate) ordinal: u32,
 }
 
-/// A book's arrivals, and the state of the book they are of.
+/// What a view knows of a book.
+#[derive(Clone)]
+pub(crate) enum Known {
+    /// Its arrivals.
+    Arrivals(Arc<[Arrival]>),
+    /// The texts it holds that the set does not record in it, by value and first line, not
+    /// yet looked up in the set.
+    Unlooked(Arc<[(u64, u32)]>),
+}
+
+/// What a view knows of a book, and the state of the book it is of.
 struct Arrivals {
     postings: Postings,
     /// The book's `textHash` then, when its lines agree on one: the same text keys the same,
     /// so they hold for as long as it does. `0`, which a book without one has, is never
     /// matched.
     text_hash: u64,
-    /// Its arrivals the set holds a live vector of, sorted.
-    slots: Arc<[Arrival]>,
+    known: Known,
 }
 
 impl SetView {
@@ -90,7 +102,7 @@ impl SetView {
     /// the set's lock and without recovery or garbage collection
     /// (`SegmentSet::open_without_recovery`): a search plans on its own thread, and must
     /// neither make an install wait nor clean up the set. A generation an install collects
-    /// while it is opened fails the open, and the next filtered search opens again.
+    /// while it is opened fails the open, and the next search opens again.
     pub(crate) fn open(dir: &Path, generation: u64) -> Result<Option<Self>, String> {
         match segment_set::info(dir).map_err(|err| err.to_string())? {
             Some(info) if info.generation == generation => {}
@@ -100,11 +112,17 @@ impl SetView {
         if set.generation() != generation {
             return Ok(None);
         }
+        static OPENED: AtomicU64 = AtomicU64::new(0);
         Ok(Some(Self {
+            id: OPENED.fetch_add(1, Ordering::Relaxed),
             dir: dir.to_path_buf(),
             set,
             arrivals: Mutex::default(),
         }))
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
     }
 
     pub(crate) fn dir(&self) -> &Path {
@@ -188,13 +206,13 @@ impl SetView {
         reached
     }
 
-    /// The live slots that hold a key of each of `values`, sorted: one pass over every slot
-    /// of the set, looking at `cancel` as it goes. A value no live slot holds is absent.
+    /// The live slots that hold a key of one of `values`, in slot order: one pass over every
+    /// slot of the set, looking at `cancel` as it goes.
     pub(crate) fn live_slots(
         &self,
         values: &HashSet<u64>,
         cancel: &CancellationToken,
-    ) -> Option<HashMap<u64, Vec<SlotRef>>> {
+    ) -> Option<Vec<SlotRef>> {
         let segments = self.set.segments();
         // In stretches of slots read in parallel, and gathered in order.
         let stretches: Vec<(u16, u32)> = segments
@@ -227,18 +245,14 @@ impl SetView {
                 )
             })
             .collect::<Option<_>>()?;
-        let mut found: HashMap<u64, Vec<SlotRef>> = HashMap::new();
-        for slot in held.into_iter().flatten() {
-            found.entry(slot.key.column_value()).or_default().push(slot);
-        }
-        Some(found)
+        Some(held.into_iter().flatten().collect())
     }
 
-    /// `book`'s arrivals as computed before, when its postings are as they were then.
-    pub(crate) fn known_arrivals(&self, book: &str, postings: &Postings) -> Option<Arc<[Arrival]>> {
+    /// What is known of `book` when its postings are as they were then, with its text hash.
+    pub(crate) fn known_arrivals(&self, book: &str, postings: &Postings) -> Option<(u64, Known)> {
         let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
         let known = arrivals.get(book)?;
-        (known.postings == *postings).then(|| Arc::clone(&known.slots))
+        (known.postings == *postings).then(|| (known.text_hash, known.known.clone()))
     }
 
     /// `book`'s arrivals as computed before for the same text, when it has one: kept, under
@@ -248,7 +262,7 @@ impl SetView {
         book: &str,
         text_hash: u64,
         postings: &Postings,
-    ) -> Option<Arc<[Arrival]>> {
+    ) -> Option<Known> {
         if text_hash == 0 {
             return None;
         }
@@ -258,7 +272,7 @@ impl SetView {
             return None;
         }
         known.postings.clone_from(postings);
-        Some(Arc::clone(&known.slots))
+        Some(known.known.clone())
     }
 
     pub(crate) fn remember_arrivals(
@@ -266,7 +280,7 @@ impl SetView {
         book: Arc<str>,
         postings: Postings,
         text_hash: u64,
-        slots: Arc<[Arrival]>,
+        known: Known,
     ) {
         self.arrivals
             .lock()
@@ -276,7 +290,7 @@ impl SetView {
                 Arrivals {
                     postings,
                     text_hash,
-                    slots,
+                    known,
                 },
             );
     }
