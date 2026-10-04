@@ -32,6 +32,7 @@ use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
 use rayon::prelude::*;
 #[cfg(feature = "semantic-integration")]
 use std::collections::HashMap;
+use tantivy::columnar::Column;
 use tantivy::schema::Value;
 use tantivy::{DocAddress, Searcher, TantivyDocument};
 
@@ -153,6 +154,9 @@ pub fn recompute_chunk_keys(
     let mut texts = Vec::with_capacity(end - start + 1);
     let mut sections = Vec::with_capacity(end - start + 1);
     let mut pdf = Vec::with_capacity(end - start + 1);
+    // Opened once per segment: opening a column reads its whole block index.
+    let mut section_columns: Vec<Option<Column<u64>>> =
+        vec![None; searcher.segment_readers().len()];
     for &address in &book[start..=end] {
         let document: TantivyDocument = searcher
             .doc(address)
@@ -171,11 +175,17 @@ pub fn recompute_chunk_keys(
                 .to_string(),
         );
         // FAST and not stored, so read from its column.
+        let column = match &mut section_columns[address.segment_ord as usize] {
+            Some(column) => column,
+            unopened => unopened.insert(
+                searcher
+                    .segment_reader(address.segment_ord)
+                    .fast_fields()
+                    .u64("sectionId")?,
+            ),
+        };
         sections.push(
-            searcher
-                .segment_reader(address.segment_ord)
-                .fast_fields()
-                .u64("sectionId")?
+            column
                 .first(address.doc_id)
                 .with_context(|| format!("the document at {address:?} has no sectionId"))?,
         );
