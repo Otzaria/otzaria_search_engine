@@ -41,14 +41,29 @@ pub(crate) enum GroupKey {
 /// A line, by its book and its id.
 pub(crate) type LineKey = (String, u64);
 
+/// What a result holds in a session besides itself: its line, the lines grouped under it,
+/// and its group.
+struct Holds {
+    line: LineKey,
+    siblings: Vec<LineKey>,
+    group: Option<GroupKey>,
+}
+
 /// One search's results so far, in the order shown. `E` is a result, `S` what else the
 /// engine keeps for the search.
 pub(crate) struct SemanticSession<E, S> {
     /// The searcher every address in the session belongs to, and every expansion reads.
     pub(crate) searcher: Searcher,
     entries: Vec<E>,
+    /// What each of `entries` holds.
+    holds: Vec<Holds>,
+    /// Lines taken with no result, such as stale ones, and the lines grouped under them.
+    dropped: HashSet<LineKey>,
     seen: HashSet<LineKey>,
     seen_groups: HashSet<GroupKey>,
+    /// How many results, from the first, a page has shown. Those after them were fused in a
+    /// narrower window than the next expansion's, which ranks them again.
+    shown: usize,
     /// The candidate window the last expansion fused.
     pub(crate) window: u32,
     /// No wider window can add a result.
@@ -60,23 +75,37 @@ pub(crate) struct SemanticSession<E, S> {
 /// search cancelled on the way leaves the session as it was.
 pub(crate) struct Additions<E> {
     entries: Vec<E>,
+    holds: Vec<Holds>,
     seen: HashSet<LineKey>,
     groups: HashSet<GroupKey>,
+    dropped: HashSet<LineKey>,
+    /// What the session's shown results and dropped lines hold, when the results nobody was
+    /// shown are ranked again: the expansions admit lines by these instead of the session's.
+    reopened: Option<(HashSet<LineKey>, HashSet<GroupKey>)>,
 }
 
 impl<E> Default for Additions<E> {
     fn default() -> Self {
         Self {
             entries: Vec::new(),
+            holds: Vec::new(),
             seen: HashSet::new(),
             groups: HashSet::new(),
+            dropped: HashSet::new(),
+            reopened: None,
         }
     }
 }
 
 impl<E> Additions<E> {
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
+    /// Whether none of what `holds` holds was taken here.
+    fn leaves(&self, holds: &Holds) -> bool {
+        !self.seen.contains(&holds.line)
+            && !holds.siblings.iter().any(|line| self.seen.contains(line))
+            && !holds
+                .group
+                .as_ref()
+                .is_some_and(|group| self.groups.contains(group))
     }
 }
 
@@ -85,8 +114,11 @@ impl<E, S> SemanticSession<E, S> {
         Self {
             searcher,
             entries: Vec::new(),
+            holds: Vec::new(),
+            dropped: HashSet::new(),
             seen: HashSet::new(),
             seen_groups: HashSet::new(),
+            shown: 0,
             window: 0,
             exhausted: false,
             state,
@@ -104,6 +136,46 @@ impl<E, S> SemanticSession<E, S> {
         &self.entries[start..end]
     }
 
+    /// Mark the page from `offset` shown: it, and every result before it, keep their places.
+    pub(crate) fn show(&mut self, offset: u32, limit: u32) {
+        let start = offset as usize;
+        if start < self.entries.len() {
+            let end = start.saturating_add(limit as usize).min(self.entries.len());
+            self.shown = self.shown.max(end);
+        }
+    }
+
+    /// Where an expansion's results go: after the shown results, with the results nobody was
+    /// shown taken back, so that the wider window ranks them with its own.
+    pub(crate) fn reopen(&self) -> Additions<E> {
+        if self.shown == self.entries.len() {
+            return Additions::default();
+        }
+        let mut seen = self.dropped.clone();
+        let mut groups = HashSet::new();
+        for holds in &self.holds[..self.shown] {
+            seen.insert(holds.line.clone());
+            seen.extend(holds.siblings.iter().cloned());
+            groups.extend(holds.group.clone());
+        }
+        Additions {
+            reopened: Some((seen, groups)),
+            ..Additions::default()
+        }
+    }
+
+    /// How many results the session holds once `additions` is committed.
+    pub(crate) fn len_with(&self, additions: &Additions<E>) -> usize {
+        if additions.reopened.is_none() {
+            return self.entries.len() + additions.entries.len();
+        }
+        let kept = self.holds[self.shown..]
+            .iter()
+            .filter(|holds| additions.leaves(holds))
+            .count();
+        self.shown + additions.entries.len() + kept
+    }
+
     /// Whether neither the session nor `additions` holds `line`, or the group it stands for.
     pub(crate) fn admits(
         &self,
@@ -111,9 +183,13 @@ impl<E, S> SemanticSession<E, S> {
         line: &LineKey,
         group: Option<&GroupKey>,
     ) -> bool {
-        let seen = |line: &LineKey| self.seen.contains(line) || additions.seen.contains(line);
+        let (seen, seen_groups) = match &additions.reopened {
+            Some((seen, groups)) => (seen, groups),
+            None => (&self.seen, &self.seen_groups),
+        };
+        let seen = |line: &LineKey| seen.contains(line) || additions.seen.contains(line);
         let grouped =
-            |group: &GroupKey| self.seen_groups.contains(group) || additions.groups.contains(group);
+            |group: &GroupKey| seen_groups.contains(group) || additions.groups.contains(group);
         !seen(line) && !group.is_some_and(grouped)
     }
 
@@ -126,18 +202,54 @@ impl<E, S> SemanticSession<E, S> {
         group: Option<GroupKey>,
         entry: Option<E>,
     ) {
-        additions.seen.insert(line);
-        additions.seen.extend(siblings.into_iter().cloned());
-        if let Some(entry) = entry {
-            additions.groups.extend(group);
-            additions.entries.push(entry);
+        let siblings: Vec<LineKey> = siblings.into_iter().cloned().collect();
+        additions.seen.insert(line.clone());
+        additions.seen.extend(siblings.iter().cloned());
+        match entry {
+            Some(entry) => {
+                additions.groups.extend(group.clone());
+                additions.entries.push(entry);
+                additions.holds.push(Holds {
+                    line,
+                    siblings,
+                    group,
+                });
+            }
+            None => {
+                additions.dropped.insert(line);
+                additions.dropped.extend(siblings);
+            }
         }
     }
 
-    pub(crate) fn commit(&mut self, additions: Additions<E>) {
+    /// Append `additions`. Reopened, the results nobody was shown that the expansions did
+    /// not take again follow them: a result the session held is never lost.
+    pub(crate) fn commit(&mut self, mut additions: Additions<E>) {
+        let mut unshown = Vec::new();
+        if let Some((seen, groups)) = additions.reopened.take() {
+            self.seen = seen;
+            self.seen_groups = groups;
+            let holds = self.holds.split_off(self.shown);
+            unshown = self
+                .entries
+                .split_off(self.shown)
+                .into_iter()
+                .zip(holds)
+                .collect();
+        }
+        unshown.retain(|(_, holds)| additions.leaves(holds));
         self.entries.extend(additions.entries);
+        self.holds.extend(additions.holds);
         self.seen.extend(additions.seen);
         self.seen_groups.extend(additions.groups);
+        self.dropped.extend(additions.dropped);
+        for (entry, holds) in unshown {
+            self.seen.insert(holds.line.clone());
+            self.seen.extend(holds.siblings.iter().cloned());
+            self.seen_groups.extend(holds.group.clone());
+            self.entries.push(entry);
+            self.holds.push(holds);
+        }
     }
 }
 
@@ -287,6 +399,52 @@ mod tests {
         assert!(session.admits(&second, &line(5), None));
         assert_eq!(session.page(1, 10), [] as [u64; 0]);
         assert_eq!(session.page(5, 10), [] as [u64; 0]);
+    }
+
+    /// The results after the last shown are ranked again by the next expansion: those it
+    /// takes move to its order, the rest follow, one whose sibling it took goes, and a shown
+    /// result never moves.
+    #[test]
+    fn results_nobody_was_shown_are_ranked_again() {
+        let mut session = Session::new(searcher(), ());
+        let mut first = Additions::default();
+        for id in 1..=3 {
+            Session::take(&mut first, line(id), &[], None, Some(id));
+        }
+        Session::take(&mut first, line(4), &[line(6)], None, Some(4));
+        Session::take(&mut first, line(7), &[], None, Some(7));
+        session.commit(first);
+        session.show(0, 2);
+        session.show(10, 2);
+        assert_eq!(session.page(0, 10), [1, 2, 3, 4, 7]);
+
+        let cancelled = session.reopen();
+        drop(cancelled);
+        assert_eq!(session.page(0, 10), [1, 2, 3, 4, 7], "nothing committed");
+
+        let mut wider = session.reopen();
+        assert!(!session.admits(&wider, &line(2), None), "shown");
+        assert!(session.admits(&wider, &line(3), None), "never shown");
+        assert_eq!(session.len_with(&wider), 5);
+        Session::take(&mut wider, line(5), &[], None, Some(5));
+        Session::take(&mut wider, line(3), &[], None, Some(3));
+        Session::take(&mut wider, line(6), &[], None, Some(6));
+        assert!(!session.admits(&wider, &line(3), None));
+        assert_eq!(session.len_with(&wider), 6, "4 goes with its sibling");
+        session.commit(wider);
+        assert_eq!(session.page(0, 10), [1, 2, 5, 3, 6, 7]);
+
+        session.show(2, 2);
+        let mut again = session.reopen();
+        assert!(!session.admits(&again, &line(3), None), "shown");
+        assert!(session.admits(&again, &line(4), None), "no result holds it");
+        assert!(session.admits(&again, &line(7), None));
+        Session::take(&mut again, line(8), &[], None, Some(8));
+        session.commit(again);
+        assert_eq!(session.page(0, 10), [1, 2, 5, 3, 8, 6, 7]);
+
+        session.show(0, 10);
+        assert!(session.reopen().reopened.is_none(), "all shown");
     }
 
     /// A session of other index contents is let go once one of the new contents is kept,

@@ -5999,11 +5999,15 @@ impl SearchEngine {
             let wanted = (offset as usize)
                 .saturating_add(limit as usize)
                 .saturating_add(1);
-            let mut additions = Additions::default();
             let mut window = session.window;
             let mut exhausted = session.exhausted;
+            let mut additions = if session.len() < wanted && !exhausted {
+                session.reopen()
+            } else {
+                Additions::default()
+            };
             let mut expanded: Option<Expanded> = None;
-            while session.len() + additions.len() < wanted && !exhausted {
+            while session.len_with(&additions) < wanted && !exhausted {
                 // Doubling: a session asked for page after page fuses a logarithmic number
                 // of windows, and the first page's leaves room for the second.
                 let requested_window = u64::from(offset)
@@ -6047,6 +6051,7 @@ impl SearchEngine {
             }
             self.semantic_sessions.put(key, Arc::clone(&shared));
             let has_more = session.len() > (offset as usize).saturating_add(limit as usize);
+            session.show(offset, limit);
 
             // Built once a session, the first time it has a page to paint.
             if session.state.painter.is_none() && session.len() > offset as usize {
@@ -24355,6 +24360,27 @@ mod tests {
             );
             assert_eq!(expansions(&engine), 2);
             assert!(third.has_more && second.has_more && first.has_more);
+        }
+
+        /// A result fused in a window but never shown is ranked again with the wider window's:
+        /// a page past the window is in fused order, and the pages shown before stand.
+        #[test]
+        fn a_result_never_shown_is_ranked_with_the_wider_window() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let first = page(&engine, 5, 0);
+            let second = page(&engine, 5, 5);
+            let third = page(&engine, 5, 10);
+            assert_eq!(expansions(&engine), 2);
+            let scores: Vec<f32> = third.results.iter().map(|hit| hit.fused_score).collect();
+            assert!(
+                scores.windows(2).all(|pair| pair[0] >= pair[1]),
+                "out of fused order: {scores:?}"
+            );
+            assert_eq!(bits(&page(&engine, 5, 0)), bits(&first));
+            assert_eq!(bits(&page(&engine, 5, 5)), bits(&second));
+            assert_eq!(bits(&page(&engine, 5, 10)), bits(&third));
+            assert!(third.has_more);
         }
 
         /// The counts keep their meaning: the lexical count is the corpus-wide count, and the
