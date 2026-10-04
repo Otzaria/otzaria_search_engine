@@ -31,10 +31,11 @@
 //!   a text repeated in many books is one hit however many lines it resolves to, so lines
 //!   that repeat a text cannot crowd the top 50 here as they do on a results page.
 //!
-//! A release passes when every gate ran and passed. A gate whose inputs are not given has
-//! not run, which fails the release like a gate that failed, unless the caller skips it by
-//! name (`--skip G6`), which the output and the report record; skipping every gate is a
-//! wrong argument. Exit 0 when every gate
+//! A release passes when every gate ran and passed. A gate with nothing to measure — an
+//! index with no keyed line, a plan or a set with no record, no live key to recall — fails.
+//! A gate whose inputs are not given has not run, which fails the release like a gate that
+//! failed, unless the caller skips it by name (`--skip G6`), which the output and the report
+//! record; skipping every gate is a wrong argument. Exit 0 when every gate
 //! passed or was skipped so, 1 when one failed or did not run, 2 when the inputs could not
 //! be read or the arguments are wrong. `--report` writes every gate's verdict and numbers as
 //! JSON, whatever the outcome when the gates ran.
@@ -445,11 +446,11 @@ mod gates {
         Ok(passed)
     }
 
-    fn percent(part: u64, whole: u64) -> f64 {
+    fn percent(part: u64, whole: u64) -> String {
         if whole == 0 {
-            100.0
+            "n/a".to_string()
         } else {
-            100.0 * part as f64 / whole as f64
+            format!("{:.4}%", 100.0 * part as f64 / whole as f64)
         }
     }
 
@@ -458,6 +459,9 @@ mod gates {
     fn g3(set: &SegmentSet, validation: &Validation, plan: Option<&Path>) -> Result<Gate> {
         let uncovered = validation.keyed_lines - validation.covered_lines;
         let mut faults = Vec::new();
+        if validation.keyed_lines == 0 {
+            faults.push("the index has no keyed line, so there is no coverage to measure".into());
+        }
         if uncovered > 0 {
             faults.push(format!(
                 "{uncovered} keyed line(s) of the index have no record of their text in their \
@@ -465,7 +469,7 @@ mod gates {
             ));
         }
         let mut detail = format!(
-            "{} of the index's {} keyed line(s) recorded in their book ({:.4}%)",
+            "{} of the index's {} keyed line(s) recorded in their book ({})",
             validation.covered_lines,
             validation.keyed_lines,
             percent(validation.covered_lines, validation.keyed_lines)
@@ -475,14 +479,16 @@ mod gates {
                 let plan = Plan::open(plan)
                     .map_err(|error| anyhow::anyhow!("could not open the plan: {error}"))?;
                 let reached = coverage(set, &plan);
-                if !reached.complete() {
+                if reached.records == 0 {
+                    faults.push("the plan has no record, so there is no reach to measure".into());
+                } else if !reached.complete() {
                     faults.push(format!(
                         "{} of the plan's record(s) not reachable in the set",
                         reached.records - reached.reachable
                     ));
                 }
                 detail.push_str(&format!(
-                    "; {} of the plan's {} record(s) reachable in the set ({:.4}%)",
+                    "; {} of the plan's {} record(s) reachable in the set ({})",
                     reached.reachable,
                     reached.records,
                     percent(reached.reachable, reached.records)
@@ -528,7 +534,16 @@ mod gates {
         } else {
             validation.moved as f64 / validation.records as f64
         };
+        // 100 × the ratio, as before: `percent` rounds some shares the other way.
+        let stale_share = if validation.records == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{:.4}%", 100.0 * stale)
+        };
         let mut faults = Vec::new();
+        if validation.records == 0 {
+            faults.push("the set holds no record, so there is nothing to resolve".to_string());
+        }
         if validation.gone > 0 {
             faults.push(format!(
                 "{} record(s) resolve to no line of the index{}",
@@ -552,18 +567,16 @@ mod gates {
         if let Some(limit) = max_stale_hints {
             if stale > limit {
                 faults.push(format!(
-                    "{:.4}% of the records are stale, more than --max-stale-hints {limit}",
-                    100.0 * stale
+                    "{stale_share} of the records are stale, more than --max-stale-hints {limit}"
                 ));
             }
         }
         let summary = format!(
-            "{} record(s): {} at their hint, {} stale ({:.4}%), {} unresolved; chunkKey column \
-             {}",
+            "{} record(s): {} at their hint, {} stale ({}), {} unresolved; chunkKey column {}",
             validation.records,
             validation.at_hint,
             validation.moved,
-            100.0 * stale,
+            stale_share,
             validation.gone,
             if validation.column_checked {
                 format!(
@@ -711,14 +724,22 @@ mod gates {
         }
         let n = queries.len() as f64;
         let (recall_10, recall_50) = (sum_10 / n, sum_50 / n);
-        let passed = recall_10 >= request.min_recall_10 && recall_50 >= request.min_recall_50;
+        // The sidecar's recall against no exact key is 1.0, which measures nothing.
+        let measured = !reference.is_empty();
+        let passed =
+            measured && recall_10 >= request.min_recall_10 && recall_50 >= request.min_recall_50;
         Ok(Gate {
             gate: "G6",
             name: "retrieval",
             status: Status::of(passed),
             detail: format!(
-                "recall@10 {recall_10:.4} (at least {}), recall@50 {recall_50:.4} over \
+                "{}recall@10 {recall_10:.4} (at least {}), recall@50 {recall_50:.4} over \
                  distinct texts (at least {}), on {} {source} queries against {} exact key(s)",
+                if measured {
+                    ""
+                } else {
+                    "the set holds no live key, so there is no recall to measure; "
+                },
                 request.min_recall_10,
                 request.min_recall_50,
                 queries.len(),
@@ -805,4 +826,22 @@ G6, retrieval — recall of the set's scan against the exact f32 scan:
 
 Exit status: 0 when every gate passed or was skipped, 1 when one failed or did not run,
 2 when the inputs could not be read or the arguments are wrong.";
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 23 of 640 is a tie that 100 × 23 / 640 and 100 × (23 / 640) round apart.
+        #[test]
+        fn a_stale_share_prints_alike_in_the_fault_and_the_summary() {
+            let validation = Validation {
+                records: 640,
+                at_hint: 617,
+                moved: 23,
+                ..Validation::default()
+            };
+            let detail = g4(&validation, Some(0.01)).detail;
+            assert_eq!(detail.matches("3.5937%").count(), 2, "{detail}");
+        }
+    }
 }
