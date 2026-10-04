@@ -678,10 +678,15 @@ are now documented as development and testing scaffolding, not for the library.
   open on the file: the reader's own meta-file watcher, which opens `meta.json`
   every 500 ms, an antivirus scan, or the search indexer. The commit failed
   with `An IO error occurred: 'Access is denied. (os error 5)'`, intermittently
-  in Windows CI, and `optimize` or a background merge failed the same way. The
-  index's directory now retries such a replacement, on Windows only, for up to
-  about two seconds; a refusal that lasts longer is returned as before, and the
-  next commit writes what the failed one did not.
+  in Windows CI, and `optimize` or a background merge failed the same way. On
+  Windows the index's directory now replaces them with `std::fs::rename`, which
+  falls back to POSIX semantics, so a handle that shares delete access no longer
+  blocks it; a holder that does not is waited out for up to about two seconds.
+  A refusal that lasts longer is returned as before, and the next commit writes
+  what the failed one did not.
+- **`otzaria_index_meta.json` is replaced atomically.** It was rewritten in
+  place, so a crash mid-write left truncated JSON and the chunk-key recipe was
+  lost without a warning; an unreadable one is now logged at warn.
 
 ## 0.9.0 – 2026-10-04
 
