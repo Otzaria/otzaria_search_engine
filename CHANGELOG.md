@@ -598,7 +598,8 @@ are now documented as development and testing scaffolding, not for the library.
   every line is. A text the 512-character cap may have cut can be held by a
   window that begins with one line longer than the cap, so its lines are all
   candidates, within the budget of 16 a hit. Either way, the lines whose
-  windows begin as the hit's does are recomputed first. Running out of that
+  windows begin as the hit's does are recomputed first, in every book of the
+  hit before the others in any. Running out of that
   budget is now the only way a version 4 index misses a line of the hit's
   `lineHash` that holds its key. A recompute also opens the `sectionId`
   column once rather than once per document it reads, which on that index

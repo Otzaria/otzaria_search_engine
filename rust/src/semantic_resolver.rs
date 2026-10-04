@@ -617,10 +617,12 @@ impl<'a> LiveResolver<'a> {
 
     /// The other lines of `book` that hold `key` as its line at `position` does, in order,
     /// at most `limit` and none `taken`: a text the book holds more than once is recorded
-    /// once, at its first line.
+    /// once, at its first line. Also the candidates put off, for [`Self::put_off_repeats`].
+    /// With more than `limit` holders, those found need not be the first in book order.
     ///
-    /// Without the column the candidates are the lines of its `lineHash`. After the first
-    /// that fails, its [`KeySpan`] passes over those that cannot hold the key and puts last
+    /// Without the column the candidates are the lines of its `lineHash`, so a repeat whose
+    /// short line is itself cut differently is found only with the column. After the first
+    /// that fails, its [`KeySpan`] passes over those that cannot hold the key and puts off
     /// those whose windows begin otherwise; each failure spends one of `budget`.
     fn repeats_of(
         &self,
@@ -630,12 +632,12 @@ impl<'a> LiveResolver<'a> {
         limit: usize,
         taken: &HashSet<DocAddress>,
         budget: &mut usize,
-    ) -> Result<Vec<usize>, ResolveError> {
+    ) -> Result<(Vec<usize>, Vec<usize>), ResolveError> {
         let Some(value) = self.repeat_value(book.docs[position]) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         let Some(positions) = self.repeats(book).get(&value) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         // The line's span, read once a candidate has failed.
         let mut span: Option<KeySpan> = None;
@@ -666,36 +668,52 @@ impl<'a> LiveResolver<'a> {
                     }
                 }
             }
-            match self.holds_within(book, position, other, key, budget, &mut span)? {
+            match self.holds_within(book, other, key, budget)? {
                 Some(true) => found.push(other),
+                Some(false) if span.is_none() => span = Some(self.key_span(book, position)?),
                 Some(false) => {}
                 None => break,
             }
         }
-        for other in later {
+        Ok((found, later))
+    }
+
+    /// The lines of `later`, candidates [`Self::repeats_of`] put off, that hold `key` and are
+    /// not `taken`, at most `limit`, while `budget` lasts.
+    fn put_off_repeats(
+        &self,
+        book: &BookLines,
+        later: &[usize],
+        key: ChunkKey,
+        limit: usize,
+        taken: &HashSet<DocAddress>,
+        budget: &mut usize,
+    ) -> Result<Vec<usize>, ResolveError> {
+        let mut found = Vec::new();
+        for &other in later {
             if found.len() == limit {
                 break;
             }
-            match self.holds_within(book, position, other, key, budget, &mut span)? {
+            if taken.contains(&book.docs[other]) {
+                continue;
+            }
+            match self.holds_within(book, other, key, budget)? {
                 Some(true) => found.push(other),
                 Some(false) => {}
                 None => break,
             }
         }
-        found.sort_unstable();
         Ok(found)
     }
 
     /// Whether the line at `other` of `book` holds `key`, recomputed while `budget` lasts, and
-    /// `None` once it is spent. The first failure reads the span of the line at `position`.
+    /// `None` once it is spent.
     fn holds_within(
         &self,
         book: &BookLines,
-        position: usize,
         other: usize,
         key: ChunkKey,
         budget: &mut usize,
-        span: &mut Option<KeySpan>,
     ) -> Result<Option<bool>, ResolveError> {
         if *budget == 0 {
             return Ok(None);
@@ -711,9 +729,6 @@ impl<'a> LiveResolver<'a> {
         let holds = self.holds(book, other, key)?;
         if !holds {
             *budget -= 1;
-            if span.is_none() {
-                *span = Some(self.key_span(book, position)?);
-            }
         }
         Ok(Some(holds))
     }
@@ -1528,16 +1543,33 @@ impl CandidateResolver for LiveResolver<'_> {
                 }
             }
             // Then each book's other lines of the text, in the order its first was found.
+            // The candidates each book put off come after every book's others, so that one
+            // book's cannot spend the budget another's likelier ones need.
             let mut budget = MAX_FAILED_REPEATS;
+            let mut room = MAX_LINES_PER_HIT - emitted;
+            let mut repeats: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
             for (book, position) in &found {
-                if emitted == MAX_LINES_PER_HIT {
+                if room == 0 {
                     break;
                 }
-                let limit = MAX_LINES_PER_HIT - emitted;
-                for other in
-                    self.repeats_of(book, *position, hit.key, limit, &taken, &mut budget)?
-                {
-                    taken.insert(book.docs[other]);
+                let (held, later) =
+                    self.repeats_of(book, *position, hit.key, room, &taken, &mut budget)?;
+                taken.extend(held.iter().map(|&other| book.docs[other]));
+                room -= held.len();
+                repeats.push((held, later));
+            }
+            for ((book, _), (held, later)) in found.iter().zip(&mut repeats) {
+                if room == 0 {
+                    break;
+                }
+                let more = self.put_off_repeats(book, later, hit.key, room, &taken, &mut budget)?;
+                taken.extend(more.iter().map(|&other| book.docs[other]));
+                room -= more.len();
+                held.extend(more);
+            }
+            for ((book, _), (mut held, _)) in found.iter().zip(repeats) {
+                held.sort_unstable();
+                for other in held {
                     lines.push(self.describe(hit_index, book, other)?);
                     emitted += 1;
                 }
