@@ -53,7 +53,7 @@ Future<void> main() async {
       expect(results, hasLength(1));
       expect(results.single.segment, BigInt.zero);
       expect(results.single.continuesToNextLine, isTrue);
-      expect(results.single.text, contains(' ¶ '));
+      expect(results.single.text, contains('<br>'));
     });
 
     test('an in-line hit is not flagged', () async {

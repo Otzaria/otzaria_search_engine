@@ -51,8 +51,10 @@ pub(crate) const LINE_FIRST_FIELD: &str = "lineFirst";
 pub(crate) const LINE_LAST_FIELD: &str = "lineLast";
 /// `<term` for the terms of a line's first content word, `>term` for its last.
 pub(crate) const LINE_EDGE_FIELD: &str = "lineEdge";
-/// Separates the two lines inside a cross-line result snippet.
-pub(crate) const SNIPPET_LINE_BREAK: &str = " ¶ ";
+/// Joins the two lines of a cross-line snippet; the painted HTML shows it as `<br>`.
+pub(crate) const SNIPPET_LINE_BREAK: &str = "\n";
+/// [`SNIPPET_LINE_BREAK`] in the snippet HTML.
+pub(crate) const SNIPPET_LINE_BREAK_HTML: &str = "<br>";
 
 const START_PREFIX: &str = "<";
 const END_PREFIX: &str = ">";

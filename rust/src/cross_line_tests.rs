@@ -126,7 +126,8 @@ fn a_phrase_continues_onto_the_next_line() {
     let results = exact(&e, "ובין המים ויאמר אלהים");
     assert_eq!(hits(&results), [(0, true)]);
     let text = &results[0].text;
-    assert!(text.contains(cross_line::SNIPPET_LINE_BREAK), "{text}");
+    assert_eq!(text.matches("<br>").count(), 1, "{text}");
+    assert!(!text.contains('\n'), "{text}");
     for word in ["ובין", "המים", "ויאמר", "אלהים"] {
         assert!(
             text.contains(&format!("<font color=red>{word}</font>")),
@@ -134,7 +135,8 @@ fn a_phrase_continues_onto_the_next_line() {
         );
     }
     // The line break sits between the painted words of the two lines.
-    assert!(text.find("ויאמר").unwrap() > text.find(cross_line::SNIPPET_LINE_BREAK).unwrap());
+    assert!(text.find("ויאמר").unwrap() > text.find("<br>").unwrap());
+    assert!(text.find("ובין").unwrap() < text.find("<br>").unwrap());
     assert_eq!(
         e.count_exact("ובין המים ויאמר אלהים".into(), vec![], false, false)
             .unwrap(),

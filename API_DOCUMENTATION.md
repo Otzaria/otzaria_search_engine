@@ -663,7 +663,7 @@ class SearchResult {
 
 `continuesToNextLine` marks a hit whose phrase starts at the end of this line and
 continues at the start of the next one (see [Phrases across a line break](#phrases-across-a-line-break)).
-`text` is then the end of this line and the start of the next, joined at ` ¶ `, with the
+`text` is then the end of this line and the start of the next, joined at a `<br>`, with the
 words of both lines painted. It is set only when both lines read back as indexed; a hit
 whose next line is `stale` or `unavailable` is shown like any other hit of this line.
 

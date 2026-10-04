@@ -101,7 +101,7 @@ pub struct SearchResult {
     pub text_status: TextStatus,
     /// The phrase continues from the end of this line onto the start of the next
     /// line (the document with `id + 1`): `text` is the end of this line and the start
-    /// of the next, joined at a ` ¶ ` separator, with the phrase painted across it.
+    /// of the next, joined at a `<br>` line break, with the phrase painted across it.
     /// Such a hit is counted once, for this line.
     pub continues_to_next_line: bool,
 }
@@ -12318,7 +12318,10 @@ impl SearchEngine {
             hl.max_chars as usize + cross_line::SNIPPET_LINE_BREAK.len(),
         )
         .unwrap_or((joined.as_str(), from_crossing.to_vec()));
-        Some(Self::paint_ranges(fragment, ranges, hl))
+        Some(Self::paint_ranges(fragment, ranges, hl).replace(
+            cross_line::SNIPPET_LINE_BREAK,
+            cross_line::SNIPPET_LINE_BREAK_HTML,
+        ))
     }
 
     fn build_results(
