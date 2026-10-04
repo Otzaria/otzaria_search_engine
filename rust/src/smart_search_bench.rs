@@ -5,7 +5,8 @@
 //! --nocapture --test-threads=1`.
 //!
 //! Adding a mode: a [`Mode`] variant, its `label`/`paged`/`available`, an arm in [`run_once`]
-//! and an entry in [`MODES`]; rows, summary and CSV follow.
+//! and an entry in [`MODES`]; rows, summary and CSV follow. [`semantic_pages`] times whole
+//! `search_semantic` pages on a real vector set (`OTZ_VECTORS`, `OTZ_MODEL`, ...).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -171,7 +172,7 @@ impl Config {
 }
 
 /// The inputs of a semantic session, for modes that need vectors; `None` unless all are set.
-#[allow(dead_code)]
+/// `OTZ_VECTORS` is the set's directory, the one holding `CURRENT`.
 struct SemanticInputs {
     vectors: PathBuf,
     model: PathBuf,
@@ -666,5 +667,268 @@ fn dictionary_forms() -> Result<()> {
     let path = config.sibling("forms.txt");
     fs::write(&path, &out)?;
     println!("{out}\nforms: {}", path.display());
+    Ok(())
+}
+
+/// Each step of [`semantic_pages`]: a fresh session's first page, the same page again, the
+/// second page (inside the first window), and the pages past it, which widen the window.
+#[cfg(feature = "semantic-integration")]
+const PAGE_STEPS: &[(&str, u32)] = &[
+    ("first", 1),
+    ("again", 1),
+    ("page2", 2),
+    ("page3", 3),
+    ("page4", 4),
+    ("page5", 5),
+];
+
+/// Whole `search_semantic` pages through the session cache, Hybrid with the default ranking,
+/// Exact and Fuzzy 0, with where each page's time went. `OTZ_RUNS` fresh sessions per query;
+/// `OTZ_GROUPS` (comma-separated) narrows the queries, `OTZ_SHARE` sets the foundational share.
+/// Before the runs, the cold path: opening the set, planning, the first search;
+/// `OTZ_COLD_ONLY` stops after it. `OTZ_DUMP` names a file for every result of the first run.
+/// `OTZ_FORGET_KEYS` starts every session without the keys earlier ones recomputed.
+#[cfg(feature = "semantic-integration")]
+#[test]
+#[ignore = "needs OTZ_INDEX and a real vector set"]
+fn semantic_pages() -> Result<()> {
+    use crate::api::search_engine::{
+        SemanticArtifactInput, SemanticCancellationToken, SemanticLexicalMode,
+        SemanticRankingOptions, SemanticRetrievalMode, SemanticTimings, LAST_SEMANTIC_TIMINGS,
+    };
+    let groups: Option<Vec<String>> = std::env::var("OTZ_GROUPS").ok().map(|groups| {
+        groups
+            .split(',')
+            .map(|group| group.trim().to_string())
+            .collect()
+    });
+    let ranking = std::env::var("OTZ_SHARE")
+        .ok()
+        .and_then(|share| share.trim().parse::<f64>().ok())
+        .map(|share| SemanticRankingOptions {
+            foundational_candidate_share: share,
+            ..SemanticRankingOptions::defaults()
+        });
+    let Some(config) = Config::from_env() else {
+        println!("OTZ_INDEX is not set; nothing to measure");
+        return Ok(());
+    };
+    let Some(inputs) = SemanticInputs::from_env() else {
+        println!("OTZ_VECTORS, OTZ_MODEL and OTZ_MODEL_IDENTITY are not set; nothing to measure");
+        return Ok(());
+    };
+    let engine = open_engine(&config)?;
+    let (opened, open_ms) = time(|| {
+        engine
+            .open_semantic_artifact(SemanticArtifactInput {
+                vectors_dir: inputs.vectors.to_string_lossy().into_owned(),
+                model_path: inputs.model.to_string_lossy().into_owned(),
+                model_identity_json: fs::read_to_string(&inputs.model_identity)?,
+                onnx_runtime_path: inputs
+                    .onnx_runtime
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                scan_threads: None,
+            })
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
+    });
+    let status = opened?;
+    println!(
+        "vector set opened in {open_ms:.0} ms: {} vectors, state {:?}",
+        status.vector_count, status.state
+    );
+    let search = |query: &str, page: u32, lexical_mode: SemanticLexicalMode| {
+        let response = engine.search_semantic(
+            query.to_string(),
+            Vec::new(),
+            config.limit,
+            (page - 1) * config.limit,
+            lexical_mode,
+            0,
+            SemanticRetrievalMode::Hybrid,
+            None,
+            false,
+            false,
+            ranking.clone(),
+            &SemanticCancellationToken::new(),
+        );
+        (response, LAST_SEMANTIC_TIMINGS.get())
+    };
+
+    let plan_ms = engine.plan_semantic_for_bench()?;
+    let cold_query = QUERIES[0].1[0];
+    let (cold, timings) = search(cold_query, 1, SemanticLexicalMode::Exact);
+    let cold = cold.map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    engine.invalidate_semantic_sessions_for_bench();
+    let (_, warm) = search(cold_query, 1, SemanticLexicalMode::Exact);
+    let cold_line = format!(
+        "cold: open {open_ms:.0} ms, plan {plan_ms:.0} ms, first search {:.0} ms (lex {:.0} \
+         emb {:.0} scan {:.0} res {:.0}; same search warm {:.0} ms, scan {:.0} res {:.0}), \
+         n={} {:?}  {cold_query}",
+        timings.total_ms,
+        timings.lexical_ms,
+        timings.embed_ms,
+        timings.scan_ms,
+        timings.resolve_ms,
+        warm.total_ms,
+        warm.scan_ms,
+        warm.resolve_ms,
+        cold.results.len(),
+        cold.executed_mode
+    );
+    println!("{cold_line}");
+    if std::env::var_os("OTZ_COLD_ONLY").is_some() {
+        return Ok(());
+    }
+    let mut dump = std::env::var_os("OTZ_DUMP").map(|_| String::new());
+    let forget_keys = std::env::var_os("OTZ_FORGET_KEYS").is_some();
+
+    let mut out = String::from(
+        "group,query,lexical,step,run,total_ms,expansions,lexical_ms,semantic_ms,embed_ms,scan_ms,resolve_ms,fuse_ms,hydrate_ms,page_ms,results,has_more,executed,total_count,lexical_total\n",
+    );
+    // Step label, lexical mode: every timing, for the summary.
+    let mut pooled: BTreeMap<(String, String), Vec<SemanticTimings>> = BTreeMap::new();
+    let wanted = |group: &str| {
+        groups
+            .as_ref()
+            .is_none_or(|groups| groups.iter().any(|g| g == group))
+    };
+    for &(group, queries) in QUERIES.iter().filter(|(group, _)| wanted(group)) {
+        for &query in queries {
+            for (lexical_label, lexical_mode) in [
+                ("exact", SemanticLexicalMode::Exact),
+                ("fuzzy0", SemanticLexicalMode::Fuzzy),
+            ] {
+                for run in 0..config.runs {
+                    engine.invalidate_semantic_sessions_for_bench();
+                    if forget_keys {
+                        engine.forget_semantic_keys_for_bench();
+                    }
+                    for &(step, page) in PAGE_STEPS {
+                        let (response, timings) = search(query, page, lexical_mode);
+                        let response = match response {
+                            Ok(response) => response,
+                            Err(error) => {
+                                println!("{query} [{lexical_label} {step}]: {error:?}");
+                                break;
+                            }
+                        };
+                        let _ = writeln!(
+                            out,
+                            "{group},{},{lexical_label},{step},{run},{:.2},{},{:.2},{:.2},{:.0},{:.0},{:.0},{:.2},{:.2},{:.2},{},{},{:?},{},{}",
+                            csv_field(query),
+                            timings.total_ms,
+                            timings.expansions,
+                            timings.lexical_ms,
+                            timings.semantic_ms,
+                            timings.embed_ms,
+                            timings.scan_ms,
+                            timings.resolve_ms,
+                            timings.fuse_ms,
+                            timings.hydrate_ms,
+                            timings.page_ms,
+                            response.results.len(),
+                            response.has_more,
+                            response.executed_mode,
+                            response.total_count,
+                            response.lexical_total_count,
+                        );
+                        if let (Some(dump), 0) = (dump.as_mut(), run) {
+                            for (rank, result) in response.results.iter().enumerate() {
+                                let _ = writeln!(
+                                    dump,
+                                    "{query}\t{lexical_label}\t{step}\t{rank}\t{}\t{}\t{}\t{:?}\t{:?}\t{:?}\t{}\t{}",
+                                    result.file_path,
+                                    result.id,
+                                    result.segment,
+                                    result.source,
+                                    result.semantic_score,
+                                    result.lexical_score,
+                                    result.fused_score,
+                                    result.merged_count,
+                                );
+                            }
+                        }
+                        if run == 0 {
+                            println!(
+                                "{group:<8} {lexical_label:<6} {step:<6} {:>8.1} ms  x{} lex {:>7.1} sem {:>7.1} (emb {:>4.0} scan {:>5.0} res {:>5.0}) fuse {:>6.1} hyd {:>6.1} page {:>6.1}  n={} more={} {:?}  {query}",
+                                timings.total_ms,
+                                timings.expansions,
+                                timings.lexical_ms,
+                                timings.semantic_ms,
+                                timings.embed_ms,
+                                timings.scan_ms,
+                                timings.resolve_ms,
+                                timings.fuse_ms,
+                                timings.hydrate_ms,
+                                timings.page_ms,
+                                response.results.len(),
+                                response.has_more,
+                                response.executed_mode,
+                            );
+                        }
+                        pooled
+                            .entry((step.to_string(), lexical_label.to_string()))
+                            .or_default()
+                            .push(timings);
+                        if !response.has_more {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let (Some(dump), Some(path)) = (dump, std::env::var_os("OTZ_DUMP")) {
+        fs::write(&path, dump)?;
+    }
+    let mut table = format!(
+        "{cold_line}\n{:<6} {:<7} {:>5} {:>9} {:>9} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}\n",
+        "step",
+        "lexical",
+        "n",
+        "p50_ms",
+        "p95_ms",
+        "lex_p50",
+        "sem_p50",
+        "scan_p50",
+        "res_p50",
+        "fuse_p50",
+        "hyd_p50",
+        "page_p50"
+    );
+    for ((step, lexical), samples) in &pooled {
+        let p50 = |field: fn(&SemanticTimings) -> f64| {
+            percentile(&sorted(samples.iter().map(field).collect()), 50.0)
+        };
+        let total = sorted(samples.iter().map(|t| t.total_ms).collect());
+        let _ = writeln!(
+            table,
+            "{step:<6} {lexical:<7} {:>5} {:>9.2} {:>9.2} {:>8.2} {:>8.2} {:>8.0} {:>8.0} {:>8.2} {:>8.2} {:>8.2}",
+            samples.len(),
+            percentile(&total, 50.0),
+            percentile(&total, 95.0),
+            p50(|t| t.lexical_ms),
+            p50(|t| t.semantic_ms),
+            p50(|t| t.scan_ms),
+            p50(|t| t.resolve_ms),
+            p50(|t| t.fuse_ms),
+            p50(|t| t.hydrate_ms),
+            p50(|t| t.page_ms),
+        );
+    }
+    if let Some(parent) = config.out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let csv = config.sibling("semantic_pages.csv");
+    fs::write(&csv, format!("\u{feff}{out}"))?;
+    let summary = config.sibling("semantic_pages_summary.txt");
+    fs::write(&summary, &table)?;
+    println!(
+        "\n{table}\ncsv: {}\nsummary: {}",
+        csv.display(),
+        summary.display()
+    );
     Ok(())
 }

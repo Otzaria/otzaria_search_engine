@@ -49,6 +49,8 @@ use otzaria_semantic_search::semantic::chunk_key::LineRef;
 #[cfg(feature = "semantic-integration")]
 use crate::semantic_errors::{self, SidecarCall};
 #[cfg(feature = "semantic-integration")]
+use crate::semantic_session::{Additions, GroupKey, LineKey, SessionKey};
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::config::profiles::{
     FusionStrategy, QueryTypeAlphas, RankingProfile, SearchProfile,
 };
@@ -57,12 +59,20 @@ use otzaria_semantic_search::errors::SemanticSearchError;
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::hybrid::hebrew_normalizer::HebrewNormalizer;
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::hybrid::ranking::quoted_phrases;
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::embedding::EmbeddingDeployment;
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::official_index::{
     LocalModel, OfficialIndexConfig, OfficialSemanticIndex,
+};
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::types::{
+    is_foundational, HybridResultItem, FOUNDATIONAL_FACET,
 };
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::types::{
@@ -1074,6 +1084,8 @@ pub struct SemanticSearchResult {
 /// Result envelope for semantic/hybrid searches. `lexical_total_count` is the
 /// truthful corpus-wide Tantivy count; `total_count` is the sidecar candidate
 /// fusion count and must not be presented as a corpus-wide semantic total.
+// `non_opaque` for the reason given on `SemanticQueryTypeAlphas`.
+#[frb(non_opaque)]
 pub struct SemanticSearchResponse {
     pub results: Vec<SemanticSearchResult>,
     pub total_count: u32,
@@ -1100,6 +1112,10 @@ pub struct SemanticSearchResponse {
     /// separate from `truncated`, which belongs to lexical term expansion.
     pub candidate_window_truncated: bool,
     pub truncated: bool,
+    /// Whether a page after this one has a result: what paging asks, which the counts above
+    /// cannot tell, since they describe a candidate window rather than the results to come.
+    #[frb(default = false)]
+    pub has_more: bool,
 }
 
 /// How the application abandons a [`SearchEngine::search_semantic`] that nobody is waiting
@@ -1211,9 +1227,10 @@ pub struct SemanticQueryTypeAlphas {
 /// in place of the ranking the engine uses when it is passed none. What lets the application
 /// calibrate and tune the ranking without a release of the engine.
 ///
-/// **The defaults are unmeasured placeholders.** They are the ranking the engine has always
-/// produced, the sidecar's `Balanced` preset value for value, and none has been checked
-/// against what a reader of this library finds relevant: each was reasoned from a scale (BM25's
+/// **The defaults are unmeasured placeholders.** They are the sidecar's `Balanced` preset but
+/// for the fusion, which is RRF, the semantic threshold, and the foundational books' preference,
+/// and none has been checked against what a reader of this library finds relevant: each was
+/// reasoned from a scale (BM25's
 /// typical range, a cosine of about 0.1 meaning unrelated) or carried over from the
 /// literature, as RRF's `k` of 60 is. Calibrating them needs a labelled relevance set, Hebrew
 /// queries of every type each with the lines judged relevant to it; a metric over the page a
@@ -1227,17 +1244,19 @@ pub struct SemanticQueryTypeAlphas {
 ///
 /// | option | default | allowed |
 /// | --- | --- | --- |
-/// | `fusion_strategy` | `Weighted` | |
+/// | `fusion_strategy` | `Rrf` | |
 /// | `rrf_k` | 60 | at least 1, when `fusion_strategy` is `Rrf`; read by nothing else |
 /// | `alpha_override` | none | 0 to 1 |
 /// | `alpha_by_query_type` | 1, 0.85, 0.7, 0.5, 0.3, 0.5 | each 0 to 1 |
 /// | `bm25_saturation_k` | 10 | above 0 |
-/// | `semantic_threshold` | 0 | 0 to 1 |
+/// | `semantic_threshold` | 0.55 | 0 to 1 |
 /// | `agreement_bonus` | 0.1 | 0 to 1 |
 /// | `phrase_match_bonus`, `rare_term_bonus`, `section_coverage_bonus` | 0 | 0 to 1 |
 /// | `duplicate_penalty` | 0 | 0 to 1 |
 /// | `metadata_ranking_enabled` | false | |
 /// | `candidate_window_multiplier` | 2 | 1 to 10 |
+/// | `foundational_bonus` | 0.002 | 0 to 1 |
+/// | `foundational_candidate_share` | 0.5 | 0 to 1 |
 ///
 /// A value outside its range, or one that is not a number, is refused before the search runs,
 /// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
@@ -1251,7 +1270,7 @@ pub struct SemanticQueryTypeAlphas {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticRankingOptions {
     /// How the two sides' scores are combined.
-    #[frb(default = "SemanticFusionStrategy.weighted")]
+    #[frb(default = "SemanticFusionStrategy.rrf")]
     pub fusion_strategy: SemanticFusionStrategy,
     /// RRF's `k`, for [`SemanticFusionStrategy::Rrf`]: the larger it is, the less the first
     /// ranks of either side count over the ones after them.
@@ -1268,7 +1287,7 @@ pub struct SemanticRankingOptions {
     pub bm25_saturation_k: f64,
     /// Below this normalized similarity a semantic candidate contributes nothing. A cosine is
     /// mapped to `(cosine + 1) / 2`, so an unrelated line, cosine 0, is 0.5.
-    #[frb(default = 0.0)]
+    #[frb(default = 0.55)]
     pub semantic_threshold: f64,
     /// Added to a line both sides found, in a hybrid search fused by weight.
     #[frb(default = 0.1)]
@@ -1292,6 +1311,14 @@ pub struct SemanticRankingOptions {
     /// How many semantic candidates are fetched for each place in the candidate window.
     #[frb(default = 2.0)]
     pub candidate_window_multiplier: f64,
+    /// Added once to the fused score of a line of a foundational book (under `/base`), in
+    /// every strategy and mode. Under RRF, 0.002 is about an eighth of a first rank's score.
+    #[frb(default = 0.002)]
+    pub foundational_bonus: f64,
+    /// A second semantic query, restricted to the foundational books, fetches this share of
+    /// the main query's candidates; 0 runs none. Skipped when the facets already name `/base`.
+    #[frb(default = 0.5)]
+    pub foundational_candidate_share: f64,
 }
 
 impl SemanticRankingOptions {
@@ -1300,7 +1327,7 @@ impl SemanticRankingOptions {
     #[frb(sync)]
     pub fn defaults() -> Self {
         Self {
-            fusion_strategy: SemanticFusionStrategy::Weighted,
+            fusion_strategy: SemanticFusionStrategy::Rrf,
             rrf_k: 60,
             alpha_override: None,
             alpha_by_query_type: SemanticQueryTypeAlphas {
@@ -1312,7 +1339,7 @@ impl SemanticRankingOptions {
                 unknown: 0.5,
             },
             bm25_saturation_k: 10.0,
-            semantic_threshold: 0.0,
+            semantic_threshold: 0.55,
             agreement_bonus: 0.1,
             phrase_match_bonus: 0.0,
             rare_term_bonus: 0.0,
@@ -1320,6 +1347,8 @@ impl SemanticRankingOptions {
             duplicate_penalty: 0.0,
             metadata_ranking_enabled: false,
             candidate_window_multiplier: 2.0,
+            foundational_bonus: 0.002,
+            foundational_candidate_share: 0.5,
         }
     }
 }
@@ -2062,9 +2091,9 @@ fn family_package(
 ///
 /// Every field is named, with no `..` from a preset, so that a repin that gives the profile
 /// another parameter fails to compile here until someone decides what the application passes
-/// for it. What is not a ranking parameter is the `Balanced` preset's, the one a search with no
-/// options ranks by: the label, which only telemetry reads, and the caches and telemetry, which
-/// change no ranking. The values are narrowed to the 32 bits the ranking computes in.
+/// for it. What is not a ranking parameter is the `Balanced` preset's: the label, which only
+/// telemetry reads, and the caches and telemetry, which change no ranking. The values are
+/// narrowed to the 32 bits the ranking computes in.
 #[cfg(feature = "semantic-integration")]
 fn ranking_profile(options: &SemanticRankingOptions) -> Result<RankingProfile, SemanticError> {
     let preset = RankingProfile::from_profile(SearchProfile::Balanced);
@@ -2094,6 +2123,8 @@ fn ranking_profile(options: &SemanticRankingOptions) -> Result<RankingProfile, S
         duplicate_penalty: options.duplicate_penalty as f32,
         metadata_ranking_enabled: options.metadata_ranking_enabled,
         candidate_window_multiplier: options.candidate_window_multiplier as f32,
+        foundational_bonus: options.foundational_bonus as f32,
+        foundational_candidate_share: options.foundational_candidate_share as f32,
         query_cache_enabled: preset.query_cache_enabled,
         embedding_cache_enabled: preset.embedding_cache_enabled,
         telemetry_enabled: preset.telemetry_enabled,
@@ -2200,6 +2231,229 @@ struct SemanticLexicalPhase {
     /// Candidates whose text is not the indexed line, by id (absent = `Ok`).
     text_status: HashMap<u64, TextStatus>,
 }
+
+/// Whether the foundational books' query is planned like the search's own: once per index
+/// generation and vector set. Off, it misses texts that moved into those books.
+#[cfg(feature = "semantic-integration")]
+const PLAN_FOUNDATIONAL_QUERY: bool = true;
+
+/// One [`SearchEngine::search_semantic`] call's inputs, after the defaults are applied.
+#[cfg(feature = "semantic-integration")]
+struct SemanticRequest<'a> {
+    query: &'a str,
+    facets: &'a [String],
+    lexical_mode: SemanticLexicalMode,
+    fuzzy_max_distance: u8,
+    retrieval_mode: SemanticRetrievalMode,
+    grouping: Option<SemanticGroupingMode>,
+    match_nikud: bool,
+    match_taamim: bool,
+    ranking: &'a RankingProfile,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl SemanticRequest<'_> {
+    /// The key of the session this request continues, over `searcher`.
+    fn session_key(
+        &self,
+        searcher: &Searcher,
+        vectors_generation: Option<u64>,
+        epoch: u64,
+    ) -> SessionKey {
+        let mut facets = self.facets.to_vec();
+        facets.sort();
+        facets.dedup();
+        // Opened before it is sampled, or the first search's read opening it would change the
+        // sample and start a second session.
+        let _ = crate::line_source::with_store(|_| Ok(()));
+        SessionKey {
+            query: self.query.to_string(),
+            facets,
+            options: format!(
+                "{:?} {} {:?} {:?} {} {} {:?}",
+                self.lexical_mode,
+                self.fuzzy_max_distance,
+                self.retrieval_mode,
+                self.grouping,
+                self.match_nikud,
+                self.match_taamim,
+                self.ranking
+            ),
+            index_content: crate::semantic_resolver::index_content(searcher),
+            library_generation: crate::line_source::query_cache_generation(),
+            vectors_generation,
+            epoch,
+        }
+    }
+}
+
+/// One result a session holds, in the session's searcher.
+#[cfg(feature = "semantic-integration")]
+struct SessionEntry {
+    item: HybridResultItem,
+    /// Where an item the sidecar asked to hydrate is, and its stored fields.
+    hydrated: Option<(DocAddress, SearchResult)>,
+    /// Where each of `item.merged` was resolved, when it was.
+    siblings: Vec<Option<DocAddress>>,
+    /// The text status of a lexical candidate's line.
+    text_status: TextStatus,
+}
+
+/// What a session keeps besides its results: the last expansion's envelope, and how to
+/// paint its pages.
+#[cfg(feature = "semantic-integration")]
+struct SessionState {
+    highlight: Option<SemanticHighlight>,
+    painter: Option<SemanticSnippetPainter>,
+    lexical_total_count: u32,
+    truncated: bool,
+    total_count: u32,
+    group_count: Option<u32>,
+    executed_mode: SemanticExecutedMode,
+    semantic_available: bool,
+    fallback_reason: Option<String>,
+    stale_primaries_dropped: u32,
+    unverified: u32,
+    /// The window a page asked for beyond [`MAX_SEMANTIC_CANDIDATE_WINDOW`], once one did.
+    capped_request: Option<u64>,
+    /// The library database's state the session is keyed by.
+    library_generation: crate::semantic_resolver::LibraryGeneration,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            highlight: None,
+            painter: None,
+            lexical_total_count: 0,
+            truncated: false,
+            total_count: 0,
+            group_count: None,
+            executed_mode: SemanticExecutedMode::Disabled,
+            semantic_available: false,
+            fallback_reason: None,
+            stale_primaries_dropped: 0,
+            unverified: 0,
+            capped_request: None,
+            library_generation: (0, None, false),
+        }
+    }
+}
+
+#[cfg(feature = "semantic-integration")]
+impl SessionState {
+    fn absorb(&mut self, expanded: Expanded) {
+        if let Some((count, truncated)) = expanded.lexical {
+            self.lexical_total_count = count;
+            self.truncated = truncated;
+        }
+        if expanded.highlight.is_some() {
+            self.highlight = expanded.highlight;
+        }
+        self.total_count = expanded.total_count;
+        self.group_count = expanded.group_count;
+        self.executed_mode = expanded.executed_mode;
+        self.semantic_available = expanded.semantic_available;
+        self.fallback_reason = expanded.fallback_reason;
+        self.stale_primaries_dropped = self
+            .stale_primaries_dropped
+            .saturating_add(expanded.stale_primaries_dropped);
+        self.unverified = expanded.unverified;
+        self.capped_request = expanded.capped_request.or(self.capped_request);
+    }
+}
+
+/// What one or more expansions of a session found, applied to it once the search is served.
+#[cfg(feature = "semantic-integration")]
+struct Expanded {
+    /// The corpus-wide lexical count and whether it is a floor; `None` when not counted.
+    lexical: Option<(u32, bool)>,
+    highlight: Option<SemanticHighlight>,
+    total_count: u32,
+    group_count: Option<u32>,
+    executed_mode: SemanticExecutedMode,
+    semantic_available: bool,
+    fallback_reason: Option<String>,
+    stale_primaries_dropped: u32,
+    unverified: u32,
+    exhausted: bool,
+    capped_request: Option<u64>,
+    timings: SemanticTimings,
+}
+
+/// Where a semantic search's time went, in milliseconds: logged at debug level, and read by
+/// the benchmark.
+#[cfg(feature = "semantic-integration")]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SemanticTimings {
+    pub expansions: u32,
+    /// The lexical phase, on its own thread beside planning and the semantic half.
+    pub lexical_ms: f64,
+    /// Planning, embedding, scanning and resolving.
+    pub semantic_ms: f64,
+    /// Of `semantic_ms`, as the sidecar measured them.
+    pub embed_ms: f64,
+    pub scan_ms: f64,
+    pub resolve_ms: f64,
+    pub fuse_ms: f64,
+    pub hydrate_ms: f64,
+    /// Cutting the page, reading its texts and painting it.
+    pub page_ms: f64,
+    pub total_ms: f64,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl SemanticTimings {
+    fn plus(self, later: SemanticTimings) -> SemanticTimings {
+        SemanticTimings {
+            expansions: self.expansions + later.expansions,
+            lexical_ms: self.lexical_ms + later.lexical_ms,
+            semantic_ms: self.semantic_ms + later.semantic_ms,
+            embed_ms: self.embed_ms + later.embed_ms,
+            scan_ms: self.scan_ms + later.scan_ms,
+            resolve_ms: self.resolve_ms + later.resolve_ms,
+            fuse_ms: self.fuse_ms + later.fuse_ms,
+            hydrate_ms: self.hydrate_ms + later.hydrate_ms,
+            page_ms: self.page_ms + later.page_ms,
+            total_ms: self.total_ms + later.total_ms,
+        }
+    }
+}
+
+#[cfg(all(test, feature = "semantic-integration"))]
+thread_local! {
+    /// The timings of the last semantic search this thread ran.
+    pub(crate) static LAST_SEMANTIC_TIMINGS: std::cell::Cell<SemanticTimings> =
+        std::cell::Cell::new(SemanticTimings::default());
+}
+
+#[cfg(feature = "semantic-integration")]
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(feature = "semantic-integration")]
+impl Expanded {
+    fn followed_by(self, later: Expanded) -> Expanded {
+        Expanded {
+            timings: self.timings.plus(later.timings),
+            lexical: later.lexical.or(self.lexical),
+            highlight: self.highlight.or(later.highlight),
+            stale_primaries_dropped: self
+                .stale_primaries_dropped
+                .saturating_add(later.stale_primaries_dropped),
+            capped_request: later.capped_request.or(self.capped_request),
+            ..later
+        }
+    }
+}
+
+#[cfg(feature = "semantic-integration")]
+type SemanticSearchSession = crate::semantic_session::SemanticSession<SessionEntry, SessionState>;
+
+#[cfg(feature = "semantic-integration")]
+type SemanticSessionCache = crate::semantic_session::SemanticSessions<SemanticSearchSession>;
 
 /// What a benchmark reads from one lexical phase.
 #[cfg(all(test, feature = "semantic-integration"))]
@@ -4025,6 +4279,9 @@ pub struct SearchEngine {
     /// let go when the session moves to another or closes.
     #[cfg(feature = "semantic-integration")]
     semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
+    /// The results recent semantic searches showed, which their next pages continue.
+    #[cfg(feature = "semantic-integration")]
+    semantic_sessions: SemanticSessionCache,
 }
 
 /// The analyzers every field and query of the index is tokenized with.
@@ -4164,6 +4421,8 @@ impl SearchEngine {
             semantic_resolver: Mutex::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_set_view: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_sessions: SemanticSessionCache::default(),
         }
     }
 
@@ -4201,7 +4460,58 @@ impl SearchEngine {
             semantic_resolver: Mutex::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_set_view: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_sessions: SemanticSessionCache::default(),
         })
+    }
+
+    /// Forget every semantic session, so the next search computes its first page afresh.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn invalidate_semantic_sessions_for_bench(&self) {
+        self.semantic_sessions.invalidate();
+    }
+
+    /// Forget the keys earlier searches recomputed, as a session that shares none would.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn forget_semantic_keys_for_bench(&self) {
+        self.semantic_resolver
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_keys();
+    }
+
+    /// Plan unfiltered searches and the foundational books' query as the first search would;
+    /// how long it took, in ms.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn plan_semantic_for_bench(&self) -> Result<f64> {
+        let started = Instant::now();
+        let open = self
+            .semantic_engine()
+            .context("no semantic session is open")?;
+        let vectors_dir = open.vectors_dir.clone().context("not a vector set")?;
+        let view = open
+            .coordinator
+            .vector_set_info()
+            .and_then(|info| self.semantic_set_view(&vectors_dir, info.generation))
+            .context("the vector set has no view")?;
+        let mut resolver = crate::semantic_resolver::LiveResolver::new(
+            self.index_reader.searcher(),
+            self.chunk_key_field,
+            &self.semantic_resolver,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let cancel = SearchCancellation::default();
+        let mut filters = SidecarSearchFilters::default();
+        resolver
+            .plan(&filters, &view, &cancel)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        if PLAN_FOUNDATIONAL_QUERY {
+            filters.facets = Some(vec![FOUNDATIONAL_FACET.to_string()]);
+            resolver
+                .plan(&filters, &view, &cancel)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        Ok(started.elapsed().as_secs_f64() * 1000.0)
     }
 
     /// The lexical phase of [`Self::search_semantic`] alone, for benchmarks:
@@ -4214,10 +4524,14 @@ impl SearchEngine {
         window: u32,
         fuzzy_distance: Option<u8>,
     ) -> Result<BenchLexicalPhase> {
+        let searcher = self.index_reader.searcher();
         let phase = match fuzzy_distance {
-            None => self.semantic_exact_lexical_candidates(query, facets, window, false, false)?,
-            Some(distance) => self
-                .semantic_fuzzy_lexical_candidates(query, facets, window, distance, false, false)?,
+            None => self.semantic_exact_lexical_candidates(
+                &searcher, query, facets, window, false, false, true,
+            )?,
+            Some(distance) => self.semantic_fuzzy_lexical_candidates(
+                &searcher, query, facets, window, distance, false, false, true,
+            )?,
         };
         Ok(BenchLexicalPhase {
             candidates: phase.candidates.len(),
@@ -4235,6 +4549,8 @@ impl SearchEngine {
     /// advanced search.
     #[frb(sync)]
     pub fn set_magic_dictionary_path(&mut self, path: String) -> bool {
+        #[cfg(feature = "semantic-integration")]
+        let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
         match MagicDictionary::open(Path::new(&path)) {
             Ok(dict) => {
                 debug!("magic dictionary loaded from {path}");
@@ -4353,6 +4669,8 @@ impl SearchEngine {
     ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             let requested = SemanticConfigKey::from_input(&config);
             let active = self
                 .semantic_runtime
@@ -4516,6 +4834,8 @@ impl SearchEngine {
     ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             let model = parse_model_identity(&config.model_identity_json)?;
             check_onnx_runtime_path(config.onnx_runtime_path.as_deref())?;
             let scan_threads = match config.scan_threads {
@@ -4692,6 +5012,8 @@ impl SearchEngine {
     pub fn disable_semantic(&mut self) {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             *self
                 .semantic_runtime
                 .get_mut()
@@ -4821,6 +5143,8 @@ impl SearchEngine {
     ) -> Result<SemanticVectorsInstallReport, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             use otzaria_semantic_search::semantic::segment_set::{
                 self, InstallExpectation, InstallSource,
             };
@@ -4936,6 +5260,8 @@ impl SearchEngine {
     ) -> Result<SemanticCompactionReport, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             use crate::semantic_resolver::{LiveKeys, LiveResolver};
             use otzaria_semantic_search::semantic::resolve::LiveKeySource;
             use otzaria_semantic_search::semantic::segment_set;
@@ -5283,6 +5609,8 @@ impl SearchEngine {
     ) -> Result<SemanticIndexingSummary, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticIndexingSummary {
                     enabled: false,
@@ -5417,6 +5745,8 @@ impl SearchEngine {
     ) -> Result<SemanticRemoveResult, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticRemoveResult {
                     enabled: false,
@@ -5460,6 +5790,8 @@ impl SearchEngine {
     pub fn reset_semantic_index(&self) -> Result<SemanticResetResult, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
+            // Whatever this changed, no page a search computed before it is served after it.
+            let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
             let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticResetResult {
                     enabled: false,
@@ -5492,12 +5824,19 @@ impl SearchEngine {
         }
     }
 
-    /// Search through the sidecar exactly once. Tantivy supplies scored lexical
-    /// candidates; the sidecar's coordinator alone performs hybrid fusion/grouping.
-    /// Semantic-only items are hydrated from Tantivy before crossing FFI. The
-    /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
-    /// development session, except that a stale artifact (the index committed
-    /// to since it was opened) is not asked, and the lexical fallback says why.
+    /// Search through the sidecar. Tantivy supplies scored lexical candidates, beside the
+    /// sidecar's semantic half rather than before it; the sidecar's coordinator alone performs
+    /// hybrid fusion/grouping. Semantic-only items are hydrated from Tantivy before crossing
+    /// FFI. The same for an artifact opened with [`Self::open_semantic_artifact`] and a
+    /// development session.
+    ///
+    /// Pages continue one another: a search's results are kept in the order shown, so each
+    /// line and group appears once and a page asked again is the same page; a commit, a
+    /// library or semantic change, or ten idle minutes start afresh. `has_more` says whether a
+    /// page follows; the counts keep describing the last candidate window.
+    ///
+    /// A query with a quoted phrase is looked up verbatim: its lexical phase is `Exact`,
+    /// whatever `lexical_mode` asks. An acronym's gershayim (רמב"ם) quotes nothing.
     ///
     /// A semantic path that cannot serve is not an error here: the response falls
     /// back to lexical results and says why, in `fallback_reason` and, as a value
@@ -5505,8 +5844,7 @@ impl SearchEngine {
     /// failing, which is an `Internal` [`SemanticError`].
     ///
     /// `ranking` replaces, for this search, every parameter hybrid ranking runs on (see
-    /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by the preset
-    /// every search has used, exactly as before, and so does
+    /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by
     /// [`SemanticRankingOptions::defaults`]. An option outside its range is refused before the
     /// search runs, as `InvalidInput` naming it, whether or not a session is open to rank by
     /// it: a build without semantic support ignores the options.
@@ -5546,8 +5884,16 @@ impl SearchEngine {
             // By the rules the coordinator checks it by, but before the lexical phase rather
             // than after it, and whether or not there is a session to rank: an option out of
             // range is a mistake in the call, and a fallback would hide it.
-            let ranking = ranking.as_ref().map(ranking_profile).transpose()?;
-            let Some(session) = self.semantic_engine() else {
+            let ranking =
+                ranking_profile(&ranking.unwrap_or_else(SemanticRankingOptions::defaults))?;
+            // A quoted phrase is a verbatim lookup, which the semantic half skips as well.
+            let lexical_mode =
+                if quoted_phrases(&HebrewNormalizer::new().normalize(&query)).is_empty() {
+                    lexical_mode
+                } else {
+                    SemanticLexicalMode::Exact
+                };
+            let Some(open) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
                     &facets,
@@ -5567,260 +5913,132 @@ impl SearchEngine {
                     cancel,
                 );
             };
-            // Ask the coordinator for a prefix wider than the requested page,
-            // then hydrate/filter before applying the caller's pagination.
-            // This lets a few stale sidecar records be skipped without leaving
-            // avoidable holes or shifting offsets between adjacent pages.
-            let requested_window = offset.saturating_add(limit.saturating_mul(2)).max(1);
-            let candidate_window_capped = requested_window > MAX_SEMANTIC_CANDIDATE_WINDOW;
-            let candidate_window = requested_window.min(MAX_SEMANTIC_CANDIDATE_WINDOW);
-            let SemanticLexicalPhase {
-                candidates: lexical_candidates,
-                total_count: lexical_total_count,
-                truncated,
-                highlight,
-                text_status: candidate_text_status,
-            } = if matches!(retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
-                // Semantic-only discards BM25 candidates in the coordinator.
-                // Count lexically for the response envelope, but do not pay
-                // to materialize and hydrate a TopDocs window that is unused.
-                let count = match lexical_mode {
-                    SemanticLexicalMode::Exact => self.count_exact_with_status(
-                        query.clone(),
-                        facets.clone(),
-                        match_nikud,
-                        match_taamim,
-                    )?,
-                    SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
-                        query.clone(),
-                        facets.clone(),
-                        fuzzy_max_distance,
-                        match_nikud,
-                        match_taamim,
-                    )?,
-                };
-                SemanticLexicalPhase {
-                    candidates: Vec::new(),
-                    total_count: count.count,
-                    truncated: count.truncated,
-                    highlight: None,
-                    text_status: HashMap::new(),
-                }
-            } else {
-                match lexical_mode {
-                    SemanticLexicalMode::Exact => self.semantic_exact_lexical_candidates(
-                        &query,
-                        &facets,
-                        candidate_window,
-                        match_nikud,
-                        match_taamim,
-                    )?,
-                    SemanticLexicalMode::Fuzzy => self.semantic_fuzzy_lexical_candidates(
-                        &query,
-                        &facets,
-                        candidate_window,
-                        fuzzy_max_distance,
-                        match_nikud,
-                        match_taamim,
-                    )?,
-                }
+            let request = SemanticRequest {
+                query: &query,
+                facets: &facets,
+                lexical_mode,
+                fuzzy_max_distance,
+                retrieval_mode,
+                grouping,
+                match_nikud,
+                match_taamim,
+                ranking: &ranking,
             };
-            // The live index a vector set's hits are resolved against, at the generation this
-            // search reads. A session built on this device never asks it.
-            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
-                if err == otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled {
-                    return SemanticError::cancelled();
-                }
-                SemanticError::new(
-                    SemanticErrorKind::Internal,
-                    format!("the index could not be read to resolve semantic results: {err}"),
-                )
-            };
-            let mut resolver = crate::semantic_resolver::LiveResolver::new(
-                self.index_reader.searcher(),
-                self.chunk_key_field,
-                &self.semantic_resolver,
-            )
-            .map_err(unreadable)?;
-            let filters = SidecarSearchFilters {
-                book_paths: None,
-                facets: (!facets.is_empty()).then_some(facets),
-                include_pdf: None,
-            };
-            // Planned against the generation the session serves, for texts that moved since the
-            // set was built: see `crate::semantic_moves`.
-            if let (Some(vectors_dir), false) = (
-                &session.vectors_dir,
-                matches!(retrieval_mode, SemanticRetrievalMode::LexicalOnly),
-            ) {
-                if resolver.has_column() {
-                    if let Some(view) = session
-                        .coordinator
-                        .vector_set_info()
-                        .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
-                    {
-                        // A filtered plan that cannot be made fails the semantic half alone; an
-                        // unfiltered one goes unplanned.
-                        match resolver.plan(&filters, &view, cancel) {
-                            Ok(_) => {}
-                            Err(
-                                otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled,
-                            ) => {
-                                return Err(SemanticError::cancelled());
-                            }
-                            Err(error) => {
-                                warn!("a filtered semantic search could not be planned: {error}");
-                                resolver.fail(error);
-                            }
-                        }
-                    }
-                }
-            }
-            // The sidecar's first act is to look at the token, so this crate does not look
-            // here itself; a test is told how far the search got.
-            search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
-            let result = session
-                .coordinator
-                .search_cancellable(
-                    &query,
-                    lexical_candidates,
-                    &HybridSearchParams {
-                        limit: candidate_window as usize,
-                        offset: 0,
-                        grouping: grouping.map(|value| match value {
-                            SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
-                            SemanticGroupingMode::IdenticalText => {
-                                SidecarGroupingMode::IdenticalText
-                            }
-                        }),
-                        filters: Some(filters),
-                        force_mode: Some(match retrieval_mode {
-                            SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
-                            SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
-                            SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
-                        }),
-                        // `ranking` is the caller's, and replaces the preset `profile` names
-                        // when it is passed; `None` ranks by that preset exactly as before.
-                        // The preset and the feature flags, which clamp where `ranking` is
-                        // refused, stay the sidecar's defaults.
-                        profile: None,
-                        feature_flags: None,
-                        ranking,
+
+            let searcher = self.index_reader.searcher();
+            let key = request.session_key(
+                &searcher,
+                open.coordinator
+                    .vector_set_info()
+                    .map(|info| info.generation),
+                self.semantic_sessions.epoch(),
+            );
+            let shared = self.semantic_sessions.get(&key).unwrap_or_else(|| {
+                Arc::new(Mutex::new(SemanticSearchSession::new(
+                    searcher.clone(),
+                    SessionState {
+                        library_generation: key.library_generation,
+                        ..SessionState::default()
                     },
-                    &resolver,
+                )))
+            });
+            let mut guard = shared.lock().unwrap_or_else(PoisonError::into_inner);
+            let session = &mut *guard;
+            // Same segments in the same order: the current searcher, whose generation the
+            // resolver's caches follow, reads every address the session holds alike.
+            session.searcher = searcher;
+
+            // One past the page, so that whether another page follows is known.
+            let wanted = (offset as usize)
+                .saturating_add(limit as usize)
+                .saturating_add(1);
+            let mut additions = Additions::default();
+            let mut window = session.window;
+            let mut exhausted = session.exhausted;
+            let mut expanded: Option<Expanded> = None;
+            while session.len() + additions.len() < wanted && !exhausted {
+                // Doubling: a session asked for page after page fuses a logarithmic number
+                // of windows, and the first page's leaves room for the second.
+                let requested_window = u64::from(offset)
+                    .saturating_add(u64::from(limit))
+                    .saturating_mul(2)
+                    .saturating_add(1)
+                    .max(u64::from(window).saturating_mul(2));
+                let capped = requested_window > u64::from(MAX_SEMANTIC_CANDIDATE_WINDOW);
+                window = requested_window.min(u64::from(MAX_SEMANTIC_CANDIDATE_WINDOW)) as u32;
+                let first = session.window == 0 && expanded.is_none();
+                let step = self.expand_semantic_session(
+                    &open,
+                    &request,
+                    session,
+                    &mut additions,
+                    window,
+                    first,
                     cancel,
-                )
-                .map_err(|err| semantic_errors::search_error(&err, session.call()))?;
-            // Hydration is a lookup per result, and nobody may be waiting for them.
-            search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;
-            // A semantic half that failed is folded into the result as text, and only
-            // then: a `LexicalOnly` request, or a quoted phrase the coordinator answers
-            // lexically, carries no reason. The coordinator stringifies the failure, so
-            // its type does not reach here, and `QueryFailed` is the kind that is true of
-            // all of them; the notes appended below are about a search that did run, and
-            // have none.
-            let fallback_kind = result
-                .fallback_reason
-                .as_ref()
-                .map(|_| SemanticErrorKind::QueryFailed);
-
-            // Every line a vector set's hit was resolved to, by (book, id): where it is in
-            // the searcher the resolver read. Empty for a session built on this device, whose
-            // lines are hydrated by book and id.
-            let records = resolver.records();
-            // A semantic match is a line that holds the text its vector was embedded from by
-            // all 128 bits of the key: the resolver checks every line it returns, primaries
-            // and grouped siblings alike, before fusion sees any, and counts those it drops.
-            // One lexical search also found is still a lexical result.
-            let unverified = resolver.unverified();
-
-            // Phase 1 — hydrate the whole window, keeping the hydrated document so the
-            // surviving page needs no second lookup. Only a `needs_hydration` item can be
-            // stale: a lexical candidate came from this same index in this same request, so
-            // it is live by construction. This has to precede pagination, or a dropped item
-            // would leave a hole on one page and shift the next.
-            //
-            // Existence and metadata only: the text is read after pagination, for the page
-            // alone, in one library-database transaction.
-            let mut surviving = Vec::with_capacity(result.results.len());
-            let mut stale_primaries_dropped = 0u32;
-            for item in result.results {
-                let record = records.get(&(item.file_path.clone(), item.id)).copied();
-                if !item.needs_hydration {
-                    surviving.push((item, None));
-                    continue;
-                }
-                let address = match record {
-                    // By the address the line was resolved at, in the searcher that
-                    // resolved it: two books' lines can share an id, and an address cannot.
-                    Some(record) => Some(record.address),
-                    // A line no vector set resolved, by its book and its id together, for
-                    // the same reason.
-                    None => self.address_in_book(resolver.searcher(), &item.file_path, item.id)?,
-                };
-                match address {
-                    Some(address) => {
-                        let document =
-                            self.document_at(resolver.searcher(), address, item.id, false)?;
-                        surviving.push((item, Some((address, document))));
-                    }
-                    // A semantic record whose Tantivy document disappeared is
-                    // stale. Never send its old metadata to Dart: a failed or
-                    // delayed sidecar cleanup must not resurrect deleted
-                    // content.
-                    None => stale_primaries_dropped = stale_primaries_dropped.saturating_add(1),
+                )?;
+                exhausted = step.exhausted;
+                expanded = Some(match expanded.take() {
+                    Some(earlier) => earlier.followed_by(step),
+                    None => step,
+                });
+                if capped {
+                    let expanded = expanded.as_mut().expect("just set");
+                    expanded.capped_request = Some(requested_window);
                 }
             }
-
-            // Phase 2 — paginate *before* the per-result work whose cost is
-            // proportional to the page: sibling hydration is one Tantivy lookup
-            // each and snippet painting tokenizes the line. Doing either for the
-            // whole candidate window would waste work that grows linearly with
-            // `offset`.
-            let page: Vec<_> = surviving
-                .into_iter()
-                .skip(offset as usize)
-                .take(limit as usize)
-                .collect();
             search_cancellation::look(cancel, SearchCheckpoint::Painting)?;
+            let page_started = Instant::now();
+            let mut timings = expanded
+                .as_ref()
+                .map_or_else(SemanticTimings::default, |expanded| expanded.timings);
+
+            session.commit(additions);
+            session.window = window;
+            session.exhausted = exhausted;
+            if let Some(expanded) = expanded {
+                session.state.absorb(expanded);
+            }
+            self.semantic_sessions.put(key, Arc::clone(&shared));
+            let has_more = session.len() > (offset as usize).saturating_add(limit as usize);
+
+            // Built once a session, the first time it has a page to paint.
+            if session.state.painter.is_none() && session.len() > offset as usize {
+                if let Some(highlight) = session.state.highlight.take() {
+                    session.state.painter =
+                        Some(self.semantic_snippet_painter(&session.searcher, highlight)?);
+                }
+            }
+            let session = &*session;
+            let page = session.page(offset, limit);
             let page_addresses: Vec<DocAddress> = page
                 .iter()
-                .filter_map(|(_, hydrated)| hydrated.as_ref().map(|(address, _)| *address))
+                .filter_map(|entry| entry.hydrated.as_ref().map(|(address, _)| *address))
                 .collect();
             let mut page_texts = self
-                .texts_at(resolver.searcher(), &page_addresses)?
+                .texts_at(&session.searcher, &page_addresses)?
                 .into_iter();
-
-            let painter = match highlight {
-                Some(highlight) if !page.is_empty() => {
-                    Some(self.semantic_snippet_painter(highlight)?)
-                }
-                _ => None,
-            };
             // Same budget the lexical API's default highlight uses, so both
             // paths bound the display string identically.
             let snippet_budget = HighlightConfig::default().max_chars;
 
             let mut results = Vec::with_capacity(page.len());
             let mut stale_siblings_dropped = 0u32;
-            for (item, hydrated) in page {
-                let original_merged_count = item.merged_count;
+            for entry in page {
+                let item = &entry.item;
                 let mut page_stale_siblings = 0u32;
                 let mut merged = Vec::with_capacity(item.merged.len());
-                for sibling in item.merged {
-                    let address = match records.get(&(sibling.file_path.clone(), sibling.id)) {
-                        Some(record) => Some(record.address),
+                for (sibling, resolved) in item.merged.iter().zip(&entry.siblings) {
+                    let address = match resolved {
+                        Some(address) => Some(*address),
                         // A sibling only lexical search found is of the group's book too:
                         // hydrated by that book and its id, never by the id alone.
-                        None => self.address_in_book(
-                            resolver.searcher(),
-                            &sibling.file_path,
-                            sibling.id,
-                        )?,
+                        None => {
+                            self.address_in_book(&session.searcher, &sibling.file_path, sibling.id)?
+                        }
                     };
                     let hydrated = address
                         .map(|address| {
-                            self.document_at(resolver.searcher(), address, sibling.id, false)
+                            self.document_at(&session.searcher, address, sibling.id, false)
                         })
                         .transpose()?;
                     match hydrated {
@@ -5837,50 +6055,47 @@ impl SearchEngine {
                 }
                 stale_siblings_dropped = stale_siblings_dropped.saturating_add(page_stale_siblings);
 
-                // Prefer Tantivy's copy for a hydrated item and move the fields
-                // out of whichever record wins, rather than cloning them.
+                // Tantivy's copy for a hydrated item, the lexical candidate's otherwise.
                 let (title, reference, text, segment, is_pdf, file_path, text_status) =
-                    match hydrated {
+                    match &entry.hydrated {
                         Some((_, document)) => {
                             let (text, status) = page_texts
                                 .next()
                                 .unwrap_or((String::new(), TextStatus::Unavailable));
                             (
-                                document.title,
-                                document.reference,
+                                document.title.clone(),
+                                document.reference.clone(),
                                 text,
                                 document.segment,
                                 document.is_pdf,
-                                document.file_path,
+                                document.file_path.clone(),
                                 status,
                             )
                         }
                         None => (
-                            item.title,
-                            item.reference,
-                            item.text,
+                            item.title.clone(),
+                            item.reference.clone(),
+                            item.text.clone(),
                             item.segment,
                             item.is_pdf,
-                            item.file_path,
-                            candidate_text_status
-                                .get(&item.id)
-                                .copied()
-                                .unwrap_or(TextStatus::Ok),
+                            item.file_path.clone(),
+                            entry.text_status,
                         ),
                     };
-                let (snippet_html, is_highlighted) = match (painter.as_ref(), text_status) {
-                    // A BM25 score is present exactly when Tantivy returned this
-                    // line for the lexical query, which is what licenses the
-                    // phrase-fallback term painting inside `paint`.
-                    (Some(painter), TextStatus::Ok) => {
-                        painter.paint(&text, item.lexical_score.is_some())
-                    }
-                    (_, TextStatus::Unavailable) => (String::new(), false),
-                    // `SemanticOnly` runs no lexical query, so there is nothing
-                    // to paint with — the line still crosses FFI bounded. A stale
-                    // line is never painted.
-                    _ => (bounded_plain_snippet(&text, snippet_budget), false),
-                };
+                let (snippet_html, is_highlighted) =
+                    match (session.state.painter.as_ref(), text_status) {
+                        // A BM25 score is present exactly when Tantivy returned this
+                        // line for the lexical query, which is what licenses the
+                        // phrase-fallback term painting inside `paint`.
+                        (Some(painter), TextStatus::Ok) => {
+                            painter.paint(&text, item.lexical_score.is_some())
+                        }
+                        (_, TextStatus::Unavailable) => (String::new(), false),
+                        // `SemanticOnly` runs no lexical query, so there is nothing
+                        // to paint with — the line still crosses FFI bounded. A stale
+                        // line is never painted.
+                        _ => (bounded_plain_snippet(&text, snippet_budget), false),
+                    };
 
                 results.push(SemanticSearchResult {
                     title,
@@ -5894,9 +6109,7 @@ impl SearchEngine {
                     // The sidecar intentionally caps the materialized sibling
                     // list. Preserve its full group count and subtract only
                     // stale siblings that were actually observed in that list.
-                    merged_count: original_merged_count
-                        .saturating_sub(page_stale_siblings)
-                        .max(1),
+                    merged_count: item.merged_count.saturating_sub(page_stale_siblings).max(1),
                     merged,
                     lexical_score: item.lexical_score,
                     semantic_score: item.semantic_score,
@@ -5910,74 +6123,71 @@ impl SearchEngine {
                     text_status,
                 });
             }
-            let mut fallback_reason = result.fallback_reason;
-            // Primaries and siblings are counted and reported separately: the
-            // first are whole result cards removed from the candidate window,
-            // the second are group members missing from the cards on this page
-            // only — siblings are hydrated after pagination, so their count is
-            // page-scoped while the primary count covers the window.
-            if stale_primaries_dropped > 0 {
-                let stale_reason = format!(
-                    "dropped {stale_primaries_dropped} stale semantic result(s) missing from \
-                     Tantivy; candidate counts may still include stale records; rebuild or \
-                     reconcile the semantic index"
-                );
-                fallback_reason = Some(match fallback_reason {
-                    Some(reason) => format!("{reason}; {stale_reason}"),
-                    None => stale_reason,
+
+            let state = &session.state;
+            let mut fallback_reason = state.fallback_reason.clone();
+            // Only a semantic half that failed has a reason, stringified by the coordinator;
+            // the notes appended below have no kind.
+            let fallback_kind = fallback_reason
+                .as_ref()
+                .map(|_| SemanticErrorKind::QueryFailed);
+            let mut note = |text: String| {
+                fallback_reason = Some(match fallback_reason.take() {
+                    Some(reason) => format!("{reason}; {text}"),
+                    None => text,
                 });
+            };
+            // Primaries are whole cards the session left out; siblings are hydrated per page,
+            // so their count is this page's.
+            if state.stale_primaries_dropped > 0 {
+                note(format!(
+                    "dropped {} stale semantic result(s) missing from Tantivy; candidate \
+                     counts may still include stale records; rebuild or reconcile the \
+                     semantic index",
+                    state.stale_primaries_dropped
+                ));
             }
             if stale_siblings_dropped > 0 {
-                let stale_reason = format!(
+                note(format!(
                     "dropped {stale_siblings_dropped} stale grouped sibling(s) missing from \
                      Tantivy on this page; rebuild or reconcile the semantic index"
-                );
-                fallback_reason = Some(match fallback_reason {
-                    Some(reason) => format!("{reason}; {stale_reason}"),
-                    None => stale_reason,
-                });
+                ));
             }
-            if unverified > 0 {
-                let unverified_reason = format!(
-                    "{unverified} semantic match(es) were not shown as such: their line no \
-                     longer holds the text the vector was embedded from"
-                );
-                fallback_reason = Some(match fallback_reason {
-                    Some(reason) => format!("{reason}; {unverified_reason}"),
-                    None => unverified_reason,
-                });
+            if state.unverified > 0 {
+                note(format!(
+                    "{} semantic match(es) were not shown as such: their line no longer \
+                     holds the text the vector was embedded from",
+                    state.unverified
+                ));
             }
-            if candidate_window_capped {
-                let cap_reason = format!(
+            if let Some(requested) = state.capped_request {
+                note(format!(
                     "semantic candidate window capped at {MAX_SEMANTIC_CANDIDATE_WINDOW} \
-                     (requested {requested_window})"
-                );
-                fallback_reason = Some(match fallback_reason {
-                    Some(reason) => format!("{reason}; {cap_reason}"),
-                    None => cap_reason,
-                });
+                     (requested {requested})"
+                ));
             }
+            timings.page_ms = elapsed_ms(page_started);
+            timings.total_ms = elapsed_ms(started);
+            debug!("semantic page at {offset} of {limit}: {timings:?}");
+            #[cfg(test)]
+            LAST_SEMANTIC_TIMINGS.set(timings);
             Ok(SemanticSearchResponse {
                 results,
-                // These remain stable across pages. They deliberately retain
-                // the sidecar's candidate-set semantics instead of subtracting
-                // only the stale records that happened to occur on this page.
-                total_count: result.total_count,
-                lexical_total_count,
-                group_count: result.group_count,
+                // The last expansion's candidate-set counts: stable across the pages it
+                // serves, and never the number of results a session will show.
+                total_count: state.total_count,
+                lexical_total_count: state.lexical_total_count,
+                group_count: state.group_count,
                 counts_are_exact: false,
                 requested_mode: retrieval_mode,
-                executed_mode: match result.search_mode {
-                    SidecarSearchMode::Hybrid => SemanticExecutedMode::Hybrid,
-                    SidecarSearchMode::SemanticOnly => SemanticExecutedMode::SemanticOnly,
-                    SidecarSearchMode::LexicalOnly => SemanticExecutedMode::LexicalOnly,
-                },
-                semantic_available: result.semantic_available,
+                executed_mode: state.executed_mode,
+                semantic_available: state.semantic_available,
                 fallback_reason,
                 fallback_kind,
                 latency_ms: started.elapsed().as_millis() as u64,
-                candidate_window_truncated: candidate_window_capped,
-                truncated,
+                candidate_window_truncated: state.capped_request.is_some(),
+                truncated: state.truncated,
+                has_more,
             })
         }
 
@@ -6004,6 +6214,360 @@ impl SearchEngine {
                 cancel,
             )
         }
+    }
+
+    /// Fuse `session`'s search over a `window`, its two halves side by side, and take every
+    /// result the session lacks into `additions`; `first` also builds the highlight and count.
+    #[cfg(feature = "semantic-integration")]
+    #[allow(clippy::too_many_arguments)]
+    fn expand_semantic_session(
+        &self,
+        open: &OpenSession,
+        request: &SemanticRequest<'_>,
+        session: &SemanticSearchSession,
+        additions: &mut Additions<SessionEntry>,
+        window: u32,
+        first: bool,
+        cancel: &SearchCancellation,
+    ) -> Result<Expanded, SemanticError> {
+        #[cfg(test)]
+        self.semantic_sessions
+            .expansions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let searcher = &session.searcher;
+        // The live index a vector set's hits are resolved against, at the generation this
+        // search reads. A session built on this device never asks it.
+        let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
+            if err == otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled {
+                return SemanticError::cancelled();
+            }
+            SemanticError::new(
+                SemanticErrorKind::Internal,
+                format!("the index could not be read to resolve semantic results: {err}"),
+            )
+        };
+        let mut resolver = crate::semantic_resolver::LiveResolver::new(
+            searcher.clone(),
+            self.chunk_key_field,
+            &self.semantic_resolver,
+        )
+        .map_err(unreadable)?;
+        resolver.share_keys(session.state.library_generation);
+        let filters = SidecarSearchFilters {
+            book_paths: None,
+            facets: (!request.facets.is_empty()).then(|| request.facets.to_vec()),
+            include_pdf: None,
+        };
+        let params = HybridSearchParams {
+            limit: window as usize,
+            offset: 0,
+            grouping: request.grouping.map(|value| match value {
+                SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
+                SemanticGroupingMode::IdenticalText => SidecarGroupingMode::IdenticalText,
+            }),
+            filters: Some(filters.clone()),
+            force_mode: Some(match request.retrieval_mode {
+                SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
+                SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
+                SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
+            }),
+            // The preset and the feature flags, which clamp where `ranking` is refused, stay
+            // the sidecar's defaults.
+            profile: None,
+            feature_flags: None,
+            ranking: Some(request.ranking.clone()),
+        };
+
+        // The lexical phase on its own thread, the semantic half on this one, where a test's
+        // probes see it.
+        let semantic_started = Instant::now();
+        let ((lexical, lexical_ms), (prepared, semantic_ms)) = std::thread::scope(|scope| {
+            let lexical = scope.spawn(|| {
+                let started = Instant::now();
+                let phase = self.semantic_lexical_phase(request, searcher, window, first);
+                (phase, elapsed_ms(started))
+            });
+            let prepared = self.plan_semantic_scan(open, request, &filters, &mut resolver, cancel);
+            let prepared = prepared.and_then(|()| {
+                // The sidecar's first act is to look at the token, so this crate does not look
+                // here itself; a test is told how far the search got.
+                search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
+                open.coordinator
+                    .prepare_semantic(request.query, &params, &resolver, cancel)
+                    .map_err(|err| semantic_errors::search_error(&err, open.call()))
+            });
+            let semantic_ms = elapsed_ms(semantic_started);
+            let lexical = lexical
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            (lexical, (prepared, semantic_ms))
+        });
+        let prepared = match prepared {
+            Err(error) if error.kind == SemanticErrorKind::Cancelled => return Err(error),
+            prepared => prepared,
+        };
+        let lexical = lexical?;
+        let prepared = prepared?;
+        if cancel.is_cancelled() {
+            return Err(SemanticError::cancelled());
+        }
+
+        let SemanticLexicalPhase {
+            candidates: lexical_candidates,
+            total_count: lexical_total_count,
+            truncated,
+            highlight,
+            text_status: candidate_text_status,
+        } = lexical;
+        let lexical_done = matches!(request.retrieval_mode, SemanticRetrievalMode::SemanticOnly)
+            || lexical_candidates.len() < window as usize;
+        let semantic_done = !prepared.healthy() || prepared.semantic_hits() < prepared.top_k();
+        let fuse_started = Instant::now();
+        let result = open
+            .coordinator
+            .fuse_prepared(lexical_candidates, prepared, &params, cancel)
+            .map_err(|err| semantic_errors::search_error(&err, open.call()))?;
+        let fuse_ms = elapsed_ms(fuse_started);
+        let telemetry = result.telemetry.clone();
+        let sidecar_ms =
+            |field: fn(&otzaria_semantic_search::telemetry::SearchTelemetry) -> Option<u64>| {
+                telemetry.as_ref().and_then(field).unwrap_or(0) as f64
+            };
+        // Hydration is a lookup per result, and nobody may be waiting for them.
+        search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;
+        let hydrate_started = Instant::now();
+        let fused = result.group_count.unwrap_or(result.total_count);
+        let exhausted = (lexical_done && semantic_done && fused <= window)
+            || window >= MAX_SEMANTIC_CANDIDATE_WINDOW;
+
+        // Where each line a vector set's hit was resolved to is, by (book, id); empty for a
+        // session built on this device, whose lines are hydrated by book and id.
+        let records = resolver.records();
+        let unverified = resolver.unverified();
+
+        // Existence and metadata only, for results the session lacks; the text is read per
+        // page. Only a `needs_hydration` item can be stale: lexical ones came from this searcher.
+        let mut stale_primaries_dropped = 0u32;
+        for mut item in result.results {
+            let line = (item.file_path.clone(), item.id);
+            let group = match (request.grouping, item.provenance.as_ref()) {
+                (Some(SemanticGroupingMode::SameSection), Some(fused)) => {
+                    Some(GroupKey::Section(fused.file_path.clone(), fused.section_id))
+                }
+                (Some(SemanticGroupingMode::IdenticalText), Some(fused))
+                    if fused.line_hash != 0 =>
+                {
+                    Some(GroupKey::Text(fused.line_hash))
+                }
+                _ => None,
+            };
+            if !session.admits(additions, &line, group.as_ref()) {
+                continue;
+            }
+            let siblings: Vec<LineKey> = item
+                .merged
+                .iter()
+                .map(|sibling| (sibling.file_path.clone(), sibling.id))
+                .collect();
+            let hydrated = if item.needs_hydration {
+                let address = match records.get(&line) {
+                    // By the address the line was resolved at, in the searcher that
+                    // resolved it: two books' lines can share an id, and an address cannot.
+                    Some(record) => Some(record.address),
+                    None => self.address_in_book(searcher, &item.file_path, item.id)?,
+                };
+                match address {
+                    Some(address) => Some((
+                        address,
+                        self.document_at(searcher, address, item.id, false)?,
+                    )),
+                    // Stale: its old metadata never reaches Dart, so a delayed sidecar
+                    // cleanup cannot resurrect deleted content.
+                    None => {
+                        stale_primaries_dropped = stale_primaries_dropped.saturating_add(1);
+                        SemanticSearchSession::take(additions, line, &siblings, group, None);
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let sibling_addresses = siblings
+                .iter()
+                .map(|sibling| records.get(sibling).map(|record| record.address))
+                .collect();
+            let text_status = candidate_text_status
+                .get(&item.id)
+                .copied()
+                .unwrap_or(TextStatus::Ok);
+            // Its fields are the item's own, and its text a second copy of the line.
+            item.provenance = None;
+            let entry = SessionEntry {
+                item,
+                hydrated,
+                siblings: sibling_addresses,
+                text_status,
+            };
+            SemanticSearchSession::take(additions, line, &siblings, group, Some(entry));
+        }
+
+        Ok(Expanded {
+            lexical: (first
+                || !matches!(request.retrieval_mode, SemanticRetrievalMode::SemanticOnly))
+            .then_some((lexical_total_count, truncated)),
+            highlight,
+            total_count: result.total_count,
+            group_count: result.group_count,
+            executed_mode: match result.search_mode {
+                SidecarSearchMode::Hybrid => SemanticExecutedMode::Hybrid,
+                SidecarSearchMode::SemanticOnly => SemanticExecutedMode::SemanticOnly,
+                SidecarSearchMode::LexicalOnly => SemanticExecutedMode::LexicalOnly,
+            },
+            semantic_available: result.semantic_available,
+            fallback_reason: result.fallback_reason,
+            stale_primaries_dropped,
+            unverified,
+            exhausted,
+            capped_request: None,
+            timings: SemanticTimings {
+                expansions: 1,
+                lexical_ms,
+                semantic_ms,
+                embed_ms: sidecar_ms(|telemetry| telemetry.embedding_latency_ms),
+                scan_ms: sidecar_ms(|telemetry| telemetry.scan_ms),
+                resolve_ms: sidecar_ms(|telemetry| telemetry.resolve_ms),
+                fuse_ms,
+                hydrate_ms: elapsed_ms(hydrate_started),
+                ..SemanticTimings::default()
+            },
+        })
+    }
+
+    /// The lexical half of one expansion, in `searcher`: the candidates of a `window`, or for
+    /// `SemanticOnly`, which discards them, the count alone, once a session.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_lexical_phase(
+        &self,
+        request: &SemanticRequest<'_>,
+        searcher: &Searcher,
+        window: u32,
+        first: bool,
+    ) -> Result<SemanticLexicalPhase, SemanticError> {
+        if matches!(request.retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
+            let count = if !first {
+                None
+            } else {
+                Some(match request.lexical_mode {
+                    SemanticLexicalMode::Exact => self.count_exact_with_status(
+                        request.query.to_string(),
+                        request.facets.to_vec(),
+                        request.match_nikud,
+                        request.match_taamim,
+                    )?,
+                    SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
+                        request.query.to_string(),
+                        request.facets.to_vec(),
+                        request.fuzzy_max_distance,
+                        request.match_nikud,
+                        request.match_taamim,
+                    )?,
+                })
+            };
+            return Ok(SemanticLexicalPhase {
+                candidates: Vec::new(),
+                total_count: count.as_ref().map_or(0, |count| count.count),
+                truncated: count.is_some_and(|count| count.truncated),
+                highlight: None,
+                text_status: HashMap::new(),
+            });
+        }
+        Ok(match request.lexical_mode {
+            SemanticLexicalMode::Exact => self.semantic_exact_lexical_candidates(
+                searcher,
+                request.query,
+                request.facets,
+                window,
+                request.match_nikud,
+                request.match_taamim,
+                first,
+            )?,
+            SemanticLexicalMode::Fuzzy => self.semantic_fuzzy_lexical_candidates(
+                searcher,
+                request.query,
+                request.facets,
+                window,
+                request.fuzzy_max_distance,
+                request.match_nikud,
+                request.match_taamim,
+                first,
+            )?,
+        })
+    }
+
+    /// Plan an opened vector set's scan (see `crate::semantic_moves`) for the search's filter
+    /// and the foundational books' query; a filter that cannot be planned fails the semantic half.
+    #[cfg(feature = "semantic-integration")]
+    fn plan_semantic_scan(
+        &self,
+        open: &OpenSession,
+        request: &SemanticRequest<'_>,
+        filters: &SidecarSearchFilters,
+        resolver: &mut crate::semantic_resolver::LiveResolver<'_>,
+        cancel: &SearchCancellation,
+    ) -> Result<(), SemanticError> {
+        use otzaria_semantic_search::semantic::resolve::ResolveError;
+        let Some(vectors_dir) = &open.vectors_dir else {
+            return Ok(());
+        };
+        if matches!(request.retrieval_mode, SemanticRetrievalMode::LexicalOnly)
+            || !resolver.has_column()
+        {
+            return Ok(());
+        }
+        let Some(view) = open
+            .coordinator
+            .vector_set_info()
+            .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
+        else {
+            return Ok(());
+        };
+        // A filtered plan that cannot be made fails the semantic half alone; an unfiltered
+        // one goes unplanned.
+        match resolver.plan(filters, &view, cancel) {
+            Ok(_) => {}
+            Err(ResolveError::Cancelled) => return Err(SemanticError::cancelled()),
+            Err(error) => {
+                warn!("a filtered semantic search could not be planned: {error}");
+                resolver.fail(error);
+                return Ok(());
+            }
+        }
+        if !PLAN_FOUNDATIONAL_QUERY
+            || request.ranking.foundational_candidate_share <= 0.0
+            || is_foundational(request.facets)
+        {
+            return Ok(());
+        }
+        // The very filter the coordinator's foundational query passes, so the resolver finds
+        // its plan by it.
+        let mut foundational = filters.clone();
+        foundational
+            .facets
+            .get_or_insert_with(Vec::new)
+            .push(FOUNDATIONAL_FACET.to_string());
+        let planning = Instant::now();
+        match resolver.plan(&foundational, &view, cancel) {
+            Ok(_) => {}
+            Err(ResolveError::Cancelled) => return Err(SemanticError::cancelled()),
+            // Unplanned, the foundational query scans the books it admits, without the texts
+            // that moved into them: worse recall for it alone, not a failed search.
+            Err(error) => warn!("the foundational books' semantic query goes unplanned: {error}"),
+        }
+        debug!(
+            "planned the foundational books' semantic query in {} ms",
+            planning.elapsed().as_millis()
+        );
+        Ok(())
     }
 
     #[cfg(not(feature = "semantic-integration"))]
@@ -6118,6 +6682,7 @@ impl SearchEngine {
                 latency_ms,
                 candidate_window_truncated: false,
                 truncated: count.truncated,
+                has_more: false,
             });
         }
 
@@ -6149,7 +6714,7 @@ impl SearchEngine {
             )?,
         };
         let hl = HighlightConfig::default();
-        let results = page
+        let results: Vec<SemanticSearchResult> = page
             .results
             .into_iter()
             .enumerate()
@@ -6196,6 +6761,8 @@ impl SearchEngine {
             })
             .collect();
         search_cancellation::look(cancel, SearchCheckpoint::Fallback)?;
+        let shown = u64::from(offset) + results.len() as u64;
+        let has_more = shown < u64::from(page.group_count.unwrap_or(page.total_count));
         Ok(SemanticSearchResponse {
             total_count: page.total_count,
             lexical_total_count: page.total_count,
@@ -6210,6 +6777,7 @@ impl SearchEngine {
             latency_ms,
             candidate_window_truncated: false,
             truncated: page.truncated,
+            has_more,
         })
     }
 
@@ -7640,14 +8208,25 @@ impl SearchEngine {
     #[cfg(feature = "semantic-integration")]
     fn semantic_exact_lexical_candidates(
         &self,
+        searcher: &Searcher,
         query: &str,
         facets: &[String],
         limit: u32,
         match_nikud: bool,
         match_taamim: bool,
+        with_highlight: bool,
     ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (search_query, truncated) = self.build_exact_query_with(query, facets, &voc, false)?;
+        if !with_highlight {
+            return self.semantic_candidates_from_query(
+                searcher,
+                search_query,
+                limit,
+                truncated,
+                None,
+            );
+        }
 
         // Retrieval honours the vocalization flags, but painting is always
         // mark-free over the stored `text` field: that is the copy the sidecar
@@ -7656,27 +8235,34 @@ impl SearchEngine {
         // dropped here — they filter documents, never highlights.
         let plain = VocalizedFlags::new(false, false);
         let (display_query, _) = self.build_exact_query_with(query, &[], &plain, false)?;
-        let searcher = self.index_reader.searcher();
         let HighlightPlan {
             query: plan_query,
             phrase,
-        } = Self::resolve_highlight(&searcher, |s| self.exact_highlight_plan(s, query, &plain));
+        } = Self::resolve_highlight(searcher, |s| self.exact_highlight_plan(s, query, &plain));
         let highlight = SemanticHighlight {
             query: plan_query.unwrap_or(display_query),
             phrase,
         };
-        self.semantic_candidates_from_query(search_query, limit, truncated, Some(highlight))
+        self.semantic_candidates_from_query(
+            searcher,
+            search_query,
+            limit,
+            truncated,
+            Some(highlight),
+        )
     }
 
     #[cfg(feature = "semantic-integration")]
     fn semantic_fuzzy_lexical_candidates(
         &self,
+        searcher: &Searcher,
         query: &str,
         facets: &[String],
         limit: u32,
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        with_highlight: bool,
     ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let token_texts = self.index_token_texts(query)?;
@@ -7690,19 +8276,27 @@ impl SearchEngine {
             )
         };
 
+        if !with_highlight {
+            return self.semantic_candidates_from_query(
+                searcher,
+                search_query,
+                limit,
+                truncated,
+                None,
+            );
+        }
         // Mark-free for the same reason as the exact path. A fuzzy automaton
         // exposes no static terms, so without the materialized highlight query
         // there is nothing to paint with and the page falls back to bounded
         // plain snippets.
-        let searcher = self.index_reader.searcher();
         let HighlightPlan {
             query: plan_query,
             phrase,
-        } = Self::resolve_highlight(&searcher, |s| {
+        } = Self::resolve_highlight(searcher, |s| {
             self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance)
         });
         let highlight = plan_query.map(|query| SemanticHighlight { query, phrase });
-        self.semantic_candidates_from_query(search_query, limit, truncated, highlight)
+        self.semantic_candidates_from_query(searcher, search_query, limit, truncated, highlight)
     }
 
     /// Build the painter for one page of sidecar results. Separate from
@@ -7712,18 +8306,18 @@ impl SearchEngine {
     #[cfg(feature = "semantic-integration")]
     fn semantic_snippet_painter(
         &self,
+        searcher: &Searcher,
         highlight: SemanticHighlight,
     ) -> Result<SemanticSnippetPainter> {
-        let searcher = self.index_reader.searcher();
         let hl = HighlightConfig::default();
         let generator = Self::make_snippet_generator(
-            &searcher,
+            searcher,
             highlight.query.as_ref(),
             self.schema.get_field("text")?,
             &hl,
         )?;
         Ok(SemanticSnippetPainter {
-            searcher,
+            searcher: searcher.clone(),
             generator,
             phrase: highlight.phrase,
             hl,
@@ -7733,12 +8327,12 @@ impl SearchEngine {
     #[cfg(feature = "semantic-integration")]
     fn semantic_candidates_from_query(
         &self,
+        searcher: &Searcher,
         query: Box<dyn Query>,
         limit: u32,
         truncated: bool,
         highlight: Option<SemanticHighlight>,
     ) -> Result<SemanticLexicalPhase> {
-        let searcher = self.index_reader.searcher();
         let collector = TopDocs::with_limit(limit as usize).order_by_score();
         let (hits, total_count): (Vec<(Score, DocAddress)>, usize) =
             searcher.search(&*query, &(collector, Count))?;
@@ -7755,10 +8349,14 @@ impl SearchEngine {
             .map(|&(_, address)| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
             .collect::<Result<Vec<_>>>()?;
         // The whole candidate window's library rows in one transaction.
-        let texts = Self::resolve_hit_texts(&self.schema, &searcher, &documents, false)?;
+        let texts = Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?;
 
         let mut candidates = Vec::with_capacity(hits.len());
         let mut text_status = HashMap::new();
+        // A book's facets are the book's, as the resolver reads them: once per book.
+        let mut facet_readers: HashMap<SegmentOrdinal, tantivy::fastfield::FacetReader> =
+            HashMap::new();
+        let mut book_facets: HashMap<String, Vec<String>> = HashMap::new();
         for (((score, _), (address, document)), text) in hits.iter().zip(&documents).zip(texts) {
             let reader = searcher.segment_reader(address.segment_ord);
             let fast = reader.fast_fields();
@@ -7777,6 +8375,32 @@ impl SearchEngine {
             if text.status != TextStatus::Ok {
                 text_status.insert(line_id, text.status);
             }
+            let file_path = document
+                .get_first(file_path_f)
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let facets = match book_facets.get(&file_path) {
+                Some(facets) => facets.clone(),
+                None => {
+                    let facet_reader = match facet_readers.entry(address.segment_ord) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(reader.facet_reader("topics")?)
+                        }
+                    };
+                    let mut facet = Facet::default();
+                    let mut facets = Vec::new();
+                    for ord in facet_reader.facet_ords(address.doc_id) {
+                        facet_reader.facet_from_ord(ord, &mut facet)?;
+                        facets.push(facet.to_string());
+                    }
+                    facets.sort();
+                    facets.dedup();
+                    book_facets.insert(file_path.clone(), facets.clone());
+                    facets
+                }
+            };
             candidates.push(SidecarLexicalCandidate {
                 title: document
                     .get_first(title_f)
@@ -7800,12 +8424,9 @@ impl SearchEngine {
                     .get_first(is_pdf_f)
                     .and_then(|value| value.as_bool())
                     .unwrap_or_default(),
-                file_path: document
-                    .get_first(file_path_f)
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
+                file_path,
                 bm25_score: *score,
+                facets,
             });
         }
         Ok(SemanticLexicalPhase {
@@ -22691,13 +23312,19 @@ mod tests {
             SemanticRankingOptions::defaults()
         }
 
-        /// The defaults are the preset a search passed no options ranks by, value for value:
-        /// what keeps passing them from moving a single score.
+        /// The defaults are the `Balanced` preset with RRF, a threshold at about cosine 0.1, and
+        /// the foundational books' preference on; a search passed no options ranks by them.
         #[test]
-        fn the_defaults_are_the_preset_a_search_without_options_ranks_by() {
+        fn the_defaults_are_balanced_with_rrf_and_the_foundational_preference() {
             assert_eq!(
                 ranking_profile(&defaults()).unwrap(),
-                RankingProfile::from_profile(SearchProfile::Balanced)
+                RankingProfile {
+                    fusion_strategy: FusionStrategy::RRF { k: 60 },
+                    semantic_threshold: 0.55,
+                    foundational_bonus: 0.002,
+                    foundational_candidate_share: 0.5,
+                    ..RankingProfile::from_profile(SearchProfile::Balanced)
+                }
             );
         }
 
@@ -22727,6 +23354,8 @@ mod tests {
                 duplicate_penalty: 0.08,
                 metadata_ranking_enabled: true,
                 candidate_window_multiplier: 3.0,
+                foundational_bonus: 0.004,
+                foundational_candidate_share: 0.25,
             };
             let preset = RankingProfile::from_profile(SearchProfile::Balanced);
             assert_eq!(
@@ -22752,6 +23381,8 @@ mod tests {
                     duplicate_penalty: 0.08,
                     metadata_ranking_enabled: true,
                     candidate_window_multiplier: 3.0,
+                    foundational_bonus: 0.004,
+                    foundational_candidate_share: 0.25,
                     query_cache_enabled: preset.query_cache_enabled,
                     embedding_cache_enabled: preset.embedding_cache_enabled,
                     telemetry_enabled: preset.telemetry_enabled,
@@ -22775,7 +23406,7 @@ mod tests {
         #[test]
         fn an_option_out_of_range_is_refused_by_its_name() {
             type Spoil = fn(&mut SemanticRankingOptions);
-            let cases: [(&str, Spoil); 20] = [
+            let cases: [(&str, Spoil); 22] = [
                 ("rrf_k", |o| {
                     o.fusion_strategy = SemanticFusionStrategy::Rrf;
                     o.rrf_k = 0;
@@ -22818,6 +23449,10 @@ mod tests {
                 ("candidate_window_multiplier", |o| {
                     o.candidate_window_multiplier = f64::NEG_INFINITY
                 }),
+                ("foundational_bonus", |o| o.foundational_bonus = -0.001),
+                ("foundational_candidate_share", |o| {
+                    o.foundational_candidate_share = 1.5
+                }),
             ];
             for (field, spoil) in cases {
                 let mut options = defaults();
@@ -22835,6 +23470,7 @@ mod tests {
             }
 
             let unread = SemanticRankingOptions {
+                fusion_strategy: SemanticFusionStrategy::Weighted,
                 rrf_k: 0,
                 ..defaults()
             };
@@ -22860,6 +23496,8 @@ mod tests {
                 duplicate_penalty: 0.0,
                 metadata_ranking_enabled: true,
                 candidate_window_multiplier: 10.0,
+                foundational_bonus: 1.0,
+                foundational_candidate_share: 0.0,
             };
             ranking_profile(&ends)
                 .expect("the ends of every range are values a calibration may land on");
@@ -22958,6 +23596,10 @@ mod tests {
 
         #[test]
         fn a_search_stops_at_the_look_it_was_cancelled_at_and_the_session_serves_on() {
+            // A change to the process-wide line source would start another session mid-test.
+            let _serial = crate::line_source::TEST_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let (engine, _index, _semantic) = indexed();
             let search = |mode, token: &SemanticCancellationToken| {
                 engine.search_semantic(
@@ -22987,6 +23629,11 @@ mod tests {
                 assert_eq!(reached, SERVED, "{mode:?}");
                 assert_eq!(served.fallback_kind, None, "{mode:?}");
                 assert!(!served.results.is_empty(), "{mode:?}");
+                // Asked again, the page is the session's: nothing runs but the last look.
+                let (again, reached) =
+                    cancelling_at(None, || search(mode, &SemanticCancellationToken::new()));
+                assert_eq!(reached, [At::Start, At::Painting], "{mode:?}");
+                assert_eq!(page(&again.unwrap()), page(&served), "{mode:?}");
 
                 // Cancelled as the token is handed over, the search stops at the sidecar's
                 // own look and never reaches hydration: had the token not been handed over,
@@ -22994,6 +23641,8 @@ mod tests {
                 for (cancel_at, stops_after) in
                     [(At::Sidecar, 2), (At::Hydration, 3), (At::Painting, 4)]
                 {
+                    // Without its session, so that the search runs every look.
+                    engine.semantic_sessions.invalidate();
                     let token = SemanticCancellationToken::new();
                     let (result, reached) = cancelling_at(Some(cancel_at), || search(mode, &token));
                     match result {
@@ -23018,6 +23667,447 @@ mod tests {
                     page(&served),
                     "{mode:?}: the cancelled searches changed what the session serves"
                 );
+            }
+        }
+    }
+
+    /// A semantic search's pages continue the results its earlier pages showed, from its
+    /// session: computed once per window, never repeated, never skipped.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
+    mod semantic_sessions {
+        use super::*;
+        use crate::search_cancellation::{cancelling_at, SearchCheckpoint as At};
+        use otzaria_semantic_search::semantic::embedding::mock::write_stub_onnx_package;
+        use std::sync::atomic::Ordering;
+
+        const BASE: &str = "/books/base.txt";
+        const OTHER: &str = "/books/other.txt";
+        const UNRELATED: &str = "/books/unrelated.txt";
+
+        /// The library line source is process-wide, and a session's key reads it: tests that
+        /// configure it would start other sessions under these.
+        fn serialized() -> std::sync::MutexGuard<'static, ()> {
+            crate::line_source::TEST_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        }
+
+        /// One book: its path, topics and lines.
+        type Book<'a> = (&'a str, &'a str, Vec<String>);
+
+        /// An engine over `books`, with a development session on the stand-in that has
+        /// embedded the books `embedded` names.
+        fn engine_over(books: &[Book<'_>], embedded: &[&str]) -> (SearchEngine, TempDir, TempDir) {
+            let (mut engine, index) = make_engine();
+            // A background merge is another index generation, and with it another session.
+            engine.set_bulk_indexing(true).unwrap();
+            let mut id = 0;
+            let mut inputs = Vec::new();
+            for (order, (path, topics, lines)) in books.iter().enumerate() {
+                let mut book_lines = Vec::new();
+                for (index, text) in lines.iter().enumerate() {
+                    id += 1;
+                    engine
+                        .add_document(
+                            id, "title", "ref", topics, text, 0, false, path, None, None, None,
+                        )
+                        .unwrap();
+                    book_lines.push(SemanticBookLineInput {
+                        line_id: id,
+                        section_id: id,
+                        text: text.clone(),
+                        line_hash: id,
+                        reference: format!("ref {index}"),
+                        segment: 0,
+                    });
+                }
+                if embedded.contains(path) {
+                    inputs.push(SemanticBookInput {
+                        source_book_key: path.to_string(),
+                        title: "title".to_string(),
+                        content_fingerprint: order as u64 + 1,
+                        is_pdf: false,
+                        topics: topics.to_string(),
+                        extra_facets: Vec::new(),
+                        lines: book_lines,
+                    });
+                }
+            }
+            engine.commit().unwrap();
+            let semantic = TempDir::new().unwrap();
+            let model = write_stub_onnx_package(&semantic.path().join("model"));
+            engine
+                .configure_semantic(SemanticConfigInput {
+                    root_dir: semantic
+                        .path()
+                        .join("semantic")
+                        .to_string_lossy()
+                        .into_owned(),
+                    model_path: model.to_string_lossy().into_owned(),
+                    model_id: "test-mock".to_string(),
+                    embedding_dim: 64,
+                    pooling: "in-graph".to_string(),
+                    max_tokens: 512,
+                    model_quantization: "int8".to_string(),
+                    embedding_text_version: 1,
+                    onnx_runtime_path: None,
+                })
+                .unwrap();
+            engine.semantic_index_books(inputs).unwrap();
+            (engine, index, semantic)
+        }
+
+        /// Forty lines with שבת in two books, every one of them embedded. Each holds the word
+        /// a number of times no other line does, so no two lexical scores tie.
+        fn sabbath() -> (SearchEngine, TempDir, TempDir) {
+            let lines = |book: &str, first: usize| -> Vec<String> {
+                (0..20)
+                    .map(|n| format!("{}{book}", "שבת ".repeat(first + 2 * n)))
+                    .collect()
+            };
+            engine_over(
+                &[
+                    (BASE, "/base/תורה", lines("ראשון", 1)),
+                    (OTHER, "/other", lines("שני", 2)),
+                ],
+                &[BASE, OTHER],
+            )
+        }
+
+        fn page_of(
+            engine: &SearchEngine,
+            query: &str,
+            limit: u32,
+            offset: u32,
+            ranking: Option<SemanticRankingOptions>,
+            token: &SemanticCancellationToken,
+        ) -> Result<SemanticSearchResponse, SemanticError> {
+            engine.search_semantic(
+                query.to_string(),
+                Vec::new(),
+                limit,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::Hybrid,
+                None,
+                false,
+                false,
+                ranking,
+                token,
+            )
+        }
+
+        fn page(engine: &SearchEngine, limit: u32, offset: u32) -> SemanticSearchResponse {
+            page_of(
+                engine,
+                "שבת",
+                limit,
+                offset,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap()
+        }
+
+        fn lines(response: &SemanticSearchResponse) -> Vec<(String, u64)> {
+            response
+                .results
+                .iter()
+                .map(|hit| (hit.file_path.clone(), hit.id))
+                .collect()
+        }
+
+        /// A page as bits, for pages that must be identical.
+        fn bits(response: &SemanticSearchResponse) -> Vec<(String, u64, u32, String)> {
+            response
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.file_path.clone(),
+                        hit.id,
+                        hit.fused_score.to_bits(),
+                        hit.snippet_html.clone(),
+                    )
+                })
+                .collect()
+        }
+
+        fn expansions(engine: &SearchEngine) -> u64 {
+            engine.semantic_sessions.expansions.load(Ordering::Relaxed)
+        }
+
+        /// Paged to the end, every result comes once, the union is what one page as large as
+        /// the whole search shows, and only the last page says nothing follows.
+        #[test]
+        fn pages_show_every_result_once_and_say_when_none_follows() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let mut shown = Vec::new();
+            let mut offset = 0;
+            loop {
+                let response = page(&engine, 5, offset);
+                assert!(response.results.len() <= 5);
+                shown.extend(lines(&response));
+                offset += 5;
+                if !response.has_more {
+                    assert!(offset >= shown.len() as u32, "a page was cut short");
+                    break;
+                }
+                assert_eq!(response.results.len(), 5, "a full page before the last");
+                assert!(offset < 100, "paging never ends");
+            }
+            let unique: HashSet<_> = shown.iter().cloned().collect();
+            assert_eq!(unique.len(), shown.len(), "a result shown twice: {shown:?}");
+
+            let (whole, _index, _semantic) = sabbath();
+            let all = page(&whole, 500, 0);
+            assert!(!all.has_more);
+            let all: HashSet<_> = lines(&all).into_iter().collect();
+            assert_eq!(unique, all, "a result never shown");
+            assert!(all.len() >= 40);
+        }
+
+        /// A page asked again is the same page, from the session; a page inside the window
+        /// the session fused runs no lexical phase, and one past it widens the window once.
+        #[test]
+        fn a_page_inside_the_window_is_a_slice_of_the_session() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let first = page(&engine, 5, 0);
+            assert_eq!(expansions(&engine), 1);
+            let second = page(&engine, 5, 5);
+            assert_eq!(
+                expansions(&engine),
+                1,
+                "the first window holds the second page"
+            );
+            assert_eq!(bits(&page(&engine, 5, 5)), bits(&second));
+            assert_eq!(bits(&page(&engine, 5, 0)), bits(&first));
+            assert_eq!(expansions(&engine), 1);
+
+            let third = page(&engine, 5, 10);
+            assert_eq!(expansions(&engine), 2, "past the window, one wider fusion");
+            assert_eq!(bits(&page(&engine, 5, 10)), bits(&third));
+            assert_eq!(
+                bits(&page(&engine, 5, 5)),
+                bits(&second),
+                "earlier pages stand"
+            );
+            assert_eq!(expansions(&engine), 2);
+            assert!(third.has_more && second.has_more && first.has_more);
+        }
+
+        /// The counts keep their meaning: the lexical count is the corpus-wide count, and the
+        /// candidate counts are a window's, the same on every page that window serves.
+        #[test]
+        fn the_counts_are_the_windows_and_the_lexical_count_the_corpus() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let first = page(&engine, 5, 0);
+            let second = page(&engine, 5, 5);
+            let lexical = engine
+                .count_exact_with_status("שבת".to_string(), Vec::new(), false, false)
+                .unwrap();
+            for response in [&first, &second] {
+                assert_eq!(response.lexical_total_count, lexical.count);
+                assert_eq!(response.truncated, lexical.truncated);
+                assert!(!response.counts_are_exact);
+                assert!(!response.candidate_window_truncated);
+                assert_eq!(response.group_count, None);
+                assert!(response.total_count >= 11, "{}", response.total_count);
+            }
+            assert_eq!(first.total_count, second.total_count);
+        }
+
+        /// A commit to the index is another session: its pages are computed afresh.
+        #[test]
+        fn a_commit_to_the_index_starts_another_session() {
+            let _serial = serialized();
+            let (mut engine, _index, _semantic) = sabbath();
+            let before = page(&engine, 50, 0);
+            assert!(!lines(&before).iter().any(|(_, id)| *id == 1000));
+            add(&mut engine, 1000, "שבת", "/books/new.txt");
+            engine.commit().unwrap();
+            let after = page(&engine, 50, 0);
+            assert_eq!(expansions(&engine), 2);
+            assert!(lines(&after).iter().any(|(_, id)| *id == 1000));
+        }
+
+        /// Changing the semantic session starts another one too.
+        #[test]
+        fn indexing_vectors_starts_another_session() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            page(&engine, 5, 0);
+            engine
+                .remove_semantic_books(vec![OTHER.to_string()])
+                .unwrap();
+            page(&engine, 5, 0);
+            assert_eq!(expansions(&engine), 2);
+        }
+
+        /// A search cancelled while it widened the window adds nothing: the page asked again
+        /// is the one a search never cancelled shows.
+        #[test]
+        fn a_cancelled_expansion_leaves_the_session_as_it_was() {
+            let _serial = serialized();
+            let (reference, _index, _semantic) = sabbath();
+            page(&reference, 5, 0);
+            let expected = page(&reference, 5, 10);
+
+            for cancel_at in [At::Sidecar, At::Hydration, At::Painting] {
+                let (engine, _index, _semantic) = sabbath();
+                page(&engine, 5, 0);
+                let token = SemanticCancellationToken::new();
+                let (cancelled, _) = cancelling_at(Some(cancel_at), || {
+                    page_of(&engine, "שבת", 5, 10, None, &token)
+                });
+                assert_eq!(
+                    cancelled.err(),
+                    Some(SemanticError::cancelled()),
+                    "{cancel_at:?}"
+                );
+                assert_eq!(
+                    bits(&page(&engine, 5, 10)),
+                    bits(&expected),
+                    "{cancel_at:?}"
+                );
+                assert_eq!(bits(&page(&engine, 5, 5)), bits(&page(&reference, 5, 5)));
+            }
+        }
+
+        /// No options and the defaults are one ranking, and one session.
+        #[test]
+        fn no_ranking_is_the_defaults() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let token = SemanticCancellationToken::new();
+            let none = page_of(&engine, "שבת", 5, 0, None, &token).unwrap();
+            let defaults = page_of(
+                &engine,
+                "שבת",
+                5,
+                0,
+                Some(SemanticRankingOptions::defaults()),
+                &token,
+            )
+            .unwrap();
+            assert_eq!(bits(&none), bits(&defaults));
+            assert_eq!(expansions(&engine), 1);
+        }
+
+        /// A line of a foundational book that only lexical search found gains the bonus, and
+        /// passes the better lexical match of another book.
+        #[test]
+        fn a_foundational_line_found_lexically_alone_moves_up() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = engine_over(
+                &[
+                    (
+                        BASE,
+                        "/base/תורה",
+                        vec!["ברכה על המחיה והכלכלה".to_string()],
+                    ),
+                    (OTHER, "/other", vec!["ברכה ברכה".to_string()]),
+                    (UNRELATED, "/other", vec!["דברים אחרים לגמרי".to_string()]),
+                ],
+                &[UNRELATED],
+            );
+            let token = SemanticCancellationToken::new();
+            let ranked = |ranking| {
+                let response = page_of(&engine, "ברכה", 10, 0, ranking, &token).unwrap();
+                let order: Vec<String> = response
+                    .results
+                    .iter()
+                    .filter(|hit| hit.source == SemanticResultSource::Lexical)
+                    .map(|hit| hit.file_path.clone())
+                    .collect();
+                order
+            };
+            let without = ranked(Some(SemanticRankingOptions {
+                foundational_bonus: 0.0,
+                ..SemanticRankingOptions::defaults()
+            }));
+            assert_eq!(without, [OTHER, BASE]);
+            assert_eq!(ranked(None), [BASE, OTHER]);
+        }
+
+        /// A quoted phrase is looked up verbatim even when the search asked for fuzzy
+        /// matching, as the semantic half skips it.
+        #[test]
+        fn a_quoted_phrase_runs_the_exact_lexical_phase() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = engine_over(
+                &[(
+                    OTHER,
+                    "/other",
+                    vec!["ברכה גדולה".to_string(), "ברכו את השם".to_string()],
+                )],
+                &[OTHER],
+            );
+            let fuzzy = |query: &str| {
+                engine
+                    .search_semantic(
+                        query.to_string(),
+                        Vec::new(),
+                        10,
+                        0,
+                        SemanticLexicalMode::Fuzzy,
+                        1,
+                        SemanticRetrievalMode::Hybrid,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let lexical = |response: &SemanticSearchResponse| -> Vec<u64> {
+                response
+                    .results
+                    .iter()
+                    .filter(|hit| hit.lexical_score.is_some())
+                    .map(|hit| hit.id)
+                    .collect()
+            };
+            let unquoted = fuzzy("ברכה");
+            assert_eq!(lexical(&unquoted).len(), 2, "within one edit, both lines");
+            let quoted = fuzzy("\"ברכה\"");
+            assert_eq!(lexical(&quoted), [1]);
+            assert_eq!(quoted.executed_mode, SemanticExecutedMode::LexicalOnly);
+        }
+
+        /// An acronym's gershayim is no quotation mark: the semantic half runs.
+        #[test]
+        fn an_acronym_runs_the_hybrid_search() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = engine_over(
+                &[(
+                    OTHER,
+                    "/other",
+                    vec!["כתב הרמב\"ם בהלכות תשובה".to_string()],
+                )],
+                &[OTHER],
+            );
+            for query in ["רמב\"ם", "רמב״ם"] {
+                let response = page_of(
+                    &engine,
+                    query,
+                    10,
+                    0,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap();
+                assert_eq!(
+                    response.executed_mode,
+                    SemanticExecutedMode::Hybrid,
+                    "{query}"
+                );
+                assert!(response.semantic_available, "{query}");
             }
         }
     }
@@ -23469,22 +24559,28 @@ mod tests {
                             r.segment == 1 && r.source != SemanticResultSource::Lexical
                         };
                         let first = search(&engine, mode);
-                        let coordinator = engine.semantic_engine().unwrap().coordinator;
-                        let hits_before_repeat = coordinator.get_telemetry_snapshot().cache_hits;
+                        let expansions = || {
+                            engine
+                                .semantic_sessions
+                                .expansions
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        };
+                        let expansions_before_repeat = expansions();
                         let id = first
                             .results
                             .iter()
                             .find(|r| probe_is_semantic(r))
                             .unwrap_or_else(|| panic!("no semantic probe; {context}"))
                             .id;
-                        // The second identical query exercises the warm cache.
+                        // The second identical query is served by the search's session.
                         assert!(
                             search(&engine, mode).results.iter().any(probe_is_semantic),
                             "{context}"
                         );
-                        assert!(
-                            coordinator.get_telemetry_snapshot().cache_hits > hits_before_repeat,
-                            "unchanged queries must still use the cache; {context}"
+                        assert_eq!(
+                            expansions(),
+                            expansions_before_repeat,
+                            "unchanged queries must still use the session; {context}"
                         );
                         let conn = rusqlite::Connection::open(&db).unwrap();
                         let update = |text: &str| {
@@ -24073,6 +25169,47 @@ mod tests {
                 probe_lines(&engine),
                 [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
             );
+        }
+
+        /// Each filter a search plans keeps its own plan: the foundational books' query reads
+        /// the books its filter admits, and the main query still reads its own.
+        #[test]
+        fn each_planned_filter_keeps_its_own_admitted_books() {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::resolve::CandidateResolver;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let cancel = CancellationToken::new();
+            let filter = |facet: &str| SidecarSearchFilters {
+                book_paths: None,
+                facets: Some(vec![facet.to_string()]),
+                include_pdf: None,
+            };
+            let (root, other) = (filter("/root"), filter("/other"));
+            assert!(resolver.plan(&root, &view, &cancel).unwrap().is_some());
+            assert!(resolver.plan(&other, &view, &cancel).unwrap().is_some());
+            let admitted = |filters: &SidecarSearchFilters| {
+                resolver
+                    .admissible_books(Some(filters))
+                    .unwrap()
+                    .map(|books| (books.len(), books.contains(BOOK), books.contains(OTHER)))
+            };
+            assert_eq!(admitted(&root), Some((1, true, false)));
+            assert_eq!(admitted(&other), Some((1, false, true)));
+            assert!(resolver.admissible_books(None).unwrap().is_none());
         }
 
         /// A plan cancelled before it asks the set keeps the books it read.
