@@ -22,10 +22,9 @@
 //!   index — or with one written under another recipe: the key of the line at each hint,
 //!   and then of the lines within [`RECOMPUTE_REACH`] of a hint that does not hold it, from
 //!   their text and sections. No pass over the whole index: a moved text is found near where
-//!   it was, or not at all. A book's other lines of a text are the lines of its `lineHash`;
-//!   a short line's key spans its neighbours, so a line among them is recomputed only when
-//!   its window's `lineHash`es can spell the text ([`KeySpan`]), and a hit stops after
-//!   [`MAX_FAILED_REPEATS`] lines recomputed that did not hold its key.
+//!   it was, or not at all. A book's other lines of a text are the lines of its `lineHash`,
+//!   passed over only where their windows cannot join to the text ([`KeySpan`]), within
+//!   [`MAX_FAILED_REPEATS`].
 //!
 //! # Every occurrence, and only the text's
 //!
@@ -110,11 +109,8 @@ pub(crate) const RECOMPUTE_REACH: usize = 16;
 /// times, lexical search still finds every one, and a semantic result needs a handful.
 pub(crate) const MAX_LINES_PER_HIT: usize = MAX_RECORDS_PER_HIT;
 
-/// The most lines the search for a hit's other lines may recompute a key for, without the
-/// column, and find that they do not hold it: the backstop behind [`KeySpan`], for a text
-/// whose windows the `lineHash` column cannot tell apart — a short line among blank or short
-/// neighbours, or after a line the cap cuts. A hit that reaches it shows the lines found by
-/// then.
+/// How many of a hit's repeat candidates may be recomputed without the column and found not to
+/// hold its key: reaching it is the only way a candidate that holds it is missed.
 pub(crate) const MAX_FAILED_REPEATS: usize = 16;
 
 /// Where a resolved line is: what the page a search shows is hydrated from. The line was
@@ -621,17 +617,11 @@ impl<'a> LiveResolver<'a> {
 
     /// The other lines of `book` that hold `key` as its line at `position` does, in order,
     /// at most `limit` and none `taken`: a text the book holds more than once is recorded
-    /// once, at its first line, and each of its lines is a line of the hit's.
+    /// once, at its first line.
     ///
-    /// Without the column the lines that share the line's `lineHash` are the candidates, and
-    /// a short line's key spans its neighbours: a text that recurs throughout a book among
-    /// other neighbours each time has hundreds of candidates and few lines holding its key.
-    /// So once a candidate is recomputed and found not to hold the key, the line's span is
-    /// read, and every later candidate whose window's `lineHash`es cannot spell the key's
-    /// text is passed over unread ([`KeySpan`]); a text whose candidates hold it, the common
-    /// case, reads nothing more. Each candidate found not to hold the key spends one of the
-    /// hit's `budget`, [`MAX_FAILED_REPEATS`] in all: once it is spent, nothing more is
-    /// recomputed.
+    /// Without the column the candidates are the lines of its `lineHash`. After the first
+    /// that fails, its [`KeySpan`] passes over those that cannot hold the key and puts last
+    /// those whose windows begin otherwise; each failure spends one of `budget`.
     fn repeats_of(
         &self,
         book: &BookLines,
@@ -647,9 +637,10 @@ impl<'a> LiveResolver<'a> {
         let Some(positions) = self.repeats(book).get(&value) else {
             return Ok(Vec::new());
         };
-        // The line's span, once a candidate has failed: `Some(None)` when it cannot be read.
-        let mut span: Option<Option<KeySpan>> = None;
+        // The line's span, read once a candidate has failed.
+        let mut span: Option<KeySpan> = None;
         let mut found = Vec::new();
+        let mut later = Vec::new();
         for &other in positions.iter() {
             if found.len() == limit {
                 break;
@@ -658,42 +649,73 @@ impl<'a> LiveResolver<'a> {
             if other == position || taken.contains(&book.docs[other]) {
                 continue;
             }
-            let holds = if self.column {
-                self.verified(book, other, key)?
-            } else {
-                if let Some(Some(span)) = &span {
-                    if self
-                        .window_hashes(book, other)
-                        .is_some_and(|window| !span.admits(&window))
-                    {
+            if self.column {
+                if self.verified(book, other, key)? {
+                    found.push(other);
+                }
+                continue;
+            }
+            if let Some(span) = &span {
+                if let Some(window) = self.window_hashes(book, other) {
+                    if !span.admits(&window) {
+                        continue;
+                    }
+                    if !span.leads(&window) {
+                        later.push(other);
                         continue;
                     }
                 }
-                if *budget == 0 {
-                    break;
-                }
-                #[cfg(test)]
-                {
-                    self.cache
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .at(self.generation_id())
-                        .recomputes += 1;
-                }
-                let holds = self.holds(book, other, key)?;
-                if !holds {
-                    *budget -= 1;
-                    if span.is_none() {
-                        span = Some(self.key_span(book, position)?);
-                    }
-                }
-                holds
-            };
-            if holds {
-                found.push(other);
+            }
+            match self.holds_within(book, position, other, key, budget, &mut span)? {
+                Some(true) => found.push(other),
+                Some(false) => {}
+                None => break,
             }
         }
+        for other in later {
+            if found.len() == limit {
+                break;
+            }
+            match self.holds_within(book, position, other, key, budget, &mut span)? {
+                Some(true) => found.push(other),
+                Some(false) => {}
+                None => break,
+            }
+        }
+        found.sort_unstable();
         Ok(found)
+    }
+
+    /// Whether the line at `other` of `book` holds `key`, recomputed while `budget` lasts, and
+    /// `None` once it is spent. The first failure reads the span of the line at `position`.
+    fn holds_within(
+        &self,
+        book: &BookLines,
+        position: usize,
+        other: usize,
+        key: ChunkKey,
+        budget: &mut usize,
+        span: &mut Option<KeySpan>,
+    ) -> Result<Option<bool>, ResolveError> {
+        if *budget == 0 {
+            return Ok(None);
+        }
+        #[cfg(test)]
+        {
+            self.cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .at(self.generation_id())
+                .recomputes += 1;
+        }
+        let holds = self.holds(book, other, key)?;
+        if !holds {
+            *budget -= 1;
+            if span.is_none() {
+                *span = Some(self.key_span(book, position)?);
+            }
+        }
+        Ok(Some(holds))
     }
 
     /// The stored text of the line at `address`.
@@ -718,35 +740,32 @@ impl<'a> LiveResolver<'a> {
             .first(address.doc_id)
     }
 
-    /// The span of the key the line at `position` of `book` holds: from its stored text, and
-    /// for a short line its window's — at most five documents, read at most once per line
-    /// whose repeats are looked for — and their `lineHash`es. `None` when a column the window
-    /// needs cannot be read: every candidate is then recomputed, within the budget.
-    fn key_span(&self, book: &BookLines, position: usize) -> Result<Option<KeySpan>, ResolveError> {
-        let own = self.stored_text(book.docs[position])?;
+    /// The span of the key the line at `position` of `book` holds, from its window's stored
+    /// texts: at most five documents.
+    fn key_span(&self, book: &BookLines, position: usize) -> Result<KeySpan, ResolveError> {
+        let address = book.docs[position];
+        let own = self.stored_text(address)?;
         if own.trim().chars().count() >= production_chunking().min_meaningful_chars {
-            return Ok(Some(KeySpan::Alone));
+            return Ok(KeySpan::ANY);
         }
-        let Some(window) = context_window(book.docs.len(), position, |at| {
-            self.section_of(book.docs[at])
-        }) else {
-            return Ok(None);
+        let (Some(window), Some(own_hash)) = (
+            context_window(book.docs.len(), position, |at| {
+                self.section_of(book.docs[at])
+            }),
+            self.line_hash_of(address),
+        ) else {
+            return Ok(KeySpan::ANY);
         };
         let mut texts = Vec::with_capacity(5);
-        let mut hashes = Vec::with_capacity(5);
         for at in window {
             texts.push(if at == position {
                 own.clone()
             } else {
                 self.stored_text(book.docs[at])?
             });
-            let Some(hash) = self.line_hash_of(book.docs[at]) else {
-                return Ok(None);
-            };
-            hashes.push(hash);
         }
         let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-        Ok(Some(KeySpan::joined(&texts, &hashes)))
+        Ok(KeySpan::joined(&texts, own_hash))
     }
 
     /// The `lineHash`es of the window the line at `position` of `book` is keyed over were it
