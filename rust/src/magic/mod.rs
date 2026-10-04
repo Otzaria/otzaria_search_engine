@@ -20,3 +20,11 @@ pub use dictionary::MagicDictionary;
 /// per-token `TermSetQuery` stays cheap; mirrors `MAX_SYNONYM_TERMS_PER_TOKEN`
 /// in the reference Lucene engine.
 pub const MAX_LEXICAL_FORMS: usize = 32;
+
+/// Forms taken from a family whose base is the token itself.
+const PRIMARY_FAMILY_CAP: usize = 24;
+/// Forms taken from a family in which the token is a surface form.
+const SECONDARY_FAMILY_CAP: usize = 8;
+/// Matched surfaces taken from a family reached only through a spelling
+/// variant; the rest of such a family is never pulled in.
+const VARIANT_ROUTE_CAP: usize = 4;
