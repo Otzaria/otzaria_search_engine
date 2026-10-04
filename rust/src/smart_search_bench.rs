@@ -98,6 +98,7 @@ enum Mode {
 
 const MODES: &[Mode] = &[
     Mode::LexExact,
+    Mode::LexFuzzy(0),
     Mode::LexFuzzy(1),
     Mode::ApiExact,
     Mode::ApiFuzzy(1),
