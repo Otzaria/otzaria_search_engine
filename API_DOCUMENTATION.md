@@ -274,10 +274,11 @@ set holds, and a delta brings it from the library version it stands at to the
 next. The set is locked throughout and the new generation goes live in one
 flip, so a release refused, cancelled or cut off by a crash leaves the set as it
 was; an open session on the same set is moved onto the new generation before
-the call returns. One install or compaction of a set runs at a time: while
-another runs, in this process or another, the call is refused as
-`vectorsBusy` with `field` `vectors_dir`, the set is as it was and an open
-session keeps serving; try again once the other has finished.
+the call returns. One install or compaction of a set runs at a time. A second
+one in this process is refused at once; otherwise the call waits up to a second
+for the set's lock before it is refused. Either refusal is `vectorsBusy` with
+`field` `vectors_dir`: the set is as it was and an open session keeps serving;
+try again once the other has finished.
 
 | field | meaning |
 | --- | --- |

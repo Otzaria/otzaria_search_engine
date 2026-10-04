@@ -1673,6 +1673,40 @@ fn vector_set_busy(vectors_dir: &Path, doing: &str) -> SemanticError {
     .with_field("vectors_dir")
 }
 
+/// How long an install or a compaction waits for the sidecar's lock on its set.
+#[cfg(feature = "semantic-integration")]
+const SET_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `attempt` again while the set's lock is held, for up to `wait`: something other than an
+/// install, such as an open's cleanup, can hold it a moment. A cancel ends the wait.
+#[cfg(feature = "semantic-integration")]
+fn waiting_for_set_lock<T>(
+    cancel: &SearchCancellation,
+    wait: std::time::Duration,
+    mut attempt: impl FnMut() -> Result<T, SemanticSearchError>,
+) -> Result<T, SemanticSearchError> {
+    use otzaria_semantic_search::errors::ArtifactError;
+    let deadline = Instant::now() + wait;
+    loop {
+        let result = attempt();
+        let held = matches!(
+            &result,
+            Err(SemanticSearchError::Artifact(ArtifactError::Io { source, .. }))
+                if source.kind() == std::io::ErrorKind::WouldBlock
+        );
+        if !held {
+            return result;
+        }
+        if cancel.is_cancelled() {
+            return Err(SemanticSearchError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// What an expansion is named in the set's `incoming/` folder: this prefix and a name of its
 /// own, with `.oxv` for the segment and [`EXPANSION_LOCK`] for its lock file.
 #[cfg(feature = "semantic-integration")]
@@ -4443,10 +4477,10 @@ impl SearchEngine {
     /// on the same set is moved onto the new generation before this returns.
     ///
     /// One install or compaction of a set runs at a time. While another runs in this
-    /// process, this one is refused before it reads anything; while one runs in another
-    /// process, once it reaches the set's lock. Either way the refusal is `VectorsBusy`
-    /// about `vectors_dir`: nothing was changed, an open session keeps serving, and the
-    /// install can be tried again once the other has finished.
+    /// process, this one is refused before it reads anything; otherwise it waits up to a
+    /// second for the set's lock before it is refused. Either way the refusal is
+    /// `VectorsBusy` about `vectors_dir`: nothing was changed, an open session keeps
+    /// serving, and the install can be tried again once the other has finished.
     ///
     /// Refusals are [`SemanticError`]s of the kinds in the table on
     /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
@@ -4512,20 +4546,19 @@ impl SearchEngine {
             } else {
                 None
             };
-            let installed = segment_set::install_package(
-                &vectors_dir,
-                &InstallSource {
-                    segment: expanded
-                        .as_ref()
-                        .map_or(downloaded.as_path(), |expansion| &expansion.segment),
-                    manifest_json: &input.manifest_json,
-                },
-                &InstallExpectation {
-                    identity: installation_identity(model),
-                    published_manifest_sha256: input.published_manifest_sha256,
-                },
-                cancel,
-            );
+            let source = InstallSource {
+                segment: expanded
+                    .as_ref()
+                    .map_or(downloaded.as_path(), |expansion| &expansion.segment),
+                manifest_json: &input.manifest_json,
+            };
+            let expectation = InstallExpectation {
+                identity: installation_identity(model),
+                published_manifest_sha256: input.published_manifest_sha256,
+            };
+            let installed = waiting_for_set_lock(cancel, SET_LOCK_WAIT, || {
+                segment_set::install_package(&vectors_dir, &source, &expectation, cancel)
+            });
             drop(expanded);
             let report = installed.map_err(|err| {
                 vector_set_error(&err, &vectors_dir, refused(&err), "installing the vectors")
@@ -4569,8 +4602,8 @@ impl SearchEngine {
     /// compaction leaves the set as it was. It refuses to start without
     /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
     /// and while another install or compaction of the set runs, as `VectorsBusy` about
-    /// `vectors_dir`. An open session on the same set is moved onto the compacted
-    /// generation.
+    /// `vectors_dir`, waiting for the set's lock as an install does. An open session on the
+    /// same set is moved onto the compacted generation.
     pub fn compact_semantic_vectors(
         &self,
         vectors_dir: String,
@@ -4606,12 +4639,14 @@ impl SearchEngine {
             )
             .map_err(|err| failed(&err.into()))?;
             let live = live_library_version.and_then(|version| LiveKeys::new(&resolver, version));
-            let report = segment_set::compact(
-                &vectors_dir,
-                &policy,
-                live.as_ref().map(|live| live as &dyn LiveKeySource),
-                &cancellation.flag,
-            )
+            let report = waiting_for_set_lock(&cancellation.flag, SET_LOCK_WAIT, || {
+                segment_set::compact(
+                    &vectors_dir,
+                    &policy,
+                    live.as_ref().map(|live| live as &dyn LiveKeySource),
+                    &cancellation.flag,
+                )
+            })
             .map_err(|err| failed(&err))?;
             if report.compacted {
                 self.reload_open_vectors(&vectors_dir)?;
@@ -21456,6 +21491,37 @@ mod tests {
             (overtaken.kind, overtaken.field.as_deref()),
             (SemanticErrorKind::VectorsBusy, Some("vectors_dir"))
         );
+    }
+
+    /// The wait for a set's lock ends when the lock is free, when it runs out, and on a
+    /// cancel, even one seen only once the wait has run out.
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn a_wait_for_the_set_lock_ends_free_out_of_time_or_cancelled() {
+        use otzaria_semantic_search::errors::ArtifactError;
+        use std::time::Duration;
+        let held = || -> Result<(), SemanticSearchError> {
+            Err(SemanticSearchError::Artifact(ArtifactError::Io {
+                context: "locking".to_string(),
+                source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
+            }))
+        };
+        let token = SearchCancellation::new();
+        let mut attempts = 0;
+        let freed = waiting_for_set_lock(&token, Duration::from_secs(5), || {
+            attempts += 1;
+            if attempts < 3 {
+                held()
+            } else {
+                Ok(())
+            }
+        });
+        assert!(freed.is_ok() && attempts == 3);
+        let busy = waiting_for_set_lock(&token, Duration::ZERO, held);
+        assert!(matches!(busy, Err(SemanticSearchError::Artifact(_))));
+        token.cancel();
+        let cancelled = waiting_for_set_lock(&token, Duration::ZERO, held);
+        assert!(matches!(cancelled, Err(SemanticSearchError::Cancelled)));
     }
 
     /// A displayed semantic result is checked against its vector by the full 128-bit key,

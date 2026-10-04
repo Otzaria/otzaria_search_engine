@@ -320,8 +320,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// compaction leaves the set as it was. It refuses to start without
   /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
   /// and while another install or compaction of the set runs, as `VectorsBusy` about
-  /// `vectors_dir`. An open session on the same set is moved onto the compacted
-  /// generation.
+  /// `vectors_dir`, waiting for the set's lock as an install does. An open session on the
+  /// same set is moved onto the compacted generation.
   Future<SemanticCompactionReport> compactSemanticVectors({
     required String vectorsDir,
     int? liveLibraryVersion,
@@ -823,10 +823,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// on the same set is moved onto the new generation before this returns.
   ///
   /// One install or compaction of a set runs at a time. While another runs in this
-  /// process, this one is refused before it reads anything; while one runs in another
-  /// process, once it reaches the set's lock. Either way the refusal is `VectorsBusy`
-  /// about `vectors_dir`: nothing was changed, an open session keeps serving, and the
-  /// install can be tried again once the other has finished.
+  /// process, this one is refused before it reads anything; otherwise it waits up to a
+  /// second for the set's lock before it is refused. Either way the refusal is
+  /// `VectorsBusy` about `vectors_dir`: nothing was changed, an open session keeps
+  /// serving, and the install can be tried again once the other has finished.
   ///
   /// Refusals are [`SemanticError`]s of the kinds in the table on
   /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the

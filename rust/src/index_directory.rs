@@ -40,7 +40,6 @@ const REPLACE_RETRY_DELAYS: [Duration; 14] = [
 #[derive(Clone, Debug)]
 pub(crate) struct IndexDirectory {
     inner: MmapDirectory,
-    #[cfg(windows)]
     root: PathBuf,
 }
 
@@ -50,7 +49,6 @@ impl IndexDirectory {
         Ok(Self {
             inner,
             // Not canonicalize: it fails on virtual drives, which `MmapDirectory` accepts.
-            #[cfg(windows)]
             root: std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
         })
     }
@@ -99,13 +97,39 @@ impl Directory for IndexDirectory {
         self.inner.sync_directory()
     }
 
+    // Not MmapDirectory's: its lock is released only on close, which a spawned child delays.
     fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
-        self.inner.acquire_lock(lock)
+        let file = lock_file(&self.root.join(&lock.filepath), lock.is_blocking)?;
+        Ok(DirectoryLock::from(Box::new(file)))
     }
 
     fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
         self.inner.watch(watch_callback)
     }
+}
+
+/// A lock file locked as `MmapDirectory` locks it, and unlocked before it is closed.
+struct LockFile(fs::File);
+
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn lock_file(path: &Path, is_blocking: bool) -> Result<LockFile, LockError> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(LockError::wrap_io_error)?;
+    if is_blocking {
+        file.lock().map_err(LockError::wrap_io_error)?;
+    } else if file.try_lock().is_err() {
+        return Err(LockError::LockBusy);
+    }
+    Ok(LockFile(file))
 }
 
 /// Replaces `path` with `data`: a new file beside it, synced, renamed over it. Readers see
@@ -365,6 +389,94 @@ mod tests {
     fn the_backoff_totals_what_its_comment_says() {
         let total: Duration = REPLACE_RETRY_DELAYS.iter().sum();
         assert_eq!(total, Duration::from_millis(1_888));
+    }
+
+    #[test]
+    fn a_dropped_lock_is_free_whoever_shares_its_descriptor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".tantivy-writer.lock");
+        let held = lock_file(&path, false).unwrap();
+        // What a process spawned while the lock is held keeps until it execs.
+        let inherited = held.0.try_clone().unwrap();
+        drop(held);
+        assert!(lock_file(&path, false).is_ok());
+        drop(inherited);
+    }
+
+    fn test_index(dir: &tempfile::TempDir) -> tantivy::Index {
+        use tantivy::schema::{Schema, TEXT};
+        let mut schema = Schema::builder();
+        schema.add_text_field("text", TEXT);
+        tantivy::Index::create(
+            IndexDirectory::open(dir.path()).unwrap(),
+            schema.build(),
+            Default::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_held_writer_refuses_a_second_until_it_is_dropped() {
+        use tantivy::{IndexWriter, TantivyError};
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = test_index(&dir);
+        let writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
+        assert!(matches!(
+            index.writer_with_num_threads::<tantivy::TantivyDocument>(1, 15_000_000),
+            Err(TantivyError::LockFailure(LockError::LockBusy, _))
+        ));
+        drop(writer);
+        let _writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
+    }
+
+    /// A child forked while the writer is held keeps its descriptors until it execs; the
+    /// writer dropped meanwhile is free for the next one all the same.
+    #[cfg(unix)]
+    #[test]
+    fn a_writer_dropped_while_a_child_is_spawned_frees_the_next() {
+        use std::io::{Read, Write};
+        use std::os::unix::process::CommandExt;
+        use tantivy::IndexWriter;
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = test_index(&dir);
+        let writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
+        let (mut forked, signal) = io::pipe().unwrap();
+        let child = thread::spawn(move || {
+            let mut command = std::process::Command::new("true");
+            // SAFETY: a pipe write and a sleep, both async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    (&signal).write_all(b"x")?;
+                    thread::sleep(Duration::from_secs(1));
+                    Ok(())
+                });
+            }
+            command.status().unwrap()
+        });
+        forked.read_exact(&mut [0u8]).unwrap();
+        drop(writer);
+        let next = index.writer_with_num_threads::<tantivy::TantivyDocument>(1, 15_000_000);
+        assert!(next.is_ok(), "{:?}", next.err());
+        assert!(child.join().unwrap().success());
+    }
+
+    #[test]
+    fn a_blocking_lock_waits_for_its_holder() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let directory = IndexDirectory::open(dir.path()).unwrap();
+        let meta = Lock {
+            filepath: PathBuf::from(".tantivy-meta.lock"),
+            is_blocking: true,
+        };
+        let held = directory.acquire_lock(&meta).unwrap();
+        let started = std::time::Instant::now();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            drop(held);
+        });
+        directory.acquire_lock(&meta).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        release.join().unwrap();
     }
 
     #[test]
