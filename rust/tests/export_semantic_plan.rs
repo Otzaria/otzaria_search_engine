@@ -1,6 +1,6 @@
 //! `export_semantic_plan` over a small library: the sidecar's plan files, byte for byte what
-//! its reference planner writes over the same index, from a version 5 index held to its
-//! `chunkKey` column and from a version 4 index keyed from its text alike.
+//! its reference planner writes over the same index, from an index held to its `chunkKey`
+//! column and from one whose column counts as absent, keyed from its text, alike.
 
 #![cfg(feature = "semantic-integration")]
 
@@ -9,7 +9,7 @@ use otzaria_semantic_search::distribution::plan::{
     EMBED_MANIFEST_FILE, EMBED_PLAN_FILE, RECORDS_FILE, TOMBSTONES_FILE,
 };
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
-use search_engine::api::search_engine::SearchEngine;
+use search_engine::api::search_engine::{configure_line_source, SearchEngine, TextStorage};
 use search_engine::semantic_corpus::TantivyCorpus;
 use search_engine::semantic_keys::production_chunking;
 use search_engine::semantic_plan::{export_plan, PlanExport};
@@ -78,28 +78,26 @@ fn model() -> ModelIdentity {
     }
 }
 
-/// The fixture library's index, of schema version 4 when `version_4` asks: this engine's
-/// schema without the `chunkKey` field, and version 4's metadata.
-fn library(dir: &Path, version_4: bool) -> PathBuf {
+/// The fixture library's index, its `chunkKey` column counting as absent when
+/// `without_column` asks: this engine's schema, and metadata that records no recipe for it.
+fn library(dir: &Path, without_column: bool) -> PathBuf {
     let index = dir.join("index");
     std::fs::create_dir_all(&index).unwrap();
-    if version_4 {
+    if without_column {
         let probe = TempDir::new().unwrap();
         drop(SearchEngine::new(probe.path().to_str().unwrap()));
         let meta: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(probe.path().join("meta.json")).unwrap())
                 .unwrap();
-        let mut fields = meta["schema"].as_array().unwrap().clone();
-        fields.retain(|field| field["name"] != "chunkKey");
         let schema: tantivy::schema::Schema =
-            serde_json::from_value(serde_json::Value::Array(fields)).unwrap();
+            serde_json::from_value(meta["schema"].clone()).unwrap();
         tantivy::Index::create_in_dir(&index, schema).unwrap();
         std::fs::write(
             index.join("otzaria_index_meta.json"),
             serde_json::json!({
                 "format": "otzaria-search-index",
-                "schema_version": 4,
-                "engine_version": "0.8.7",
+                "schema_version": 5,
+                "engine_version": "0.9.0",
                 "tantivy_version": "0.26.2",
                 "created_at_unix_seconds": 0
             })
@@ -118,6 +116,7 @@ fn library(dir: &Path, version_4: bool) -> PathBuf {
                 0,
                 text,
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
     }
@@ -125,10 +124,20 @@ fn library(dir: &Path, version_4: bool) -> PathBuf {
     index
 }
 
-/// `export_semantic_plan` over `index` into `out`, as a build machine runs it.
-fn run_export(index: &Path, out: &Path, model_file: &Path) -> std::process::Output {
+/// `export_semantic_plan` over `index` into `out`, as a build machine runs it, reading the
+/// text the index keeps in a library database from `library` when one is given.
+fn run_export(
+    index: &Path,
+    out: &Path,
+    model_file: &Path,
+    library: Option<&Path>,
+) -> std::process::Output {
     let library_version = LIBRARY_VERSION.to_string();
-    Command::new(env!("CARGO_BIN_EXE_export_semantic_plan"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_export_semantic_plan"));
+    if let Some(library) = library {
+        command.args(["--seforim-db", library.to_str().unwrap()]);
+    }
+    command
         .args([
             "--index",
             index.to_str().unwrap(),
@@ -152,18 +161,20 @@ fn bytes(dir: &Path, name: &str) -> Vec<u8> {
 }
 
 /// The plan opens as the sidecar opens one, and is what its own planner writes over the same
-/// index; a version 4 index plans to the same files, keyed from its text.
+/// index; an index without the column plans to the same files, keyed from its text.
 #[test]
 fn the_plan_is_the_sidecars_own_from_either_key_source() {
     let dir = TempDir::new().unwrap();
     let model_file = dir.path().join("model.json");
     std::fs::write(&model_file, serde_json::to_vec(&model()).unwrap()).unwrap();
     let mut planned = Vec::new();
-    for version_4 in [false, true] {
-        let root = dir.path().join(if version_4 { "v4" } else { "v5" });
-        let index = library(&root, version_4);
+    for without_column in [false, true] {
+        let root = dir
+            .path()
+            .join(if without_column { "keyed" } else { "column" });
+        let index = library(&root, without_column);
         let out = root.join("plan");
-        let output = run_export(&index, &out, &model_file);
+        let output = run_export(&index, &out, &model_file, None);
         assert!(
             output.status.success(),
             "the export failed:\n{}\n{}",
@@ -182,8 +193,8 @@ fn the_plan_is_the_sidecars_own_from_either_key_source() {
         let documents = 6 + 4 + 1;
         assert_eq!(
             manifest.parity.checked,
-            if version_4 { 0 } else { documents },
-            "a version 5 index is held to its column, line by line; version 4: {version_4}"
+            if without_column { 0 } else { documents },
+            "an index is held to its column, line by line; without column: {without_column}"
         );
         assert_eq!(manifest.parity.mismatches, 0);
         let counts = manifest.counts;
@@ -204,6 +215,7 @@ fn the_plan_is_the_sidecars_own_from_either_key_source() {
         // The sidecar's own planner, over the same index read as its corpus.
         let corpus = TantivyCorpus::from_index_path(
             &index,
+            None,
             LIBRARY_VERSION,
             RELEASE_TAG,
             production_chunking(),
@@ -233,7 +245,7 @@ fn the_plan_is_the_sidecars_own_from_either_key_source() {
             assert_eq!(
                 bytes(&out, name),
                 bytes(&reference, name),
-                "{name}, version 4: {version_4}"
+                "{name}, without column: {without_column}"
             );
         }
         assert_eq!(expected.counts, counts);
@@ -247,6 +259,102 @@ fn the_plan_is_the_sidecars_own_from_either_key_source() {
             "{name}: the column and the text plan alike"
         );
     }
+}
+
+/// `books` as a library database holds an official book: book `n + 1` for the `n`th, its
+/// lines the rows at line indexes 0 and on.
+fn write_library(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE book (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL);
+         CREATE TABLE line (id INTEGER PRIMARY KEY NOT NULL, bookId INTEGER NOT NULL,
+                            lineIndex INTEGER NOT NULL, heRef TEXT);
+         CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);
+         CREATE TABLE line_content (id INTEGER PRIMARY KEY NOT NULL, content TEXT NOT NULL);",
+    )
+    .unwrap();
+    let mut id = 0i64;
+    for (book, (title, _, _, text)) in books().into_iter().enumerate() {
+        let book = book as i64 + 1;
+        conn.execute(
+            "INSERT INTO book (id, title) VALUES (?1, ?2)",
+            rusqlite::params![book, title],
+        )
+        .unwrap();
+        for (index, row) in text.split('\n').enumerate() {
+            id += 1;
+            conn.execute(
+                "INSERT INTO line (id, bookId, lineIndex) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, book, index as i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO line_content (id, content) VALUES (?1, ?2)",
+                rusqlite::params![id, row],
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// An index of `books` as the official books of [`write_library`], their text kept as
+/// `storage` says.
+fn official_library(dir: &Path, storage: TextStorage) -> PathBuf {
+    let index = dir.join("index");
+    std::fs::create_dir_all(&index).unwrap();
+    let mut engine = SearchEngine::new(index.to_str().unwrap());
+    for (book, (title, _, order, text)) in books().into_iter().enumerate() {
+        engine
+            .add_text_book(
+                title.to_string(),
+                "/test".to_string(),
+                format!("id:{}", book + 1),
+                order,
+                0,
+                text,
+                None,
+                storage,
+            )
+            .unwrap();
+    }
+    engine.commit().unwrap();
+    index
+}
+
+/// An index that keeps official books' text in the library database plans, given that
+/// database, to the files an index that stored the text plans to; given none, it is refused.
+#[test]
+fn a_library_index_plans_from_its_database_like_a_stored_one() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_library(&db);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let stored = official_library(&dir.path().join("stored"), TextStorage::InIndex);
+    let external = official_library(&dir.path().join("external"), TextStorage::LibraryDb);
+    let model_file = dir.path().join("model.json");
+    std::fs::write(&model_file, serde_json::to_vec(&model()).unwrap()).unwrap();
+
+    let (from_stored, from_db) = (dir.path().join("plan-stored"), dir.path().join("plan-db"));
+    assert!(run_export(&stored, &from_stored, &model_file, None)
+        .status
+        .success());
+    let output = run_export(&external, &from_db, &model_file, Some(&db));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for name in [RECORDS_FILE, BOOKS_FILE, EMBED_PLAN_FILE, TOMBSTONES_FILE] {
+        assert_eq!(bytes(&from_stored, name), bytes(&from_db, name), "{name}");
+    }
+
+    let output = run_export(&external, &dir.path().join("plan-none"), &model_file, None);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--seforim-db"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// What a warehouse holds stays out of `embed.jsonl`.
@@ -317,7 +425,7 @@ fn a_warehouse_vector_is_not_embedded_and_a_column_off_its_text_fails_the_gate()
     let model_file = dir.path().join("model.json");
     std::fs::write(&model_file, serde_json::to_vec(&model()).unwrap()).unwrap();
     let out = dir.path().join("forged");
-    let output = run_export(&index, &out, &model_file);
+    let output = run_export(&index, &out, &model_file, None);
     assert!(
         !output.status.success(),
         "the parity gate must fail the export"

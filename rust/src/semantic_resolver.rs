@@ -18,8 +18,8 @@
 //!   column — the text moved to another book. Where the pass found each value, and that it
 //!   found one nowhere, is remembered for the generation, so a value is passed over the
 //!   index for at most once a generation, however many searches hit its vector.
-//! * **Recomputed from the stored text**, for an index without the column — a version 4
-//!   index — or with one written under another recipe: the key of the line at each hint,
+//! * **Recomputed from the text**, for an index whose column was written under another
+//!   recipe, which counts as absent: the key of the line at each hint,
 //!   and then of the lines within [`RECOMPUTE_REACH`] of a hint that does not hold it, from
 //!   their text and sections. No pass over the whole index: a moved text is found near where
 //!   it was, or not at all. A book's other lines of a text are the lines of its `lineHash`,
@@ -62,7 +62,9 @@
 //! [`PLAN_CACHE`] filters searched with last, and the unfiltered one. A book's arrivals are
 //! kept with the set's view, under the book's postings and its text hash, across generations.
 
-use crate::semantic_keys::{context_window, production_chunking, recompute_chunk_keys, KeySpan};
+use crate::semantic_keys::{
+    context_window, line_texts, production_chunking, recompute_chunk_keys, KeySpan,
+};
 use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
 use otzaria_semantic_search::cancellation::CancellationToken;
@@ -332,7 +334,6 @@ pub(crate) struct LiveResolver<'a> {
     /// Whether the `chunkKey` column is one this build uses; otherwise keys are recomputed.
     column: bool,
     file_path: Field,
-    text: Field,
     columns: Vec<SegmentColumns>,
     cache: &'a Mutex<ResolverCache>,
     /// Every line this search resolved, by `(file_path, line_id)`, for its page.
@@ -362,7 +363,6 @@ impl<'a> LiveResolver<'a> {
     ) -> Result<Self, ResolveError> {
         let schema = searcher.schema();
         let file_path = schema.get_field("filePath").map_err(index_error)?;
-        let text = schema.get_field("text").map_err(index_error)?;
         let chunk_key_name = chunk_key.map(|field| schema.get_field_name(field).to_string());
         let columns = searcher
             .segment_readers()
@@ -385,7 +385,6 @@ impl<'a> LiveResolver<'a> {
             searcher,
             column: chunk_key.is_some(),
             file_path,
-            text,
             columns,
             cache,
             records: Mutex::new(HashMap::new()),
@@ -796,14 +795,9 @@ impl<'a> LiveResolver<'a> {
         Ok(Some(holds))
     }
 
-    /// The stored text of the line at `address`.
-    fn stored_text(&self, address: DocAddress) -> Result<String, ResolveError> {
-        let document: TantivyDocument = self.searcher.doc(address).map_err(index_error)?;
-        Ok(document
-            .get_first(self.text)
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string())
+    /// The text of the lines at `addresses`, as their keys are computed from it.
+    fn texts(&self, addresses: &[DocAddress]) -> Result<Vec<String>, ResolveError> {
+        line_texts(&self.searcher, addresses).map_err(index_error)
     }
 
     fn section_of(&self, address: DocAddress) -> Option<u64> {
@@ -818,11 +812,11 @@ impl<'a> LiveResolver<'a> {
             .first(address.doc_id)
     }
 
-    /// The span of the key the line at `position` of `book` holds, from its window's stored
+    /// The span of the key the line at `position` of `book` holds, from its window's
     /// texts: at most five documents.
     fn key_span(&self, book: &BookLines, position: usize) -> Result<KeySpan, ResolveError> {
         let address = book.docs[position];
-        let own = self.stored_text(address)?;
+        let own = self.texts(&[address])?.pop().unwrap_or_default();
         if own.trim().chars().count() >= production_chunking().min_meaningful_chars {
             return Ok(KeySpan::ANY);
         }
@@ -834,14 +828,8 @@ impl<'a> LiveResolver<'a> {
         ) else {
             return Ok(KeySpan::ANY);
         };
-        let mut texts = Vec::with_capacity(5);
-        for at in window {
-            texts.push(if at == position {
-                own.clone()
-            } else {
-                self.stored_text(book.docs[at])?
-            });
-        }
+        let addresses: Vec<DocAddress> = window.map(|at| book.docs[at]).collect();
+        let texts = self.texts(&addresses)?;
         let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
         Ok(KeySpan::joined(&texts, own_hash))
     }
@@ -1626,9 +1614,19 @@ fn admits(compiled: Option<&CompiledFilters<'_>>, name: &str, info: &BookInfo) -
 impl CandidateResolver for LiveResolver<'_> {
     /// The index's generation, with the top bit set for a planned search: one that could not
     /// be planned answers without its arrivals, and the query cache must not hand that answer
-    /// to one that was.
+    /// to one that was. The library database a line's text is read from is folded in: a new
+    /// database, or one that cannot be read now, is another answer.
     fn generation(&self) -> u64 {
-        let generation = self.generation_id() & !(1 << 63);
+        use std::hash::{Hash, Hasher};
+        let library = crate::line_source::status();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (
+            self.generation_id(),
+            library.generation,
+            library.suspend_depth > 0,
+        )
+            .hash(&mut hasher);
+        let generation = hasher.finish() & !(1 << 63);
         if self.plan.is_some() {
             generation | 1 << 63
         } else {
@@ -1934,7 +1932,7 @@ impl CandidateResolver for LiveResolver<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::search_engine::{live_chunk_key_field, SearchEngine};
+    use crate::api::search_engine::{live_chunk_key_field, SearchEngine, TextStorage};
     use otzaria_semantic_search::semantic::resolve::RecordRef;
     use tantivy::{Index, ReloadPolicy};
 
@@ -1955,7 +1953,16 @@ mod tests {
             ),
         ] {
             engine
-                .add_text_book("ספר".into(), "/א".into(), key.into(), order, 0, text, None)
+                .add_text_book(
+                    "ספר".into(),
+                    "/א".into(),
+                    key.into(),
+                    order,
+                    0,
+                    text,
+                    None,
+                    TextStorage::InIndex,
+                )
                 .unwrap();
             engine.commit().unwrap();
         }

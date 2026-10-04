@@ -24,7 +24,7 @@ use otzaria_semantic_search::semantic::segment_set::{
     install_package, InstallExpectation, InstallSource,
 };
 use otzaria_semantic_search::semantic::versioning::{IndexVersion, ModelIdentity, ModelPackage};
-use search_engine::api::search_engine::SearchEngine;
+use search_engine::api::search_engine::{SearchEngine, TextStorage};
 use search_engine::semantic_corpus::TantivyCorpus;
 use std::path::Path;
 use std::process::Command;
@@ -59,6 +59,7 @@ fn write_index(dir: &Path) {
             0,
             GENESIS_TEXT.to_string(),
             Some(vec!["/era/תנך".to_string()]),
+            TextStorage::InIndex,
         )
         .unwrap();
     engine
@@ -70,6 +71,7 @@ fn write_index(dir: &Path) {
             0,
             BERACHOT_TEXT.to_string(),
             None,
+            TextStorage::InIndex,
         )
         .unwrap();
     engine.commit().unwrap();
@@ -203,6 +205,7 @@ fn the_build_binary_turns_an_index_and_a_model_into_a_package_that_installs() {
     let engine = SearchEngine::new(fixture.index.path().to_str().unwrap());
     let corpus = TantivyCorpus::from_engine(
         &engine,
+        None,
         LIBRARY_VERSION.parse().unwrap(),
         "",
         fixture.chunking.clone(),

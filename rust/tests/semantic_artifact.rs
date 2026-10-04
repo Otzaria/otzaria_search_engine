@@ -22,7 +22,7 @@ use search_engine::api::search_engine::{
     SemanticCancellationToken, SemanticCompactionPolicy, SemanticConfigInput, SemanticError,
     SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode, SemanticLexicalMode,
     SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
-    SemanticVectorsInstallInput, SemanticVectorsPackageKind,
+    SemanticVectorsInstallInput, SemanticVectorsPackageKind, TextStorage,
 };
 use search_engine::semantic_keys::production_chunking;
 use std::collections::BTreeSet;
@@ -115,6 +115,7 @@ fn add_books(engine: &mut SearchEngine, books: &[Book]) {
                 0,
                 text.clone(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
     }
@@ -127,25 +128,22 @@ fn replace_book(engine: &mut SearchEngine, book: Book) {
     add_books(engine, &[book]);
 }
 
-/// An empty index of schema version 4, as the engine before the `chunkKey` column made
-/// one: this engine's schema without that field, and version 4's metadata.
-fn version_4_index(dir: &Path) {
+/// An empty index whose `chunkKey` column counts as absent: this engine's schema, and
+/// metadata that records no recipe for the column, as for one written under another recipe.
+fn index_without_column(dir: &Path) {
     let probe = TempDir::new().unwrap();
     drop(SearchEngine::new(probe.path().to_str().unwrap()));
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(probe.path().join("meta.json")).unwrap())
             .unwrap();
-    let mut fields = meta["schema"].as_array().unwrap().clone();
-    fields.retain(|field| field["name"] != "chunkKey");
-    let schema: tantivy::schema::Schema =
-        serde_json::from_value(serde_json::Value::Array(fields)).unwrap();
+    let schema: tantivy::schema::Schema = serde_json::from_value(meta["schema"].clone()).unwrap();
     tantivy::Index::create_in_dir(dir, schema).unwrap();
     std::fs::write(
         dir.join("otzaria_index_meta.json"),
         serde_json::json!({
             "format": "otzaria-search-index",
-            "schema_version": 4,
-            "engine_version": "0.8.7",
+            "schema_version": 5,
+            "engine_version": "0.9.0",
             "tantivy_version": "0.26.2",
             "created_at_unix_seconds": 0
         })
@@ -169,15 +167,16 @@ fn build_library() -> Library {
     build_library_of(&default_books(), false)
 }
 
-/// [`build_library`] of `books`, into an index of schema version 4 when `version_4` asks.
-fn build_library_of(books: &[Book], version_4: bool) -> Library {
+/// [`build_library`] of `books`, into an index without the column when `without_column`
+/// asks.
+fn build_library_of(books: &[Book], without_column: bool) -> Library {
     let root = TempDir::new().unwrap();
     let index = root.path().join("tantivy");
     let work = root.path().join("work");
     std::fs::create_dir_all(&index).unwrap();
     std::fs::create_dir_all(&work).unwrap();
-    if version_4 {
-        version_4_index(&index);
+    if without_column {
+        index_without_column(&index);
     }
     add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
 
@@ -900,8 +899,8 @@ fn a_commit_after_opening_leaves_the_set_serving() {
 /// A line pushed down by one inserted above it is found where it moved, by its key.
 #[test]
 fn a_line_inserted_above_is_found_where_it_moved() {
-    for version_4 in [false, true] {
-        let library = build_library_of(&default_books(), version_4);
+    for without_column in [false, true] {
+        let library = build_library_of(&default_books(), without_column);
         let mut engine = library.engine();
         engine.open_semantic_artifact(library.input()).unwrap();
         replace_book(
@@ -918,17 +917,17 @@ fn a_line_inserted_above_is_found_where_it_moved() {
         assert_eq!(
             semantic_lines(&engine, PROBE_LINE, &[]).first(),
             Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
-            "schema version 4: {version_4}"
+            "without column: {without_column}"
         );
     }
 }
 
-/// What an index of schema version 4 — no `chunkKey` column, as the published v30 library
-/// index is — does not find, as the README says: a line the set recorded, once it is more
-/// than 16 lines from there, and a text that moved to another book, filtered or not. The
-/// same changes on version 5 are found (the tests around this one).
+/// What an index without a `chunkKey` column this build uses does not find, as the README
+/// says: a line the set recorded, once it is more than 16 lines from there, and a text that
+/// moved to another book, filtered or not. The same changes are found with the column (the
+/// tests around this one).
 #[test]
-fn a_version_4_index_finds_a_line_only_near_where_the_set_recorded_it() {
+fn an_index_without_the_column_finds_a_line_only_near_where_the_set_recorded_it() {
     let library = build_library_of(&default_books(), true);
     let mut engine = library.engine();
     engine.open_semantic_artifact(library.input()).unwrap();
@@ -1129,8 +1128,8 @@ fn search_page(
 /// A passage the book holds in two sections is one vector with one record — a set records a
 /// text once per book, at its first line — and each line that holds it is a line of its
 /// own: two results without grouping, two groups by section, one group of two by text, and
-/// one result on each of two pages of one. The same from the column and, in a version 4
-/// index, from the text.
+/// one result on each of two pages of one. The same from the column and, in an index without
+/// it, from the text.
 #[test]
 fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
     let books = vec![(
@@ -1140,8 +1139,8 @@ fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
         0,
         format!("<h2>פרק א</h2>\n{PROBE_LINE}\n<h2>פרק ב</h2>\n{PROBE_LINE}"),
     )];
-    for version_4 in [false, true] {
-        let library = build_library_of(&books, version_4);
+    for without_column in [false, true] {
+        let library = build_library_of(&books, without_column);
         let engine = library.engine();
         engine.open_semantic_artifact(library.input()).unwrap();
         let semantic_only = SemanticRetrievalMode::SemanticOnly;
@@ -1158,7 +1157,7 @@ fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
         assert_eq!(
             occurrences(&ungrouped),
             vec![(1, 1), (3, 1)],
-            "both sections hold the text; version 4: {version_4}"
+            "both sections hold the text; without column: {without_column}"
         );
         assert!(
             ungrouped.fallback_reason.is_none(),
@@ -1230,13 +1229,13 @@ fn a_passage_repeated_in_one_book_is_a_result_for_each_occurrence() {
 /// A hit's lines are capped, and the cap does not go to one book first: a passage one book
 /// holds forty times and another once is one vector with a record in each, and each record
 /// is a line of the hit's before any book's other lines of it are: the other book's line,
-/// and 31 of the forty — whichever of the two books comes first by name, and in a version 4
-/// index as from the column.
+/// and 31 of the forty — whichever of the two books comes first by name, and in an index
+/// without the column as from it.
 #[test]
 fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
     let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
     let repeated = vec![passage; 40].join("\n");
-    for version_4 in [false, true] {
+    for without_column in [false, true] {
         for (many, once) in [
             ("/books/a-many.txt", "/books/z-once.txt"),
             ("/books/z-many.txt", "/books/a-once.txt"),
@@ -1251,7 +1250,7 @@ fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
                     format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
                 ),
             ];
-            let library = build_library_of(&books, version_4);
+            let library = build_library_of(&books, without_column);
             let engine = library.engine();
             engine.open_semantic_artifact(library.input()).unwrap();
             let response = search_page(
@@ -1270,7 +1269,7 @@ fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
                     .map(|hit| hit.segment)
                     .collect()
             };
-            let context = format!("{many} and {once}, version 4: {version_4}");
+            let context = format!("{many} and {once}, without column: {without_column}");
             assert_eq!(
                 of(once),
                 [1],
@@ -1290,7 +1289,7 @@ fn review_d_repeats_in_one_book_crowd_out_another_books_record() {
 /// repeats of it — and not by id: a book first in the catalogue, whose twenty-five repeats
 /// have the lowest ids, filled a page of twenty with them (R1 of the acceptance run).
 /// Ungrouped, every book's line comes before any repeat; the page is the same on every
-/// call, and pages of five make it up. From the column, and in a version 4 index from the
+/// call, and pages of five make it up. From the column, and in an index without it from the
 /// text.
 #[test]
 fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
@@ -1312,8 +1311,8 @@ fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
             format!("שורה פותחת בספר {order} ארוכה דיה לעמוד לבדה\n{passage}"),
         ));
     }
-    for version_4 in [false, true] {
-        let library = build_library_of(&books, version_4);
+    for without_column in [false, true] {
+        let library = build_library_of(&books, without_column);
         let page = |offset: u32, limit: u32| -> Vec<(String, u64)> {
             // A session of its own each time, so that no page is answered from a cache.
             let engine = library.engine();
@@ -1340,7 +1339,7 @@ fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
                 })
                 .collect()
         };
-        let context = format!("version 4: {version_4}");
+        let context = format!("without column: {without_column}");
         let first = page(0, 20);
         assert_eq!(first.len(), 20, "{context}");
         let first_repeat = first
@@ -1527,7 +1526,7 @@ fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
                     let address = DocAddress::new(segment as u32, doc);
                     let stored: TantivyDocument = searcher.doc(address).unwrap();
                     (stored
-                        .get_first(field("text"))
+                        .get_first(field("textStored"))
                         .and_then(|value| value.as_str())
                         == Some(replaced))
                     .then_some(address)
@@ -1541,6 +1540,7 @@ fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
             field("title") => "בראשית",
             field("reference") => "",
             field("text") => "שורה זרה שאינה הטקסט שהווקטור נבנה ממנו",
+            field("textStored") => "שורה זרה שאינה הטקסט שהווקטור נבנה ממנו",
             field("id") => id,
             field("segment") => 1u64,
             field("isPdf") => false,
@@ -1957,11 +1957,12 @@ fn a_text_copied_within_its_category_is_found_in_both_books() {
 }
 
 /// F2 of the second audit: a passage copied into a new book after opening. Unfiltered finds
-/// every line its filter does; on version 4, which has no arrivals, neither finds the copy.
+/// every line its filter does; without the column, which has no arrivals, neither finds the
+/// copy.
 #[test]
 fn a_text_copied_into_a_new_book_is_found_unfiltered_where_its_filter_finds_it() {
-    for version_4 in [false, true] {
-        let library = build_library_of(&default_books(), version_4);
+    for without_column in [false, true] {
+        let library = build_library_of(&default_books(), without_column);
         let mut engine = library.engine();
         engine.open_semantic_artifact(library.input()).unwrap();
         let copy = "/books/copy.txt";
@@ -1982,7 +1983,7 @@ fn a_text_copied_into_a_new_book_is_found_unfiltered_where_its_filter_finds_it()
                 .map(|(book, _, line)| (book, line))
                 .collect()
         };
-        let context = format!("version 4: {version_4}");
+        let context = format!("without column: {without_column}");
         let filtered = lines(&["/עותקים"]);
         let unfiltered = lines(&[]);
         assert!(
@@ -1992,7 +1993,7 @@ fn a_text_copied_into_a_new_book_is_found_unfiltered_where_its_filter_finds_it()
         );
         let original = (BERACHOT.to_string(), 0);
         let copied = (copy.to_string(), 1);
-        if version_4 {
+        if without_column {
             assert_eq!(filtered, BTreeSet::new(), "{context}");
             assert_eq!(unfiltered, BTreeSet::from([original]), "{context}");
         } else {
@@ -2121,6 +2122,7 @@ fn the_lines_of_a_planned_search_are_the_same_whatever_the_plan_iterates() {
                 0,
                 format!("שורה נוספת ארוכה דיה לעמוד לבדה מספר {round}"),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -2261,10 +2263,10 @@ fn a_release_installs_through_the_api_and_reports_itself() {
 
 /// A release manifest's `requires` is information, and nothing reads it: the published v30
 /// release says `indexSchemaVersion: 5` — the schema whose `chunkKey` column it is resolved
-/// through — and a device whose index is still version 4, as the published v30 library
-/// index is, installs, opens and searches it all the same, resolving from the stored text.
+/// through — and a device whose index has no column this build uses installs, opens and
+/// searches it all the same, resolving from the text.
 #[test]
-fn a_release_that_requires_schema_5_serves_a_version_4_index() {
+fn a_release_that_requires_schema_5_serves_an_index_without_the_column() {
     use sha2::Digest;
     let library = build_library_of(&default_books(), true);
     let engine = library.engine();
@@ -2284,7 +2286,7 @@ fn a_release_that_requires_schema_5_serves_a_version_4_index() {
             library.install_input(&vectors, &segment, &manifest, Some(digest)),
             &token,
         )
-        .expect("a version 4 index installs a release that requires version 5");
+        .expect("an index without the column installs a release that requires version 5");
     let status = engine
         .open_semantic_artifact(SemanticArtifactInput {
             vectors_dir: dir_string(&vectors),
@@ -2301,7 +2303,11 @@ fn a_release_that_requires_schema_5_serves_a_version_4_index() {
         &std::fs::read_to_string(library.index.join("otzaria_index_meta.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(metadata["schema_version"], 4, "the index stayed version 4");
+    assert_eq!(metadata["schema_version"], 5);
+    assert!(
+        metadata.get("chunk_key_version").is_none(),
+        "the index stayed without a recipe for its column"
+    );
 }
 
 /// A segment published compressed is expanded and installed, and nothing of it is left
@@ -2996,8 +3002,8 @@ fn an_install_moves_the_open_session_onto_the_release() {
 /// of the set's library version.
 #[test]
 fn a_set_compacts_when_asked_and_the_session_follows() {
-    for version_4 in [false, true] {
-        let library = build_library_of(&default_books(), version_4);
+    for without_column in [false, true] {
+        let library = build_library_of(&default_books(), without_column);
         let mut engine = library.engine();
         let token = SemanticCancellationToken::new();
         let vectors = dir_string(&library.vectors);
@@ -3033,7 +3039,7 @@ fn a_set_compacts_when_asked_and_the_session_follows() {
         assert!(report.compacted, "{}", report.reason);
         assert!(report.generation > unforced.generation);
         assert_eq!(report.slots_after, u64::from(EMBEDDED));
-        if version_4 {
+        if without_column {
             assert_eq!(
                 (report.hints_refreshed, report.records_pruned),
                 (0, 0),
@@ -3053,7 +3059,7 @@ fn a_set_compacts_when_asked_and_the_session_follows() {
         assert_eq!(
             semantic_lines(&engine, PROBE_LINE, &[]).first(),
             Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
-            "schema version 4: {version_4}"
+            "without column: {without_column}"
         );
 
         // Another library version's index re-anchors nothing.
@@ -3163,8 +3169,8 @@ fn verifying_finds_a_damaged_block_and_opening_refuses_it_after() {
 /// the column and recomputed without it.
 #[test]
 fn coverage_counts_the_live_lines_the_set_holds() {
-    for version_4 in [false, true] {
-        let library = build_library_of(&default_books(), version_4);
+    for without_column in [false, true] {
+        let library = build_library_of(&default_books(), without_column);
         let mut engine = library.engine();
         let token = SemanticCancellationToken::new();
         let vectors = dir_string(&library.vectors);
@@ -3184,7 +3190,7 @@ fn coverage_counts_the_live_lines_the_set_holds() {
                 2,
                 LIBRARY_VERSION
             ),
-            "schema version 4: {version_4}"
+            "without column: {without_column}"
         );
         assert_eq!(coverage.ratio, 1.0);
 
@@ -3207,7 +3213,7 @@ fn coverage_counts_the_live_lines_the_set_holds() {
                 coverage.books_covered,
             ),
             (u64::from(EMBEDDED) + 1, u64::from(EMBEDDED), 3, 2),
-            "schema version 4: {version_4}"
+            "without column: {without_column}"
         );
 
         let cancelled = SemanticCancellationToken::new();

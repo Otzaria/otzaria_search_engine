@@ -28,7 +28,7 @@ use otzaria_semantic_search::semantic::embedding::{
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 use otzaria_semantic_search::semantic::oxv::codec::CodecSpec;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
-use search_engine::api::search_engine::SearchEngine;
+use search_engine::api::search_engine::{SearchEngine, TextStorage};
 use search_engine::semantic_keys::production_chunking;
 use search_engine::semantic_plan::{export_plan, PlanExport};
 use serde_json::Value;
@@ -98,6 +98,7 @@ fn add_books(index: &Path, books: &[Book]) {
                 0,
                 text.clone(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
     }
@@ -607,6 +608,7 @@ fn stale_hints_are_reported_and_fail_only_past_the_limit() {
             0,
             lines.join("\n"),
             None,
+            TextStorage::InIndex,
         )
         .unwrap();
     engine.commit().unwrap();

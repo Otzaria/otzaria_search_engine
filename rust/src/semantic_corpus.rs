@@ -34,6 +34,14 @@
 //! describe refuses the corpus before a build starts from it. The second decompresses the
 //! whole store. Both are build-machine costs paid once per build, and neither happens on a
 //! device — the application opens an installed vector set and never sees this type.
+//!
+//! # Lines whose text is in the library database
+//!
+//! An official book indexed with `TextStorage::LibraryDb` keeps no text in the index. Its
+//! lines are read from the `seforim.db` the build is given, a whole book per read, and
+//! each is verified against the index (`lineHash`, or the book's line count for lines too
+//! short to sign) — so `CorpusLine::text` is byte-identical to a build over an index that
+//! stored the text. A line the database cannot vouch for stops the build.
 
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::builder::BuildPlan;
@@ -45,7 +53,7 @@ use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
 use otzaria_semantic_search::semantic::recipe::EmbeddingRecipe;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, TextIdentity};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 use tantivy::schema::{Facet, Value};
@@ -87,6 +95,63 @@ pub struct TantivyCorpus {
     /// reads six million stored documents in parallel, and a `RefCell` anywhere in the
     /// struct would make that impossible for a cache neither thread touches.
     plan: Mutex<Option<BTreeSet<u64>>>,
+    /// The library database for lines whose text is not in the index; `None` when the
+    /// build was given none, which is an error only if such a line is read.
+    library: Option<Mutex<LibraryText>>,
+}
+
+/// Library-database text for a build: whole books, read once each, most recent last.
+struct LibraryText {
+    store: crate::line_source::LineStore,
+    books: VecDeque<(i64, std::sync::Arc<Vec<Option<String>>>)>,
+}
+
+/// Books kept decoded at once. A build walks books in id order, so one would do; a few
+/// absorb the parallel read straddling a boundary.
+const LIBRARY_BOOK_CACHE: usize = 4;
+
+impl LibraryText {
+    fn open(path: &Path) -> Result<Self> {
+        Ok(Self {
+            store: crate::line_source::LineStore::open(path)?,
+            books: VecDeque::new(),
+        })
+    }
+
+    /// The indexed (normalized) text of every row of `book_id`, `None` for a row that
+    /// cannot be decoded; `None` overall when the book is not in the database.
+    fn book(&mut self, book_id: i64) -> Result<Option<std::sync::Arc<Vec<Option<String>>>>> {
+        if let Some(position) = self.books.iter().position(|(id, _)| *id == book_id) {
+            let entry = self.books.remove(position).expect("position is in range");
+            let lines = entry.1.clone();
+            self.books.push_back(entry);
+            return Ok(Some(lines));
+        }
+        let Some(rows) = self.store.fetch_book(book_id)? else {
+            return Ok(None);
+        };
+        let lines: Vec<Option<String>> = rows
+            .into_iter()
+            .map(|row| match row {
+                crate::line_source::RowText::Found(raw) => {
+                    Some(crate::api::search_engine::normalize_text_for_indexing(raw))
+                }
+                _ => None,
+            })
+            .collect();
+        let lines = std::sync::Arc::new(lines);
+        if self.books.len() == LIBRARY_BOOK_CACHE {
+            self.books.pop_front();
+        }
+        self.books.push_back((book_id, lines.clone()));
+        Ok(Some(lines))
+    }
+}
+
+/// What a line needs from the library database when the index holds no text for it.
+struct LibraryLine {
+    book_id: i64,
+    ordinal: u64,
 }
 
 impl TantivyCorpus {
@@ -104,6 +169,7 @@ impl TantivyCorpus {
     /// index this build cannot read is a `Result` rather than a panic from inside tantivy.
     pub fn from_index_path(
         index_path: &Path,
+        library_db: Option<&Path>,
         library_version: u32,
         library_release_tag: impl Into<String>,
         chunking: ChunkerConfig,
@@ -125,6 +191,7 @@ impl TantivyCorpus {
             .with_context(|| format!("reading the index at {}", index_path.display()))?;
         Self::open(
             reader.searcher(),
+            library_db,
             library_version,
             library_release_tag,
             chunking,
@@ -137,6 +204,7 @@ impl TantivyCorpus {
     /// see the module documentation for why that matters more than it looks.
     pub fn from_engine(
         engine: &crate::api::search_engine::SearchEngine,
+        library_db: Option<&Path>,
         library_version: u32,
         library_release_tag: impl Into<String>,
         chunking: ChunkerConfig,
@@ -149,6 +217,7 @@ impl TantivyCorpus {
         ensure_compatible(&engine.index_compatibility())?;
         Self::open(
             engine.corpus_searcher(),
+            library_db,
             library_version,
             library_release_tag,
             chunking,
@@ -171,10 +240,18 @@ impl TantivyCorpus {
     /// opens against the wrong index.
     pub(crate) fn open(
         searcher: Searcher,
+        library_db: Option<&Path>,
         library_version: u32,
         library_release_tag: impl Into<String>,
         chunking: ChunkerConfig,
     ) -> Result<Self> {
+        let library = library_db
+            .map(|path| {
+                LibraryText::open(path)
+                    .with_context(|| format!("opening the library database {}", path.display()))
+            })
+            .transpose()?
+            .map(Mutex::new);
         let mut books: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         let mut locations: HashMap<u64, Location> = HashMap::new();
         let mut scanned: u64 = 0;
@@ -261,6 +338,7 @@ impl TantivyCorpus {
             books,
             locations,
             plan: Mutex::new(None),
+            library,
         };
         // Every line through the same strict reader the build will use — a method on the
         // corpus, not a second way to read a document.
@@ -292,9 +370,71 @@ impl TantivyCorpus {
         let Some(location) = self.locations.get(&line_id) else {
             return Ok(None);
         };
-        self.read_at(location.address, line_id)
+        self.read_full(location.address, line_id)
             .map(Some)
             .map_err(|reason| PackError::Corpus { reason })
+    }
+
+    /// [`Self::read_at`], with the text of a library-database line read and verified.
+    fn read_full(&self, address: DocAddress, line_id: u64) -> Result<CorpusLine, String> {
+        let (mut line, library) = self.read_at(address, line_id)?;
+        if let Some(library) = library {
+            line.text = self.library_text(line_id, &line, &library)?;
+        }
+        Ok(line)
+    }
+
+    /// The text of a line the index holds no text for, verified against the index.
+    fn library_text(
+        &self,
+        line_id: u64,
+        line: &CorpusLine,
+        at: &LibraryLine,
+    ) -> Result<String, String> {
+        let library = self.library.as_ref().ok_or_else(|| {
+            format!(
+                "line {line_id} keeps its text in the library database, and this build was \
+                 given none (pass --seforim-db)"
+            )
+        })?;
+        let mut library = library
+            .lock()
+            .map_err(|_| "the library database reader panicked".to_string())?;
+        let lines = library
+            .book(at.book_id)
+            .map_err(|error| {
+                format!("reading line {line_id} from the library database: {error:#}")
+            })?
+            .ok_or_else(|| {
+                format!(
+                    "line {line_id}: book {} is not in the library database",
+                    at.book_id
+                )
+            })?;
+        let text = lines
+            .get(at.ordinal as usize)
+            .ok_or_else(|| {
+                format!(
+                    "line {line_id}: book {} has no row {} in the library database",
+                    at.book_id, at.ordinal
+                )
+            })?
+            .clone()
+            .ok_or_else(|| format!("line {line_id}: its library row cannot be decoded"))?;
+        let verified = if line.line_hash != 0 {
+            crate::api::search_engine::line_dedup_hash(&text) == line.line_hash
+        } else {
+            let indexed = self.books.get(&line.source_book_key).map_or(0, Vec::len);
+            lines.len() == indexed
+        };
+        if !verified {
+            return Err(format!(
+                "line {line_id}: the library database no longer holds the text this index was \
+                 built from (book {}, row {}); build from the database the index was made with",
+                at.book_id, at.ordinal
+            ));
+        }
+        Ok(text)
     }
 
     /// Every field of one line, or an explanation of which one the index could not answer.
@@ -308,7 +448,14 @@ impl TantivyCorpus {
     /// `contentHash` is the one field where `0` is a real answer — a PDF has no fingerprint
     /// in the library database — which is exactly why "the column has no value for this
     /// document" and "the value is zero" must not collapse into each other.
-    fn read_at(&self, address: DocAddress, line_id: u64) -> Result<CorpusLine, String> {
+    ///
+    /// A line whose text is in the library database comes back with an empty `text` and
+    /// the [`LibraryLine`] to read it from — see [`Self::library_text`].
+    fn read_at(
+        &self,
+        address: DocAddress,
+        line_id: u64,
+    ) -> Result<(CorpusLine, Option<LibraryLine>), String> {
         let document: TantivyDocument = self
             .searcher
             .doc(address)
@@ -384,20 +531,53 @@ impl TantivyCorpus {
             ));
         }
 
-        Ok(CorpusLine {
-            source_book_key: text_field("filePath")?,
-            title: text_field("title")?,
-            reference: text_field("reference")?,
-            section_id: column_u64("sectionId")?,
-            segment: stored_u64("segment")?,
-            is_pdf: stored_bool("isPdf")?,
-            line_hash: column_u64("lineHash")?,
-            content_hash: column_u64("contentHash")?,
-            facets: self
-                .read_facets(address)
-                .map_err(|error| format!("reading the facets of line {line_id}: {error}"))?,
-            text: text_field("text")?,
-        })
+        let source_book_key = text_field("filePath")?;
+        let segment = stored_u64("segment")?;
+        // `textStored` is on every document whose text the index keeps; its absence is
+        // what marks a library-database line, never a text to default.
+        let has_stored_text = schema
+            .get_field(crate::api::search_engine::TEXT_STORED_FIELD)
+            .map(|field| document.get_first(field).is_some())
+            .unwrap_or(false);
+        let (text, library) = if has_stored_text {
+            (
+                text_field(crate::api::search_engine::TEXT_STORED_FIELD)?,
+                None,
+            )
+        } else {
+            let book_id =
+                crate::api::search_engine::library_book_id(&source_book_key).ok_or_else(|| {
+                    format!(
+                        "line {line_id} carries no text and its book {source_book_key:?} is \
+                         not a library book"
+                    )
+                })?;
+            (
+                String::new(),
+                Some(LibraryLine {
+                    book_id,
+                    ordinal: segment,
+                }),
+            )
+        };
+
+        Ok((
+            CorpusLine {
+                source_book_key,
+                title: text_field("title")?,
+                reference: text_field("reference")?,
+                section_id: column_u64("sectionId")?,
+                segment,
+                is_pdf: stored_bool("isPdf")?,
+                line_hash: column_u64("lineHash")?,
+                content_hash: column_u64("contentHash")?,
+                facets: self
+                    .read_facets(address)
+                    .map_err(|error| format!("reading the facets of line {line_id}: {error}"))?,
+                text,
+            },
+            library,
+        ))
     }
 
     /// Every facet path on a document, sorted and deduplicated.
@@ -502,7 +682,7 @@ fn ensure_every_line_reads(corpus: &TantivyCorpus) -> Result<()> {
         window.par_iter().try_for_each(|&line_id| {
             let address = corpus.locations[&line_id].address;
             corpus
-                .read_at(address, line_id)
+                .read_full(address, line_id)
                 .map(drop)
                 .map_err(|reason| anyhow::anyhow!("{reason}"))
         })?;
@@ -599,7 +779,7 @@ fn ensure_ids_encode_positions(books: &BTreeMap<String, Vec<u64>>) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::search_engine::SearchEngine;
+    use crate::api::search_engine::{SearchEngine, TextStorage};
     use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
     use tempfile::TempDir;
 
@@ -625,6 +805,7 @@ mod tests {
                 0,
                 GENESIS_TEXT.to_string(),
                 Some(vec!["/era/תנך".to_string()]),
+                TextStorage::InIndex,
             )
             .unwrap();
         engine
@@ -636,6 +817,7 @@ mod tests {
                 0,
                 BERACHOT_TEXT.to_string(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -649,6 +831,7 @@ mod tests {
     fn corpus(engine: &SearchEngine) -> TantivyCorpus {
         TantivyCorpus::from_engine(
             engine,
+            None,
             LIBRARY_VERSION,
             LIBRARY_RELEASE_TAG,
             ChunkerConfig::default(),
@@ -764,6 +947,7 @@ mod tests {
                 0,
                 "ויהי אחרי מות משה עבד יהוה".to_string(),
                 None,
+                TextStorage::InIndex,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -882,6 +1066,7 @@ mod tests {
         let mut writer = index.writer(50_000_000).unwrap();
         let mut maimed = TantivyDocument::new();
         maimed.add_text(field("text"), "שורה ארוכה דיה כדי לעמוד בפני עצמה");
+        maimed.add_text(field("textStored"), "שורה ארוכה דיה כדי לעמוד בפני עצמה");
         maimed.add_text(field("reference"), "ref");
         maimed.add_text(field("title"), "משנה ברכות");
         maimed.add_text(field("filePath"), BERACHOT);
@@ -945,6 +1130,7 @@ mod tests {
             let mut writer = index.writer(50_000_000).unwrap();
             let mut doubled = TantivyDocument::new();
             doubled.add_text(field("text"), "שורה ארוכה דיה כדי לעמוד בפני עצמה");
+            doubled.add_text(field("textStored"), "שורה ארוכה דיה כדי לעמוד בפני עצמה");
             doubled.add_text(field("reference"), "ref");
             doubled.add_text(field("title"), "משנה ברכות");
             doubled.add_text(field("filePath"), BERACHOT);
@@ -990,6 +1176,7 @@ mod tests {
             0,
             "שורה ארוכה דיה לעמוד בפני עצמה".to_string(),
             None,
+            TextStorage::InIndex,
         );
         let error = refused.expect_err("the last catalogue position cannot form an id");
         assert!(format!("{error}").contains("overflows u64"), "{error}");
@@ -1029,6 +1216,7 @@ mod tests {
     fn expect_refusal(engine: &SearchEngine, what: &str) -> String {
         match TantivyCorpus::from_engine(
             engine,
+            None,
             LIBRARY_VERSION,
             LIBRARY_RELEASE_TAG,
             ChunkerConfig::default(),
@@ -1257,5 +1445,66 @@ mod tests {
             identity.document_id_scheme_version,
             DOCUMENT_ID_SCHEME_VERSION
         );
+    }
+
+    /// A build over an index that keeps official text in the library database reads
+    /// exactly the corpus an index that stored the text would: same lines, same identity.
+    #[test]
+    fn library_text_builds_the_same_corpus_as_stored_text() {
+        use crate::external_text_tests as fixture;
+        let _guard = crate::line_source::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("seforim.db");
+        let books = fixture::books();
+        fixture::write_library(&db, &books, true);
+        let (stored_dir, external_dir) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(&stored_dir).unwrap();
+        std::fs::create_dir_all(&external_dir).unwrap();
+        let stored =
+            fixture::index_library_books_committed(&stored_dir, &books, TextStorage::InIndex);
+        let external =
+            fixture::index_library_books_committed(&external_dir, &books, TextStorage::LibraryDb);
+
+        let open = |engine: &SearchEngine, db: Option<&Path>| {
+            TantivyCorpus::from_engine(
+                engine,
+                db,
+                LIBRARY_VERSION,
+                LIBRARY_RELEASE_TAG,
+                ChunkerConfig::default(),
+            )
+        };
+        let a = open(&stored, None).unwrap();
+        let b = open(&external, Some(&db)).unwrap();
+        assert_eq!(a.identity().unwrap(), b.identity().unwrap());
+        assert_eq!(a.line_count(), b.line_count());
+        for key in a.book_keys().unwrap() {
+            let ids = a.book_line_ids(&key).unwrap();
+            assert_eq!(ids, b.book_line_ids(&key).unwrap());
+            for id in ids {
+                let (x, y) = (a.line(id).unwrap().unwrap(), b.line(id).unwrap().unwrap());
+                assert_eq!(
+                    serde_json::to_value(&x).unwrap(),
+                    serde_json::to_value(&y).unwrap()
+                );
+            }
+        }
+
+        // No database: refused, naming the flag.
+        let err = open(&external, None).err().unwrap();
+        assert!(format!("{err:#}").contains("--seforim-db"), "{err:#}");
+
+        // A database the index was not built from: refused, never re-labelled.
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE line_content SET content = 'שורה אחרת לגמרי מאשר באינדקס' WHERE id =              (SELECT id FROM line WHERE bookId = 3 AND lineIndex = 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let err = open(&external, Some(&db)).err().unwrap();
+        assert!(format!("{err:#}").contains("no longer holds"), "{err:#}");
     }
 }

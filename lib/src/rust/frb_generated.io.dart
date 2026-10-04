@@ -218,6 +218,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_semantic_vectors_install_input(dynamic raw);
 
   @protected
+  TextStorage dco_decode_box_autoadd_text_storage(dynamic raw);
+
+  @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
@@ -261,6 +264,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IndexCompatibility dco_decode_index_compatibility(dynamic raw);
+
+  @protected
+  LineSourceStatus dco_decode_line_source_status(dynamic raw);
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
@@ -398,6 +404,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticRankingOptions? dco_decode_opt_box_autoadd_semantic_ranking_options(
     dynamic raw,
   );
+
+  @protected
+  TextStorage? dco_decode_opt_box_autoadd_text_storage(dynamic raw);
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
@@ -561,6 +570,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
+
+  @protected
+  TextStatus dco_decode_text_status(dynamic raw);
+
+  @protected
+  TextStorage dco_decode_text_storage(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -787,6 +802,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TextStorage sse_decode_box_autoadd_text_storage(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
@@ -836,6 +854,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IndexCompatibility sse_decode_index_compatibility(
     SseDeserializer deserializer,
   );
+
+  @protected
+  LineSourceStatus sse_decode_line_source_status(SseDeserializer deserializer);
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
@@ -1017,6 +1038,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticRankingOptions? sse_decode_opt_box_autoadd_semantic_ranking_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TextStorage? sse_decode_opt_box_autoadd_text_storage(
     SseDeserializer deserializer,
   );
 
@@ -1236,6 +1262,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
+
+  @protected
+  TextStatus sse_decode_text_status(SseDeserializer deserializer);
+
+  @protected
+  TextStorage sse_decode_text_storage(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -1510,6 +1542,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_text_storage(
+    TextStorage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -1572,6 +1610,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_index_compatibility(
     IndexCompatibility self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_line_source_status(
+    LineSourceStatus self,
     SseSerializer serializer,
   );
 
@@ -1789,6 +1833,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_semantic_ranking_options(
     SemanticRankingOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_text_storage(
+    TextStorage? self,
     SseSerializer serializer,
   );
 
@@ -2061,6 +2111,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_test_case(TestCase self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_text_status(TextStatus self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_text_storage(TextStorage self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);

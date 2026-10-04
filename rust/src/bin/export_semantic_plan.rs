@@ -100,6 +100,10 @@ fn main() {
         warehouse
     });
 
+    if let Some(db) = flag("--seforim-db") {
+        search_engine::api::search_engine::configure_line_source(db)
+            .unwrap_or_else(|error| fail("Could not use the library database", &error));
+    }
     let report = export_plan(PlanExport {
         index_path: PathBuf::from(required("--index")),
         out_dir: PathBuf::from(required("--out")),
@@ -155,8 +159,12 @@ The plan of a vector build, from a release index: the sidecar's plan files.
 Usage:
   export_semantic_plan --index <dir> --library-version <N> --model <model.json> --out <dir>
 
-  --index                  The release index, opened read-only: schema 4, keyed from its
-                           text, or schema 5, whose chunkKey column is held to its text
+  --index                  The release index, opened read-only: schema 5, whose chunkKey
+                           column is held to its text, or keyed from the text where the
+                           column was written under another recipe
+  --seforim-db <path>      The library database official books' line text is read from,
+                           read-only: required when the index keeps that text there, and
+                           the database the index was built from
   --library-version        The library edition the index was built from: its db_version
   --release-tag            The release that edition was published as (default: none)
   --model                  JSON ModelIdentity; its chunking_identity must be this build's

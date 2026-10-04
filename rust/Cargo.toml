@@ -7,7 +7,18 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-default = []
+# SQLite comes from exactly one of the two features below; enabling both or
+# neither is a compile error (see `src/sqlite_host.rs`). libsqlite3-sys lets
+# `loadable_extension` silently win over `bundled`, so app builds must use
+# `--no-default-features --features sqlite-host` rather than adding to the
+# default.
+default = ["sqlite-bundled"]
+# CLI binaries, tests and build tools: SQLite compiled into this crate.
+sqlite-bundled = ["rusqlite/bundled"]
+# The app: no SQLite inside the library. Every call goes through the API table
+# of the SQLite instance Dart already loaded, handed over by
+# `sqlite3_auto_extension(sqlite_host_entry_address())`.
+sqlite-host = ["rusqlite/loadable_extension"]
 # The production feature, and the one cargokit.yaml builds the application with:
 # the ONNX backend, for the Meivin ONNX graph the application uses. It is the
 # only embedding backend there is. GGUF models and llama.cpp are not supported:
@@ -83,15 +94,19 @@ serde_json = "1.0.150"
 htmlescape = "0.3.1"
 log = "0.4.32"
 unicode-segmentation = "1.13.3"
-# Lexical (MagicDictionary) approximate-search path. `bundled` compiles SQLite
-# from source so there is no system libsqlite dependency on Android/iOS.
-rusqlite = { version = "0.32", features = ["bundled"] }
+# Lexical (MagicDictionary) approximate-search path and the library line source.
+# Which SQLite it binds to is chosen by the `sqlite-bundled`/`sqlite-host`
+# features. No other rusqlite features: the host's SQLite (Dart's build) omits
+# trace, progress handler, decltype and the authorizer.
+rusqlite = { version = "0.32", default-features = false }
 lru = "0.12"
 # מקבול הנרמול באינדוקס (add_text_book / add_pdf_book): הנרמול הוא ~85%
 # מזמן ה-CPU של הזנת המנוע ואינו תלוי-סדר בין שורות.
 rayon = "1.10"
 # A release may publish its vector segment compressed (`.oxv.zst`), and installing it
-# expands it. The version tantivy already builds, with no features: decoding only.
+# expands it; the library line source decodes the per-row frames of
+# `line_content.content` (a `seforim.db` with `zstd_dict`). The version tantivy
+# already builds, with no features: decoding only.
 zstd = { version = "0.13", default-features = false }
 # A vector plan names each embedded text by its full SHA-256. Same crate and major version
 # the semantic sidecar hashes with.
