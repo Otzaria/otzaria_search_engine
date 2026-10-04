@@ -2968,6 +2968,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// FNV-1a מצטבר — הבסיס לכל חתימות התוכן. `feed_field` מקדים קידומת-אורך
 /// כדי ששרשורי שדות שונים לא יתלכדו ("אב"+"ג" מול "א"+"בג").
+#[derive(Clone, Copy)]
 struct Fnv(u64);
 
 impl Fnv {
@@ -3071,23 +3072,56 @@ const LINE_DEDUP_MIN_LETTERS: usize = 12;
 /// 0 שמור ל"אין חתימה" — פחות מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות
 /// *עבריות* (אלפאנומרי משתתף בחתימה אך אינו נספר לסף).
 fn line_dedup_hash(normalized_text: &str) -> u64 {
-    let mut fnv = Fnv::new();
-    let mut letters = 0usize;
-    let mut buf = [0u8; 4];
-    for c in normalized_text.chars() {
-        if ('א'..='ת').contains(&c) {
-            letters += 1;
-        } else if !c.is_alphanumeric() {
-            continue;
-        }
-        for lower in c.to_lowercase() {
-            fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
+    let mut hasher = LineDedupHasher::new();
+    hasher.feed(normalized_text);
+    hasher.finish()
+}
+
+/// [`line_dedup_hash`] of `parts` joined with spaces, a part more each time: spaces take no
+/// part in it, so each part is fed once.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn line_dedup_hashes<'a>(parts: &'a [&str]) -> impl Iterator<Item = u64> + 'a {
+    let mut hasher = LineDedupHasher::new();
+    parts.iter().map(move |part| {
+        hasher.feed(part);
+        hasher.finish()
+    })
+}
+
+/// [`line_dedup_hash`], fed in parts.
+struct LineDedupHasher {
+    fnv: Fnv,
+    letters: usize,
+}
+
+impl LineDedupHasher {
+    fn new() -> Self {
+        Self {
+            fnv: Fnv::new(),
+            letters: 0,
         }
     }
-    if letters < LINE_DEDUP_MIN_LETTERS {
-        return 0;
+
+    fn feed(&mut self, text: &str) {
+        let mut buf = [0u8; 4];
+        for c in text.chars() {
+            if ('א'..='ת').contains(&c) {
+                self.letters += 1;
+            } else if !c.is_alphanumeric() {
+                continue;
+            }
+            for lower in c.to_lowercase() {
+                self.fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
+            }
+        }
     }
-    fnv.finish()
+
+    fn finish(&self) -> u64 {
+        if self.letters < LINE_DEDUP_MIN_LETTERS {
+            return 0;
+        }
+        self.fnv.finish()
+    }
 }
 
 /// Mirrors the Dart `IndexingDocumentBuilder._updateReferenceTrail`: a new
@@ -20655,6 +20689,18 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn line_dedup_hashes_are_the_hashes_of_the_parts_joined() {
+        let parts = ["אמר", "רבי עקיבא,", "", "כל ישראל", "יש להם חלק 15", "A"];
+        let hashes: Vec<u64> = line_dedup_hashes(&parts).collect();
+        for (at, hash) in hashes.iter().enumerate() {
+            assert_eq!(*hash, line_dedup_hash(&parts[..=at].join(" ")), "{at}");
+        }
+        assert_eq!(hashes[2], 0);
+        assert_ne!(hashes[3], 0);
+    }
+
     #[test]
     fn bounded_groups_cap_keeps_counting_existing_groups() {
         // מילוי התקרה; קבוצה קיימת ממשיכה לצבור גם בתקרה, וקבוצות גרועות
@@ -21680,19 +21726,32 @@ mod tests {
         /// How many times the books below hold [`SHORT`] among lines of their own.
         const RECURS: usize = 300;
 
-        /// One book of five-line blocks, each [`SHORT`] with two lines on either side — the
-        /// window its key spans: the first block's own, `RECURS` blocks of `neighbour(n)`, and
-        /// the first block again, a real repeat of its text.
-        fn recurring(neighbour: impl Fn(usize) -> String) -> String {
-            let first = [
-                "ויקרא משה אל כל ישראל ויאמר אליהם",
-                "שמע ישראל את החוקים ואת המשפטים",
-                SHORT,
-                "אשר אנכי דובר באזניכם היום",
-                "ולמדתם אותם ושמרתם לעשותם",
-            ]
-            .join("\n");
-            let blocks = (0..RECURS).map(|block| {
+        /// [`SHORT`] in the window its key spans.
+        const FIRST: [&str; 5] = [
+            "ויקרא משה אל כל ישראל ויאמר אליהם",
+            "שמע ישראל את החוקים ואת המשפטים",
+            SHORT,
+            "אשר אנכי דובר באזניכם היום",
+            "ולמדתם אותם ושמרתם לעשותם",
+        ];
+
+        /// [`FIRST`] cut into lines at another space: the same key, other `lineHash`es.
+        const RESPLIT: [&str; 5] = [
+            "ויקרא משה אל כל ישראל",
+            "ויאמר אליהם שמע ישראל את החוקים ואת המשפטים",
+            SHORT,
+            FIRST[3],
+            FIRST[4],
+        ];
+
+        /// Blocks of [`SHORT`] in its window: `first`, `recurs` of `neighbour(n)`, `last`.
+        fn book_of(
+            first: &[&str; 5],
+            recurs: usize,
+            neighbour: impl Fn(usize) -> String,
+            last: &[&[&str; 5]],
+        ) -> String {
+            let blocks = (0..recurs).map(|block| {
                 let n = 4 * block;
                 [
                     neighbour(n),
@@ -21703,11 +21762,26 @@ mod tests {
                 ]
                 .join("\n")
             });
-            std::iter::once(first.clone())
+            std::iter::once(first.join("\n"))
                 .chain(blocks)
-                .chain(std::iter::once(first))
+                .chain(last.iter().map(|block| block.join("\n")))
                 .collect::<Vec<_>>()
                 .join("\n")
+        }
+
+        /// [`FIRST`], `RECURS` blocks of `neighbour(n)`, and [`FIRST`] again.
+        fn recurring(neighbour: impl Fn(usize) -> String) -> String {
+            book_of(&FIRST, RECURS, neighbour, &[&FIRST])
+        }
+
+        /// The line of each result of `response` that is [`SHORT`], in the page's order.
+        fn shorts(response: &SemanticSearchResponse) -> Vec<u64> {
+            response
+                .results
+                .iter()
+                .filter(|result| result.snippet_html == SHORT)
+                .map(|result| result.segment)
+                .collect()
         }
 
         /// The text of `block`'s short line as it is embedded: what a query must repeat for
@@ -21809,6 +21883,89 @@ mod tests {
                 recomputes <= 4 * MAX_FAILED_REPEATS as u64,
                 "{recomputes} keys recomputed"
             );
+        }
+
+        /// A text held three times, once cut into lines at other spaces, after a line that
+        /// fails: all three are shown, with the column or without.
+        #[test]
+        fn a_repeat_whose_lines_are_cut_at_other_spaces_is_found_with_the_column_or_without() {
+            let text = book_of(
+                &FIRST,
+                1,
+                |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
+                &[&RESPLIT, &FIRST],
+            );
+            for version_4 in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let engine = open(&dir, built_of(&dir, version_4, text.clone()));
+
+                let response = semantic_page(&engine, &window(&text, 0), 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let shorts = shorts(&response);
+                assert_eq!(
+                    shorts.get(..3),
+                    Some(&[2, 12, 17][..]),
+                    "version 4: {version_4}; every line of the text, first: {shorts:?}"
+                );
+            }
+        }
+
+        /// R2's shape at the size of the library's worst book: a failed recompute per hit,
+        /// and the real repeats, however they are cut into lines, still shown.
+        #[test]
+        fn a_short_line_among_nine_hundred_others_costs_one_failure_and_keeps_every_repeat() {
+            let dir = TempDir::new().unwrap();
+            let recurs = 900;
+            let text = book_of(
+                &FIRST,
+                recurs,
+                |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
+                &[&RESPLIT, &FIRST],
+            );
+            let engine = open(&dir, built_of(&dir, true, text.clone()));
+
+            let response = semantic_page(&engine, &window(&text, 0), 10);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let repeats = [5 * (recurs as u64 + 1) + 2, 5 * (recurs as u64 + 2) + 2];
+            assert_eq!(shorts(&response)[..3], [2, repeats[0], repeats[1]]);
+            let (recomputes, worst) = resolver_counts(&engine);
+            assert_eq!(worst, 1, "failed recomputes of the worst hit");
+            assert!(recomputes < 20, "{recomputes} keys recomputed");
+        }
+
+        /// A real repeat behind more candidates the columns cannot tell from it than the budget
+        /// allows is shown with the column, and not without it.
+        #[test]
+        fn a_repeat_past_the_budget_is_found_only_with_the_column() {
+            let first = ["פסוק א", "פסוק ב", SHORT, "פסוק ג", "פסוק ד"];
+            let recurs = 2 * MAX_FAILED_REPEATS;
+            let text = book_of(&first, recurs, |n| format!("פסוק {n}"), &[&first]);
+            let repeat = 5 * (recurs as u64 + 1) + 2;
+            for version_4 in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let engine = open(&dir, built_of(&dir, version_4, text.clone()));
+
+                let response = semantic_page(&engine, &window(&text, 0), 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let shorts = shorts(&response);
+                assert!(shorts.contains(&2), "{shorts:?}");
+                assert_eq!(shorts.contains(&repeat), !version_4, "{shorts:?}");
+                if version_4 {
+                    assert_eq!(resolver_counts(&engine).1, MAX_FAILED_REPEATS);
+                }
+            }
         }
 
         /// A filtered search after a commit that left the book it admits alone plans again —

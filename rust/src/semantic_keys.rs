@@ -22,12 +22,16 @@
 //! opened by all of them. Public on the Rust side alone, for the tools and tests that hold
 //! the recipe to the one a model publishes.
 
+#[cfg(feature = "semantic-integration")]
+use crate::api::search_engine::line_dedup_hashes;
 use crate::api::search_engine::LINE_TEXT_VERSION;
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef, KEY_VERSION};
 use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
 use rayon::prelude::*;
+#[cfg(feature = "semantic-integration")]
+use std::collections::HashMap;
 use tantivy::schema::Value;
 use tantivy::{DocAddress, Searcher, TantivyDocument};
 
@@ -224,99 +228,125 @@ pub(crate) fn context_window(
     Some(start..=end)
 }
 
-/// What the text a line's key is computed from says of the lines that can hold the same key,
-/// as far as their `lineHash` column can tell it without reading them: what lets the lines
-/// of one text be told apart before a key is recomputed for any of them.
-///
-/// A line under `min_meaningful_chars` is keyed over its neighbours as well, so the lines of
-/// a short text that recurs throughout a book share its `lineHash` and almost none its key —
-/// and recomputing one reads five documents. A line holds the key only if its window spells
-/// the same text, and two equal texts have equal `lineHash`es, so a window whose
-/// `lineHash`es cannot spell it is passed over unread. [`Self::admits`] says which.
-///
-/// That holds as long as the text is cut into lines the same way in both places — the
-/// recipe joins lines with a space, so one line could in principle be two elsewhere — and
-/// for an index whose stored lines are trimmed, with no run of spaces, as
+/// What a short line's key says of the lines that can hold it, from their windows'
+/// `lineHash`es alone. Sound as long as stored lines are trimmed and single-spaced, as
 /// `normalize_text_for_indexing` stores them.
 #[cfg(feature = "semantic-integration")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum KeySpan {
-    /// A line long enough to stand alone: its key is its own text, and its `lineHash` is all
-    /// a line holding it must share.
-    Alone,
-    /// A short line's key, over the lines of its [`context_window`] joined.
-    Joined {
-        /// The `lineHash` of each line a line holding the key must hold the same text as, in
-        /// order: from the window's first line that is not blank, every line the text holds
-        /// whole and with room after it — the cap cannot have cut there.
-        hashes: Vec<u64>,
-        /// Whether that is the whole text, short enough that nothing could follow it in the
-        /// window without changing the key: a line holding it then holds exactly these, and
-        /// otherwise begins with them.
-        whole: bool,
-    },
+pub(crate) struct KeySpan {
+    /// The key's text, when no window that does not join to it can hold the key: not for a
+    /// line that stands alone, a text the cap may have cut, or one a line alone could be.
+    words: Option<Words>,
+    /// The first `lineHash` of the line's window that is not 0.
+    lead: Option<u64>,
+}
+
+/// A text cut at each space, and the `lineHash` of every run of its words a line can be.
+#[cfg(feature = "semantic-integration")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Words {
+    /// Where two spaces meet: a blank line's place.
+    empty: Vec<bool>,
+    /// Each run of words that are not empty, `(first, last)`, by its `lineHash`.
+    runs: HashMap<u64, Vec<(usize, usize)>>,
 }
 
 #[cfg(feature = "semantic-integration")]
 impl KeySpan {
-    /// The span of the key of a short line whose [`context_window`] holds `texts`, as the
-    /// index stores them, with the `lineHash`es `hashes`.
-    pub(crate) fn joined(texts: &[&str], hashes: &[u64]) -> Self {
-        let chunking = production_chunking();
-        // After the last character the cap keeps of a line, a separator, a blank line's
-        // separator for each blank line, and the next line's first character: within this
-        // many of the cap, a window could go on past it without changing the key.
-        let room = 2 * chunking.context_window_lines + 1;
-        let joined = texts.join(" ");
-        let lead = joined.chars().count() - joined.trim_start().chars().count();
-        let whole = joined.trim().chars().count() + room <= chunking.max_chunk_chars;
-        let blank = |text: &&str| text.trim().is_empty();
-        let first = texts.iter().position(|text| !blank(text));
-        let last = texts.iter().rposition(|text| !blank(text));
-        let (Some(first), Some(last)) = (first, last) else {
-            return Self::Joined {
-                hashes: Vec::new(),
-                whole,
-            };
-        };
-        let mut kept = Vec::new();
-        let mut end = 0usize;
-        for (index, text) in texts.iter().enumerate().take(last + 1) {
-            if index > 0 {
-                end += 1;
-            }
-            end += text.chars().count();
-            if index < first {
-                continue;
-            }
-            if !whole && end.saturating_sub(lead) + room > chunking.max_chunk_chars {
-                break;
-            }
-            kept.push(hashes[index]);
-        }
-        Self::Joined {
-            hashes: kept,
-            whole,
+    /// Any line may hold the key.
+    pub(crate) const ANY: Self = Self {
+        words: None,
+        lead: None,
+    };
+
+    /// The span of the key of a short line whose [`context_window`] holds `texts`, the line's
+    /// own `lineHash` being `own`.
+    pub(crate) fn joined(texts: &[&str], own: u64) -> Self {
+        let lead = texts
+            .iter()
+            .filter_map(|&text| line_dedup_hashes(&[text]).next())
+            .find(|&hash| hash != 0);
+        Self {
+            words: Words::of(texts, own),
+            lead,
         }
     }
 
     /// Whether a line whose [`context_window`] — were the line short — has the `lineHash`es
-    /// `window` can hold the key this is the span of. `false` only for one that cannot,
-    /// within what [`KeySpan`] assumes: a window's blank lines at either end are not part of
-    /// the text, and a blank line's `lineHash` is 0, so a 0 at either end may be one.
+    /// `window` can hold the key: whether those lines, in order, can join to its text.
     pub(crate) fn admits(&self, window: &[u64]) -> bool {
-        let Self::Joined { hashes, whole } = self else {
-            return true;
-        };
-        let leading = window.iter().take_while(|&&hash| hash == 0).count();
-        (0..=leading).any(|skipped| {
-            let rest = &window[skipped..];
-            if !whole {
-                return rest.starts_with(hashes);
+        self.words.as_ref().is_none_or(|words| words.admit(window))
+    }
+
+    /// Whether `window` begins as the line's own does: the likelier to hold the key.
+    pub(crate) fn leads(&self, window: &[u64]) -> bool {
+        self.lead
+            .is_none_or(|lead| window.iter().find(|&&hash| hash != 0) == Some(&lead))
+    }
+}
+
+#[cfg(feature = "semantic-integration")]
+impl Words {
+    fn of(texts: &[&str], own: u64) -> Option<Self> {
+        let chunking = production_chunking();
+        // A window the cap cuts keeps the key only past a run of spaces, shorter than this.
+        let room = 2 * chunking.context_window_lines + 1;
+        let joined = texts.join(" ");
+        let text = joined.trim();
+        let length = text.chars().count();
+        if length == 0 || length + room > chunking.max_chunk_chars {
+            return None;
+        }
+        let words: Vec<&str> = text.split(' ').collect();
+        let mut runs: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
+        for first in 0..words.len() {
+            let end = words[first..]
+                .iter()
+                .position(|word| word.is_empty())
+                .map_or(words.len(), |run| first + run);
+            let hashes = line_dedup_hashes(&words[first..end]);
+            for (last, hash) in (first..end).zip(hashes) {
+                runs.entry(hash).or_default().push((first, last));
             }
-            let trailing = rest.iter().rev().take_while(|&&hash| hash == 0).count();
-            (0..=trailing).any(|cut| rest[..rest.len() - cut] == hashes[..])
+        }
+        // A line that stands alone is keyed as its own text, whatever its window.
+        let alone = runs
+            .get(&own)
+            .is_some_and(|found| found.contains(&(0, words.len() - 1)));
+        if alone && length >= chunking.min_meaningful_chars {
+            return None;
+        }
+        Some(Self {
+            empty: words.iter().map(|word| word.is_empty()).collect(),
+            runs,
         })
+    }
+
+    fn admit(&self, window: &[u64]) -> bool {
+        let count = self.empty.len();
+        // `at[w]`: the lines so far can be the words before `w`.
+        let mut at = vec![false; count + 1];
+        let mut next = vec![false; count + 1];
+        at[0] = true;
+        for &hash in window {
+            next.fill(false);
+            if hash == 0 {
+                // Blank: trimmed before or after the text, or where two spaces meet.
+                next[0] = at[0];
+                next[count] = at[count];
+                for word in 0..count {
+                    next[word + 1] |= at[word] && self.empty[word];
+                }
+            }
+            for &(first, last) in self.runs.get(&hash).into_iter().flatten() {
+                next[last + 1] |= at[first];
+            }
+            if !next.contains(&true) {
+                return false;
+            }
+            std::mem::swap(&mut at, &mut next);
+        }
+        at[count]
     }
 }
 
@@ -634,15 +664,9 @@ mod tests {
             }
         }
 
-        /// What [`KeySpan`] reads of a line's `lineHash`: equal for equal texts, and 0 for a
-        /// blank line and one under twelve Hebrew letters, as `line_dedup_hash` gives it.
+        /// The index's `lineHash` of a line.
         fn line_hash(text: &str) -> u64 {
-            if text.chars().filter(|c| ('א'..='ת').contains(c)).count() < 12 {
-                return 0;
-            }
-            text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-            })
+            line_dedup_hashes(&[text]).next().unwrap()
         }
 
         /// A book of lines with no space inside them — so a text is cut into lines one way
@@ -681,6 +705,43 @@ mod tests {
                 .collect()
         }
 
+        /// Blocks of up to three lines, each a section, so a short line's key is its block's
+        /// words; half of them an earlier block's words cut at other spaces.
+        fn recut(next: &mut impl FnMut(u64) -> u64) -> (Vec<String>, Vec<u64>) {
+            const WORDS: [&str; 5] = ["אבגדה", "וזחטי", "כלמנס", "עפ,", "צקרשת"];
+            let mut blocks: Vec<Vec<&str>> = Vec::new();
+            let (mut texts, mut sections) = (Vec::new(), Vec::new());
+            for section in 0..next(12) + 1 {
+                let words = match blocks.len() {
+                    0 => None,
+                    seen => Some(blocks[next(seen as u64) as usize].clone()),
+                }
+                .filter(|_| next(2) == 0)
+                .unwrap_or_else(|| {
+                    (0..next(8) + 1)
+                        .map(|_| WORDS[next(WORDS.len() as u64) as usize])
+                        .collect()
+                });
+                let mut lines: Vec<String> = Vec::new();
+                let mut line: Vec<&str> = Vec::new();
+                for (at, word) in words.iter().enumerate() {
+                    line.push(word);
+                    if at + 1 < words.len() && lines.len() < 2 && next(3) == 0 {
+                        lines.push(line.join(" "));
+                        line.clear();
+                    }
+                }
+                lines.push(line.join(" "));
+                if lines.len() < 3 && next(4) == 0 {
+                    lines.insert(next(lines.len() as u64 + 1) as usize, String::new());
+                }
+                sections.extend(std::iter::repeat_n(section, lines.len()));
+                texts.extend(lines);
+                blocks.push(words);
+            }
+            (texts, sections)
+        }
+
         fn is_short(text: &str) -> bool {
             text.trim().chars().count() < production_chunking().min_meaningful_chars
         }
@@ -715,15 +776,18 @@ mod tests {
             }
         }
 
-        /// The point of [`KeySpan`]: a line that holds the key is never passed over — every
-        /// pair of lines of a book with one key, whatever their windows' shapes, blank lines
-        /// at either end or the cap — and lines that do not hold it are.
+        /// No line that can be a candidate and holds the key is passed over, however its window
+        /// is cut into lines; most that do not hold it are.
         #[test]
         fn a_line_that_holds_the_key_is_never_passed_over() {
             let mut next = sequence(0xa11ce);
-            let (mut shared, mut passed_over) = (0, 0);
-            for _ in 0..400 {
-                let (texts, sections) = book(&mut next);
+            let (mut shared, mut recut_shared, mut passed_over) = (0, 0, 0);
+            for round in 0..800 {
+                let (texts, sections) = if round % 2 == 0 {
+                    book(&mut next)
+                } else {
+                    recut(&mut next)
+                };
                 let lines = lines(&texts, &sections);
                 let keys = PRODUCTION_CHUNKER.chunk_keys(&lines);
                 let hashes: Vec<u64> = texts.iter().map(|text| line_hash(text)).collect();
@@ -733,17 +797,23 @@ mod tests {
                 for (position, key) in keys.iter().enumerate() {
                     let Some(key) = key else { continue };
                     let span = if is_short(&texts[position]) {
-                        let window = window(position);
                         let texts: Vec<&str> =
-                            texts[window.clone()].iter().map(String::as_str).collect();
-                        KeySpan::joined(&texts, &hashes[window])
+                            texts[window(position)].iter().map(String::as_str).collect();
+                        KeySpan::joined(&texts, hashes[position])
                     } else {
-                        KeySpan::Alone
+                        KeySpan::ANY
                     };
                     for other in (0..lines.len()).filter(|&other| other != position) {
                         let admitted = span.admits(&hashes[window(other)]);
-                        if keys[other] == Some(*key) {
+                        // The resolver's candidates share the line's `lineHash`; a short line
+                        // is held to its window whatever its own.
+                        let candidate =
+                            hashes[other] == hashes[position] || is_short(&texts[other]);
+                        if keys[other] == Some(*key) && candidate {
                             shared += 1;
+                            if hashes[window(other)] != hashes[window(position)] {
+                                recut_shared += 1;
+                            }
                             assert!(
                                 admitted,
                                 "line {other} holds line {position}'s key: {texts:?} in \
@@ -756,58 +826,57 @@ mod tests {
                 }
             }
             assert!(shared > 1_000, "{shared} pairs shared a key");
+            assert!(recut_shared > 1_000, "{recut_shared} pairs were cut apart");
             assert!(passed_over > 10_000, "{passed_over} pairs were passed over");
         }
 
-        /// A short line's span, by hand: blank lines at the ends are not part of it, a window
-        /// must spell all of it while the text is whole, and begin with what the cap leaves
-        /// whole otherwise.
+        /// A short line's span by hand.
         #[test]
-        fn a_span_is_the_lines_its_text_holds_whole() {
-            let (a, x, b) = (11, 22, 33);
-            let span = KeySpan::joined(&["", "אלף", "בית", "גימל"], &[0, a, x, b]);
-            assert_eq!(
-                span,
-                KeySpan::Joined {
-                    hashes: vec![a, x, b],
-                    whole: true
-                }
-            );
-            assert!(span.admits(&[a, x, b]));
-            assert!(span.admits(&[0, a, x, b, 0]));
-            assert!(!span.admits(&[a, x]));
-            assert!(!span.admits(&[a, x, b, 44]));
-            assert!(!span.admits(&[44, a, x, b]));
-            assert!(!span.admits(&[a, 44, b]));
+        fn a_span_admits_every_cut_of_its_text_and_nothing_else() {
+            let short = "ויאמר משה אל העם";
+            let window = [
+                "ויקרא משה אל כל ישראל ויאמר אליהם",
+                "שמע ישראל את החוקים ואת המשפטים",
+                short,
+                "אשר אנכי דובר באזניכם היום",
+                "ולמדתם אותם ושמרתם לעשותם",
+            ];
+            let hashes =
+                |texts: &[&str]| -> Vec<u64> { texts.iter().map(|t| line_hash(t)).collect() };
+            let own = hashes(&window);
+            let span = KeySpan::joined(&window, line_hash(short));
+            assert!(span.admits(&own) && span.leads(&own));
+            // Its first two lines cut at another space: admitted, and tried after those that
+            // begin as it does.
+            let resplit = hashes(&[
+                "ויקרא משה אל כל ישראל",
+                "ויאמר אליהם שמע ישראל את החוקים ואת המשפטים",
+                short,
+                window[3],
+                window[4],
+            ]);
+            assert!(span.admits(&resplit) && !span.leads(&resplit));
+            // Blank lines at either end are trimmed.
+            assert!(span.admits(&[&[0][..], &own[..]].concat()));
+            assert!(span.admits(&[&own[..], &[0]].concat()));
+            // Out of order, short of the text, past it, or with a line it does not hold.
+            assert!(!span.admits(&[own[1], own[0], own[2], own[3], own[4]]));
+            assert!(!span.admits(&own[..4]));
+            assert!(!span.admits(&[&own[1..], &[line_hash("שורה אחרת שאינה בטקסט כלל")]].concat()));
+            assert!(!span.admits(&[own[0], own[1], own[2], 0, own[4]]));
 
-            // Cut by the cap inside the line after the short one: only what precedes the cut,
-            // with room after it, is what a line must share.
+            // A blank line inside the text is a place two spaces meet.
+            let span = KeySpan::joined(&[window[0], "", short], line_hash(short));
+            assert!(span.admits(&[own[0], 0, own[2]]));
+            assert!(!span.admits(&[own[0], own[2]]));
+
+            // A text the cap may cut, and one a line standing alone could be, rule nothing out.
             let long = "א".repeat(600);
-            let span = KeySpan::joined(&["אלף", &long], &[x, 55]);
-            assert_eq!(
-                span,
-                KeySpan::Joined {
-                    hashes: vec![x],
-                    whole: false
-                }
-            );
-            assert!(span.admits(&[x, 66, 77]));
-            assert!(span.admits(&[0, x]));
-            assert!(!span.admits(&[a, x]));
-
-            // A line the cap cuts before the short one: nothing to share, so nothing to rule
-            // out — the budget behind the span is what bounds it.
-            let span = KeySpan::joined(&[&long, "אלף"], &[55, x]);
-            assert_eq!(
-                span,
-                KeySpan::Joined {
-                    hashes: Vec::new(),
-                    whole: false
-                }
-            );
-            assert!(span.admits(&[a, b]));
-
-            assert!(KeySpan::Alone.admits(&[a, b]));
+            let anything = [line_hash("שורה אחרת שאינה בטקסט כלל"), 0, 7];
+            for texts in [[short, &long, ""], ["—", short, "—"]] {
+                assert!(KeySpan::joined(&texts, line_hash(short)).admits(&anything));
+            }
+            assert!(KeySpan::ANY.admits(&anything) && KeySpan::ANY.leads(&anything));
         }
 
         /// Within a few characters of the cap a window can go on without changing its key:
@@ -836,7 +905,7 @@ mod tests {
                 };
                 let own = window(1);
                 let own_texts: Vec<&str> = texts[own.clone()].iter().map(String::as_str).collect();
-                let span = KeySpan::joined(&own_texts, &hashes[own]);
+                let span = KeySpan::joined(&own_texts, hashes[1]);
                 assert!(
                     span.admits(&hashes[window(3)]),
                     "{blanks} blank line(s): {span:?}"
