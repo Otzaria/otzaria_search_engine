@@ -671,6 +671,22 @@ are now documented as development and testing scaffolding, not for the library.
   record, and G6 a set with no live key (a recall of 1.0 against 0 keys), so an
   empty index or set could be published. Each now fails; the report's fields
   are unchanged, and a share of none shows as `n/a`, not 100%.
+- **A commit on Windows no longer fails with "Access is denied" while something
+  holds `meta.json` open.** tantivy replaces `meta.json` on every commit and
+  merge, and `.managed.json` for every new segment file, by renaming a
+  temporary file over it, and Windows refuses that rename while any handle is
+  open on the file: the reader's own meta-file watcher, which opens `meta.json`
+  every 500 ms, an antivirus scan, or the search indexer. The commit failed
+  with `An IO error occurred: 'Access is denied. (os error 5)'`, intermittently
+  in Windows CI, and `optimize` or a background merge failed the same way. On
+  Windows the index's directory now replaces them with `std::fs::rename`, which
+  falls back to POSIX semantics, so a handle that shares delete access no longer
+  blocks it; a holder that does not is waited out for up to about two seconds.
+  A refusal that lasts longer is returned as before, and the next commit writes
+  what the failed one did not.
+- **`otzaria_index_meta.json` is replaced atomically.** It was rewritten in
+  place, so a crash mid-write left truncated JSON and the chunk-key recipe was
+  lost without a warning; an unreadable one is now logged at warn.
 
 ## 0.9.0 – 2026-10-04
 

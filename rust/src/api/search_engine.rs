@@ -14,7 +14,6 @@ use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
-use tantivy::directory::MmapDirectory;
 use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
@@ -36,6 +35,7 @@ use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::highlight_matcher as display_highlight_matcher;
+use crate::index_directory::{atomic_replace, IndexDirectory};
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
@@ -3360,7 +3360,7 @@ fn write_current_index_metadata(index_path: &Path) -> Result<()> {
 fn write_index_metadata(index_path: &Path, metadata: &IndexMetadata) -> Result<()> {
     let metadata_path = index_metadata_path(index_path);
     let serialized = serde_json::to_string_pretty(metadata)?;
-    fs::write(&metadata_path, format!("{serialized}\n")).with_context(|| {
+    atomic_replace(&metadata_path, format!("{serialized}\n").as_bytes()).with_context(|| {
         format!(
             "failed to write index metadata to {}",
             metadata_path.display()
@@ -3392,8 +3392,18 @@ fn index_metadata(schema_version: u32, chunk_keys: Option<ChunkKeyRecipe>) -> In
 
 /// The metadata an index directory holds, when it holds metadata this engine reads.
 fn read_index_metadata(index_path: &Path) -> Option<IndexMetadata> {
-    let raw = fs::read_to_string(index_metadata_path(index_path)).ok()?;
-    serde_json::from_str(&raw).ok()
+    let path = index_metadata_path(index_path);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            warn!("index metadata {} is unreadable: {err}", path.display());
+            return None;
+        }
+    };
+    serde_json::from_str(&raw)
+        .inspect_err(|err| warn!("index metadata {} is invalid: {err}", path.display()))
+        .ok()
 }
 
 /// The index's `chunkKey` column, when it has one written under this build's recipe.
@@ -3422,7 +3432,7 @@ pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option
 /// refuses it under [`current_schema`], and it is opened again under the schema of each
 /// older version in turn. A schema none of them is stays refused, as the `SchemaError`
 /// `open_or_create` returns.
-fn open_or_create_index(directory: MmapDirectory) -> tantivy::Result<Index> {
+fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
     let mut opened = Index::open_or_create(directory.clone(), current_schema());
     for version in (MIN_READABLE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).rev() {
         if !matches!(opened, Err(tantivy::TantivyError::SchemaError(_))) {
@@ -3711,8 +3721,9 @@ impl SearchEngine {
     pub fn new(path: &str) -> Self {
         init_engine_logger();
         debug!("new path={}", path);
-        let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = match open_or_create_index(mmap_directory) {
+        let directory =
+            IndexDirectory::open(Path::new(path)).expect("unable to open mmap directory");
+        let index = match open_or_create_index(directory) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -3795,7 +3806,7 @@ impl SearchEngine {
             .searchable_segment_ids()
             .is_ok_and(|segments| segments.is_empty());
         if let Err(err) = ensure_current_index_metadata(Path::new(path), empty) {
-            debug!("failed to ensure index metadata: {err:#}");
+            warn!("failed to ensure index metadata: {err:#}");
         }
         let chunk_key_field = live_chunk_key_field(&schema, Path::new(path));
 
@@ -13123,7 +13134,7 @@ mod tests {
             b.add_text_field("filePath", TEXT | STORED);
             b.add_facet_field("topics", FacetOptions::default());
             let old_schema = b.build();
-            let mmap = MmapDirectory::open(dir.path()).unwrap();
+            let mmap = tantivy::directory::MmapDirectory::open(dir.path()).unwrap();
             Index::open_or_create(mmap, old_schema).unwrap();
         }
 
@@ -15072,6 +15083,49 @@ mod tests {
         assert!(after.contains(&large_id));
         assert_eq!(engine.get_document_count(), 9);
         assert_eq!(count_hits(&engine, "שלום"), 9);
+    }
+
+    // A handle like the one the reader's meta-file watcher opens every 500 ms: replacing
+    // meta.json under it failed the commit with "Access is denied. (os error 5)".
+    #[cfg(windows)]
+    #[test]
+    fn replace_meta_json_while_a_reader_holds_it() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/1.txt");
+        let held = fs::File::open(dir.path().join("meta.json")).unwrap();
+        engine.commit().unwrap();
+        drop(held);
+        assert_eq!(count_hits(&engine, "שלום"), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replace_meta_json_held_past_the_retries_fails_and_the_next_commit_recovers() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/1.txt");
+        // FILE_SHARE_READ | FILE_SHARE_WRITE: no delete sharing, which blocks even std's rename.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(dir.path().join("meta.json"))
+            .unwrap();
+        let error = engine.commit().unwrap_err();
+        assert!(error.to_string().contains("os error 5"), "{error}");
+        drop(held);
+        engine.commit().unwrap();
+        assert_eq!(count_hits(&engine, "שלום"), 1);
+    }
+
+    #[test]
+    fn index_metadata_survives_a_write_that_fails_before_its_rename() {
+        let dir = TempDir::new().unwrap();
+        write_index_metadata(dir.path(), &index_metadata(4, None)).unwrap();
+        let before = fs::read(index_metadata_path(dir.path())).unwrap();
+        crate::index_directory::fail_next_rename();
+        assert!(write_current_index_metadata(dir.path()).is_err());
+        assert_eq!(fs::read(index_metadata_path(dir.path())).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     /// גדלים סינתטיים: כאן נבדק הכלל עצמו, בלי לתלות אותו בגודל שסגמנט
