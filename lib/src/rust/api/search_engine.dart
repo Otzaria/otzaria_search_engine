@@ -4,11 +4,12 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `escape_regex_term`, `exact_highlight_plan`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_patterns`, `lexical_phrase_per_word_terms`, `library_book_id`, `library_storage_or_fallback`, `line_dedup_hash`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `terms_regex_union`, `text_index_analyzer`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_book_id`, `library_storage_or_fallback`, `line_dedup_hash`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `text_index_analyzer`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -1249,12 +1250,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
     HighlightConfig? highlight,
   });
 
-  /// Search through the sidecar exactly once. Tantivy supplies scored lexical
-  /// candidates; the sidecar's coordinator alone performs hybrid fusion/grouping.
-  /// Semantic-only items are hydrated from Tantivy before crossing FFI. The
-  /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
-  /// development session, except that a stale artifact (the index committed
-  /// to since it was opened) is not asked, and the lexical fallback says why.
+  /// Search through the sidecar. Tantivy supplies scored lexical candidates, beside the
+  /// sidecar's semantic half rather than before it; the sidecar's coordinator alone performs
+  /// hybrid fusion/grouping. Semantic-only items are hydrated from Tantivy before crossing
+  /// FFI. The same for an artifact opened with [`Self::open_semantic_artifact`] and a
+  /// development session.
+  ///
+  /// Pages continue one another: a search's results are kept in the order shown, so each
+  /// line and group appears once and a page asked again is the same page; a commit, a
+  /// library or semantic change, or ten idle minutes start afresh. `has_more` says whether a
+  /// page follows; the counts keep describing the last candidate window.
+  ///
+  /// A query with a quoted phrase is looked up verbatim: its lexical phase is `Exact`,
+  /// whatever `lexical_mode` asks. An acronym's gershayim (רמב"ם) quotes nothing.
   ///
   /// A semantic path that cannot serve is not an error here: the response falls
   /// back to lexical results and says why, in `fallback_reason` and, as a value
@@ -1262,8 +1270,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// failing, which is an `Internal` [`SemanticError`].
   ///
   /// `ranking` replaces, for this search, every parameter hybrid ranking runs on (see
-  /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by the preset
-  /// every search has used, exactly as before, and so does
+  /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by
   /// [`SemanticRankingOptions::defaults`]. An option outside its range is refused before the
   /// search runs, as `InvalidInput` naming it, whether or not a session is open to rank by
   /// it: a build without semantic support ignores the options.
@@ -1362,6 +1369,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// is: it answers which books this device should embed. On an opened
   /// artifact it is refused as read-only, since nothing there is re-indexed.
   Future<SemanticIndexDiff> semanticIndexDiff();
+
+  /// Marks the clause of each target's line nearest `query`, one per target in order; a line
+  /// that cannot be marked is not an error. Cancelled, it ends with a `Cancelled` error.
+  Future<List<SemanticPassageHighlight>> semanticPassageHighlights({
+    required String query,
+    required List<SemanticHighlightTarget> targets,
+    required SemanticCancellationToken cancellation,
+  });
 
   /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
   /// sidecar's engine lock, which indexing holds for the duration of one
@@ -2912,6 +2927,26 @@ enum SemanticFusionStrategy {
 
 enum SemanticGroupingMode { sameSection, identicalText }
 
+/// A semantic hit whose passage [`SearchEngine::semantic_passage_highlights`] should mark: the
+/// line, by its book and its id, as a [`SemanticSearchResult`] names it.
+class SemanticHighlightTarget {
+  final String filePath;
+  final BigInt id;
+
+  const SemanticHighlightTarget({required this.filePath, required this.id});
+
+  @override
+  int get hashCode => filePath.hashCode ^ id.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticHighlightTarget &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          id == other.id;
+}
+
 class SemanticIndexDiff {
   final bool enabled;
   final List<String> newBooks;
@@ -2996,6 +3031,45 @@ class SemanticIndexingSummary {
 
 enum SemanticLexicalMode { exact, fuzzy }
 
+/// A target's line centred on its clause nearest the query, escaped, the clause in `<mark>`; empty
+/// when nothing is marked. Separate from the result, whose own snippet stays as it was.
+class SemanticPassageHighlight {
+  final String filePath;
+  final BigInt id;
+  final String snippetHtml;
+  final bool isHighlighted;
+
+  /// The cosine of the marked clause and the query, from the one model that embedded both.
+  final double? spanScore;
+
+  const SemanticPassageHighlight({
+    required this.filePath,
+    required this.id,
+    required this.snippetHtml,
+    required this.isHighlighted,
+    this.spanScore,
+  });
+
+  @override
+  int get hashCode =>
+      filePath.hashCode ^
+      id.hashCode ^
+      snippetHtml.hashCode ^
+      isHighlighted.hashCode ^
+      spanScore.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticPassageHighlight &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          id == other.id &&
+          snippetHtml == other.snippetHtml &&
+          isHighlighted == other.isHighlighted &&
+          spanScore == other.spanScore;
+}
+
 /// The lexical weight `alpha` for each kind of query the sidecar tells apart, by the words
 /// in it; `1 - alpha` goes to the semantic side. Each a number from 0 to 1. The defaults are
 /// the weights the ranking has always used, and are unmeasured (see
@@ -3056,9 +3130,10 @@ class SemanticQueryTypeAlphas {
 /// in place of the ranking the engine uses when it is passed none. What lets the application
 /// calibrate and tune the ranking without a release of the engine.
 ///
-/// **The defaults are unmeasured placeholders.** They are the ranking the engine has always
-/// produced, the sidecar's `Balanced` preset value for value, and none has been checked
-/// against what a reader of this library finds relevant: each was reasoned from a scale (BM25's
+/// **The defaults are unmeasured placeholders.** They are the sidecar's `Balanced` preset but
+/// for the fusion, which is RRF, the semantic threshold, and the foundational books' preference,
+/// and none has been checked against what a reader of this library finds relevant: each was
+/// reasoned from a scale (BM25's
 /// typical range, a cosine of about 0.1 meaning unrelated) or carried over from the
 /// literature, as RRF's `k` of 60 is. Calibrating them needs a labelled relevance set, Hebrew
 /// queries of every type each with the lines judged relevant to it; a metric over the page a
@@ -3072,17 +3147,19 @@ class SemanticQueryTypeAlphas {
 ///
 /// | option | default | allowed |
 /// | --- | --- | --- |
-/// | `fusion_strategy` | `Weighted` | |
+/// | `fusion_strategy` | `Rrf` | |
 /// | `rrf_k` | 60 | at least 1, when `fusion_strategy` is `Rrf`; read by nothing else |
 /// | `alpha_override` | none | 0 to 1 |
 /// | `alpha_by_query_type` | 1, 0.85, 0.7, 0.5, 0.3, 0.5 | each 0 to 1 |
 /// | `bm25_saturation_k` | 10 | above 0 |
-/// | `semantic_threshold` | 0 | 0 to 1 |
+/// | `semantic_threshold` | 0.55 | 0 to 1 |
 /// | `agreement_bonus` | 0.1 | 0 to 1 |
 /// | `phrase_match_bonus`, `rare_term_bonus`, `section_coverage_bonus` | 0 | 0 to 1 |
 /// | `duplicate_penalty` | 0 | 0 to 1 |
 /// | `metadata_ranking_enabled` | false | |
 /// | `candidate_window_multiplier` | 2 | 1 to 10 |
+/// | `foundational_bonus` | 0.002 | 0 to 1 |
+/// | `foundational_candidate_share` | 0.5 | 0 to 1 |
 ///
 /// A value outside its range, or one that is not a number, is refused before the search runs,
 /// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
@@ -3135,13 +3212,21 @@ class SemanticRankingOptions {
   /// How many semantic candidates are fetched for each place in the candidate window.
   final double candidateWindowMultiplier;
 
+  /// Added once to the fused score of a line of a foundational book (under `/base`), in
+  /// every strategy and mode. Under RRF, 0.002 is about an eighth of a first rank's score.
+  final double foundationalBonus;
+
+  /// A second semantic query, restricted to the foundational books, fetches this share of
+  /// the main query's candidates; 0 runs none. Skipped when the facets already name `/base`.
+  final double foundationalCandidateShare;
+
   const SemanticRankingOptions({
-    this.fusionStrategy = SemanticFusionStrategy.weighted,
+    this.fusionStrategy = SemanticFusionStrategy.rrf,
     this.rrfK = 60,
     this.alphaOverride,
     this.alphaByQueryType = const SemanticQueryTypeAlphas(),
     this.bm25SaturationK = 10.0,
-    this.semanticThreshold = 0.0,
+    this.semanticThreshold = 0.55,
     this.agreementBonus = 0.1,
     this.phraseMatchBonus = 0.0,
     this.rareTermBonus = 0.0,
@@ -3149,6 +3234,8 @@ class SemanticRankingOptions {
     this.duplicatePenalty = 0.0,
     this.metadataRankingEnabled = false,
     this.candidateWindowMultiplier = 2.0,
+    this.foundationalBonus = 0.002,
+    this.foundationalCandidateShare = 0.5,
   });
 
   /// The ranking a search runs on when it is passed none, read from the engine: the defaults
@@ -3170,7 +3257,9 @@ class SemanticRankingOptions {
       sectionCoverageBonus.hashCode ^
       duplicatePenalty.hashCode ^
       metadataRankingEnabled.hashCode ^
-      candidateWindowMultiplier.hashCode;
+      candidateWindowMultiplier.hashCode ^
+      foundationalBonus.hashCode ^
+      foundationalCandidateShare.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3189,7 +3278,9 @@ class SemanticRankingOptions {
           sectionCoverageBonus == other.sectionCoverageBonus &&
           duplicatePenalty == other.duplicatePenalty &&
           metadataRankingEnabled == other.metadataRankingEnabled &&
-          candidateWindowMultiplier == other.candidateWindowMultiplier;
+          candidateWindowMultiplier == other.candidateWindowMultiplier &&
+          foundationalBonus == other.foundationalBonus &&
+          foundationalCandidateShare == other.foundationalCandidateShare;
 }
 
 class SemanticRemoveResult {
@@ -3271,6 +3362,10 @@ class SemanticSearchResponse {
   final bool candidateWindowTruncated;
   final bool truncated;
 
+  /// Whether a page after this one has a result: what paging asks, which the counts above
+  /// cannot tell, since they describe a candidate window rather than the results to come.
+  final bool hasMore;
+
   const SemanticSearchResponse({
     required this.results,
     required this.totalCount,
@@ -3285,6 +3380,7 @@ class SemanticSearchResponse {
     required this.latencyMs,
     required this.candidateWindowTruncated,
     required this.truncated,
+    this.hasMore = false,
   });
 
   @override
@@ -3301,7 +3397,8 @@ class SemanticSearchResponse {
       fallbackKind.hashCode ^
       latencyMs.hashCode ^
       candidateWindowTruncated.hashCode ^
-      truncated.hashCode;
+      truncated.hashCode ^
+      hasMore.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3320,7 +3417,8 @@ class SemanticSearchResponse {
           fallbackKind == other.fallbackKind &&
           latencyMs == other.latencyMs &&
           candidateWindowTruncated == other.candidateWindowTruncated &&
-          truncated == other.truncated;
+          truncated == other.truncated &&
+          hasMore == other.hasMore;
 }
 
 class SemanticSearchResult {
