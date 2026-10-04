@@ -120,6 +120,9 @@ impl MagicDictionary {
         .with_context(|| format!("opening lexical.db at {}", path.display()))?;
         conn.execute_batch("PRAGMA query_only = ON;")
             .context("setting query_only on lexical.db")?;
+        // Family rows are scattered; mapping avoids a read syscall per page miss.
+        // Best-effort (SQLite falls back to reads); winClose releases the view.
+        let _ = conn.execute_batch("PRAGMA mmap_size = 268435456;");
         // Preparing every query validates the schema here, so a wrong file
         // fails now instead of returning no expansions on every lookup.
         for sql in [
