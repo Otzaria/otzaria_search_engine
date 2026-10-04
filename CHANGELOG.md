@@ -723,8 +723,8 @@ are now documented as development and testing scaffolding, not for the library.
   process spawned meanwhile until it exec'd, so the next install could fail as
   `vectorsBusy` (one CI run in about a hundred). An install and a compaction
   now wait up to a second for the set's lock before they are refused; a second
-  one in this process is still refused at once. The sidecar's own fix,
-  unlocking explicitly, is Otzaria/otzaria-semantic-search#21, not pinned here.
+  one in this process is still refused at once. The sidecar unlocks the set
+  explicitly since 5d71ae5 (Otzaria/otzaria-semantic-search#21), pinned here.
 - **Reopening the index writer is not refused by a process spawned
   meanwhile.** tantivy's writer lock had the same flaw, so a writer reopened in
   this process could fail with `LockBusy`. The index's directory now takes its
