@@ -767,3 +767,114 @@ fn real_library_cross_line_cost() {
         );
     }
 }
+
+#[test]
+fn repeated_middle_word_uses_the_continuation_that_completes_the_phrase() {
+    let (e, _dir) = book_engine(&["אחת שתים שתים", "מילה שלש"]);
+    let results = advanced(&e, "אחת שתים שלש", 1);
+    assert_eq!(hits(&results), [(0, true)]);
+    assert_eq!(count_advanced(&e, "אחת שתים שלש", 1), 1);
+    let text = &results[0].text;
+    assert!(
+        text.contains("<font color=red>אחת</font> שתים <font color=red>שתים</font>"),
+        "{text}"
+    );
+    assert!(text.contains("<br>"), "{text}");
+    assert!(text.contains("<font color=red>שלש</font>"), "{text}");
+
+    let (e, _dir) = book_engine(&["אחת שתים שתים מילה שלש"]);
+    let results = advanced(&e, "אחת שתים שלש", 1);
+    assert_eq!(hits(&results), [(0, false)]);
+    assert!(
+        results[0].text.contains("<font color=red>שלש</font>"),
+        "{}",
+        results[0].text
+    );
+    assert_eq!(results[0].text.matches("<font").count(), 3);
+}
+
+#[test]
+fn a_single_acronym_renders_each_canonical_cross_line_expansion() {
+    use std::io::Write as _;
+    let (mut e, _dir) = book_engine(&[
+        "כתב רבי משה",
+        "בן מיימון בספרו",
+        "אמר רבינו משה",
+        "בן מימון בהלכות",
+        "אמר רמב\"ם בהלכות",
+        "דבר אחר",
+        "כתב רבי משה מילה",
+        "בן מיימון בספרו",
+    ]);
+    let mut dictionary = tempfile::NamedTempFile::new().unwrap();
+    dictionary
+        .write_all(r#"{"רמב\"ם":["רבי משה בן מיימון","רבינו משה בן מימון"]}"#.as_bytes())
+        .unwrap();
+    assert!(e.set_acronyms_dictionary_path(dictionary.path().to_string_lossy().into_owned()));
+    let options = HashMap::from([(
+        "רמב\"ם_0".to_string(),
+        HashMap::from([("ראשי תיבות".to_string(), true)]),
+    )]);
+    // The original query's distance must not relax canonical expansions.
+    let results = advanced_with(&e, "רמב\"ם", 2, options, "");
+    assert_eq!(hits(&results), [(0, true), (2, true), (4, false)]);
+    for (result, words) in results[..2].iter().zip([
+        ["רבי", "משה", "בן", "מיימון"],
+        ["רבינו", "משה", "בן", "מימון"],
+    ]) {
+        assert_eq!(result.text.matches("<br>").count(), 1, "{}", result.text);
+        for word in words {
+            assert!(
+                result
+                    .text
+                    .contains(&format!("<font color=red>{word}</font>")),
+                "{}",
+                result.text
+            );
+        }
+    }
+    assert_eq!(results[2].text.matches("<font").count(), 1);
+    assert!(!results[2].text.contains("<br>"));
+
+    // Reverse expansion: the main phrase can cross, while its single-term
+    // alternative is highlighted directly without attaching the next line.
+    let options = HashMap::from([(
+        "רבי_0".to_string(),
+        HashMap::from([("ראשי תיבות".to_string(), true)]),
+    )]);
+    let results = advanced_with(&e, "רבי משה בן מיימון", 0, options, "");
+    assert_eq!(hits(&results), [(0, true), (4, false)]);
+    assert_eq!(results[1].text.matches("<font").count(), 1);
+    assert!(!results[1].text.contains("<br>"));
+}
+
+#[test]
+fn acronym_snippets_paint_complete_alternatives_without_stray_expansion_words() {
+    use std::io::Write as _;
+    let (mut e, _dir) = book_engine(&["רמב\"ם רבי משה בן מיימון משה"]);
+    let mut dictionary = tempfile::NamedTempFile::new().unwrap();
+    dictionary
+        .write_all(r#"{"רמב\"ם":["רבי משה בן מיימון"]}"#.as_bytes())
+        .unwrap();
+    assert!(e.set_acronyms_dictionary_path(dictionary.path().to_string_lossy().into_owned()));
+    for (query, option) in [("רמב\"ם", "רמב\"ם_0"), ("רבי משה בן מיימון", "רבי_0")]
+    {
+        let options = HashMap::from([(
+            option.to_string(),
+            HashMap::from([("ראשי תיבות".to_string(), true)]),
+        )]);
+        let results = advanced_with(&e, query, 0, options, "");
+        assert_eq!(hits(&results), [(0, false)]);
+        assert_eq!(
+            results[0].text.matches("<font").count(),
+            5,
+            "{}",
+            results[0].text
+        );
+        assert!(
+            results[0].text.ends_with("</font> משה"),
+            "{}",
+            results[0].text
+        );
+    }
+}

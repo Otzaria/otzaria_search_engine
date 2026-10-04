@@ -2463,6 +2463,15 @@ struct PhraseHighlight {
     /// The search also matches the phrase across a line break (see [`cross_line`]): a
     /// hit without an in-line occurrence is shown joined with its next line.
     cross_line: bool,
+    /// Complete alternate phrases (e.g. an acronym's canonical expansion).
+    /// Each carries its own word count and gaps; no cross-alternative mixing.
+    alternatives: Vec<PhraseHighlight>,
+}
+
+impl PhraseHighlight {
+    fn variants(&self) -> impl Iterator<Item = &Self> {
+        std::iter::once(self).chain(self.alternatives.iter())
+    }
 }
 
 /// What a highlight-query builder resolves to: the flat term query that drives
@@ -11742,8 +11751,8 @@ impl SearchEngine {
     /// line, so every occurrence of every word variant is a true match to
     /// paint — flat term-union highlighting, no phrase filter.
     /// `acronym_alts` — חלופות פענוח ר"ת (תבניות-ליטרל פר-מילה): מילות כל
-    /// חלופה מתממשות ומצטרפות לאיחוד ההדגשה השטוח, כך שמסמך שנמצא דרך
-    /// החלופה ייצבע (דרך נפילת מסנן-הביטוי לצביעת-הטרמים הרחבה).
+    /// חלופה מתממשות ומצטרפות לאיחוד ההדגשה השטוח. במסלול המרחק נשמר
+    /// גם מסנן ביטוי נפרד לכל חלופה, עם המרווחים הקנוניים שלה.
     fn advanced_highlight_plan_for_scope(
         &self,
         searcher: &Searcher,
@@ -11797,19 +11806,28 @@ impl SearchEngine {
             "hebrew"
         };
         let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
-        // איחוד ההדגשה השטוח נושא גם את מילות חלופות הר"ת; מסנן-הביטוי
-        // נשאר של השאילתה הראשית בלבד (רק במסלול הרב-מילי) — פרגמנט
-        // שנמצא דרך חלופה נופל לצביעה הרחבה וכל מילות החלופה נצבעות.
         let mut all_word_sets = per_word_terms.clone();
+        let mut alternatives = Vec::with_capacity(acronym_alts.len());
         for alt in acronym_alts {
-            all_word_sets.extend(self.phrase_per_word_terms(searcher, alt, field)?);
+            let alt_terms = self.phrase_per_word_terms(searcher, alt, field)?;
+            all_word_sets.extend(alt_terms.iter().cloned());
+            alternatives.push(PhraseHighlight {
+                gaps: vec![0; alt_terms.len().saturating_sub(1)],
+                per_word_terms: alt_terms,
+                analyzer,
+                cross_line: !voc.any(),
+                alternatives: Vec::new(),
+            });
         }
         let query = self.terms_query_from_word_sets(&all_word_sets, field)?;
-        let phrase = (per_word_terms.len() >= 2).then(|| PhraseHighlight {
+        // A single-word main query still needs the expansion's phrase plan to
+        // detect and render a match that continues on the next line.
+        let phrase = Some(PhraseHighlight {
             per_word_terms,
             gaps: gaps.to_vec(),
             analyzer,
             cross_line: !voc.any(),
+            alternatives,
         });
         Ok(HighlightPlan { query, phrase })
     }
@@ -11850,6 +11868,7 @@ impl SearchEngine {
                     gaps,
                     analyzer: "hebrew_vocalized",
                     cross_line: false,
+                    alternatives: Vec::new(),
                 }),
             });
         }
@@ -11867,6 +11886,7 @@ impl SearchEngine {
                 gaps,
                 analyzer: "hebrew",
                 cross_line: true,
+                alternatives: Vec::new(),
             }),
         })
     }
@@ -11895,6 +11915,7 @@ impl SearchEngine {
                 gaps,
                 analyzer: "hebrew",
                 cross_line: false,
+                alternatives: Vec::new(),
             })
         } else {
             None
@@ -12138,9 +12159,9 @@ impl SearchEngine {
     /// `SnippetGenerator` use, tags each token with the query words it can fill,
     /// then keeps the byte ranges of tokens forming an occurrence
     /// `w0 … w1 … w_{k-1}` where each adjacent pair `w-1, w` is at most
-    /// `gaps[w-1]` intermediate tokens apart — the greedy, leftmost,
-    /// non-overlapping match `display_highlight`'s combined pattern performs
-    /// in an opened book.
+    /// `gaps[w-1]` intermediate tokens apart. Selects the leftmost complete,
+    /// non-overlapping matches, retaining a candidate only when its entire
+    /// phrase suffix can be completed.
     ///
     /// Returns `None` when the fragment holds no complete occurrence, so the
     /// caller falls back to the plain term highlight instead of painting
@@ -12156,13 +12177,31 @@ impl SearchEngine {
         hl: &HighlightConfig,
         window: Option<usize>,
     ) -> Option<String> {
-        let word_count = phrase.per_word_terms.len();
-        let ranges = Self::phrase_occurrences(searcher, fragment, phrase)?;
-        let (fragment, ranges) = match window {
-            Some(budget) => crop_around_first_occurrence(fragment, &ranges, word_count, budget)?,
-            None => (fragment, ranges),
-        };
-        Some(Self::paint_ranges(fragment, ranges, hl))
+        phrase
+            .variants()
+            .enumerate()
+            .find_map(|(selected, variant)| {
+                let word_count = variant.per_word_terms.len();
+                let ranges = Self::phrase_occurrences(searcher, fragment, variant)?;
+                let (fragment, mut ranges) = match window {
+                    Some(budget) => {
+                        crop_around_first_occurrence(fragment, &ranges, word_count, budget)?
+                    }
+                    None => (fragment, ranges),
+                };
+                // A snippet can contain both the acronym and its expansion, or
+                // multiple expansions. Paint every complete variant in that window.
+                for (i, other) in phrase.variants().enumerate() {
+                    if i != selected {
+                        ranges.extend(
+                            Self::phrase_occurrences(searcher, fragment, other)
+                                .into_iter()
+                                .flatten(),
+                        );
+                    }
+                }
+                Some(Self::paint_ranges(fragment, ranges, hl))
+            })
     }
 
     /// The byte ranges of `fragment`'s complete phrase occurrences, one range per
@@ -12173,99 +12212,82 @@ impl SearchEngine {
         phrase: &PhraseHighlight,
     ) -> Option<Vec<(usize, usize)>> {
         let word_count = phrase.per_word_terms.len();
-        if word_count < 2 {
+        if word_count == 0 {
             return None;
         }
         let mut analyzer = searcher.index().tokenizers().get(phrase.analyzer)?;
 
-        // Candidate = a fragment token that can fill at least one query word.
-        // `order` is the tokenizer's `position` — one increment per *word*:
-        // the quote-free twin token an indexing analyzer emits (ראו
-        // `emit_quote_free`) shares its word's position, so it must not
-        // inflate the intermediate-word gap `order_b - order_a - 1`.
+        // Index positions count words, not emitted tokens: quote-free twins
+        // and paired readings share their position and cannot fill successive
+        // query words. Keep their source ranges separate for painting.
         struct Candidate {
             order: usize,
             from: usize,
             to: usize,
-            words: Vec<usize>,
         }
         let mut candidates: Vec<Candidate> = Vec::new();
+        let mut by_word = vec![Vec::new(); word_count];
         let mut stream = analyzer.token_stream(fragment);
         while let Some(token) = stream.next() {
-            let words: Vec<usize> = phrase
-                .per_word_terms
-                .iter()
-                .enumerate()
-                .filter_map(|(w, set)| set.contains(token.text.as_str()).then_some(w))
-                .collect();
-            if !words.is_empty() {
+            let ci = candidates.len();
+            let mut matched = false;
+            for (set, word_candidates) in phrase.per_word_terms.iter().zip(&mut by_word) {
+                if set.contains(token.text.as_str()) {
+                    word_candidates.push(ci);
+                    matched = true;
+                }
+            }
+            if matched {
                 candidates.push(Candidate {
                     order: token.position,
                     from: token.offset_from,
                     to: token.offset_to,
-                    words,
                 });
             }
         }
 
-        // Greedy leftmost, non-overlapping scan.
-        let mut ranges: Vec<(usize, usize)> = Vec::new();
-        let mut ci = 0usize;
-        while ci < candidates.len() {
-            if candidates[ci].words.contains(&0) {
-                let mut chosen = vec![ci];
-                let mut cur = ci;
-                let mut ok = true;
-                for w in 1..word_count {
-                    let max_gap = phrase.gaps.get(w - 1).copied().unwrap_or(0) as usize;
-                    let mut m = cur + 1;
-                    let mut found = None;
-                    while m < candidates.len() {
-                        // The indexing analyzer emits a quote-free twin at the
-                        // same position as a quote-bearing word. It is another
-                        // spelling of that *one* word, never the next phrase
-                        // word, so it cannot consume a query position.
-                        if candidates[m].order <= candidates[cur].order {
-                            m += 1;
-                            continue;
-                        }
-                        // The gap grows monotonically with m, so once it exceeds
-                        // the allowance no later candidate can match this word.
-                        if candidates[m]
-                            .order
-                            .saturating_sub(candidates[cur].order + 1)
-                            > max_gap
-                        {
-                            break;
-                        }
-                        if candidates[m].words.contains(&w) {
-                            found = Some(m);
-                            break;
-                        }
-                        m += 1;
-                    }
-                    match found {
-                        Some(m) => {
-                            chosen.push(m);
-                            cur = m;
-                        }
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
+        // Layer w stores only candidates able to complete words w..end and
+        // the earliest viable continuation in layer w+1. A monotone cursor
+        // finds that continuation in linear time per layer. Unlike greedily
+        // accepting the first matching next word, this cannot get trapped by
+        // a repeated word whose later suffix lies outside the next gap.
+        // Time and space are O(word_count * candidate_count), with no
+        // exponential backtracking when many words match the same pattern.
+        let mut layers: Vec<Vec<(usize, usize)>> = vec![Vec::new(); word_count];
+        layers[word_count - 1] = by_word[word_count - 1].iter().map(|&ci| (ci, 0)).collect();
+        for w in (0..word_count - 1).rev() {
+            let max_step = (phrase.gaps.get(w).copied().unwrap_or(0) as usize).saturating_add(1);
+            let next = &layers[w + 1];
+            let mut cursor = 0;
+            let mut viable = Vec::new();
+            for &ci in &by_word[w] {
+                let order = candidates[ci].order;
+                while cursor < next.len() && candidates[next[cursor].0].order <= order {
+                    cursor += 1;
                 }
-                if ok {
-                    for &c in &chosen {
-                        ranges.push((candidates[c].from, candidates[c].to));
-                    }
-                    ci = cur + 1;
-                    continue;
+                if cursor < next.len()
+                    && candidates[next[cursor].0].order <= order.saturating_add(max_step)
+                {
+                    viable.push((ci, cursor));
                 }
             }
-            ci += 1;
+            layers[w] = viable;
         }
 
+        let mut ranges = Vec::new();
+        let mut consumed_through = None;
+        for (start, &(ci, _)) in layers[0].iter().enumerate() {
+            if consumed_through.is_some_and(|order| candidates[ci].order <= order) {
+                continue;
+            }
+            let mut entry = start;
+            for layer in &layers {
+                let (ci, next) = layer[entry];
+                ranges.push((candidates[ci].from, candidates[ci].to));
+                consumed_through = Some(candidates[ci].order);
+                entry = next;
+            }
+        }
         (!ranges.is_empty()).then_some(ranges)
     }
 
@@ -12304,24 +12326,33 @@ impl SearchEngine {
         phrase: &PhraseHighlight,
         hl: &HighlightConfig,
     ) -> Option<String> {
-        let word_count = phrase.per_word_terms.len();
         let (joined, line_break) = cross_line::joined_lines(line, next);
-        let ranges = Self::phrase_occurrences(searcher, &joined, phrase)?;
-        let crossing = ranges.chunks_exact(word_count).position(|occurrence| {
-            occurrence[0].0 < line_break.start && occurrence[word_count - 1].1 > line_break.end
-        })?;
-        let from_crossing = &ranges[crossing * word_count..];
-        let (fragment, ranges) = crop_around_first_occurrence(
-            &joined,
-            from_crossing,
-            word_count,
-            hl.max_chars as usize + cross_line::SNIPPET_LINE_BREAK.len(),
-        )
-        .unwrap_or((joined.as_str(), from_crossing.to_vec()));
-        Some(Self::paint_ranges(fragment, ranges, hl).replace(
-            cross_line::SNIPPET_LINE_BREAK,
-            cross_line::SNIPPET_LINE_BREAK_HTML,
-        ))
+        phrase
+            .variants()
+            .filter(|variant| variant.cross_line)
+            .find_map(|variant| {
+                let word_count = variant.per_word_terms.len();
+                if word_count < 2 {
+                    return None;
+                }
+                let ranges = Self::phrase_occurrences(searcher, &joined, variant)?;
+                let crossing = ranges.chunks_exact(word_count).position(|occurrence| {
+                    occurrence[0].0 < line_break.start
+                        && occurrence[word_count - 1].1 > line_break.end
+                })?;
+                let from_crossing = &ranges[crossing * word_count..];
+                let (fragment, ranges) = crop_around_first_occurrence(
+                    &joined,
+                    from_crossing,
+                    word_count,
+                    hl.max_chars as usize + cross_line::SNIPPET_LINE_BREAK.len(),
+                )
+                .unwrap_or((joined.as_str(), from_crossing.to_vec()));
+                Some(Self::paint_ranges(fragment, ranges, hl).replace(
+                    cross_line::SNIPPET_LINE_BREAK,
+                    cross_line::SNIPPET_LINE_BREAK_HTML,
+                ))
+            })
     }
 
     fn build_results(
@@ -12474,7 +12505,9 @@ impl SearchEngine {
         let mut slots = Vec::new();
         for (slot, ((address, document), text)) in documents.iter().zip(texts).enumerate() {
             if text.status != TextStatus::Ok
-                || Self::phrase_occurrences(searcher, &text.plain, phrase).is_some()
+                || phrase.variants().any(|variant| {
+                    Self::phrase_occurrences(searcher, &text.plain, variant).is_some()
+                })
             {
                 continue;
             }
@@ -13559,6 +13592,7 @@ mod tests {
             gaps: vec![1000],
             analyzer: "hebrew",
             cross_line: false,
+            alternatives: Vec::new(),
         };
         let text = format!("משה {} ואהרן", "שלום ".repeat(100));
         assert!(SearchEngine::phrase_filtered_snippet_html(
@@ -13582,6 +13616,7 @@ mod tests {
             gaps: vec![0],
             analyzer: "hebrew",
             cross_line: false,
+            alternatives: Vec::new(),
         };
         // The final word produces an indexing-only quote-free twin at the same
         // position. That is one word, not a strict two-word phrase.
@@ -13594,6 +13629,120 @@ mod tests {
             Some(80),
         )
         .is_none());
+    }
+
+    #[test]
+    fn phrase_occurrences_agree_with_exhaustive_ordered_gap_oracle() {
+        fn complete(
+            words: &[&str],
+            sets: &[HashSet<String>],
+            gaps: &[u32],
+            chosen: &mut Vec<usize>,
+        ) -> bool {
+            let w = chosen.len();
+            if w == sets.len() {
+                return true;
+            }
+            let start = chosen.last().map_or(0, |&last| last + 1);
+            let end = chosen.last().map_or(words.len(), |&last| {
+                words.len().min(last + gaps[w - 1] as usize + 2)
+            });
+            for i in start..end {
+                if sets[w].contains(words[i]) {
+                    chosen.push(i);
+                    if complete(words, sets, gaps, chosen) {
+                        return true;
+                    }
+                    chosen.pop();
+                }
+            }
+            false
+        }
+        let (engine, _dir) = make_engine();
+        let searcher = engine.index_reader.searcher();
+        let sets = vec![
+            HashSet::from(["אחת".into()]),
+            HashSet::from(["אחת".into(), "שתים".into()]),
+            HashSet::from(["שלש".into()]),
+        ];
+        for len in 0..=6u32 {
+            for mut encoding in 0..3usize.pow(len) {
+                let words: Vec<_> = (0..len)
+                    .map(|_| {
+                        let word = ["אחת", "שתים", "שלש"][encoding % 3];
+                        encoding /= 3;
+                        word
+                    })
+                    .collect();
+                let text = words.join(" ");
+                let mut offsets = Vec::new();
+                let mut offset = 0;
+                for word in &words {
+                    offsets.push((offset, offset + word.len()));
+                    offset += word.len() + 1;
+                }
+                for gaps in [vec![0, 0], vec![0, 1], vec![1, 0], vec![1, 1], vec![2, 2]] {
+                    let phrase = PhraseHighlight {
+                        per_word_terms: sets.clone(),
+                        gaps: gaps.clone(),
+                        analyzer: "hebrew",
+                        cross_line: false,
+                        alternatives: Vec::new(),
+                    };
+                    let mut expected = Vec::new();
+                    let mut after = 0;
+                    while after < words.len() {
+                        let mut chosen = Vec::new();
+                        if !complete(&words[after..], &sets, &gaps, &mut chosen) {
+                            break;
+                        }
+                        expected.extend(chosen.iter().map(|&i| offsets[after + i]));
+                        after += chosen.last().unwrap() + 1;
+                    }
+                    let actual = SearchEngine::phrase_occurrences(&searcher, &text, &phrase);
+                    assert_eq!(actual.unwrap_or_default(), expected, "{text:?}, {gaps:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phrase_occurrences_preserve_shared_positions_and_nonoverlap() {
+        let (engine, _dir) = make_engine();
+        let searcher = engine.index_reader.searcher();
+        let phrase = PhraseHighlight {
+            per_word_terms: vec![
+                HashSet::from(["רמב\"ם".into(), "רמבם".into()]),
+                HashSet::from(["רמב\"ם".into(), "רמבם".into()]),
+            ],
+            gaps: vec![0],
+            analyzer: "hebrew",
+            cross_line: false,
+            alternatives: Vec::new(),
+        };
+        let text = "רמב\"ם רמב\"ם רמב\"ם";
+        let ranges = SearchEngine::phrase_occurrences(&searcher, text, &phrase).unwrap();
+        assert_eq!(
+            ranges.len(),
+            2,
+            "one non-overlapping occurrence, not quote-free twins"
+        );
+        assert_eq!(&text[ranges[0].0..ranges[0].1], "רמב\"ם");
+        assert_eq!(&text[ranges[1].0..ranges[1].1], "רמב\"ם");
+        let phrase = PhraseHighlight {
+            per_word_terms: vec![
+                HashSet::from(["הוצא".into()]),
+                HashSet::from(["היצא".into()]),
+            ],
+            ..phrase
+        };
+        assert!(SearchEngine::phrase_occurrences(&searcher, "(הוצא) [היצא]", &phrase).is_none());
+        assert_eq!(
+            SearchEngine::phrase_occurrences(&searcher, "(הוצא) [היצא] (הוצא) [היצא]", &phrase)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -13640,6 +13789,7 @@ mod tests {
             gaps: vec![0],
             analyzer: "hebrew",
             cross_line: false,
+            alternatives: Vec::new(),
         };
         let field = engine.schema.get_field("text").unwrap();
         let query = engine
@@ -13725,6 +13875,7 @@ mod tests {
             gaps: vec![1000],
             analyzer: "hebrew",
             cross_line: false,
+            alternatives: Vec::new(),
         };
         let field = engine.schema.get_field("text").unwrap();
         let query = engine
