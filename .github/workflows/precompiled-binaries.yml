@@ -1,22 +1,19 @@
 name: Precompiled Binaries
 
+# Release publishing calls this workflow before uploading to pub.dev. Regular
+# code pushes do not spend runners on every platform; manual builds stay available.
 on:
-  push:
-    branches:
-      - main
-      - use-regex
-      - refactor
-    paths:
-      - ".github/workflows/precompiled-binaries.yml"
-      - "cargokit/**"
-      - "rust/**"
+  workflow_call:
+    secrets:
+      PRIVATE_KEY:
+        required: true
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: precompiled-binaries-${{ github.ref }}
+  group: precompiled-binaries-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +24,8 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
@@ -54,6 +53,8 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
@@ -142,6 +143,8 @@ jobs:
           git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
@@ -176,6 +179,8 @@ jobs:
             target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
@@ -211,6 +216,8 @@ jobs:
 
   verify:
     name: Verify published binaries
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     needs:
       - publish-apple-and-android
@@ -218,6 +225,8 @@ jobs:
       - publish-windows
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
