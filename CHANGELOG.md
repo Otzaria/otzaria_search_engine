@@ -1,5 +1,67 @@
 # Changelog
 
+## 2.0.0 – 2026-10-04
+
+> Breaking for Dart code that calls `addTextBook` or `addTextBookBytes`, which
+> take a new required `textStorage`, and for every existing index: one built
+> before 2.0.0, version 4 or 5, is `rebuild_required`, so it ships as 2.0.0,
+> not as a 1.x release that `^1.0.0` would take on its own.
+
+### Breaking
+
+- **Index schema 5 gains the fields official books' library text is read and
+  checked by**: `text`/`textVocalized` are no longer stored, display copies
+  move to the stored-only `textStored`/`textVocalizedStored`, and each library
+  line carries `lineCheck`, a CRC-32 of its exact text. The compatibility check
+  compares the whole Tantivy schema, so a version 4 index, or a version 5 one
+  built by 1.0.0, is `rebuild_required`. (#32)
+- **`addTextBook` and `addTextBookBytes` take `required TextStorage
+  textStorage`.** `TextStorage.inIndex` stores the text as before;
+  `TextStorage.libraryDb` is for the `\n`-joined rows of an official book read
+  from the library database, with `filePath` `id:<bookId>`. (#32)
+
+### Added
+
+- **Official books' line text is read from the library database.** A book
+  indexed with `TextStorage.libraryDb` keeps its lines in the inverted index
+  only; results read each line back from `seforim.db`, at its `lineIndex`
+  first, and prepare it exactly as indexing did (BOM, `data:` URIs, zstd-framed
+  rows, normalization, vocalized rendering), so `SearchResult.text` is
+  unchanged. A whole result window is read in one read transaction. A book
+  whose line count does not match its rows, or indexed while the source cannot
+  be read, is stored `inIndex` instead and counted in
+  `LineSourceStatus.libraryFallbacks`. (#32)
+- **`SearchResult.textStatus` and `SemanticSearchResult.textStatus`**: `ok`,
+  `stale` (the database no longer holds the indexed line; the current one is
+  shown escaped and unhighlighted) or `unavailable` (the source is
+  unconfigured, suspended, busy or unreadable). Text stored in the index is
+  always `ok`. (#32)
+- **`configureLineSource`, `suspendLineSource`, `resumeLineSource`,
+  `suspendLineSourceOwned`, `resumeLineSourceOwned` and `lineSourceStatus`**
+  manage the process-wide line source. A suspend closes the file, so the
+  database can be replaced on Windows; an owned hold is released when its Dart
+  port closes. (#32)
+- **`sqliteHostEntryAddress`**: app builds (`sqlite-host`, which cargokit now
+  builds with) share Dart's SQLite through `sqlite3_auto_extension`; tests, CLI
+  and build tools keep the bundled SQLite (`sqlite-bundled`, the default). (#32)
+- **`storedLines`** on `addTextBook`/`addTextBookBytes` keeps the cleaned text
+  of a library book's image rows in the index: showing the real library's 964
+  image rows went from ~440 ms to 13 ms, for under 1 MB of index. (#32)
+- **`--seforim-db`** on `build_semantic_artifact`, `export_semantic_plan` and
+  `validate_semantic_vectors` reads library text the same way; a row that
+  changed since indexing is refused rather than keyed. (#32)
+
+### Changed
+
+- **Chunk keys of library lines are computed from the library row as a result
+  reads it**, so a changed row is keyed as it reads now, and an unreadable
+  source fails the recomputation instead of keying an empty line. The semantic
+  query cache keys a search by the line source's generation and suspension,
+  and by the open connection's `data_version`, so it does not reuse an answer
+  across a database change, a suspend or a reopen. (#32)
+- **Publishing to pub.dev builds and verifies every platform's precompiled
+  binaries first**, and dry-runs the package before publishing. (#43)
+
 ## 1.0.0 – 2026-10-04
 
 > Breaking for Dart code that constructs `SemanticConfigInput` or
