@@ -498,7 +498,8 @@ G6's queries are `--queries <file>`, one per line, or else `--sample-queries`
 runtime query model (`--onnx-runtime`, or `OTZARIA_ONNX_RUNTIME`). Recall is
 counted over keys, which are distinct texts, since that is what a scan returns:
 a text in many books is one hit, so repeated texts cannot take the top 50 here
-as they do on a results page.
+as they do on a results page. The warehouse is first verified as the sidecar's
+`warehouse-verify` does; one that fails is an input that does not read.
 
 A release passes when every gate ran and passed. A gate whose inputs are not
 given has not run, and fails the release like a gate that failed, unless it is

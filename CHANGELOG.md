@@ -265,10 +265,10 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at 5d71ae5, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  at 2663873, its `onnx-backend` with the `store-v2` branch, its two rounds of
   audit fixes, `scan-with`, `open-without-recovery`, `fusion-tie-order`,
-  `fix/g5-empty-sample`, `fix/install-lock-race` and `fix/windows-rename-retry`
-  merged, which keys a
+  `fix/g5-empty-sample`, `fix/install-lock-race`, `fix/windows-rename-retry`
+  and `fix/warehouse-integrity` merged, which keys a
   vector by the text it was embedded from, so a set's
   identity is a line recipe and a model family, with nothing positional in it:
   - The text half is the line recipe of the index, which this plugin declares
@@ -744,6 +744,14 @@ are now documented as development and testing scaffolding, not for the library.
   record, and G6 a set with no live key (a recall of 1.0 against 0 keys), so an
   empty index or set could be published. Each now fails; the report's fields
   are unchanged, and a share of none shows as `n/a`, not 100%.
+- **`validate_semantic_vectors` refuses a damaged warehouse.** Opening one
+  checked its sizes and headers only, so a flipped bit in its vectors, or an
+  index entry pointing at another text's record, passed G6, which measures
+  against that same warehouse. The sidecar verifies the warehouse before its
+  exact reference since 2663873 (Otzaria/otzaria-semantic-search#22), pinned
+  here, so G6 refuses it with exit 2, naming what failed.
+  `export_semantic_plan --warehouse` takes a text whose index entry is corrupt
+  as not held, and plans it to be embedded.
 - **A commit on Windows no longer fails with "Access is denied" while something
   holds `meta.json` open.** tantivy replaces `meta.json` on every commit and
   merge, and `.managed.json` for every new segment file, by renaming a
