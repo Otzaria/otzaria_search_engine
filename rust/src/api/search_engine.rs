@@ -10545,19 +10545,26 @@ impl SearchEngine {
     /// The ranking-only `Should` that lifts hits where the typed words stand
     /// adjacent (within [`LEXICAL_FUZZY_PHRASE_SLOP`]) above scattered ones.
     fn exact_phrase_boost(text_f: Field, term_texts: &[String]) -> Option<(Occur, Box<dyn Query>)> {
-        if term_texts.len() < 2 {
+        let phrase = Self::exact_phrase(text_f, term_texts)?;
+        Some((
+            Occur::Should,
+            Box::new(ConstScoreQuery::new(Box::new(phrase), FUZZY_BOOST_PHRASE)),
+        ))
+    }
+
+    /// The typed words, exact, within [`LEXICAL_FUZZY_PHRASE_SLOP`]; `None`
+    /// for a single word.
+    fn exact_phrase(text_f: Field, words: &[String]) -> Option<PhraseQuery> {
+        if words.len() < 2 {
             return None;
         }
-        let terms = term_texts
+        let terms = words
             .iter()
             .map(|t| Term::from_field_text(text_f, t))
             .collect();
         let mut phrase = PhraseQuery::new(terms);
         phrase.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
-        Some((
-            Occur::Should,
-            Box::new(ConstScoreQuery::new(Box::new(phrase), FUZZY_BOOST_PHRASE)),
-        ))
+        Some(phrase)
     }
 
     /// Token groups of the query's quoted phrases of two or more words. A `"`
@@ -10667,19 +10674,24 @@ impl SearchEngine {
                 Occur::Must,
                 self.lexical_fuzzy_phrase_query(dict, phrase, max_distance)?,
             ));
+            if rank {
+                clauses.extend(
+                    Self::exact_phrase(text_f, phrase)
+                        .map(|q| (Occur::Should, Box::new(q) as Box<dyn Query>)),
+                );
+            }
         }
         for token in term_texts {
-            // A quoted word's recall is the phrase's; its tiers only rank, and
-            // skip the automaton whose eager term union would run twice.
-            let in_phrase = phrases.iter().any(|p| p.len() >= 2 && p.contains(token));
-            if in_phrase && !rank {
+            // A quoted word's recall and rank are its phrase's: per-word tiers
+            // would score every phrase candidate again (~20% of the query).
+            if phrases.iter().any(|p| p.len() >= 2 && p.contains(token)) {
                 continue;
             }
             let exact_term = Term::from_field_text(text_f, token);
             // Wrap the fuzzy automaton in the fuzzy-tier boost only when ranking;
             // an unranked recall query (count/catalogue) carries no boost so it
             // stays the bare `FuzzyTermQuery` it always was.
-            let fuzzy: Option<Box<dyn Query>> = (max_distance > 0 && !in_phrase).then(|| {
+            let fuzzy: Option<Box<dyn Query>> = (max_distance > 0).then(|| {
                 let fuzzy_q = FuzzyTermQuery::new(exact_term.clone(), max_distance, true);
                 if rank {
                     Box::new(BoostQuery::new(Box::new(fuzzy_q), FUZZY_BOOST_FUZZY))
@@ -10748,12 +10760,7 @@ impl SearchEngine {
             } else {
                 Box::new(BooleanQuery::new(should))
             };
-            let occur = if in_phrase {
-                Occur::Should
-            } else {
-                Occur::Must
-            };
-            clauses.push((occur, token_query));
+            clauses.push((Occur::Must, token_query));
         }
         if rank {
             clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
@@ -18869,6 +18876,26 @@ mod tests {
                 "distance {distance}: the exact phrase ranks above its dictionary forms"
             );
         }
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_quoted_phrase_ranks_exact_hits_by_bm25() {
+        let (mut engine, dir) = make_engine();
+        add(
+            &mut engine,
+            1,
+            "הלכתי לישון אחרי יום ארוך של עבודה קשה",
+            "/books/a.txt",
+        );
+        add(&mut engine, 2, "הלכתי לישון", "/books/b.txt");
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        assert_eq!(
+            fuzzy_ids(&mut engine, "\"הלכתי לישון\"", 1, ResultsOrder::Relevance),
+            vec![2, 1],
+            "both hold the exact phrase; the shorter line scores higher"
+        );
     }
 
     #[test]
