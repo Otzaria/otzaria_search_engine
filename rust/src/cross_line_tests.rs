@@ -118,6 +118,48 @@ fn analyzer(e: &SearchEngine) -> TextAnalyzer {
 }
 
 #[test]
+fn gapped_match_with_repeated_middle_word_displays_both_lines() {
+    let (e, _dir) = book_engine(&["אחת שתים שתים", "מילה שלש"]);
+    let results = advanced(&e, "אחת שתים שלש", 1);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].continues_to_next_line, "{}", results[0].text);
+    assert!(results[0].text.contains("שלש"));
+}
+
+#[test]
+fn both_readings_at_the_end_of_a_line_match_across_the_break() {
+    let (e, _dir) = book_engine(&["הארץ (הוצא) [היצא]", "אתך כל החיה"]);
+    assert_eq!(exact(&e, "הוצא אתך").len(), 1);
+    assert_eq!(exact(&e, "היצא אתך").len(), 1);
+}
+
+#[test]
+fn both_readings_at_the_start_of_a_line_match_across_the_break() {
+    let (e, _dir) = book_engine(&["כל החיה", "(הוצא) [היצא] אתך"]);
+    assert_eq!(exact(&e, "החיה היצא").len(), 1);
+    assert_eq!(exact(&e, "החיה הוצא").len(), 1);
+}
+
+#[test]
+fn acronym_expansion_across_the_break_displays_both_lines() {
+    use std::io::Write;
+    let (mut e, _dir) = book_engine(&["כתב רבי משה", "בן מיימון בספרו"]);
+    let mut dictionary = tempfile::NamedTempFile::new().unwrap();
+    dictionary
+        .write_all(r#"{"רמב\"ם":["רבי משה בן מיימון"]}"#.as_bytes())
+        .unwrap();
+    assert!(e.set_acronyms_dictionary_path(dictionary.path().to_string_lossy().into()));
+    let options = HashMap::from([(
+        "רמב\"ם_0".to_string(),
+        HashMap::from([("ראשי תיבות".to_string(), true)]),
+    )]);
+    let results = advanced_with(&e, "רמב\"ם", 0, options, "");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].continues_to_next_line, "{}", results[0].text);
+    assert!(results[0].text.contains("מיימון"));
+}
+
+#[test]
 fn a_phrase_continues_onto_the_next_line() {
     let (e, _dir) = book_engine(&[
         "ויבדל בין המים אשר מתחת לרקיע ובין המים",
