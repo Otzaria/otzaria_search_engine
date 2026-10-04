@@ -534,6 +534,12 @@ mod gates {
         } else {
             validation.moved as f64 / validation.records as f64
         };
+        // 100 × the ratio, as before: `percent` rounds some shares the other way.
+        let stale_share = if validation.records == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{:.4}%", 100.0 * stale)
+        };
         let mut faults = Vec::new();
         if validation.records == 0 {
             faults.push("the set holds no record, so there is nothing to resolve".to_string());
@@ -559,10 +565,9 @@ mod gates {
             ));
         }
         if let Some(limit) = max_stale_hints {
-            if !stale.is_finite() || stale > limit {
+            if stale > limit {
                 faults.push(format!(
-                    "{:.4}% of the records are stale, more than --max-stale-hints {limit}",
-                    100.0 * stale
+                    "{stale_share} of the records are stale, more than --max-stale-hints {limit}"
                 ));
             }
         }
@@ -571,7 +576,7 @@ mod gates {
             validation.records,
             validation.at_hint,
             validation.moved,
-            percent(validation.moved, validation.records),
+            stale_share,
             validation.gone,
             if validation.column_checked {
                 format!(
@@ -821,4 +826,22 @@ G6, retrieval — recall of the set's scan against the exact f32 scan:
 
 Exit status: 0 when every gate passed or was skipped, 1 when one failed or did not run,
 2 when the inputs could not be read or the arguments are wrong.";
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 23 of 640 is a tie that 100 × 23 / 640 and 100 × (23 / 640) round apart.
+        #[test]
+        fn a_stale_share_prints_alike_in_the_fault_and_the_summary() {
+            let validation = Validation {
+                records: 640,
+                at_hint: 617,
+                moved: 23,
+                ..Validation::default()
+            };
+            let detail = g4(&validation, Some(0.01)).detail;
+            assert_eq!(detail.matches("3.5937%").count(), 2, "{detail}");
+        }
+    }
 }

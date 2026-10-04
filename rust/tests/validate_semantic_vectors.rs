@@ -800,9 +800,7 @@ fn an_empty_plan_fails_coverage() {
     assert_eq!(gate(&report, "G4").0, "passed", "{printed}");
 }
 
-/// A set with no live key, against an index that has lines: G3 fails on the lines it does
-/// not cover, and G4 and G6, with no record to resolve and no key to recall against, fail
-/// too, so skipping G3 does not let it through.
+/// A set with no live key fails G4 and G6 too, so skipping G3 does not let it through.
 #[test]
 fn a_set_with_no_live_key_fails_every_gate() {
     let release = release(&books());
