@@ -615,15 +615,10 @@ impl<'a> LiveResolver<'a> {
         })
     }
 
-    /// The other lines of `book` that hold `key` as its line at `position` does, in order,
-    /// at most `limit` and none `taken`: a text the book holds more than once is recorded
-    /// once, at its first line. Also the candidates put off, for [`Self::put_off_repeats`].
-    /// With more than `limit` holders, those found need not be the first in book order.
-    ///
-    /// Without the column the candidates are the lines of its `lineHash`, so a repeat whose
-    /// short line is itself cut differently is found only with the column. After the first
-    /// that fails, its [`KeySpan`] passes over those that cannot hold the key and puts off
-    /// those whose windows begin otherwise; each failure spends one of `budget`.
+    /// The other lines of `book` holding `key` as `position` does, sorted: at most `limit`
+    /// (not necessarily the first), none `taken`; plus those put off for [`Self::put_off_repeats`].
+    /// Without the column candidates share the line's `lineHash`, so a repeat whose own line is
+    /// cut otherwise is missed; after a failure [`KeySpan`] skips or puts off the rest.
     fn repeats_of(
         &self,
         book: &BookLines,
