@@ -9,6 +9,7 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
      - [Semantic search](#semantic-search)
 2. [Top-Level Functions](#top-level-functions)
   - [checkIndexCompatibility](#checkindexcompatibility)
+  - [Library line source](#library-line-source)
 3. [Data Models](#data-models)
    - [SearchResult](#searchresult)
   - [IndexCompatibility](#indexcompatibility)
@@ -292,8 +293,8 @@ A release manifest's `requires` (`indexSchemaVersion`, `lineTextVersion`,
 `keyVersion`) and `builtBy` are information, and nothing checks them: the
 release's identity is what an install and an open check. The published v30
 release says `indexSchemaVersion: 5`, the schema whose `chunkKey` column its
-records are resolved by, and installs, opens and searches on a version 4 index
-all the same, with version 4's limits (below).
+records are resolved by, and installs, opens and searches on an index without a
+column this build uses all the same, with the limits below.
 
 The report says what the release was (`kind`: `base`, `delta` or `compacted`),
 the library version and generation the set stands at, the vectors it added and
@@ -360,8 +361,8 @@ A set's vectors are keyed by the text each was embedded from, not by where it
 sits in an index, so nothing ties the set to one index: every search resolves
 its hits against the index that is open, by the key of each line's text, which
 an index of schema version 5 keeps in its `chunkKey` column. A commit after
-opening leaves the set serving. On version 5 a line that moved is found where it
-is now, in its book or in another (version 4: see below); a text a book holds in
+opening leaves the set serving. With the column a line that moved is found where
+it is now, in its book or in another (without it: see below); a text a book holds in
 several places is a line for each, so ungrouped every one is a result. A hit
 is at most 32 lines: first one for each book that holds its text — each book
 the set records it in, or, when it left them, each book the index holds it in
@@ -378,11 +379,19 @@ shown as a lexical result; `fallbackReason` counts them. Under a filter, a text
 that moved or was copied into an admitted book since the set was built is found
 there, and only there: its vector is weighed at its own score beside the scan of
 the admitted books, whose results are exactly what they would be had nothing
-moved; that needs version 5 too.
+moved; that needs the column too.
 
-An index of schema version 4 has no `chunkKey` column — the published v30
-library index is one. Keys are recomputed from the stored text, which is
-slower; every line returned is still held to its whole key, and a passage a book
+A line of an official book whose text is in the library database
+(`TextStorage.libraryDb`) is keyed, checked and shown from its library row, read
+as a result reads it: a row changed since indexing is keyed as it reads now, so
+a vector of its old text is not shown for it; while the line source cannot be
+read (unconfigured, suspended, busy) the hits cannot be checked, and the
+semantic half falls back with a reason. The query cache keys a search by the
+line source's `generation` and suspension too.
+
+An index whose `chunkKey` column was written under another recipe — its metadata
+records another, or none — has no column this build uses. Keys are recomputed
+from the text, which is slower; every line returned is still held to its whole key, and a passage a book
 repeats is still a line for each, by its `lineHash`. A line under 20 characters
 is keyed with up to two neighbours on each side, so a short text a book holds
 in many places among other lines has its key only where the neighbours repeat
@@ -391,7 +400,7 @@ others are recomputed only where their neighbours' `lineHash`es can spell the
 hit's text, and a hit stops after 16 lines that were recomputed and did not
 hold its key — which takes neighbours too short to have a `lineHash` (under 12
 Hebrew letters), or one before the line that fills the 512-character cap alone
-— so such a hit may show fewer of a book's repeats than version 5 does. But a
+— so such a hit may show fewer of a book's repeats than the column does. But a
 record's line is found
 only at the line the set recorded or within 16 lines of it in the same book: a
 line moved further within its book, or a text moved to another book, is not
@@ -401,7 +410,7 @@ records as they are (re-anchoring needs the column). This matters only while
 the index and the vectors are of different library versions, or after the index
 changed on the device (a book added, reindexed or moved); an index and a set of
 the same library version agree line for line. A rebuild by this engine gives
-version 5. On an opened set the calls that build vectors are refused as
+the column. On an opened set the calls that build vectors are refused as
 read-only. `SemanticStatus` reports the open set's `vectorsLibraryVersion`,
 `vectorSegments` and `needsCompaction`. INT8 vectors from x86 and ARM CPUs meet
 at about cosine 0.999, the same order as INT8 against fp32.
@@ -554,7 +563,7 @@ Checks whether an existing index is compatible with the current search engine sc
 
 The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies its full schema against the schemas this engine reads.
 
-This engine reads schema versions 4 and 5, and creates 5. A version 4 index is `compatible` and needs no rebuild: it opens, searches and takes books as it always did, and stays version 4. It lacks only the `chunkKey` column, which only an index this engine creates has.
+This engine reads and creates schema version 5: the `chunkKey` column, `text`/`textVocalized` kept out of the store, and the fields official books' library text is read and checked by (`lineCheck`, `textStored`, `textVocalizedStored`). A version 4 index stores its text where this engine does not read it, and is `rebuild_required`; so is a version 5 index without those fields, since the check compares the index's whole Tantivy schema, not only the version its metadata declares.
 
 **Parameters:**
 - `path` (String): File system path of the Tantivy index directory
@@ -564,10 +573,70 @@ This engine reads schema versions 4 and 5, and creates 5. A version 4 index is `
 Common `status` values:
 - `compatible`: Otzaria metadata exists, declares a schema version this engine reads, and the index has that version's schema
 - `legacy_compatible`: Otzaria metadata is missing, but the full Tantivy schema is one this engine reads
-- `rebuild_required`: The index schema is older than version 4, or is not the schema its version has, and should be rebuilt
+- `rebuild_required`: The index schema is older than version 5, or is not the schema its version has, and should be rebuilt
 - `engine_too_old`: The index schema is newer than this engine supports
 - `missing_index`: The index directory does not exist
 - `invalid_index_path`: The given path is not a valid directory path
+
+### Library line source
+
+Since schema 5 the index does not have to store the text of official books. A book
+indexed with `textStorage: TextStorage.libraryDb` keeps its lines in the inverted index
+only; when results are built, the engine reads each line back from the library database
+(`seforim.db`) and prepares it exactly as indexing did, so `SearchResult.text` is
+unchanged. Everything else (`TextStorage.inIndex`, the default) is stored as before.
+
+```dart
+// Once, before the engine touches SQLite (app builds share Dart's SQLite):
+final entry = sqliteHostEntryAddress();          // BigInt; 0 = SQLite is bundled
+// if (entry != BigInt.zero) register Pointer.fromAddress(entry.toInt()) with
+// sqlite3_auto_extension, then open any connection. The entry stays registered (it only
+// returns SQLITE_OK after the first open); the app may sqlite3_cancel_auto_extension it
+// after that first open. It never cancels itself: doing so inside the callback would make
+// that open skip the next registered extension.
+
+Future<void> configureLineSource({required String dbPath}); // lazy; new path drops caches
+Future<void> suspendLineSource();  // closes the file; waits for a running window
+Future<void> resumeLineSource();   // undoes one suspend; the last drops all caches
+Future<LineSourceStatus> lineSourceStatus(); // ..., generation, libraryFallbacks
+```
+
+- `addTextBook` / `addTextBookBytes` take `required TextStorage textStorage`. Pass
+  `TextStorage.libraryDb` only when the text is the `\n`-joined rows of an official book
+  read from the library database; `filePath` must then be `id:<bookId>`. A document's
+  `segment` is its row's 0-based position in the book's `lineIndex` order.
+- `addTextBook` / `addTextBookBytes` also take an optional `Uint32List? storedLines`: the
+  line ordinals of a `libraryDb` book whose text is stored in the index anyway, as for
+  `inIndex`. Pass the rows whose `data:` URIs (embedded images) indexing removed: read
+  back from the database, each would cost its raw size on every result window, while its
+  cleaned text is a few bytes. Those lines carry no `lineCheck` and are always `ok`; the rest of the
+  book reads from the database. Ignored for `inIndex`; ordinals past the last line are
+  ignored. Without it every line of a `libraryDb` book reads from the database, image rows
+  included (decoded and stripped exactly as indexing did).
+- `libraryDb` needs the line source configured while indexing: the book's text is split
+  into lines and their count is compared with the book's rows in the database. When they
+  differ (a row containing `\n`, another database) or the source cannot be read
+  (unconfigured, suspended, or busy past the 100 ms timeout), the book is indexed as
+  `inIndex` instead — its text is stored and its results are always `ok` — a warning is
+  logged and `LineSourceStatus.libraryFallbacks` grows by one. The return value is
+  unchanged. Indexing does not honor a window's busy backoff (below).
+- `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
+  `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
+  ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
+- Each library line carries `lineCheck`, a CRC-32 of its exact text (spacing, punctuation,
+  nikud and markup included). Every library row of one result window is read in a single
+  read transaction and must match its `lineCheck`, and its `lineHash` when that is not 0;
+  see `TextStatus` below. A line is read first at `lineIndex = segment`; only when that
+  row does not match is the book's row order mapped (and cached) to find it by position.
+- `suspendLineSource` must be called before the database file is renamed or replaced
+  (Windows cannot replace an open file); while suspended, library results are
+  `TextStatus.unavailable`. A write by another connection without a suspend is noticed
+  (`PRAGMA data_version`) by the next window, which drops its cached lookups first.
+- While another connection holds a write lock on the database, a window waits at most
+  100 ms, its library results are `unavailable`, and the next second of windows does not
+  touch the database at all.
+- The database is opened by its plain path, read-only, so UNC paths (`\\server\share\...`)
+  work.
 
 ---
 
@@ -587,8 +656,20 @@ class SearchResult {
   int segment;         // Segment number (u64)
   bool isPdf;          // Whether document is PDF
   String filePath;     // Path to document file
+  TextStatus textStatus; // ok | stale | unavailable
 }
 ```
+
+`textStatus` is always `ok` for text stored in the index. For `TextStorage.libraryDb`
+documents, `ok` means the displayed text is exactly the text that was indexed — not that
+it came from the same database row: identical lines can trade places, and a line still at
+its `lineIndex` after an earlier row was deleted without renumbering reads `ok`.
+`stale` — the database no longer holds the indexed line (changed in any way, moved or
+deleted); `text` is the database's current line at that position, HTML-escaped and
+unhighlighted (empty when the row is gone), and reindexing the book fixes it.
+`unavailable` — the line source is unconfigured, suspended, busy or unreadable; `text` is
+empty.
+`SemanticSearchResult` carries the same field.
 
 **Note:** The `text` field contains a snippet with HTML highlighting when matches are found. Highlights are wrapped in `<font color=red>...</font>` tags by default (configurable via `HighlightConfig`). If no snippet is generated, it contains the full document text.
 

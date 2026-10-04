@@ -28,7 +28,7 @@ use otzaria_semantic_search::semantic::oxv::codec::CodecSpec;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticCancellationToken, SemanticLexicalMode,
-    SemanticRetrievalMode,
+    SemanticRetrievalMode, TextStorage,
 };
 use search_engine::semantic_keys::production_chunking;
 use search_engine::semantic_plan::{export_plan, PlanExport};
@@ -75,6 +75,8 @@ fn index_of(dir: &Path, books: &[Book]) {
                 *order,
                 0,
                 lines.join("\n"),
+                None,
+                TextStorage::InIndex,
                 None,
             )
             .unwrap();

@@ -154,7 +154,7 @@ rust/src/api/magic/
 
 ```toml
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }  # bundled = ללא תלות מערכת ב-libsqlite
+rusqlite = { version = "0.32", default-features = false }  # bundled/host לפי הפיצ'רים sqlite-bundled / sqlite-host
 lru = "0.12"
 regex = "1.10"
 reqwest = { version = "0.12", features = ["json", "blocking"] }  # רק אם הורדה ב-Rust

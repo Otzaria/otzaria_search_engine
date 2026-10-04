@@ -95,6 +95,9 @@ pub struct SearchResult {
     /// בלבד, בלי snippet, כדי שהאפליקציה תוכל להציג "הרחב" ולקפוץ אליהן.
     /// `merged_count` עשוי לעלות על `merged.len() + 1` כשהקבוצה גדולה מהתקרה.
     pub merged: Vec<MergedSibling>,
+    /// Whether `text` is the line this document was indexed from. Always
+    /// [`TextStatus::Ok`] for text stored in the index; see [`TextStorage`].
+    pub text_status: TextStatus,
 }
 
 /// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
@@ -123,6 +126,63 @@ pub struct MergedSibling {
 pub enum ResultGrouping {
     SameSection,
     IdenticalText,
+}
+
+/// Where a document's display text is kept.
+///
+/// - `InIndex` — in the index's doc store (PDF, file-backed and personal books,
+///   attached databases, empty-book markers). The default everywhere. (Not
+///   `Index`: Dart enums already have an `index` member.)
+/// - `LibraryDb` — only in the inverted index; the display text is read from the
+///   library database configured with [`configure_line_source`] when a result is
+///   built. Only for an official book whose text came from that database's rows,
+///   through [`SearchEngine::add_text_book`]: `file_path` must be `id:<bookId>`, and
+///   a document's `segment` is the 0-based position of its row among the book's
+///   rows ordered by `lineIndex`. Each line keeps a check of its exact text
+///   (`lineCheck`), which the row read back must match. The lines the call lists in
+///   `stored_lines` are stored as for `InIndex` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextStorage {
+    LibraryDb,
+    InIndex,
+}
+
+/// Whether a result's text is the line its document was indexed from.
+///
+/// - `Ok` — it is (always, for text stored in the index).
+/// - `Stale` — the library database no longer matches the index (the row changed
+///   in any way, moved or disappeared). `text` is the database's current line,
+///   HTML-escaped and unhighlighted (empty when the row is gone). Reindexing the
+///   book fixes it.
+/// - `Unavailable` — the line source is unconfigured, suspended, busy (another
+///   connection is writing the database) or unreadable. `text` is empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextStatus {
+    Ok,
+    Stale,
+    Unavailable,
+}
+
+/// State of the process-wide line source ([`configure_line_source`]).
+pub struct LineSourceStatus {
+    /// A database path has been configured.
+    pub configured: bool,
+    /// A connection is currently open (opened lazily by the first result window).
+    pub open: bool,
+    /// Outstanding [`suspend_line_source`] calls.
+    pub suspend_depth: u32,
+    /// Whether this build can call SQLite: always true when SQLite is bundled; in
+    /// the app build, true once Dart has run [`sqlite_host_entry_address`] through
+    /// `sqlite3_auto_extension` and opened a connection.
+    pub host_api_ready: bool,
+    /// Bumped whenever cached knowledge of the database is discarded (a new path,
+    /// or the last [`resume_line_source`]).
+    pub generation: u64,
+    /// Books asked for as [`TextStorage::LibraryDb`] that were stored
+    /// [`TextStorage::InIndex`] instead, because the library database could not be
+    /// read or its row count differed from the book's lines. Only grows within a
+    /// process.
+    pub library_fallbacks: u64,
 }
 
 pub struct DocumentInput {
@@ -166,6 +226,10 @@ pub struct DocumentInput {
     /// [`FACET_DIMENSION_ROOTS`] לסמנטיקת הסינון (OR בתוך ממד, AND בין
     /// ממדים). `None` = אין.
     pub extra_facets: Option<Vec<String>>,
+    /// Where the display text is kept: `None` or [`TextStorage::InIndex`].
+    /// `LibraryDb` is refused here — only [`SearchEngine::add_text_book`] can tie a
+    /// line to its library row.
+    pub text_storage: Option<TextStorage>,
 }
 
 /// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
@@ -996,6 +1060,9 @@ pub struct SemanticSearchResult {
     pub source: SemanticResultSource,
     /// False after successful Tantivy hydration of a semantic-only item.
     pub needs_hydration: bool,
+    /// As [`SearchResult::text_status`]: anything but `Ok` leaves `snippet_html`
+    /// unpainted (`Stale`) or empty (`Unavailable`).
+    pub text_status: TextStatus,
 }
 
 /// Result envelope for semantic/hybrid searches. `lexical_total_count` is the
@@ -2124,6 +2191,8 @@ struct SemanticLexicalPhase {
     /// `None` in `SemanticOnly`, where no lexical query is executed and every
     /// result therefore gets an unhighlighted (but still bounded) snippet.
     highlight: Option<SemanticHighlight>,
+    /// Candidates whose text is not the indexed line, by id (absent = `Ok`).
+    text_status: HashMap<u64, TextStatus>,
 }
 
 /// A lexical query kept alive past its own execution so snippets can be built
@@ -2558,16 +2627,21 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
 //
 // v5: נוסף השדה `chunkKey` (FAST) — מפתח הטקסט שהשורה מוטמעת בו (ראו
-// semantic_keys), בסוף הסכימה. בניגוד לכל הקפיצות הקודמות, אינדקס v4 *אינו*
-// דורש בנייה מחדש: המנוע פותח אותו בסכימה שלו, מחפש בו וממשיך לכתוב אליו,
-// בלי העמודה (ראו MIN_READABLE_SCHEMA_VERSION). רק אינדקס חדש מקבל אותה.
+// semantic_keys). `text`/`textVocalized` are no longer stored: the display copies are
+// `textStored`/`textVocalizedStored`, written only for `TextStorage::InIndex` documents,
+// and official books read their text from the library database, verified against the
+// new `lineCheck` (FAST). An index of version 4, or of a version 5 build without these
+// fields, stores its text where this build does not read it: the compatibility check
+// compares the whole Tantivy schema, so it is `rebuild_required`.
+//
+// A change to `normalize_text_for_indexing` or to the row preparation
+// (`line_source::prepare_row`) needs a bump: that is what keeps `TextStatus::Ok` true,
+// the promise that the displayed text is exactly what was indexed.
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
-/// The oldest schema version this engine opens, searches and writes to as it was built,
-/// with no rebuild: version 4, the schema before the `chunkKey` column. Such an index stays
-/// at version 4 and has no column, whatever is added to it; only an index this engine
-/// creates gets one. Every version in between is a version this engine reads, each with the
-/// one schema [`schema_of_version`] gives it.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 4;
+/// The oldest schema version this engine opens, searches and writes to as it was built.
+/// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
+/// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
+const MIN_READABLE_SCHEMA_VERSION: u32 = 5;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -2741,6 +2815,64 @@ where
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
 pub fn check_index_compatibility(path: String) -> IndexCompatibility {
     check_index_compatibility_path(Path::new(&path))
+}
+
+/// Points the line source at the library database (`seforim.db`) that
+/// [`TextStorage::LibraryDb`] documents read their text from. Nothing is opened
+/// here — the first result window (or `LibraryDb` indexing) opens it, read-only,
+/// by its plain path (UNC paths work). A different path discards the open
+/// connection and every cache.
+pub fn configure_line_source(db_path: String) -> Result<()> {
+    crate::line_source::configure(&db_path)
+}
+
+/// Closes the library database so it can be renamed or replaced, waiting for a
+/// window that is reading it (milliseconds). Returns once the file handle is
+/// released. Calls nest; while suspended, `LibraryDb` results come back
+/// [`TextStatus::Unavailable`].
+pub fn suspend_line_source() -> Result<()> {
+    crate::line_source::suspend();
+    Ok(())
+}
+
+/// Undoes one [`suspend_line_source`]. The last one discards every cache, since
+/// the file may have been replaced; the next window reopens it.
+pub fn resume_line_source() -> Result<()> {
+    crate::line_source::resume()
+}
+
+/// Suspends for a Dart owner port. Duplicate holds are ignored; a closed port is
+/// released automatically before the next source access, including isolate exit.
+pub fn suspend_line_source_owned(owner_port: i64) -> Result<()> {
+    crate::line_source::suspend_owned(owner_port)
+}
+
+/// Releases only this owner's hold. Safe to repeat or call after its port closed.
+pub fn resume_line_source_owned(owner_port: i64) -> Result<()> {
+    crate::line_source::resume_owned(owner_port);
+    Ok(())
+}
+
+pub fn line_source_status() -> LineSourceStatus {
+    let status = crate::line_source::status();
+    LineSourceStatus {
+        configured: status.configured,
+        open: status.open,
+        suspend_depth: status.suspend_depth,
+        host_api_ready: crate::sqlite_host::is_ready(),
+        generation: status.generation,
+        library_fallbacks: status.library_fallbacks,
+    }
+}
+
+/// The entry point to hand to `sqlite3_auto_extension` (as a function pointer)
+/// before the engine uses SQLite, followed by opening any connection; 0 when
+/// this build bundles its own SQLite and needs nothing from the host. It stays
+/// registered and costs nothing after the first open; the app may
+/// `sqlite3_cancel_auto_extension` it once that open has returned.
+#[frb(sync)]
+pub fn sqlite_host_entry_address() -> usize {
+    crate::sqlite_host::entry_address()
 }
 
 /// Builds display-highlight regex patterns for a search query, so the app can
@@ -3105,7 +3237,7 @@ const LINE_DEDUP_MIN_LETTERS: usize = 12;
 ///
 /// 0 שמור ל"אין חתימה" — פחות מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות
 /// *עבריות* (אלפאנומרי משתתף בחתימה אך אינו נספר לסף).
-fn line_dedup_hash(normalized_text: &str) -> u64 {
+pub(crate) fn line_dedup_hash(normalized_text: &str) -> u64 {
     let mut hasher = LineDedupHasher::new();
     hasher.feed(normalized_text);
     hasher.finish()
@@ -3139,9 +3271,19 @@ impl LineDedupHasher {
     fn feed(&mut self, text: &str) {
         let mut buf = [0u8; 4];
         for c in text.chars() {
+            // Hebrew letters and ASCII skip the Unicode tables (same result).
             if ('א'..='ת').contains(&c) {
                 self.letters += 1;
-            } else if !c.is_alphanumeric() {
+                self.fnv.feed(c.encode_utf8(&mut buf).as_bytes());
+                continue;
+            }
+            if c.is_ascii() {
+                if c.is_ascii_alphanumeric() {
+                    self.fnv.feed(&[c.to_ascii_lowercase() as u8]);
+                }
+                continue;
+            }
+            if !c.is_alphanumeric() {
                 continue;
             }
             for lower in c.to_lowercase() {
@@ -3155,6 +3297,69 @@ impl LineDedupHasher {
             return 0;
         }
         self.fnv.finish()
+    }
+}
+
+/// The display copies of a document whose text is kept in the index. `textStored` is
+/// written even when empty: its absence is what marks a library-database document.
+fn add_stored_text(
+    document: &mut TantivyDocument,
+    (text_stored_f, vocalized_stored_f): (Field, Field),
+    plain: &str,
+    vocalized: Option<&str>,
+) {
+    document.add_text(text_stored_f, plain);
+    if let Some(vocalized) = vocalized {
+        document.add_text(vocalized_stored_f, vocalized);
+    }
+}
+
+/// The library book id of an official book's `file_path` (`id:<bookId>`).
+pub(crate) fn library_book_id(file_path: &str) -> Option<i64> {
+    let id: i64 = file_path.strip_prefix("id:")?.parse().ok()?;
+    (id >= 0 && format!("id:{id}") == file_path).then_some(id)
+}
+
+/// `DocumentInput` always stores its text: nothing ties a ready-made document's `segment`
+/// to a row of the library database, so a `LibraryDb` one is refused.
+fn refuse_library_storage(docs: &[DocumentInput]) -> Result<()> {
+    if let Some(doc) = docs
+        .iter()
+        .find(|doc| doc.text_storage == Some(TextStorage::LibraryDb))
+    {
+        anyhow::bail!(
+            "TextStorage::LibraryDb is only accepted by add_text_book/add_text_book_bytes \
+             (document {} of {:?})",
+            doc.id,
+            doc.file_path
+        );
+    }
+    Ok(())
+}
+
+fn require_library_book_id(file_path: &str) -> Result<i64> {
+    library_book_id(file_path).with_context(|| {
+        format!(
+            "TextStorage::LibraryDb needs a file_path of the form id:<bookId>, got {file_path:?}"
+        )
+    })
+}
+
+/// `LibraryDb` when the configured line source holds exactly `lines` rows for the book;
+/// otherwise `InIndex`, since a document's `segment` would not be its row's ordinal (a row
+/// containing `\n` splits into two lines) or nothing can tell.
+fn library_storage_or_fallback(book_id: i64, lines: usize, title: &str) -> TextStorage {
+    let rows = crate::line_source::with_store_for_indexing(|store| store.book_row_count(book_id));
+    match rows {
+        Ok(rows) if rows == lines as u64 => TextStorage::LibraryDb,
+        rows => {
+            crate::line_source::note_library_fallback();
+            warn!(
+                "add_text_book '{title}' (id:{book_id}): {lines} lines against library rows \
+                 {rows:?}; storing its text in the index"
+            );
+            TextStorage::InIndex
+        }
     }
 }
 
@@ -3476,8 +3681,7 @@ fn read_index_metadata(index_path: &Path) -> Option<IndexMetadata> {
 
 /// The index's `chunkKey` column, when it has one written under this build's recipe.
 ///
-/// A version 4 index has none. A column whose metadata records another recipe, or none,
-/// is one this build does not use: it counts as absent, so nothing reads it and nothing is
+/// A column whose metadata records another recipe, or none, is one this build does not use: it counts as absent, so nothing reads it and nothing is
 /// written to it, and the keys of the index's lines are computed from their text instead.
 pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option<Field> {
     let field = schema.get_field(CHUNK_KEY_FIELD).ok()?;
@@ -3537,48 +3741,45 @@ fn compatibility(
 /// The schema of the indexes this engine creates, version [`INDEX_SCHEMA_VERSION`]. Kept in
 /// one place so `new()` and the compatibility checks can never drift apart.
 fn current_schema() -> Schema {
-    index_schema(true)
+    index_schema()
 }
 
 /// The one schema an index of `version` has, for the versions this engine reads.
 fn schema_of_version(version: u32) -> Option<Schema> {
     match version {
-        INDEX_SCHEMA_VERSION => Some(index_schema(true)),
-        // The same fields in the same order, but the `chunkKey` column.
-        MIN_READABLE_SCHEMA_VERSION => Some(index_schema(false)),
+        INDEX_SCHEMA_VERSION => Some(index_schema()),
         _ => None,
     }
 }
 
-/// The schema of version [`INDEX_SCHEMA_VERSION`], or of version 4 without `chunk_keys`.
-fn index_schema(chunk_keys: bool) -> Schema {
+/// The schema of version [`INDEX_SCHEMA_VERSION`].
+fn index_schema() -> Schema {
     let mut schema_builder = Schema::builder();
     // Deliberately NOT fast: a text fast field stores every raw line in a
     // columnar dictionary — a second full copy of the corpus — and nothing
     // reads it (collectors use only the filePath/contentHash/id columns).
+    // Not stored either: Tantivy stores per field, so the display copy lives in
+    // `textStored`, written only for documents whose text is not read from the
+    // library database (see `TextStorage`).
     schema_builder.add_text_field(
         "text",
-        TextOptions::default()
-            .set_indexing_options(
-                TextFieldIndexing::default()
-                    .set_tokenizer("hebrew")
-                    .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-            )
-            .set_stored(),
+        TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer("hebrew")
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        ),
     );
     // השדה המנוקד: מאוכלס רק בשורות שנושאות ניקוד/טעמים (שאר השורות פשוט
     // אינן קיימות בו — tantivy מטפל בשדה חסר בחינם). מאונדקס בטוקנייזר
-    // ששומר את הסימנים, ומאוחסן כדי שתוצאות חיפוש מנוקד יציגו את הטקסט
-    // המנוקד. חיפוש רגיל אינו נוגע בשדה הזה כלל.
+    // ששומר את הסימנים; העותק המוצג בתוצאות חיפוש מנוקד הוא
+    // `textVocalizedStored`. חיפוש רגיל אינו נוגע בשדה הזה כלל.
     schema_builder.add_text_field(
         "textVocalized",
-        TextOptions::default()
-            .set_indexing_options(
-                TextFieldIndexing::default()
-                    .set_tokenizer("hebrew_vocalized")
-                    .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-            )
-            .set_stored(),
+        TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer("hebrew_vocalized")
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        ),
     );
     schema_builder.add_text_field("reference", STORED);
     schema_builder.add_text_field(
@@ -3613,17 +3814,28 @@ fn index_schema(chunk_keys: bool) -> Schema {
     // חתימת דה-דופליקציה של גוף השורה (ראו line_dedup_hash). FAST בלבד:
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
+    // CRC-32 of the exact line the indexing path normalized (`line_source::line_check`),
+    // written only for documents whose text is read from the library database: the row
+    // read back must match it to be shown as the indexed line.
+    schema_builder.add_u64_field(LINE_CHECK_FIELD, FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
-    if chunk_keys {
-        // The key of the text the line is embedded as, `ChunkKey::column_value` (see
-        // `semantic_keys`): 0 for a line the recipe does not embed, a PDF's, and any line
-        // not added by `add_text_book`. FAST only: read columnar to tie a stored vector to
-        // the lines that hold its text; neither searched nor stored. Last, so every other
-        // field keeps the number it has in a version 4 index, which has no such field.
-        schema_builder.add_u64_field(CHUNK_KEY_FIELD, FAST);
-    }
+    // The key of the text the line is embedded as, `ChunkKey::column_value` (see
+    // `semantic_keys`): 0 for a line the recipe does not embed, a PDF's, and any line
+    // not added by `add_text_book`. FAST only: read columnar to tie a stored vector to
+    // the lines that hold its text; neither searched nor stored.
+    schema_builder.add_u64_field(CHUNK_KEY_FIELD, FAST);
+    // Display copies of `text`/`textVocalized`, stored only (never indexed): on every
+    // `TextStorage::InIndex` document and on the `stored_lines` of a `LibraryDb` book.
+    // `textStored` is present on each, even when empty, so its absence marks a document
+    // whose text is in the library database.
+    schema_builder.add_text_field(TEXT_STORED_FIELD, STORED);
+    schema_builder.add_text_field(TEXT_VOCALIZED_STORED_FIELD, STORED);
     schema_builder.build()
 }
+
+pub(crate) const TEXT_STORED_FIELD: &str = "textStored";
+pub(crate) const LINE_CHECK_FIELD: &str = "lineCheck";
+const TEXT_VOCALIZED_STORED_FIELD: &str = "textVocalizedStored";
 
 /// Cache key for materialized single-word term sets. The searcher
 /// `generation_id` changes on every reader reload (i.e. after each commit),
@@ -3716,13 +3928,12 @@ const VOC_VARIANTS_PER_TOKEN: usize = 128;
 const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
 pub struct SearchEngine {
-    /// The schema of the index this engine opened, which is the one it was built with: a
-    /// version 4 index has no `chunkKey` field, and is not given one.
+    /// The schema of the index this engine opened, which is the one it was built with.
     schema: Schema,
     /// The `chunkKey` column, when the index has one this build uses: written under the
     /// chunk-key recipe this build computes (see [`live_chunk_key_field`]). `None` for a
-    /// version 4 index, which has none, and for a column written under another recipe,
-    /// which counts as absent: nothing writes to it, and nothing reads it.
+    /// column written under another recipe, or none recorded, which counts as absent:
+    /// nothing writes to it, and nothing reads it.
     chunk_key_field: Option<Field>,
     /// The directory this engine opened. Retained only so a build can ask whether the
     /// index it is about to read is one this version reads — see
@@ -5256,6 +5467,7 @@ impl SearchEngine {
                 total_count: lexical_total_count,
                 truncated,
                 highlight,
+                text_status: candidate_text_status,
             } = if matches!(retrieval_mode, SemanticRetrievalMode::SemanticOnly) {
                 // Semantic-only discards BM25 candidates in the coordinator.
                 // Count lexically for the response envelope, but do not pay
@@ -5280,6 +5492,7 @@ impl SearchEngine {
                     total_count: count.count,
                     truncated: count.truncated,
                     highlight: None,
+                    text_status: HashMap::new(),
                 }
             } else {
                 match lexical_mode {
@@ -5414,6 +5627,9 @@ impl SearchEngine {
             // stale: a lexical candidate came from this same index in this same request, so
             // it is live by construction. This has to precede pagination, or a dropped item
             // would leave a hole on one page and shift the next.
+            //
+            // Existence and metadata only: the text is read after pagination, for the page
+            // alone, in one library-database transaction.
             let mut surviving = Vec::with_capacity(result.results.len());
             let mut stale_primaries_dropped = 0u32;
             for item in result.results {
@@ -5422,18 +5638,20 @@ impl SearchEngine {
                     surviving.push((item, None));
                     continue;
                 }
-                let hydrated = match record {
+                let address = match record {
                     // By the address the line was resolved at, in the searcher that
                     // resolved it: two books' lines can share an id, and an address cannot.
-                    Some(record) => {
-                        Some(self.document_at(resolver.searcher(), record.address, item.id)?)
-                    }
+                    Some(record) => Some(record.address),
                     // A line no vector set resolved, by its book and its id together, for
                     // the same reason.
-                    None => self.document_in_book(resolver.searcher(), &item.file_path, item.id)?,
+                    None => self.address_in_book(resolver.searcher(), &item.file_path, item.id)?,
                 };
-                match hydrated {
-                    Some(document) => surviving.push((item, Some(document))),
+                match address {
+                    Some(address) => {
+                        let document =
+                            self.document_at(resolver.searcher(), address, item.id, false)?;
+                        surviving.push((item, Some((address, document))));
+                    }
                     // A semantic record whose Tantivy document disappeared is
                     // stale. Never send its old metadata to Dart: a failed or
                     // delayed sidecar cleanup must not resurrect deleted
@@ -5453,6 +5671,13 @@ impl SearchEngine {
                 .take(limit as usize)
                 .collect();
             search_cancellation::look(cancel, SearchCheckpoint::Painting)?;
+            let page_addresses: Vec<DocAddress> = page
+                .iter()
+                .filter_map(|(_, hydrated)| hydrated.as_ref().map(|(address, _)| *address))
+                .collect();
+            let mut page_texts = self
+                .texts_at(resolver.searcher(), &page_addresses)?
+                .into_iter();
 
             let painter = match highlight {
                 Some(highlight) if !page.is_empty() => {
@@ -5471,20 +5696,21 @@ impl SearchEngine {
                 let mut page_stale_siblings = 0u32;
                 let mut merged = Vec::with_capacity(item.merged.len());
                 for sibling in item.merged {
-                    let hydrated = match records.get(&(sibling.file_path.clone(), sibling.id)) {
-                        Some(record) => Some(self.document_at(
-                            resolver.searcher(),
-                            record.address,
-                            sibling.id,
-                        )?),
+                    let address = match records.get(&(sibling.file_path.clone(), sibling.id)) {
+                        Some(record) => Some(record.address),
                         // A sibling only lexical search found is of the group's book too:
                         // hydrated by that book and its id, never by the id alone.
-                        None => self.document_in_book(
+                        None => self.address_in_book(
                             resolver.searcher(),
                             &sibling.file_path,
                             sibling.id,
                         )?,
                     };
+                    let hydrated = address
+                        .map(|address| {
+                            self.document_at(resolver.searcher(), address, sibling.id, false)
+                        })
+                        .transpose()?;
                     match hydrated {
                         Some(document) => merged.push(MergedSibling {
                             title: document.title,
@@ -5501,32 +5727,47 @@ impl SearchEngine {
 
                 // Prefer Tantivy's copy for a hydrated item and move the fields
                 // out of whichever record wins, rather than cloning them.
-                let (title, reference, text, segment, is_pdf, file_path) = match hydrated {
-                    Some(document) => (
-                        document.title,
-                        document.reference,
-                        document.text,
-                        document.segment,
-                        document.is_pdf,
-                        document.file_path,
-                    ),
-                    None => (
-                        item.title,
-                        item.reference,
-                        item.text,
-                        item.segment,
-                        item.is_pdf,
-                        item.file_path,
-                    ),
-                };
-                let (snippet_html, is_highlighted) = match painter.as_ref() {
+                let (title, reference, text, segment, is_pdf, file_path, text_status) =
+                    match hydrated {
+                        Some((_, document)) => {
+                            let (text, status) = page_texts
+                                .next()
+                                .unwrap_or((String::new(), TextStatus::Unavailable));
+                            (
+                                document.title,
+                                document.reference,
+                                text,
+                                document.segment,
+                                document.is_pdf,
+                                document.file_path,
+                                status,
+                            )
+                        }
+                        None => (
+                            item.title,
+                            item.reference,
+                            item.text,
+                            item.segment,
+                            item.is_pdf,
+                            item.file_path,
+                            candidate_text_status
+                                .get(&item.id)
+                                .copied()
+                                .unwrap_or(TextStatus::Ok),
+                        ),
+                    };
+                let (snippet_html, is_highlighted) = match (painter.as_ref(), text_status) {
                     // A BM25 score is present exactly when Tantivy returned this
                     // line for the lexical query, which is what licenses the
                     // phrase-fallback term painting inside `paint`.
-                    Some(painter) => painter.paint(&text, item.lexical_score.is_some()),
+                    (Some(painter), TextStatus::Ok) => {
+                        painter.paint(&text, item.lexical_score.is_some())
+                    }
+                    (_, TextStatus::Unavailable) => (String::new(), false),
                     // `SemanticOnly` runs no lexical query, so there is nothing
-                    // to paint with — the line still crosses FFI bounded.
-                    None => (bounded_plain_snippet(&text, snippet_budget), false),
+                    // to paint with — the line still crosses FFI bounded. A stale
+                    // line is never painted.
+                    _ => (bounded_plain_snippet(&text, snippet_budget), false),
                 };
 
                 results.push(SemanticSearchResult {
@@ -5554,6 +5795,7 @@ impl SearchEngine {
                         SidecarResultSource::Both => SemanticResultSource::Both,
                     },
                     needs_hydration: false,
+                    text_status,
                 });
             }
             let mut fallback_reason = result.fallback_reason;
@@ -5810,8 +6052,10 @@ impl SearchEngine {
                 // can only be real markup — and a corpus line that happens to
                 // contain it verbatim is passed through exactly as the existing
                 // lexical API already passes it through.
-                let is_highlighted = item.text.contains(&hl.highlight_prefix);
-                let snippet_html = if is_highlighted {
+                let is_highlighted =
+                    item.text_status == TextStatus::Ok && item.text.contains(&hl.highlight_prefix);
+                let snippet_html = if is_highlighted || item.text_status != TextStatus::Ok {
+                    // A stale line arrives already escaped and bounded.
                     item.text
                 } else {
                     bounded_plain_snippet(&item.text, hl.max_chars)
@@ -5835,6 +6079,7 @@ impl SearchEngine {
                     fused_score: 1.0 / (rank.saturating_add(1) as f32),
                     source: SemanticResultSource::Lexical,
                     needs_hydration: false,
+                    text_status: item.text_status,
                 }
             })
             .collect();
@@ -5923,12 +6168,17 @@ impl SearchEngine {
         }
         // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; הבדיקה על הקלט הגולמי
         // (הנרמול הרגיל מסיר את הסימנים) והעותק המנוקד מנורמל בנפרד.
-        if hebrew_query::contains_attached_marks(_text) {
-            document.add_text(
-                text_vocalized_f,
-                hebrew_query::normalize_vocalized_text_for_indexing(_text),
-            );
+        let vocalized = hebrew_query::contains_attached_marks(_text)
+            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(_text));
+        if let Some(vocalized) = &vocalized {
+            document.add_text(text_vocalized_f, vocalized);
         }
+        add_stored_text(
+            &mut document,
+            self.stored_text_fields()?,
+            &normalized_text,
+            vocalized.as_deref(),
+        );
         self.writer_mut()?.add_document(document)?;
         Ok(())
     }
@@ -5959,6 +6209,10 @@ impl SearchEngine {
             line_hash_f,
         ) = self.all_fields()?;
         let chunk_key_f = self.chunk_key_field;
+        let stored_fields = self.stored_text_fields()?;
+        // Validated before anything is written, so a bad document cannot leave half
+        // a batch in the writer.
+        refuse_library_storage(&docs)?;
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
@@ -5967,7 +6221,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
-                text_f         => normalized_text,
+                text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
                 segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
@@ -5986,14 +6240,19 @@ impl SearchEngine {
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
-            if let Some(vocalized) = doc.text_vocalized {
-                if !vocalized.is_empty() {
-                    document.add_text(
-                        text_vocalized_f,
-                        hebrew_query::normalize_vocalized_text_for_indexing(&vocalized),
-                    );
-                }
+            let vocalized = doc
+                .text_vocalized
+                .filter(|vocalized| !vocalized.is_empty())
+                .map(|vocalized| hebrew_query::normalize_vocalized_text_for_indexing(&vocalized));
+            if let Some(vocalized) = &vocalized {
+                document.add_text(text_vocalized_f, vocalized);
             }
+            add_stored_text(
+                &mut document,
+                stored_fields,
+                &normalized_text,
+                vocalized.as_deref(),
+            );
             writer.add_document(document)?;
         }
         Ok(())
@@ -6012,6 +6271,20 @@ impl SearchEngine {
     /// the raw text crosses the bridge exactly once and only a count comes
     /// back. Document ids encode catalogue order exactly like the Dart
     /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+    ///
+    /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
+    /// newline-joined rows of an official book read from the library database
+    /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
+    /// the index and results read them back from that database. The book is
+    /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
+    /// configured line source does not hold exactly as many rows for it as `text`
+    /// has lines — a row containing `\n`, a different database — or cannot be read
+    /// (unconfigured, suspended, busy).
+    ///
+    /// `stored_lines`: 0-based line ordinals of a `LibraryDb` book whose text is stored
+    /// in the index anyway, as for `InIndex` — the rows that held embedded `data:` images,
+    /// which a result would otherwise read back raw (megabytes) on every window. Ignored
+    /// for `InIndex`; ordinals past the last line are ignored.
     pub fn add_text_book(
         &mut self,
         title: String,
@@ -6021,6 +6294,8 @@ impl SearchEngine {
         generation_order: u32,
         text: String,
         extra_facets: Option<Vec<String>>,
+        text_storage: TextStorage,
+        stored_lines: Option<Vec<u32>>,
     ) -> Result<u32> {
         self.add_text_book_impl(
             title,
@@ -6030,6 +6305,8 @@ impl SearchEngine {
             generation_order,
             &text,
             extra_facets.unwrap_or_default(),
+            text_storage,
+            stored_lines.unwrap_or_default(),
         )
     }
 
@@ -6048,6 +6325,8 @@ impl SearchEngine {
         generation_order: u32,
         text: Vec<u8>,
         extra_facets: Option<Vec<String>>,
+        text_storage: TextStorage,
+        stored_lines: Option<Vec<u32>>,
     ) -> Result<u32> {
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
@@ -6064,6 +6343,8 @@ impl SearchEngine {
             generation_order,
             &text,
             extra_facets.unwrap_or_default(),
+            text_storage,
+            stored_lines.unwrap_or_default(),
         )
     }
 
@@ -6077,11 +6358,22 @@ impl SearchEngine {
         generation_order: u32,
         text: &str,
         extra_facets: Vec<String>,
+        text_storage: TextStorage,
+        stored_lines: Vec<u32>,
     ) -> Result<u32> {
+        let library_book = match text_storage {
+            TextStorage::LibraryDb => Some(require_library_book_id(&file_path)?),
+            TextStorage::InIndex => None,
+        };
         if text.is_empty() {
             return Ok(0);
         }
         let started = Instant::now();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let text_storage = match library_book {
+            Some(book_id) => library_storage_or_fallback(book_id, lines.len(), &title),
+            None => TextStorage::InIndex,
+        };
         let text_bytes = text.len();
         let (
             title_f,
@@ -6117,13 +6409,25 @@ impl SearchEngine {
         let text_hash = content_fingerprint(text);
         let id_base = catalogue_id_base(catalogue_order)?;
         let chunk_key_f = self.chunk_key_field;
+        let library = text_storage == TextStorage::LibraryDb;
+        let mut kept_in_index = Vec::new();
+        if library && !stored_lines.is_empty() {
+            kept_in_index = vec![false; lines.len()];
+            for ordinal in stored_lines {
+                if let Some(kept) = kept_in_index.get_mut(ordinal as usize) {
+                    *kept = true;
+                }
+            }
+        }
+        let stores_text = |segment: usize| !library || kept_in_index.get(segment) == Some(&true);
+        let stored_fields = self.stored_text_fields()?;
+        let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
         // writer.add_document (queue push; grows only when tantivy's indexing
         // threads apply backpressure).
         let prepare_started = Instant::now();
-        let lines: Vec<&str> = text.split('\n').collect();
 
         // Sequential cheap pass: the reference trail is stateful across
         // lines, so resolve each line to its reference index first. The
@@ -6155,30 +6459,34 @@ impl SearchEngine {
         // also gets its vocalized rendering, for the `textVocalized` field
         // (the mark check is cheap and almost always short-circuits false).
         use rayon::prelude::*;
-        let normalized: Vec<(String, Option<String>, u64)> = lines
+        type Prepared = (String, Option<String>, u64, Option<u32>);
+        let normalized: Vec<Prepared> = lines
             .par_iter()
-            .map(|raw_line| {
+            .enumerate()
+            .map(|(segment, raw_line)| {
                 let plain = hebrew_query::normalize_text_for_indexing(raw_line);
                 let vocalized = hebrew_query::contains_attached_marks(raw_line)
                     .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
                     .filter(|v| !v.is_empty());
                 let line_hash = line_dedup_hash(&plain);
-                (plain, vocalized, line_hash)
+                let line_check =
+                    (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
+                (plain, vocalized, line_hash, line_check)
             })
             .collect();
         let prepare_time = prepare_started.elapsed();
 
         // The key each line's vector is stored under: the production recipe over the text
         // the index stores and the sections the headings open, which the passes above just
-        // made. Only for a column in use — a version 4 index has none, and one written under
-        // another recipe counts as absent.
+        // made. Only for a column in use — one written under another recipe counts as
+        // absent.
         let keys_started = Instant::now();
         let chunk_keys: Vec<u64> = match chunk_key_f {
             Some(_) => {
                 let lines: Vec<LineRef<'_>> = normalized
                     .iter()
                     .zip(&reference_of_line)
-                    .map(|((plain, _, _), section)| LineRef {
+                    .map(|((plain, _, _, _), section)| LineRef {
                         text: plain,
                         section: u64::from(*section),
                     })
@@ -6191,7 +6499,7 @@ impl SearchEngine {
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        for (segment, (normalized_line, vocalized_line, line_hash)) in
+        for (segment, (normalized_line, vocalized_line, line_hash, line_check)) in
             normalized.into_iter().enumerate()
         {
             let reference = references[reference_of_line[segment] as usize].as_str();
@@ -6199,7 +6507,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => reference,
-                text_f         => normalized_line,
+                text_f         => normalized_line.as_str(),
                 id_f           => id,
                 segment_f      => segment as u64,
                 is_pdf_f       => false,
@@ -6218,8 +6526,18 @@ impl SearchEngine {
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
-            if let Some(vocalized) = vocalized_line {
+            if let Some(vocalized) = &vocalized_line {
                 document.add_text(text_vocalized_f, vocalized);
+            }
+            if let Some(check) = line_check {
+                document.add_u64(line_check_f, u64::from(check));
+            } else {
+                add_stored_text(
+                    &mut document,
+                    stored_fields,
+                    &normalized_line,
+                    vocalized_line.as_deref(),
+                );
             }
             writer.add_document(document)?;
             ordinal += 1;
@@ -6293,6 +6611,7 @@ impl SearchEngine {
             .collect::<std::result::Result<_, _>>()?;
         let id_base = catalogue_id_base(catalogue_order)?;
         let chunk_key_f = self.chunk_key_field;
+        let stored_fields = self.stored_text_fields()?;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -6328,7 +6647,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => page.reference.as_str(),
-                text_f         => normalized,
+                text_f         => normalized.as_str(),
                 id_f           => id,
                 segment_f      => u64::from(page.page_index),
                 is_pdf_f       => true,
@@ -6346,6 +6665,7 @@ impl SearchEngine {
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
+            add_stored_text(&mut document, stored_fields, &normalized, None);
             writer.add_document(document)?;
             ordinal += 1;
         }
@@ -6412,6 +6732,10 @@ impl SearchEngine {
             line_hash_f,
         ) = self.all_fields()?;
         let chunk_key_f = self.chunk_key_field;
+        let stored_fields = self.stored_text_fields()?;
+        // Validated before anything is written, so a bad document cannot leave half
+        // a batch in the writer.
+        refuse_library_storage(&docs)?;
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
@@ -6421,7 +6745,7 @@ impl SearchEngine {
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
-                text_f         => normalized_text,
+                text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
                 segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
@@ -6440,14 +6764,19 @@ impl SearchEngine {
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
-            if let Some(vocalized) = doc.text_vocalized {
-                if !vocalized.is_empty() {
-                    document.add_text(
-                        text_vocalized_f,
-                        hebrew_query::normalize_vocalized_text_for_indexing(&vocalized),
-                    );
-                }
+            let vocalized = doc
+                .text_vocalized
+                .filter(|vocalized| !vocalized.is_empty())
+                .map(|vocalized| hebrew_query::normalize_vocalized_text_for_indexing(&vocalized));
+            if let Some(vocalized) = &vocalized {
+                document.add_text(text_vocalized_f, vocalized);
             }
+            add_stored_text(
+                &mut document,
+                stored_fields,
+                &normalized_text,
+                vocalized.as_deref(),
+            );
             writer.add_document(document)?;
         }
         Ok(())
@@ -6471,7 +6800,7 @@ impl SearchEngine {
     /// call is one snapshot — see [`TantivyCorpus`](crate::semantic_corpus::TantivyCorpus),
     /// which holds it for a whole build precisely so a reload cannot move the corpus
     /// underneath one.
-    #[cfg(feature = "semantic-integration")]
+    #[cfg(any(test, feature = "semantic-integration"))]
     pub(crate) fn corpus_searcher(&self) -> Searcher {
         self.index_reader.searcher()
     }
@@ -6903,7 +7232,8 @@ impl SearchEngine {
     }
 
     /// Fetch a single document by its numeric id. Returns None if not found.
-    /// The `text` field contains the raw stored text (no snippet/highlight).
+    /// The `text` field contains the raw text (no snippet/highlight) — for a
+    /// [`TextStorage::LibraryDb`] document, the library row; see `text_status`.
     pub fn get_document_by_id(&self, id: u64) -> Result<Option<SearchResult>> {
         let id_f = self.schema.get_field("id")?;
         let term = Term::from_field_u64(id_f, id);
@@ -6914,20 +7244,20 @@ impl SearchEngine {
         let Some((_, addr)) = top_docs.into_iter().next() else {
             return Ok(None);
         };
-        self.document_at(&searcher, addr, id).map(Some)
+        self.document_at(&searcher, addr, id, true).map(Some)
     }
 
-    /// The line `id` of the book `file_path` in `searcher`, as [`Self::get_document_by_id`]
-    /// reads a line: found by the book and the id together, because two books' lines can
-    /// share an id — an index updated book by book can give two books one catalogue
-    /// position. `None` when the book holds no such line.
+    /// Where the line `id` of the book `file_path` is in `searcher`: found by the book and
+    /// the id together, because two books' lines can share an id — an index updated book by
+    /// book can give two books one catalogue position. `None` when the book holds no such
+    /// line.
     #[cfg(feature = "semantic-integration")]
-    fn document_in_book(
+    fn address_in_book(
         &self,
         searcher: &Searcher,
         file_path: &str,
         id: u64,
-    ) -> Result<Option<SearchResult>> {
+    ) -> Result<Option<DocAddress>> {
         let book = TermQuery::new(
             Term::from_field_text(self.schema.get_field("filePath")?, file_path),
             IndexRecordOption::Basic,
@@ -6941,44 +7271,36 @@ impl SearchEngine {
             (Occur::Must, Box::new(line) as Box<dyn Query>),
         ]);
         let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
-        let Some((_, address)) = top_docs.into_iter().next() else {
-            return Ok(None);
-        };
-        self.document_at(searcher, address, id).map(Some)
+        Ok(top_docs.into_iter().next().map(|(_, address)| address))
     }
 
     /// The stored fields of the document at `address` in `searcher`, as a result: what a
     /// result is hydrated from. `id` is the document's, as the caller found it.
+    /// `with_text: false` skips the text (`text` empty, `text_status` Ok) for callers that
+    /// need only the location, or read the texts of many results at once ([`Self::texts_at`]).
     fn document_at(
         &self,
         searcher: &Searcher,
         address: DocAddress,
         id: u64,
+        with_text: bool,
     ) -> Result<SearchResult> {
         let doc = searcher.doc::<TantivyDocument>(address)?;
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
-        let text_f = self.schema.get_field("text")?;
         let segment_f = self.schema.get_field("segment")?;
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
-
-        Ok(SearchResult {
-            title: doc
-                .get_first(title_f)
+        let str_field = |field: Field| {
+            doc.get_first(field)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
-                .to_string(),
-            reference: doc
-                .get_first(reference_f)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            text: doc
-                .get_first(text_f)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
+                .to_string()
+        };
+        let mut result = SearchResult {
+            title: str_field(title_f),
+            reference: str_field(reference_f),
+            text: String::new(),
             id,
             segment: doc
                 .get_first(segment_f)
@@ -6988,14 +7310,41 @@ impl SearchEngine {
                 .get_first(is_pdf_f)
                 .and_then(|v| v.as_bool())
                 .unwrap_or_default(),
-            file_path: doc
-                .get_first(file_path_f)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            file_path: str_field(file_path_f),
             merged_count: 1,
             merged: Vec::new(),
-        })
+            text_status: TextStatus::Ok,
+        };
+        if with_text {
+            let documents = [(address, doc)];
+            if let Some(hit) =
+                Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?.pop()
+            {
+                result.text = hit.plain;
+                result.text_status = hit.status;
+            }
+        }
+        Ok(result)
+    }
+
+    /// The raw text of the documents at `addresses`, as [`Self::document_at`] reads it, with
+    /// every library row read in one transaction.
+    #[cfg(feature = "semantic-integration")]
+    fn texts_at(
+        &self,
+        searcher: &Searcher,
+        addresses: &[DocAddress],
+    ) -> Result<Vec<(String, TextStatus)>> {
+        let documents = addresses
+            .iter()
+            .map(|&address| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(
+            Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?
+                .into_iter()
+                .map(|hit| (hit.plain, hit.status))
+                .collect(),
+        )
     }
 
     /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -7247,15 +7596,21 @@ impl SearchEngine {
 
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
-        let text_f = self.schema.get_field("text")?;
         let id_f = self.schema.get_field("id")?;
         let segment_f = self.schema.get_field("segment")?;
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
 
+        let documents = hits
+            .iter()
+            .map(|&(_, address)| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .collect::<Result<Vec<_>>>()?;
+        // The whole candidate window's library rows in one transaction.
+        let texts = Self::resolve_hit_texts(&self.schema, &searcher, &documents, false)?;
+
         let mut candidates = Vec::with_capacity(hits.len());
-        for (score, address) in hits {
-            let document = searcher.doc::<TantivyDocument>(address)?;
+        let mut text_status = HashMap::new();
+        for (((score, _), (address, document)), text) in hits.iter().zip(&documents).zip(texts) {
             let reader = searcher.segment_reader(address.segment_ord);
             let fast = reader.fast_fields();
             let section_id = fast
@@ -7266,6 +7621,13 @@ impl SearchEngine {
                 .u64("lineHash")?
                 .first(address.doc_id)
                 .unwrap_or_default();
+            let line_id = document
+                .get_first(id_f)
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            if text.status != TextStatus::Ok {
+                text_status.insert(line_id, text.status);
+            }
             candidates.push(SidecarLexicalCandidate {
                 title: document
                     .get_first(title_f)
@@ -7277,15 +7639,8 @@ impl SearchEngine {
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                text: document
-                    .get_first(text_f)
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                line_id: document
-                    .get_first(id_f)
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or_default(),
+                text: text.plain,
+                line_id,
                 section_id,
                 line_hash,
                 segment: document
@@ -7301,7 +7656,7 @@ impl SearchEngine {
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                bm25_score: score,
+                bm25_score: *score,
             });
         }
         Ok(SemanticLexicalPhase {
@@ -7309,6 +7664,7 @@ impl SearchEngine {
             total_count: total_count as u32,
             truncated,
             highlight,
+            text_status,
         })
     }
 
@@ -8437,6 +8793,15 @@ impl SearchEngine {
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
+
+    /// `(textStored, textVocalizedStored)` — the display copies of
+    /// [`TextStorage::InIndex`] documents.
+    fn stored_text_fields(&self) -> Result<(Field, Field)> {
+        Ok((
+            self.schema.get_field(TEXT_STORED_FIELD)?,
+            self.schema.get_field(TEXT_VOCALIZED_STORED_FIELD)?,
+        ))
+    }
 
     fn all_fields(&self) -> Result<SchemaFields> {
         Ok((
@@ -11741,19 +12106,17 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
-        // המסלול המנוקד מציג את העותק המנוקד השמור; שדה `text` הרגיל נשאר
-        // fallback הגנתי (לא אמור לקרות — כל מסמך שנמצא דרך השדה המנוקד
-        // נכתב עם עותק שמור).
-        let plain_text_field = schema.get_field("text")?;
+        // המסלול המנוקד מציג את העותק המנוקד; לשורה בלי עותק כזה — הטקסט הרגיל.
+        let vocalized_field = text_field == schema.get_field("textVocalized")?;
         let id_field = schema.get_field("id")?;
         let segment_field = schema.get_field("segment")?;
         let is_pdf_field = schema.get_field("isPdf")?;
         let file_path_field = schema.get_field("filePath")?;
 
-        let mut results = Vec::with_capacity(addresses.len());
+        let mut documents = Vec::with_capacity(addresses.len());
         for doc_address in addresses {
-            let retrieved_doc = match searcher.doc::<TantivyDocument>(doc_address) {
-                Ok(d) => d,
+            match searcher.doc::<TantivyDocument>(doc_address) {
+                Ok(d) => documents.push((doc_address, d)),
                 Err(e) => {
                     // A hit the collectors counted but the doc store cannot
                     // materialize (e.g. a corrupt store block). Skipping it
@@ -11765,10 +12128,13 @@ impl SearchEngine {
                         doc_address.segment_ord,
                         doc_address.doc_id
                     );
-                    continue;
                 }
-            };
+            }
+        }
+        let texts = Self::resolve_hit_texts(schema, searcher, &documents, vocalized_field)?;
 
+        let mut results = Vec::with_capacity(documents.len());
+        for ((_, retrieved_doc), hit_text) in documents.iter().zip(texts) {
             let title = retrieved_doc
                 .get_first(title_field)
                 .and_then(|v| v.as_str())
@@ -11777,16 +12143,6 @@ impl SearchEngine {
             let reference = retrieved_doc
                 .get_first(reference_field)
                 .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let text = retrieved_doc
-                .get_first(text_field)
-                .and_then(|v| v.as_str())
-                .or_else(|| {
-                    retrieved_doc
-                        .get_first(plain_text_field)
-                        .and_then(|v| v.as_str())
-                })
                 .unwrap_or_default()
                 .to_string();
             let id = retrieved_doc
@@ -11807,39 +12163,17 @@ impl SearchEngine {
                 .unwrap_or_default()
                 .to_string();
 
-            let mut snippet = snippet_generator.snippet(&text);
-            snippet.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
-            // For multi-word phrase queries, tantivy's term-based highlighter
-            // paints every occurrence of every query term; re-derive the
-            // highlights so only in-order, within-gap phrase occurrences stay
-            // painted. Falls back to the plain term highlight when the chosen
-            // fragment holds no complete phrase occurrence (never paints less
-            // context than before).
-            let (lead, tail) = glued_punctuation(&text, snippet.fragment_range());
-            let fragment = [lead, snippet.fragment(), tail].concat();
-            let term_html = || {
-                htmlescape::encode_minimal(lead)
-                    + &snippet.to_html()
-                    + &htmlescape::encode_minimal(tail)
-            };
-            let snippet_html = match phrase {
-                Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
-                    .or_else(|| {
-                        Self::phrase_filtered_snippet_html(
-                            searcher,
-                            &text,
-                            pf,
-                            hl,
-                            Some(hl.max_chars as usize),
-                        )
-                    })
-                    .unwrap_or_else(term_html),
-                None => term_html(),
-            };
-            let result_text = if snippet_html.is_empty() {
-                text
-            } else {
-                snippet_html
+            let text_status = hit_text.status;
+            let text = hit_text.display(vocalized_field);
+            let result_text = match text_status {
+                TextStatus::Ok => {
+                    Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
+                        .unwrap_or(text)
+                }
+                // The line no longer matches what was indexed: painting the query's
+                // terms into it would claim a match the index never saw.
+                TextStatus::Stale => bounded_plain_snippet(&text, hl.max_chars),
+                TextStatus::Unavailable => String::new(),
             };
 
             results.push(SearchResult {
@@ -11852,10 +12186,253 @@ impl SearchEngine {
                 file_path,
                 merged_count: 1,
                 merged: Vec::new(),
+                text_status,
             });
         }
         Ok(results)
     }
+
+    /// The highlighted snippet of `text`, or `None` when the generator found nothing
+    /// to show (the caller then shows the line as is).
+    fn snippet_html(
+        searcher: &Searcher,
+        snippet_generator: &SnippetGenerator,
+        text: &str,
+        hl: &HighlightConfig,
+        phrase: Option<&PhraseHighlight>,
+    ) -> Option<String> {
+        let mut snippet = snippet_generator.snippet(text);
+        snippet.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
+        // For multi-word phrase queries, tantivy's term-based highlighter
+        // paints every occurrence of every query term; re-derive the
+        // highlights so only in-order, within-gap phrase occurrences stay
+        // painted. Falls back to the plain term highlight when the chosen
+        // fragment holds no complete phrase occurrence (never paints less
+        // context than before).
+        let (lead, tail) = glued_punctuation(text, snippet.fragment_range());
+        let fragment = [lead, snippet.fragment(), tail].concat();
+        let term_html = || {
+            htmlescape::encode_minimal(lead)
+                + &snippet.to_html()
+                + &htmlescape::encode_minimal(tail)
+        };
+        let snippet_html = match phrase {
+            Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
+                .or_else(|| {
+                    Self::phrase_filtered_snippet_html(
+                        searcher,
+                        text,
+                        pf,
+                        hl,
+                        Some(hl.max_chars as usize),
+                    )
+                })
+                .unwrap_or_else(term_html),
+            None => term_html(),
+        };
+        (!snippet_html.is_empty()).then_some(snippet_html)
+    }
+
+    /// The display text of each document, in order: the stored copy for
+    /// [`TextStorage::InIndex`] documents, the library-database row for the rest.
+    /// Every library row of the call is read in one transaction.
+    ///
+    /// `vocalized`: also derive the vocalized rendering of library rows (what the
+    /// `textVocalized` field was indexed from).
+    fn resolve_hit_texts(
+        schema: &Schema,
+        searcher: &Searcher,
+        documents: &[(DocAddress, TantivyDocument)],
+        vocalized: bool,
+    ) -> Result<Vec<HitText>> {
+        let text_stored_f = schema.get_field(TEXT_STORED_FIELD)?;
+        let vocalized_stored_f = schema.get_field(TEXT_VOCALIZED_STORED_FIELD)?;
+        let file_path_f = schema.get_field("filePath")?;
+        let segment_f = schema.get_field("segment")?;
+
+        struct Pending {
+            slot: usize,
+            key: crate::line_source::LineKey,
+            line_check: Option<u32>,
+            line_hash: u64,
+        }
+        let mut out = Vec::with_capacity(documents.len());
+        let mut pending: Vec<Pending> = Vec::new();
+        let mut check_columns = HashMap::new();
+        for (slot, (address, document)) in documents.iter().enumerate() {
+            if let Some(stored) = document.get_first(text_stored_f).and_then(|v| v.as_str()) {
+                out.push(HitText {
+                    plain: stored.to_string(),
+                    vocalized: document
+                        .get_first(vocalized_stored_f)
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    status: TextStatus::Ok,
+                });
+                continue;
+            }
+            out.push(HitText::unavailable());
+            let file_path = document
+                .get_first(file_path_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let Some(book_id) = library_book_id(file_path) else {
+                log::warn!("document without stored text has no library book id: {file_path:?}");
+                continue;
+            };
+            let ordinal = document
+                .get_first(segment_f)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            let (check_column, hash_column) = match check_columns.entry(address.segment_ord) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let fast = searcher.segment_reader(address.segment_ord).fast_fields();
+                    e.insert((fast.u64(LINE_CHECK_FIELD)?, fast.u64("lineHash")?))
+                }
+            };
+            pending.push(Pending {
+                slot,
+                key: crate::line_source::LineKey { book_id, ordinal },
+                line_check: check_column
+                    .first(address.doc_id)
+                    .and_then(|v| u32::try_from(v).ok()),
+                line_hash: hash_column.first(address.doc_id).unwrap_or_default(),
+            });
+        }
+        if pending.is_empty() {
+            return Ok(out);
+        }
+
+        let keys: Vec<_> = pending.iter().map(|p| p.key).collect();
+        let checks: Vec<_> = pending.iter().map(|p| p.line_check).collect();
+        let rows = match crate::line_source::with_store(|store| store.fetch_window(&keys, &checks))
+        {
+            Ok(rows) => rows,
+            Err(reason) => {
+                debug!(
+                    "library text unavailable for {} hit(s): {reason:?}",
+                    keys.len()
+                );
+                return Ok(out);
+            }
+        };
+        // Normalizing a window's rows is most of its cost; a lone row is not worth the hop.
+        use rayon::prelude::*;
+        let hits: Vec<HitText> = pending
+            .par_iter()
+            .zip(rows.into_par_iter())
+            .with_min_len(LIBRARY_ROWS_PER_TASK)
+            .map(|(p, row)| HitText::from_library_row(row, p.line_check, p.line_hash, vocalized))
+            .collect();
+        for (p, hit) in pending.iter().zip(hits) {
+            out[p.slot] = hit;
+        }
+        Ok(out)
+    }
+}
+
+/// Library rows normalized per parallel task in [`SearchEngine::resolve_hit_texts`].
+const LIBRARY_ROWS_PER_TASK: usize = 8;
+
+/// One hit's display text before snippeting — see [`SearchEngine::resolve_hit_texts`].
+struct HitText {
+    plain: String,
+    /// The vocalized rendering, for documents that have one.
+    vocalized: Option<String>,
+    status: TextStatus,
+}
+
+impl HitText {
+    fn unavailable() -> Self {
+        HitText {
+            plain: String::new(),
+            vocalized: None,
+            status: TextStatus::Unavailable,
+        }
+    }
+
+    /// The texts `add_text_book` indexed this row as, `Ok` when the row is the line the
+    /// document was indexed from: its `lineCheck`, and its `lineHash` when that is not 0.
+    fn from_library_row(
+        row: crate::line_source::RowText,
+        line_check: Option<u32>,
+        line_hash: u64,
+        vocalized: bool,
+    ) -> Self {
+        use crate::line_source::RowText;
+        let raw = match row {
+            RowText::Found(raw) => raw,
+            RowText::Missing => {
+                return HitText {
+                    plain: String::new(),
+                    vocalized: None,
+                    status: TextStatus::Stale,
+                }
+            }
+            RowText::Unreadable => return HitText::unavailable(),
+        };
+        let vocalized = (vocalized && hebrew_query::contains_attached_marks(&raw))
+            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(&raw))
+            .filter(|v| !v.is_empty());
+        let plain = if vocalized.is_none() || line_hash != 0 {
+            hebrew_query::normalize_text_for_indexing(&raw)
+        } else {
+            String::new()
+        };
+        let status = if line_check == Some(crate::line_source::line_check(&raw))
+            && (line_hash == 0 || line_dedup_hash(&plain) == line_hash)
+        {
+            TextStatus::Ok
+        } else {
+            TextStatus::Stale
+        };
+        // `display` shows the vocalized rendering whenever there is one.
+        let plain = if vocalized.is_some() {
+            String::new()
+        } else {
+            plain
+        };
+        HitText {
+            plain,
+            vocalized,
+            status,
+        }
+    }
+
+    fn display(self, vocalized: bool) -> String {
+        match self.vocalized {
+            Some(text) if vocalized => text,
+            _ => self.plain,
+        }
+    }
+}
+
+/// The text a document was indexed from, as [`indexed_texts`] reads it.
+pub(crate) struct IndexedText {
+    pub(crate) text: String,
+    pub(crate) status: TextStatus,
+}
+
+/// The normalized text each document was indexed from — what its `text` field holds: the
+/// stored copy, or its library row read back and checked as a result's is
+/// ([`SearchEngine::resolve_hit_texts`]), every row of the call in one transaction. A
+/// [`TextStatus::Stale`] line carries the row the library holds now (empty when it is
+/// gone), and a [`TextStatus::Unavailable`] one no text. What the semantic paths compute a
+/// line's chunk key from.
+pub(crate) fn indexed_texts(
+    searcher: &Searcher,
+    documents: &[(DocAddress, TantivyDocument)],
+) -> Result<Vec<IndexedText>> {
+    Ok(
+        SearchEngine::resolve_hit_texts(searcher.schema(), searcher, documents, false)?
+            .into_iter()
+            .map(|hit| IndexedText {
+                text: hit.plain,
+                status: hit.status,
+            })
+            .collect(),
+    )
 }
 
 impl HighlightConfig {
@@ -13224,7 +13801,7 @@ mod tests {
             .unwrap();
     }
 
-    // ── The chunkKey column, and version 4 indexes beside it ───────────────
+    // ── The chunkKey column, and the indexes version 5 rebuilds ─────────────
 
     /// The schema of a real version 4 index, as the `meta.json` of the library's release
     /// index (6,042,284 lines, built by the engine before the `chunkKey` column) holds it.
@@ -13245,31 +13822,111 @@ mod tests {
         {"name": "topics", "type": "facet", "options": {"stored": false}}
     ]"#;
 
-    /// Version 4's schema is the one version 4 indexes have, and version 5's is that and
-    /// `chunkKey` after it, so every other field keeps its number.
-    #[test]
-    fn version_5_is_version_4_and_a_chunk_key_column_after_it() {
-        let released: Schema = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
-        assert_eq!(schema_of_version(4), Some(released.clone()));
+    /// The fields version 5 adds to the released version 4 schema, beside `chunkKey`: where
+    /// the text of a document is kept when it is not read from the library database.
+    const VERSION_5_FIELDS: [&str; 3] = [
+        LINE_CHECK_FIELD,
+        TEXT_STORED_FIELD,
+        TEXT_VOCALIZED_STORED_FIELD,
+    ];
 
+    /// Version 5 is the released version 4 schema with `text` and `textVocalized` out of the
+    /// store, and the `chunkKey` column and [`VERSION_5_FIELDS`] beside it. No other
+    /// version is one this engine reads.
+    #[test]
+    fn version_5_is_version_4_with_the_text_out_of_its_store() {
+        let released: Schema = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
             schema_of_version(INDEX_SCHEMA_VERSION),
             Some(current.clone())
         );
-        let fields: Vec<_> = current.fields().map(|(_, entry)| entry.clone()).collect();
-        let released_fields: Vec<_> = released.fields().map(|(_, entry)| entry.clone()).collect();
-        assert_eq!(fields[..fields.len() - 1], released_fields[..]);
+        for (_, entry) in released.fields() {
+            let now = current.get_field_entry(current.get_field(entry.name()).unwrap());
+            if ["text", "textVocalized"].contains(&entry.name()) {
+                assert!(entry.is_stored() && !now.is_stored(), "{}", entry.name());
+                assert_eq!(now.is_indexed(), entry.is_indexed(), "{}", entry.name());
+            } else {
+                assert_eq!(now, entry);
+            }
+        }
+        let mut added: Vec<&str> = current
+            .fields()
+            .map(|(_, entry)| entry.name())
+            .filter(|name| released.get_field(name).is_err())
+            .collect();
+        added.sort_unstable();
+        let mut expected = VERSION_5_FIELDS.to_vec();
+        expected.push(CHUNK_KEY_FIELD);
+        expected.sort_unstable();
+        assert_eq!(added, expected);
 
-        let chunk_key = fields.last().unwrap();
-        assert_eq!(chunk_key.name(), CHUNK_KEY_FIELD);
+        let chunk_key = current.get_field_entry(current.get_field(CHUNK_KEY_FIELD).unwrap());
         assert!(chunk_key.is_fast());
         assert!(!chunk_key.is_indexed());
         assert!(!chunk_key.is_stored());
         assert_eq!(chunk_key.field_type().value_type(), Type::U64);
 
-        for version in [MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
+        for version in [4, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
             assert_eq!(schema_of_version(version), None, "{version}");
+        }
+    }
+
+    /// An empty index of the schema `fields` (a `meta.json` schema array), with the metadata
+    /// of `version` when one is given.
+    fn index_of_schema(fields: JsonValue, version: Option<u32>) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let schema: Schema = serde_json::from_value(fields).unwrap();
+        Index::create_in_dir(dir.path(), schema).unwrap();
+        if let Some(version) = version {
+            let recipe = (version == INDEX_SCHEMA_VERSION).then(ChunkKeyRecipe::current);
+            write_metadata(&dir, &index_metadata(version, recipe));
+        }
+        dir
+    }
+
+    /// The released version 4 index is rebuilt, with its metadata or without: its text is
+    /// stored where this build does not read it.
+    #[test]
+    fn a_released_version_4_index_is_rebuilt() {
+        let fields: JsonValue = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
+        for version in [Some(4), None] {
+            let dir = index_of_schema(fields.clone(), version);
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version:?}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
+            assert_eq!(compatibility.found_schema_version, version);
+        }
+    }
+
+    /// A version 5 index written without [`VERSION_5_FIELDS`] — its text stored the
+    /// version 4 way, beside a `chunkKey` column — is rebuilt: the check reads the fields
+    /// the index has, not the version its metadata declares.
+    #[test]
+    fn a_version_5_index_without_its_fields_is_rebuilt() {
+        let mut fields: Vec<JsonValue> = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
+        fields.push(json!({
+            "name": CHUNK_KEY_FIELD,
+            "type": "u64",
+            "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}
+        }));
+        let without: Schema = serde_json::from_value(JsonValue::Array(fields.clone())).unwrap();
+        for name in VERSION_5_FIELDS {
+            assert!(current_schema().get_field(name).is_ok(), "{name}");
+            assert!(without.get_field(name).is_err(), "{name}");
+        }
+        for version in [Some(INDEX_SCHEMA_VERSION), None] {
+            let dir = index_of_schema(JsonValue::Array(fields.clone()), version);
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version:?}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
+            if version.is_some() {
+                assert!(
+                    compatibility.reason.as_deref().unwrap().contains("differs"),
+                    "{:?}",
+                    compatibility.reason
+                );
+            }
         }
     }
 
@@ -13280,28 +13937,6 @@ mod tests {
 
     fn read_metadata(dir: &TempDir) -> JsonValue {
         serde_json::from_str(&fs::read_to_string(index_metadata_path(dir.path())).unwrap()).unwrap()
-    }
-
-    /// An index the engine before the column left: version 4's schema, version 4's
-    /// metadata, and a book.
-    fn version_4_index() -> TempDir {
-        let dir = TempDir::new().unwrap();
-        Index::create_in_dir(dir.path(), schema_of_version(4).unwrap()).unwrap();
-        write_metadata(&dir, &index_metadata(4, None));
-        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
-        engine
-            .add_text_book(
-                "בראשית".to_string(),
-                "/root".to_string(),
-                "/books/genesis.txt".to_string(),
-                0,
-                0,
-                "בראשית ברא אלהים את השמים ואת הארץ\nוהארץ היתה תהו ובהו".to_string(),
-                None,
-            )
-            .unwrap();
-        engine.commit().unwrap();
-        dir
     }
 
     /// What the `chunkKey` column holds for each live document, by id: `None` for a
@@ -13322,109 +13957,6 @@ mod tests {
         }
         values.sort_unstable();
         values.into_iter().map(|(_, value)| value).collect()
-    }
-
-    /// **An index built before the column is not rebuilt.** It opens compatible, under its
-    /// own schema; it is searched as it was; it takes new books, which get no field; and it
-    /// stays version 4, with no recipe recorded.
-    #[test]
-    fn a_version_4_index_opens_searches_and_takes_books_as_it_is() {
-        let dir = version_4_index();
-
-        let compatibility = check_index_compatibility(dir_path_string(&dir));
-        assert!(compatibility.compatible, "{:?}", compatibility.reason);
-        assert_eq!(compatibility.status, "compatible");
-        assert_eq!(compatibility.found_schema_version, Some(4));
-
-        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
-        assert_eq!(engine.schema, schema_of_version(4).unwrap());
-        assert!(engine.schema.get_field(CHUNK_KEY_FIELD).is_err());
-        assert_eq!(engine.chunk_key_field, None);
-        assert_eq!(
-            engine.count(vec!["ברא".to_string()], &[], 0, 100).unwrap(),
-            1
-        );
-
-        engine
-            .add_text_book(
-                "שמות".to_string(),
-                "/root".to_string(),
-                "/books/exodus.txt".to_string(),
-                1,
-                0,
-                "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
-                None,
-            )
-            .unwrap();
-        engine
-            .add_pdf_book(
-                "סרוק".to_string(),
-                "/root".to_string(),
-                "/books/scan.pdf".to_string(),
-                2,
-                0,
-                vec![PdfPageInput {
-                    page_index: 0,
-                    reference: "עמוד 1".to_string(),
-                    text: "ויאמר משה אל העם אל תיראו".to_string(),
-                }],
-                None,
-            )
-            .unwrap();
-        add(&mut engine, 99, "שורה שנוספה לבדה", "/books/loose.txt");
-        engine.commit().unwrap();
-        engine.index_reader.reload().unwrap();
-        assert_eq!(
-            engine.count(vec!["שמות".to_string()], &[], 0, 100).unwrap(),
-            1
-        );
-        assert_eq!(
-            engine.count(vec!["משה".to_string()], &[], 0, 100).unwrap(),
-            1
-        );
-        assert_eq!(
-            engine.count(vec!["ברא".to_string()], &[], 0, 100).unwrap(),
-            1
-        );
-        assert_eq!(chunk_key_values(&engine), vec![None; 5]);
-        drop(engine);
-
-        let metadata = read_metadata(&dir);
-        assert_eq!(metadata["schema_version"], 4);
-        for field in [
-            "line_text_version",
-            "chunk_key_version",
-            "chunk_key_chunking_identity",
-        ] {
-            assert!(metadata.get(field).is_none(), "{field}");
-        }
-        let compatibility = check_index_compatibility(dir_path_string(&dir));
-        assert!(compatibility.compatible);
-        assert_eq!(compatibility.found_schema_version, Some(4));
-    }
-
-    /// A version 4 index whose metadata is missing is found by its Tantivy schema, and given
-    /// version 4's metadata back: no column, so no recipe.
-    #[test]
-    fn a_version_4_index_without_metadata_gets_version_4_metadata() {
-        let dir = version_4_index();
-        fs::remove_file(index_metadata_path(dir.path())).unwrap();
-
-        let compatibility = check_index_compatibility(dir_path_string(&dir));
-        assert!(compatibility.compatible);
-        assert_eq!(compatibility.status, "legacy_compatible");
-        assert_eq!(compatibility.found_schema_version, Some(4));
-
-        let engine = SearchEngine::new(dir.path().to_str().unwrap());
-        assert_eq!(engine.chunk_key_field, None);
-        drop(engine);
-        let metadata = read_metadata(&dir);
-        assert_eq!(metadata["schema_version"], 4);
-        assert!(metadata.get("line_text_version").is_none());
-        assert_eq!(
-            check_index_compatibility(dir_path_string(&dir)).status,
-            "compatible"
-        );
     }
 
     /// A new index is version 5: it has the column, its metadata records the recipe the
@@ -13454,6 +13986,8 @@ mod tests {
                 0,
                 0,
                 "בראשית ברא אלהים את השמים ואת הארץ\nאו".to_string(),
+                None,
+                TextStorage::InIndex,
                 None,
             )
             .unwrap();
@@ -13486,6 +14020,7 @@ mod tests {
             generation_order: None,
             text_vocalized: None,
             extra_facets: None,
+            text_storage: None,
         };
         add(&mut engine, 1, line, "/books/loose.txt");
         engine.add_documents_batch(vec![input(2)]).unwrap();
@@ -13532,6 +14067,8 @@ mod tests {
                     0,
                     "בראשית ברא אלהים את השמים ואת הארץ".to_string(),
                     None,
+                    TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
             engine.commit().unwrap();
@@ -13559,6 +14096,8 @@ mod tests {
                     1,
                     0,
                     "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
+                    None,
+                    TextStorage::InIndex,
                     None,
                 )
                 .unwrap();
@@ -13901,6 +14440,8 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 text.to_string(),
                 None,
+                TextStorage::InIndex,
+                None,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -14026,6 +14567,8 @@ mod tests {
                 1,
                 DEFAULT_GENERATION_ORDER,
                 "יותר בכבוד המורים<br>כי אב הביאו לעולם".to_string(),
+                None,
+                TextStorage::InIndex,
                 None,
             )
             .unwrap();
@@ -14696,6 +15239,7 @@ mod tests {
                 section_id: None,
                 generation_order: None,
                 extra_facets: None,
+                text_storage: None,
             }])
             .unwrap();
         engine
@@ -14714,6 +15258,7 @@ mod tests {
                 section_id: None,
                 generation_order: None,
                 extra_facets: None,
+                text_storage: None,
             }])
             .unwrap();
         engine.commit().unwrap();
@@ -14805,6 +15350,8 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 text.as_bytes().to_vec(),
                 None,
+                TextStorage::InIndex,
+                None,
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -14856,6 +15403,8 @@ mod tests {
                 1,
                 DEFAULT_GENERATION_ORDER,
                 String::new(),
+                None,
+                TextStorage::InIndex,
                 None,
             )
             .unwrap();
@@ -16893,6 +17442,7 @@ mod tests {
             section_id: None,
             generation_order: None,
             extra_facets: None,
+            text_storage: None,
         }
     }
 
@@ -17007,6 +17557,8 @@ mod tests {
                     DEFAULT_GENERATION_ORDER,
                     text.to_string(),
                     None,
+                    TextStorage::InIndex,
+                    None,
                 )
                 .unwrap();
         }
@@ -17072,6 +17624,8 @@ mod tests {
                     order,
                     DEFAULT_GENERATION_ORDER,
                     text.to_string(),
+                    None,
+                    TextStorage::InIndex,
                     None,
                 )
                 .unwrap();
@@ -19447,6 +20001,8 @@ mod tests {
                 DEFAULT_GENERATION_ORDER,
                 text.to_string(),
                 None,
+                TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -19749,6 +20305,8 @@ mod tests {
                 7,
                 0,
                 text.to_string(),
+                None,
+                TextStorage::InIndex,
                 None,
             )
             .unwrap();
@@ -20209,6 +20767,8 @@ mod tests {
                 0,
                 lines.join("\n"),
                 None,
+                TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -20511,6 +21071,8 @@ mod tests {
                 0,
                 text,
                 None,
+                TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -20679,6 +21241,68 @@ mod tests {
         assert_eq!(page.total_count, 2);
         assert_eq!(page.group_count, Some(2));
         assert!(page.results.iter().all(|r| r.merged_count == 1));
+    }
+
+    #[test]
+    fn a_library_row_needs_its_line_hash_as_well_as_its_check() {
+        use crate::line_source::RowText;
+        let raw = "וַיֹּאמֶר אֱלֹהִים יְהִי אוֹר וַיְהִי אוֹר וירא אלהים";
+        let check = crate::line_source::line_check(raw);
+        let hash = line_dedup_hash(&hebrew_query::normalize_text_for_indexing(raw));
+        assert_ne!(hash, 0);
+        let status = |line_hash: u64, vocalized: bool| {
+            HitText::from_library_row(
+                RowText::Found(raw.to_string()),
+                Some(check),
+                line_hash,
+                vocalized,
+            )
+            .status
+        };
+        for vocalized in [false, true] {
+            assert_eq!(status(hash, vocalized), TextStatus::Ok);
+            // 0 is "no signature": only the check vouches for the row.
+            assert_eq!(status(0, vocalized), TextStatus::Ok);
+            assert_eq!(status(hash ^ 1, vocalized), TextStatus::Stale);
+        }
+        let shown =
+            HitText::from_library_row(RowText::Found(raw.to_string()), Some(check), hash, true);
+        assert!(shown.plain.is_empty() && shown.vocalized.is_some());
+    }
+
+    #[test]
+    fn line_dedup_hash_fast_paths_hash_like_the_unicode_tables() {
+        fn reference(text: &str) -> u64 {
+            let mut fnv = Fnv::new();
+            let mut letters = 0usize;
+            let mut buf = [0u8; 4];
+            for c in text.chars() {
+                if ('א'..='ת').contains(&c) {
+                    letters += 1;
+                } else if !c.is_alphanumeric() {
+                    continue;
+                }
+                for lower in c.to_lowercase() {
+                    fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+            if letters < LINE_DEDUP_MIN_LETTERS {
+                return 0;
+            }
+            fnv.finish()
+        }
+        let prefix = "אבגדהוזחטיכלמנ";
+        for c in (0u32..0x3000).filter_map(char::from_u32) {
+            let text = format!("{prefix}{c}");
+            assert_eq!(
+                line_dedup_hash(&text),
+                reference(&text),
+                "U+{:04X}",
+                c as u32
+            );
+        }
+        let mixed = "וַיֹּ֥אמֶר אֱלֹהִ֖ים, Rabbi ÉLI 15 ١٥ \u{200E}ﬠ ײ׳ \"מ\" שָׁלוֹם";
+        assert_eq!(line_dedup_hash(mixed), reference(mixed));
     }
 
     #[test]
@@ -21609,22 +22233,34 @@ mod tests {
             )
         }
 
-        /// [`Built`] of `text` as the one book [`BOOK`], in an index of schema version 4 —
-        /// no `chunkKey` column — when `version_4` asks.
-        fn built_of(dir: &TempDir, version_4: bool, text: String) -> Built {
-            built_of_books(dir, version_4, &[(BOOK, text)])
+        /// [`Built`] of `text` as the one book [`BOOK`], in an index whose `chunkKey` column
+        /// counts as absent — its metadata records no recipe — when `without_column` asks.
+        fn built_of(dir: &TempDir, without_column: bool, text: String) -> Built {
+            built_of_books(dir, without_column, &[(BOOK, text)])
         }
 
         /// [`built_of`] with each of `books`, `(path, text)`, a book of its own.
-        fn built_of_books(dir: &TempDir, version_4: bool, books: &[(&str, String)]) -> Built {
+        fn built_of_books(dir: &TempDir, without_column: bool, books: &[(&str, String)]) -> Built {
+            built_with(dir, without_column, books, TextStorage::InIndex, None)
+        }
+
+        /// [`built_of_books`], each book's text kept as `storage` says, and the vectors built
+        /// with the text of `library` when it is in a library database.
+        fn built_with(
+            dir: &TempDir,
+            without_column: bool,
+            books: &[(&str, String)],
+            storage: TextStorage,
+            library: Option<&Path>,
+        ) -> Built {
             let index = dir.path().join("index");
             fs::create_dir_all(&index).unwrap();
-            if version_4 {
-                Index::create_in_dir(&index, schema_of_version(4).unwrap()).unwrap();
-                write_index_metadata(&index, &index_metadata(4, None)).unwrap();
+            if without_column {
+                Index::create_in_dir(&index, current_schema()).unwrap();
+                write_index_metadata(&index, &index_metadata(INDEX_SCHEMA_VERSION, None)).unwrap();
             }
             let mut engine = SearchEngine::new(index.to_str().unwrap());
-            assert_eq!(engine.chunk_key_field.is_none(), version_4);
+            assert_eq!(engine.chunk_key_field.is_none(), without_column);
             for (order, (path, text)) in books.iter().enumerate() {
                 engine
                     .add_text_book(
@@ -21634,6 +22270,8 @@ mod tests {
                         order as u32,
                         0,
                         text.clone(),
+                        None,
+                        storage,
                         None,
                     )
                     .unwrap();
@@ -21659,7 +22297,8 @@ mod tests {
                     quantization: "int8".to_string(),
                 }],
             };
-            let corpus = TantivyCorpus::from_engine(&engine, 30, "", chunking.clone()).unwrap();
+            let corpus =
+                TantivyCorpus::from_engine(&engine, library, 30, "", chunking.clone()).unwrap();
             let package = dir.path().join("package");
             let report = build(
                 BuildRequest {
@@ -21694,7 +22333,7 @@ mod tests {
         /// The probe line's id and the value its `chunkKey` column holds.
         fn probe(engine: &SearchEngine) -> (u64, u64) {
             let searcher = engine.index_reader.searcher();
-            let text_f = engine.schema.get_field("text").unwrap();
+            let text_f = engine.schema.get_field(TEXT_STORED_FIELD).unwrap();
             for (ord, reader) in searcher.segment_readers().iter().enumerate() {
                 let ids = reader.fast_fields().u64("id").unwrap();
                 let keys = reader.fast_fields().u64(CHUNK_KEY_FIELD).unwrap();
@@ -21720,6 +22359,7 @@ mod tests {
                 field("title") => "בראשית",
                 field("reference") => "בראשית",
                 field("text") => text,
+                field(TEXT_STORED_FIELD) => text,
                 field("id") => id,
                 field("segment") => 1u64,
                 field("isPdf") => false,
@@ -21795,6 +22435,159 @@ mod tests {
                 "{:?}",
                 response.fallback_reason
             );
+        }
+
+        /// A line whose text is in the library database is resolved and verified as a stored
+        /// one is, with the column or without; a row changed since it was indexed is not shown
+        /// as its vector's; and while the database cannot be read, the semantic half fails
+        /// rather than keying empty lines.
+        #[test]
+        fn a_library_line_is_a_semantic_match_like_a_stored_one() {
+            let _guard = crate::line_source::TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let rows = ["בראשית ברא אלהים את השמים ואת הארץ", PROBE];
+            for without_column in [false, true] {
+                crate::line_source::reset_for_tests();
+                let dir = TempDir::new().unwrap();
+                let db = dir.path().join("seforim.db");
+                crate::external_text_tests::write_book(&db, 1, &rows);
+                configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+                let built = built_with(
+                    &dir,
+                    without_column,
+                    &[("id:1", rows.join("\n"))],
+                    TextStorage::LibraryDb,
+                    Some(&db),
+                );
+                let engine = open(&dir, built);
+                let context = format!("without column: {without_column}");
+
+                let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+                let top = response.results.first().expect("a semantic hit");
+                assert_eq!(top.snippet_html, PROBE, "{context}");
+                assert_eq!(top.source, SemanticResultSource::Semantic, "{context}");
+                assert_eq!(top.text_status, TextStatus::Ok, "{context}");
+                assert!(response.fallback_reason.is_none(), "{context}");
+
+                suspend_line_source().unwrap();
+                let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+                resume_line_source().unwrap();
+                assert!(
+                    response
+                        .results
+                        .iter()
+                        .all(|result| result.source != SemanticResultSource::Semantic),
+                    "{context}"
+                );
+                assert!(response.fallback_reason.is_some(), "{context}");
+
+                let conn = rusqlite::Connection::open(&db).unwrap();
+                conn.execute(
+                    "UPDATE line_content SET content = ?1 WHERE id = \
+                     (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1)",
+                    ["שורה אחרת לגמרי שאין לה דבר עם הווקטור"],
+                )
+                .unwrap();
+                drop(conn);
+                let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+                assert!(
+                    response
+                        .results
+                        .iter()
+                        .all(|result| result.source != SemanticResultSource::Semantic
+                            || result.segment != 1),
+                    "the changed line is not shown as the vector's; {context}"
+                );
+            }
+            crate::line_source::reset_for_tests();
+        }
+
+        /// A repeated query must verify the current library text even when an unpaused
+        /// writer changed it, including when a lexical window refreshed the row caches first.
+        #[test]
+        fn cached_library_hits_are_reverified_after_an_unpaused_write() {
+            let _guard = crate::line_source::TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for without_column in [false, true] {
+                for refresh_rows_first in [false, true] {
+                    for mode in [
+                        SemanticRetrievalMode::SemanticOnly,
+                        SemanticRetrievalMode::Hybrid,
+                    ] {
+                        crate::line_source::reset_for_tests();
+                        let dir = TempDir::new().unwrap();
+                        let db = dir.path().join("seforim.db");
+                        let rows = ["<h1>בראשית</h1>", PROBE];
+                        crate::external_text_tests::write_book(&db, 1, &rows);
+                        configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+                        let built = built_with(
+                            &dir,
+                            without_column,
+                            &[("id:1", rows.join("\n"))],
+                            TextStorage::LibraryDb,
+                            Some(&db),
+                        );
+                        let engine = open(&dir, built);
+                        let context = format!("without_column={without_column}, refresh_rows_first={refresh_rows_first}, mode={mode:?}");
+                        let probe_is_semantic = |r: &SemanticSearchResult| {
+                            r.segment == 1 && r.source != SemanticResultSource::Lexical
+                        };
+                        let first = search(&engine, mode);
+                        let coordinator = engine.semantic_engine().unwrap().coordinator;
+                        let hits_before_repeat = coordinator.get_telemetry_snapshot().cache_hits;
+                        let id = first
+                            .results
+                            .iter()
+                            .find(|r| probe_is_semantic(r))
+                            .unwrap_or_else(|| panic!("no semantic probe; {context}"))
+                            .id;
+                        // The second identical query exercises the warm cache.
+                        assert!(
+                            search(&engine, mode).results.iter().any(probe_is_semantic),
+                            "{context}"
+                        );
+                        assert!(
+                            coordinator.get_telemetry_snapshot().cache_hits > hits_before_repeat,
+                            "unchanged queries must still use the cache; {context}"
+                        );
+                        let conn = rusqlite::Connection::open(&db).unwrap();
+                        let update = |text: &str| {
+                            conn.execute(
+                                "UPDATE line_content SET content = ?1 WHERE id = \
+                                 (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1)",
+                                [text],
+                            )
+                            .unwrap();
+                        };
+                        update("שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+                        if refresh_rows_first {
+                            let doc = engine.get_document_by_id(id).unwrap().unwrap();
+                            assert_eq!(doc.text_status, TextStatus::Stale, "{context}");
+                        }
+                        for _ in 0..2 {
+                            let response = search(&engine, mode);
+                            assert!(
+                                response.results.iter().all(|r| !probe_is_semantic(r)),
+                                "cached semantic hit survived changed text; {context}: {:?}",
+                                response
+                                    .results
+                                    .iter()
+                                    .map(|r| (&r.snippet_html, r.text_status, r.source))
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                        // A second commit must also discard any cached rejection.
+                        update(PROBE);
+                        assert!(
+                            search(&engine, mode).results.iter().any(probe_is_semantic),
+                            "restored row; {context}"
+                        );
+                    }
+                }
+            }
+            crate::line_source::reset_for_tests();
         }
 
         /// A short line, under the 20 characters a line stands alone at, with letters enough
@@ -21972,9 +22765,9 @@ mod tests {
                 |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
                 &[&RESPLIT, &FIRST],
             );
-            for version_4 in [false, true] {
+            for without_column in [false, true] {
                 let dir = TempDir::new().unwrap();
-                let engine = open(&dir, built_of(&dir, version_4, text.clone()));
+                let engine = open(&dir, built_of(&dir, without_column, text.clone()));
 
                 let response = semantic_page(&engine, &window(&text, 0), 10);
                 assert!(
@@ -21986,7 +22779,7 @@ mod tests {
                 assert_eq!(
                     shorts.get(..3),
                     Some(&[2, 12, 17][..]),
-                    "version 4: {version_4}; every line of the text, first: {shorts:?}"
+                    "without column: {without_column}; every line of the text, first: {shorts:?}"
                 );
             }
         }
@@ -22026,9 +22819,9 @@ mod tests {
             let recurs = 2 * MAX_FAILED_REPEATS;
             let text = book_of(&first, recurs, |n| format!("פסוק {n}"), &[&first]);
             let repeat = 5 * (recurs as u64 + 1) + 2;
-            for version_4 in [false, true] {
+            for without_column in [false, true] {
                 let dir = TempDir::new().unwrap();
-                let engine = open(&dir, built_of(&dir, version_4, text.clone()));
+                let engine = open(&dir, built_of(&dir, without_column, text.clone()));
 
                 let response = semantic_page(&engine, &window(&text, 0), 10);
                 assert!(
@@ -22038,8 +22831,8 @@ mod tests {
                 );
                 let shorts = shorts(&response);
                 assert!(shorts.contains(&2), "{shorts:?}");
-                assert_eq!(shorts.contains(&repeat), !version_4, "{shorts:?}");
-                if version_4 {
+                assert_eq!(shorts.contains(&repeat), !without_column, "{shorts:?}");
+                if without_column {
                     assert_eq!(resolver_counts(&engine).1, MAX_FAILED_REPEATS);
                 }
             }
@@ -22063,10 +22856,10 @@ mod tests {
             let query: String = window(&text, 0).chars().take(512).collect();
             let other = "/books/exodus.txt";
             let repeat = 5 * (recurs as u64 + 1) + 2;
-            for version_4 in [false, true] {
+            for without_column in [false, true] {
                 let dir = TempDir::new().unwrap();
                 let books = [(BOOK, text.clone()), (other, text.clone())];
-                let engine = open(&dir, built_of_books(&dir, version_4, &books));
+                let engine = open(&dir, built_of_books(&dir, without_column, &books));
 
                 let response = semantic_page(&engine, query.trim_end(), 10);
                 assert!(
@@ -22085,7 +22878,7 @@ mod tests {
                 assert_eq!(
                     lines,
                     [(other, 2), (other, repeat), (BOOK, 2), (BOOK, repeat)],
-                    "version 4: {version_4}"
+                    "without column: {without_column}"
                 );
             }
         }
@@ -22133,6 +22926,8 @@ mod tests {
                     1,
                     0,
                     "שורה בספר אחר ארוכה דיה לעמוד לבדה".to_string(),
+                    None,
+                    TextStorage::InIndex,
                     None,
                 )
                 .unwrap();
@@ -22202,6 +22997,8 @@ mod tests {
                     order,
                     0,
                     format!("שורה בספר אחר ארוכה דיה לעמוד לבדה\n{PROBE}"),
+                    None,
+                    TextStorage::InIndex,
                     None,
                 )
                 .unwrap();

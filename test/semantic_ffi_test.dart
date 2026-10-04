@@ -699,6 +699,7 @@ Future<void> main() async {
         catalogueOrder: 0,
         generationOrder: 0,
         text: 'בראשית ברא אלהים את השמים ואת הארץ\n$probeLine',
+        textStorage: TextStorage.inIndex,
       );
       await engine.commit();
 
@@ -821,6 +822,7 @@ Future<void> main() async {
         catalogueOrder: 1,
         generationOrder: 0,
         text: 'שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה',
+        textStorage: TextStorage.inIndex,
       );
       await engine.commit();
 

@@ -10,16 +10,21 @@
 //!
 //! The text of a line is what the index stores, chunked under the recipe compiled into this
 //! build — the one its `chunkKey` column is written under — so a plan describes the index
-//! the application opens. A version 4 index has no column, and its keys are only ever
-//! computed from that text. A version 5 index's column is held to the same computation, line
-//! by line: the key's first eight bytes for a line the recipe embeds, `0` for one it does
+//! the application opens. An index whose column was written under another recipe has none
+//! this build uses, and its keys are only ever computed from that text. A column this build
+//! uses is held to the same computation, line by line: the key's first eight bytes for a line the recipe embeds, `0` for one it does
 //! not. That is the plan manifest's parity gate, and a plan that fails it is refused by
 //! every reader of plans.
 //!
 //! A PDF's lines are not planned. No vector is built from them: the index keys them `0`,
 //! and a device never resolves a hit to one.
+//!
+//! The text of an official book indexed with `TextStorage::LibraryDb` is read from the
+//! library database the line source is configured with (`--seforim-db` in the tools), and
+//! must be the text the index was built from: a row that changed since, or a database that
+//! cannot be read, stops the plan.
 
-use crate::api::search_engine::LINE_TEXT_VERSION;
+use crate::api::search_engine::{indexed_texts, TextStatus, LINE_TEXT_VERSION};
 use crate::semantic_keys::production_chunking;
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::ledger::{split, Ledger};
@@ -368,7 +373,6 @@ pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
         index_path.display()
     );
     let schema = searcher.schema();
-    let text_field = schema.get_field("text")?;
     let is_pdf_field = schema.get_field("isPdf")?;
     let mut state: u64 = 0x005E_ED0F_0E1A_7CA5;
     let mut next = move || {
@@ -393,12 +397,10 @@ pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
         {
             continue;
         }
-        let words: Vec<&str> = document
-            .get_first(text_field)
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect();
+        let text = indexed_lines(&searcher, vec![(address, document)])?
+            .pop()
+            .expect("one text for one document");
+        let words: Vec<&str> = text.split_whitespace().collect();
         if words.len() < 3 {
             continue;
         }
@@ -522,9 +524,8 @@ fn plan_book(
     book: &[DocAddress],
 ) -> Result<Vec<PlannedLine>> {
     let schema = searcher.schema();
-    let text_field = schema.get_field("text")?;
     let is_pdf_field = schema.get_field("isPdf")?;
-    let mut texts = Vec::with_capacity(book.len());
+    let mut documents = Vec::with_capacity(book.len());
     let mut sections = Vec::with_capacity(book.len());
     let mut pdf = Vec::with_capacity(book.len());
     let mut stored_keys = Vec::with_capacity(book.len());
@@ -532,19 +533,13 @@ fn plan_book(
         let document: TantivyDocument = searcher
             .doc(address)
             .with_context(|| format!("reading the document at {address:?}"))?;
-        texts.push(
-            document
-                .get_first(text_field)
-                .and_then(|value| value.as_str())
-                .with_context(|| format!("the document at {address:?} stores no text"))?
-                .to_string(),
-        );
         pdf.push(
             document
                 .get_first(is_pdf_field)
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false),
         );
+        documents.push((address, document));
         let segment = address.segment_ord as usize;
         sections.push(
             columns.section[segment]
@@ -557,6 +552,7 @@ fn plan_book(
                 .map(|column| column.first(address.doc_id).unwrap_or(0)),
         );
     }
+    let texts = indexed_lines(searcher, documents)?;
     let lines: Vec<LineRef<'_>> = texts
         .iter()
         .zip(&sections)
@@ -572,6 +568,29 @@ fn plan_book(
             column: stored_keys[index],
         })
         .collect())
+}
+
+/// The text each document was indexed from, exactly: a plan keys the index as it was built,
+/// so a library row that changed since, or one that cannot be read, is refused.
+fn indexed_lines(
+    searcher: &Searcher,
+    documents: Vec<(DocAddress, TantivyDocument)>,
+) -> Result<Vec<String>> {
+    indexed_texts(searcher, &documents)?
+        .into_iter()
+        .zip(&documents)
+        .map(|(line, (address, _))| match line.status {
+            TextStatus::Ok => Ok(line.text),
+            TextStatus::Stale => anyhow::bail!(
+                "the library database no longer holds the text the document at {address:?} \
+                 was indexed from; plan from the database the index was made with"
+            ),
+            TextStatus::Unavailable => anyhow::bail!(
+                "the document at {address:?} keeps its text in the library database, which \
+                 cannot be read (pass --seforim-db)"
+            ),
+        })
+        .collect()
 }
 
 /// Now, as a manifest records it: `YYYY-MM-DDTHH:MM:SSZ`.

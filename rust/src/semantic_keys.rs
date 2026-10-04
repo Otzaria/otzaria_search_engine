@@ -17,6 +17,11 @@
 //! what the index stores, by [`recompute_chunk_key`]; and that is also how a result is checked
 //! against the vector it came from before it is shown.
 //!
+//! A line whose text is in the library database (`TextStorage::LibraryDb`) is keyed from its
+//! row, read back as a result reads it: a row changed since it was indexed is keyed as it
+//! reads now, which is the text a result shows, and one that cannot be read now fails the
+//! recomputation rather than keying an empty line.
+//!
 //! At the crate root, not under `api`, so flutter_rust_bridge generates no bindings for it.
 //! Compiled into every build, as the sidecar is: the release index is built by one build and
 //! opened by all of them. Public on the Rust side alone, for the tools and tests that hold
@@ -24,7 +29,7 @@
 
 #[cfg(feature = "semantic-integration")]
 use crate::api::search_engine::line_dedup_hashes;
-use crate::api::search_engine::LINE_TEXT_VERSION;
+use crate::api::search_engine::{indexed_texts, TextStatus, LINE_TEXT_VERSION};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef, KEY_VERSION};
@@ -82,7 +87,7 @@ pub fn column_values(lines: &[LineRef<'_>]) -> Vec<u64> {
 }
 
 /// The key of the line at `ordinal` of a book, computed again from what the index stores:
-/// the stored `text` of the line and of its neighbours within the recipe's context window,
+/// the text of the line and of its neighbours within the recipe's context window,
 /// and the `sectionId` each belongs to. `None` when the production recipe does not embed the
 /// line, and for a PDF's line, which no vector is built from.
 ///
@@ -118,7 +123,6 @@ pub fn recompute_chunk_keys(
         book.len()
     );
     let schema = searcher.schema();
-    let text_field = schema.get_field("text")?;
     let is_pdf_field = schema.get_field("isPdf")?;
 
     // One line long enough to stand alone is embedded as its own text, whatever its
@@ -136,12 +140,14 @@ pub fn recompute_chunk_keys(
         {
             return Ok(vec![None]);
         }
-        let text = document
-            .get_first(text_field)
-            .and_then(|value| value.as_str())
-            .with_context(|| format!("the document at {address:?} stores no text"))?;
+        let text = key_texts(searcher, &[(address, document)])?
+            .pop()
+            .expect("one text for one document");
         if text.trim().chars().count() >= production_chunking().min_meaningful_chars {
-            let alone = [LineRef { text, section: 0 }];
+            let alone = [LineRef {
+                text: &text,
+                section: 0,
+            }];
             return Ok(vec![PRODUCTION_CHUNKER
                 .embedded_text(&alone, 0)
                 .map(|text| ChunkKey::of(&text))]);
@@ -151,7 +157,7 @@ pub fn recompute_chunk_keys(
     let reach = production_chunking().context_window_lines;
     let start = lines.start.saturating_sub(reach);
     let end = (lines.end - 1).saturating_add(reach).min(book.len() - 1);
-    let mut texts = Vec::with_capacity(end - start + 1);
+    let mut documents = Vec::with_capacity(end - start + 1);
     let mut sections = Vec::with_capacity(end - start + 1);
     let mut pdf = Vec::with_capacity(end - start + 1);
     // Opened once per segment: opening a column reads its whole block index.
@@ -167,13 +173,7 @@ pub fn recompute_chunk_keys(
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false),
         );
-        texts.push(
-            document
-                .get_first(text_field)
-                .and_then(|value| value.as_str())
-                .with_context(|| format!("the document at {address:?} stores no text"))?
-                .to_string(),
-        );
+        documents.push((address, document));
         // FAST and not stored, so read from its column.
         let column = match &mut section_columns[address.segment_ord as usize] {
             Some(column) => column,
@@ -190,6 +190,7 @@ pub fn recompute_chunk_keys(
                 .with_context(|| format!("the document at {address:?} has no sectionId"))?,
         );
     }
+    let texts = key_texts(searcher, &documents)?;
     let window: Vec<LineRef<'_>> = texts
         .iter()
         .zip(&sections)
@@ -206,6 +207,39 @@ pub fn recompute_chunk_keys(
                 .map(|text| ChunkKey::of(&text))
         })
         .collect())
+}
+
+/// The text each of `documents` is keyed from: see the module documentation.
+fn key_texts(
+    searcher: &Searcher,
+    documents: &[(DocAddress, TantivyDocument)],
+) -> Result<Vec<String>> {
+    indexed_texts(searcher, documents)?
+        .into_iter()
+        .zip(documents)
+        .map(|(line, (address, _))| match line.status {
+            TextStatus::Ok | TextStatus::Stale => Ok(line.text),
+            TextStatus::Unavailable => anyhow::bail!(
+                "the text of the document at {address:?} is in the library database, which \
+                 cannot be read now"
+            ),
+        })
+        .collect()
+}
+
+/// The text of the lines at `addresses`, as a key is computed from it.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn line_texts(searcher: &Searcher, addresses: &[DocAddress]) -> Result<Vec<String>> {
+    let documents = addresses
+        .iter()
+        .map(|&address| {
+            let document: TantivyDocument = searcher
+                .doc(address)
+                .with_context(|| format!("reading the document at {address:?}"))?;
+            Ok((address, document))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    key_texts(searcher, &documents)
 }
 
 /// The positions the key of a short line at `position` of a book of `len` lines is computed
@@ -390,7 +424,7 @@ impl ChunkKeyRecipe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::search_engine::SearchEngine;
+    use crate::api::search_engine::{SearchEngine, TextStorage};
     use tantivy::Index;
     use tempfile::TempDir;
 
@@ -492,6 +526,8 @@ mod tests {
                 0,
                 text,
                 None,
+                TextStorage::InIndex,
+                None,
             )
             .unwrap();
         engine.commit().unwrap();
@@ -506,7 +542,7 @@ mod tests {
     /// Every live document by id: its address, its stored text and what its `chunkKey`
     /// column holds, `None` where it holds nothing.
     fn rows(searcher: &Searcher) -> Vec<(u64, DocAddress, String, Option<u64>)> {
-        let text = searcher.schema().get_field("text").unwrap();
+        let text = searcher.schema().get_field("textStored").unwrap();
         let mut rows = Vec::new();
         for (segment_ord, reader) in searcher.segment_readers().iter().enumerate() {
             let ids = reader.fast_fields().u64("id").unwrap();

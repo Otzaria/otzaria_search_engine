@@ -57,7 +57,7 @@
 use search_engine::api::search_engine::{
     SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticConfigInput, SemanticErrorKind, SemanticExecutedMode,
-    SemanticLexicalMode, SemanticRetrievalMode,
+    SemanticLexicalMode, SemanticRetrievalMode, TextStorage,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -432,6 +432,8 @@ fn build_artifact(
                 0,
                 0,
                 text,
+                None,
+                TextStorage::InIndex,
                 None,
             )
             .unwrap();

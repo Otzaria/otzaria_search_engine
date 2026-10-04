@@ -30,7 +30,7 @@
 //! and links — and a vector only when its slot is live in the generation.
 //!
 //! The arrivals are column values, so a plan is made only for an index with the column;
-//! without it — a version 4 index — a filtered search scans the admitted books alone, and
+//! without one this build uses, a filtered search scans the admitted books alone, and
 //! finds a text that moved into one once the vectors are updated.
 //!
 //! [`LiveResolver::plan`]: crate::semantic_resolver::LiveResolver::plan

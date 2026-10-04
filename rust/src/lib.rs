@@ -21,6 +21,13 @@ mod magic;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
 mod lexicons;
+// Line text of official books read from the library database at search time, and the
+// choice of SQLite (bundled or the host's) — internal; only thin wrappers live in
+// `crate::api`.
+#[cfg(test)]
+mod external_text_tests;
+mod line_source;
+mod sqlite_host;
 // The lexical index seen as the semantic builder's corpus (S4b). At the crate root, not
 // under `api`: it is a Rust-to-Rust port between this engine and the semantic sidecar, and
 // flutter_rust_bridge must not generate bindings for it — Dart never supplies a corpus.

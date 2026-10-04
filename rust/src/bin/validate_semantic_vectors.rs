@@ -111,6 +111,7 @@ mod gates {
     /// The flags, by name, each taking one value.
     const VALUED: &[&str] = &[
         "--index",
+        "--seforim-db",
         "--vectors",
         "--plan",
         "--max-stale-hints",
@@ -301,6 +302,10 @@ mod gates {
             return Ok(true);
         };
         let index = PathBuf::from(args.required("--index")?);
+        if let Some(db) = args.get("--seforim-db") {
+            search_engine::api::search_engine::configure_line_source(db.to_string())
+                .context("could not use the library database")?;
+        }
         // The set: one installed already, or the one the releases install into a set of this
         // run's own, removed after.
         let installed;
@@ -791,6 +796,8 @@ Usage:
   validate_semantic_vectors --index <dir> (--release <dir>... | --vectors <dir>) [options]
 
   --index <dir>             The release index, opened read-only
+  --seforim-db <path>       The library database official books' line text is read from,
+                            read-only: required when the index keeps that text there
   --release <dir>           An assembled release, its segment.oxv and release.json; given
                             once per release, the published state first and the new one
                             last, they are installed as a device installs them into a set

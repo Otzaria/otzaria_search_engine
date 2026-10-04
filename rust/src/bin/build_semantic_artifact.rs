@@ -86,6 +86,7 @@ fn main() {
     };
 
     let index_path = required("--index");
+    let seforim_db = flag("--seforim-db");
     let out = required("--out");
     let library_version = library_version(&required("--library-version"));
     let release_tag = flag("--release-tag").unwrap_or_default();
@@ -110,6 +111,7 @@ fn main() {
     // incompatible schema instead of reporting it.
     let corpus = TantivyCorpus::from_index_path(
         Path::new(&index_path),
+        seforim_db.as_deref().map(Path::new),
         library_version,
         release_tag,
         chunking.clone(),
@@ -217,6 +219,10 @@ Required:
 
 Optional:
   --release-tag <tag>        The release that edition was published as (default: none)
+  --seforim-db <path>        The library database official books' line text is read from,
+                             read-only. Required when the index keeps that text there
+                             (index schema 5), and must be the database the index was
+                             built from
   --batch <N>                Texts per inference call (default: 32)
   --created-at <timestamp>   Manifest timestamp (default: now, UTC)
   --allow-non-semantic       Permit a backend whose vectors carry no meaning. For tests
