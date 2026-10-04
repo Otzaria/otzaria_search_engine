@@ -127,7 +127,8 @@ impl Mode {
 }
 
 /// `OTZ_INDEX` (required), `OTZ_LIBRARY_DB`, `OTZ_LEXICAL_DB`, `OTZ_RUNS` (5), `OTZ_PAGES` (3),
-/// `OTZ_LIMIT` (30), `OTZ_OUT` (csv; `_summary.txt` and `_forms.txt` beside it).
+/// `OTZ_LIMIT` (30), `OTZ_OUT` (csv; `_summary.txt` and `_forms.txt` beside it). Optional
+/// filters: `OTZ_ONLY` (queries, `|`-separated) and `OTZ_MODES` (labels, `,`-separated).
 struct Config {
     index: PathBuf,
     library_db: Option<PathBuf>,
@@ -543,7 +544,17 @@ fn lexical_baseline() -> Result<()> {
     let mut rows = Vec::new();
     for &(group, queries) in QUERIES {
         for &query in queries {
+            if let Ok(only) = std::env::var("OTZ_ONLY") {
+                if !only.split('|').any(|q| q == query) {
+                    continue;
+                }
+            }
             for &mode in MODES.iter().filter(|mode| mode.available()) {
+                if let Ok(modes) = std::env::var("OTZ_MODES") {
+                    if !modes.split(',').any(|m| m == mode.label()) {
+                        continue;
+                    }
+                }
                 let pages = if mode.paged() { config.pages } else { 1 };
                 for page in 1..=pages {
                     let window =
