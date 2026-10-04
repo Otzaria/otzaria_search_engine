@@ -588,6 +588,35 @@ are now documented as development and testing scaffolding, not for the library.
   | in one book | 2.7/4.2/6 | 2.7/4.2/6 | 14.9/15.6/19 |
 
   Every line shown still holds its vector's text.
+- **A version 4 index finds a short line's repeats however their neighbours
+  are cut into lines.** The filter of the previous entry passed over a line
+  whose window held the hit's text cut into lines at other spaces: the same
+  key, other `lineHash`es. A book holding such a text three times showed all
+  three with the `chunkKey` column and two without it. A window is now passed
+  over only when its lines' `lineHash`es cannot join to the hit's text at any
+  of its spaces, which is exact for lines stored trimmed and single-spaced, as
+  every line is. A text the 512-character cap may have cut can be held by a
+  window that begins with one line longer than the cap, so its lines are all
+  candidates, within the budget of 16 a hit. Either way, the lines whose
+  windows begin as the hit's does are recomputed first, in every book of the
+  hit before the others in any. Running out of that
+  budget is now the only way a version 4 index misses a line of the hit's
+  `lineHash` that holds its key. A recompute also opens the `sectionId`
+  column once rather than once per document it reads, which on that index
+  cost about 120 µs each time. On a local version 4 library index of
+  6,042,284 lines, every one trimmed, single-spaced and with the `lineHash` of
+  its text, the 1,856 hits of short lines that recur 20 or more times in
+  their book:
+
+  | | before | after |
+  | --- | --- | --- |
+  | lines found holding the key | 1,351 | 1,352 |
+  | lines passed over that held it | 1 | 0 |
+  | failed recomputes, 1,219 hits on whole texts | 3,166 | 3,373 |
+  | failed recomputes, 637 hits on texts the cap cut | 4,749 | 10,192 |
+  | one short line recomputed, µs | 766 | 216 |
+
+  The latencies of the previous entry were not measured again.
 - **A filtered search finds a text that moved, or was copied, into a book it
   admits.** The scan reads only the vectors with a record in an admitted book,
   and a set's records are where its texts were when it was built, so under the
