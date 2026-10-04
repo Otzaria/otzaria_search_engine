@@ -17,7 +17,8 @@
 
 use super::normalize::{self, StemProbe};
 use super::{
-    blacklist, MAX_LEXICAL_FORMS, PRIMARY_FAMILY_CAP, SECONDARY_FAMILY_CAP, VARIANT_ROUTE_CAP,
+    blacklist, MAX_LEXICAL_FORMS, MIN_FORM_LETTERS, MIN_VARIANT_SURFACE_LETTERS,
+    PRIMARY_FAMILY_CAP, SECONDARY_FAMILY_CAP, VARIANT_ROUTE_CAP,
 };
 use anyhow::{Context, Result};
 use lru::LruCache;
@@ -86,10 +87,11 @@ impl Picked {
         MAX_LEXICAL_FORMS.saturating_sub(self.seen.len())
     }
 
-    /// Adds `form` to `terms` when it is a new single-word index term. Returns
-    /// true once `terms` holds `cap` entries.
+    /// Adds `form` to `terms` when it is a new single-word index term with at
+    /// least [`MIN_FORM_LETTERS`] Hebrew letters. Returns true once `terms`
+    /// holds `cap` entries.
     fn offer(&mut self, terms: &mut Vec<String>, form: &str, cap: usize) -> bool {
-        if terms.len() < cap {
+        if terms.len() < cap && normalize::hebrew_letter_count(form) >= MIN_FORM_LETTERS {
             if let Some(term) = normalize::to_index_term(form) {
                 if !self.seen.contains(&term) {
                     self.seen.insert(term.clone());
@@ -116,10 +118,8 @@ impl MagicDictionary {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .with_context(|| format!("opening lexical.db at {}", path.display()))?;
-        // Family rows are scattered across the file; mapping it turns each
-        // page-cache miss into a memory read instead of a read syscall.
-        conn.execute_batch("PRAGMA query_only = ON; PRAGMA mmap_size = 268435456;")
-            .context("configuring lexical.db")?;
+        conn.execute_batch("PRAGMA query_only = ON;")
+            .context("setting query_only on lexical.db")?;
         // Preparing every query validates the schema here, so a wrong file
         // fails now instead of returning no expansions on every lookup.
         for sql in [
@@ -288,7 +288,9 @@ impl MagicDictionary {
                     continue;
                 }
                 let surface = row.get_ref(2)?.as_str()?;
-                if probe.matches(surface) {
+                if normalize::hebrew_letter_count(surface) >= MIN_VARIANT_SURFACE_LETTERS
+                    && probe.matches(surface)
+                {
                     matched.push((base_id, row.get(1)?, surface.to_owned()));
                 }
             }
@@ -362,7 +364,8 @@ mod tests {
     const FIXTURE: &str = r#"
         INSERT INTO base (id, value) VALUES
             (1, 'הלכ'), (2, 'בת'), (3, 'שבת'), (4, 'לא'), (5, 'כן'), (6, 'שוב'),
-            (7, 'תשובה'), (8, 'תפילין'), (9, 'רמב"ם'), (10, 'רמבם'), (11, 'אדמדמ');
+            (7, 'תשובה'), (8, 'תפילין'), (9, 'רמב"ם'), (10, 'רמבם'), (11, 'אדמדמ'),
+            (12, 'ישב');
         INSERT INTO surface (id, value, base_id) VALUES
             (1, 'הלכתי', 1), (2, 'הולכ', 1),
             (10, 'בת', 2), (11, 'ובת', 2), (12, 'בתו', 2), (13, 'שבתו', 2), (14, 'בבת', 2),
@@ -370,15 +373,16 @@ mod tests {
             (30, 'ולא', 4), (31, 'א'' דלא', 4),
             (40, 'וכן', 5), (41, 'לחתוך', 5),
             (50, 'תשוב', 6), (51, 'ישובו', 6),
-            (60, 'בתשובה', 7), (61, 'תשובות', 7),
+            (60, 'בתשובה', 7), (61, 'תשובות', 7), (62, 'ת''', 7),
             (70, 'בתפילין', 8), (71, 'תפלין', 8),
             (80, 'הרמב"ם', 9), (81, 'לרמב"ם', 9),
             (90, 'הרמבם', 10), (91, 'הרמב״ם', 10),
-            (100, 'אדמדמים', 11);
+            (100, 'אדמדמים', 11),
+            (110, 'שב', 12), (111, 'ישבו', 12);
         INSERT INTO variant (id, value) VALUES (1, 'הלכ'), (2, 'שבת'), (3, 'תשובה');
         INSERT INTO surface_variant (surface_id, variant_id) VALUES
             (1, 1),
-            (13, 2), (14, 2), (20, 2),
+            (13, 2), (14, 2), (20, 2), (110, 2),
             (31, 3), (40, 3), (50, 3), (51, 3), (60, 3);
     "#;
 
@@ -453,7 +457,8 @@ mod tests {
         let forms = dict.recall_forms("שבת", 32);
         assert_eq!(forms.first().map(String::as_str), Some("שבת"));
         assert!(has(&forms, "בשבת") && has(&forms, "שבתו"));
-        for foreign in ["בת", "ובת", "בתו", "בבת"] {
+        // "שב" shares the stem but is too short to trust through a variant.
+        for foreign in ["בת", "ובת", "בתו", "בבת", "שב"] {
             assert!(!has(&forms, foreign), "{foreign} leaked: {forms:?}");
         }
 
@@ -461,6 +466,18 @@ mod tests {
         assert!(has(&forms, "בתשובה") && has(&forms, "תשוב"));
         for foreign in ["לא", "ולא", "כן", "וכן", "ישובו", "שוב"] {
             assert!(!has(&forms, foreign), "{foreign} leaked: {forms:?}");
+        }
+    }
+
+    #[test]
+    fn forms_with_fewer_than_two_hebrew_letters_are_dropped() {
+        let (_dir, dict) = open_fixture("");
+        for forms in [
+            dict.recall_forms("תשובה", 32),
+            dict.highlight_forms("תשובה", 32),
+        ] {
+            assert!(has(&forms, "תשובות"));
+            assert!(!has(&forms, "ת'"), "{forms:?}");
         }
     }
 
@@ -589,6 +606,20 @@ mod tests {
             .filter(|f| bat.contains(*f) && !own.contains(*f) && f.as_str() != "שבתו")
             .collect();
         assert!(leaked.is_empty(), "family בת leaked {leaked:?}");
+
+        for word in ["שבת", "תשובה", "תפילין", "רמב\"ם", "מלך", "הלך"] {
+            for forms in [
+                dict.recall_forms(word, MAX_LEXICAL_FORMS),
+                dict.highlight_forms(word, MAX_LEXICAL_FORMS),
+            ] {
+                let short: Vec<&String> = forms
+                    .iter()
+                    .filter(|f| normalize::hebrew_letter_count(f) < MIN_FORM_LETTERS)
+                    .collect();
+                assert!(short.is_empty(), "{word}: too short {short:?}");
+            }
+        }
+        assert!(!has(&dict.recall_forms("הלך", MAX_LEXICAL_FORMS), "הל"));
 
         let teshuva = dict.recall_forms("תשובה", MAX_LEXICAL_FORMS);
         assert!(!has(&teshuva, "לא") && !has(&teshuva, "וכן"), "{teshuva:?}");

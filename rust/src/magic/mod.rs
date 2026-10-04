@@ -28,3 +28,8 @@ const SECONDARY_FAMILY_CAP: usize = 8;
 /// Matched surfaces taken from a family reached only through a spelling
 /// variant; the rest of such a family is never pulled in.
 const VARIANT_ROUTE_CAP: usize = 4;
+/// Hebrew letters a form needs to be emitted at all (`ת'` is noise, not a form).
+const MIN_FORM_LETTERS: usize = 2;
+/// Hebrew letters a variant-route surface needs; shorter ones (`הל`) pass the
+/// stem check by accident.
+const MIN_VARIANT_SURFACE_LETTERS: usize = 3;

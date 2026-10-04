@@ -118,6 +118,14 @@ pub fn lookup_keys(token: &str) -> Vec<String> {
     keys
 }
 
+/// Hebrew letters (א–ת, finals included) in `s`; quotes, parentheses and
+/// digits do not count.
+pub fn hebrew_letter_count(s: &str) -> usize {
+    s.chars()
+        .filter(|c| ('\u{05D0}'..='\u{05EA}').contains(c))
+        .count()
+}
+
 /// Prefix-stripped readings of a folded word: the word itself, then each
 /// deeper strip of [`PREFIX_LETTERS`] that still leaves a root-sized stem.
 fn stems(word: &[char]) -> impl Iterator<Item = &[char]> {
@@ -265,6 +273,13 @@ mod tests {
         assert!(!shares_stem("הלך", "אזל"));
         // Compared folded: a final letter in the word still matches a medial one.
         assert!(shares_stem("מלך", "המלכים"));
+    }
+
+    #[test]
+    fn hebrew_letter_count_ignores_quotes_parentheses_and_digits() {
+        assert_eq!(hebrew_letter_count("ת'"), 1);
+        assert_eq!(hebrew_letter_count("(רמב\"ם"), 4);
+        assert_eq!(hebrew_letter_count("31"), 0);
     }
 
     #[test]
