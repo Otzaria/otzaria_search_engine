@@ -78,6 +78,17 @@ fn is_marker_char(c: char) -> bool {
         || matches!(c, '\'' | '"' | '\u{05F3}' | '\u{05F4}' | '*')
 }
 
+/// End of a tokenizer-recognized `(X) [Y]` pair whose opening `(` is at
+/// `open`. Use the same parser as the tokenizer so either reading remains a
+/// content word, even when one looks like a short Hebrew enumerator.
+fn reading_pair_end(s: &str, open: usize) -> Option<usize> {
+    let (start, end) = next_token_boundaries(s, open + 1)?;
+    if start != open + 1 {
+        return None;
+    }
+    paired_reading_after(s, start, end).map(|pair| pair.after_pair)
+}
+
 /// Byte length of a leading enumerator such as `(יא) `, `[ג]` or `{פ}`,
 /// including the whitespace after it; 0 when the line has none.
 fn leading_marker_len(s: &str) -> usize {
@@ -90,6 +101,9 @@ fn leading_marker_len(s: &str) -> usize {
         Some((_, '{')) => '}',
         _ => return 0,
     };
+    if close == ')' && reading_pair_end(t, 0).is_some() {
+        return 0;
+    }
     for (n, (i, c)) in chars.enumerate() {
         if c == close {
             if n == 0 || n > 5 {
@@ -121,6 +135,18 @@ fn trailing_marker_start(s: &str) -> usize {
         if c == open {
             if n == 0 || n > 5 {
                 return s.len();
+            }
+            // A final `[Y]` can be the second reading of `(X) [Y]`, rather
+            // than a number. Inspect only its immediately preceding group;
+            // ordinary trailing markers do not require a full token scan.
+            if open == '[' {
+                if let Some(before_close) = t[..i].trim_end().strip_suffix(')') {
+                    if let Some(pair_open) = before_close.rfind('(') {
+                        if reading_pair_end(t, pair_open) == Some(t.len()) {
+                            return s.len();
+                        }
+                    }
+                }
             }
             return t[..i].trim_end().len();
         }
@@ -972,6 +998,54 @@ mod tests {
         ] {
             assert_eq!(&line[content_range(line)], content, "{line:?}");
         }
+    }
+
+    #[test]
+    fn content_range_preserves_paired_readings_at_either_edge() {
+        for (line, content) in [
+            ("הארץ (הוצא) [היצא]", "הארץ (הוצא) [היצא]"),
+            ("(הוצא) [היצא] אתך", "(הוצא) [היצא] אתך"),
+            ("  (ח')[ו'] אתך", "  (ח')[ו'] אתך"),
+            ("הארץ (ח')[ו']:  ", "הארץ (ח')[ו']:  "),
+            ("(אריכותהכתיב) [קרי] אתך", "(אריכותהכתיב) [קרי] אתך"),
+            ("(כתב) [אריכותהקרי] אתך", "(כתב) [אריכותהקרי] אתך"),
+            ("הארץ (אריכותהכתיב) [קרי]׃", "הארץ (אריכותהכתיב) [קרי]׃"),
+            ("(א) (הוצא) [היצא] {פ}", "(הוצא) [היצא]"),
+            ("(א)[ב](ג)[ד]", "(א)[ב](ג)[ד]"),
+            ("הארץ (לך) [לכה־]", "הארץ (לך) [לכה־]"),
+        ] {
+            assert_eq!(&line[content_range(line)], content, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn line_edges_index_both_readings_as_one_content_position() {
+        let mut analyzer = TextAnalyzer::builder(crate::hebrew_tokenizer::HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: false,
+        })
+        .build();
+        for (line, position) in [("(הוצא) [היצא]", 0), ("(א) (הוצא) [היצא] {פ}", 1)]
+        {
+            let edges = line_edges(&mut analyzer, line).unwrap();
+            assert_eq!((edges.first, edges.last), (position, position), "{line}");
+            assert_eq!(edges.start_terms, ["הוצא", "היצא"], "{line}");
+            assert_eq!(edges.end_terms, ["הוצא", "היצא"], "{line}");
+        }
+    }
+
+    #[test]
+    fn joined_lines_preserve_both_readings_and_skip_actual_markers() {
+        for (left, right) in [
+            ("הארץ (הוצא) [היצא]", "(ב) אתך"),
+            ("הארץ (הוצא) [היצא] {פ}", "(ב) אתך"),
+        ] {
+            let (joined, line_break) = joined_lines(left, right);
+            assert_eq!(joined, "הארץ (הוצא) [היצא]\nאתך");
+            assert_eq!(&joined[line_break], SNIPPET_LINE_BREAK);
+        }
+        let (joined, _) = joined_lines("הארץ {פ}", "(הוצא) [היצא] אתך");
+        assert_eq!(joined, "הארץ\n(הוצא) [היצא] אתך");
     }
 
     #[test]

@@ -483,6 +483,83 @@ fn line_edges_agree_with_the_indexing_analyzer() {
     }
 }
 
+#[test]
+fn either_paired_reading_can_end_a_cross_line_phrase_part() {
+    for pair in [
+        "(הוצא) [היצא]",
+        "(הוצא)[היצא]",
+        "(הוצא) [היצא]:",
+        "(הוצא) [היצא] {פ}",
+    ] {
+        let left = format!("הארץ {pair}");
+        let (e, _dir) = book_engine(&[&left, "(ב) אתך כל החיה"]);
+        for reading in ["הוצא", "היצא"] {
+            let query = format!("{reading} אתך");
+            let results = exact(&e, &query);
+            assert_eq!(hits(&results), [(0, true)], "{left}: {query}");
+            assert!(results[0].text.contains("הוצא"), "{}", results[0].text);
+            assert!(results[0].text.contains("היצא"), "{}", results[0].text);
+            assert!(results[0].text.contains("אתך"), "{}", results[0].text);
+            assert_eq!(
+                e.count_exact(query, vec![], false, false).unwrap(),
+                1,
+                "{left}"
+            );
+        }
+        // The two spellings are alternatives at one position, not two words.
+        assert!(exact(&e, "הוצא היצא אתך").is_empty(), "{left}");
+    }
+}
+
+#[test]
+fn either_paired_reading_can_start_a_cross_line_phrase_part() {
+    for right in [
+        "(הוצא) [היצא] אתך",
+        "(הוצא)[היצא] אתך",
+        "(ב) (הוצא) [היצא] אתך",
+    ] {
+        let (e, _dir) = book_engine(&["כל החיה {פ}", right]);
+        for reading in ["הוצא", "היצא"] {
+            let query = format!("החיה {reading}");
+            let results = exact(&e, &query);
+            assert_eq!(hits(&results), [(0, true)], "{right}: {query}");
+            assert!(results[0].text.contains("הוצא"), "{}", results[0].text);
+            assert!(results[0].text.contains("היצא"), "{}", results[0].text);
+            assert_eq!(e.count_exact(query, vec![], false, false).unwrap(), 1);
+        }
+        assert!(exact(&e, "החיה הוצא היצא").is_empty(), "{right}");
+    }
+}
+
+#[test]
+fn long_and_punctuated_paired_readings_are_preserved_across_lines() {
+    for (pair, readings) in [
+        ("(אריכותהכתיב) [קרי]", ["אריכותהכתיב", "קרי"]),
+        ("(כתב) [אריכותהקרי]", ["כתב", "אריכותהקרי"]),
+        ("(לך) [לכה־]", ["לך", "לכה"]),
+        ("(ח')[ו']", ["ח'", "ו'"]),
+    ] {
+        let left = format!("הארץ {pair}");
+        let (e, _dir) = book_engine(&[&left, "אתך"]);
+        for reading in readings {
+            assert_eq!(
+                hits(&exact(&e, &format!("{reading} אתך"))),
+                [(0, true)],
+                "{left}: {reading}"
+            );
+        }
+        let right = format!("{pair} אתך");
+        let (e, _dir) = book_engine(&["הארץ", &right]);
+        for reading in readings {
+            assert_eq!(
+                hits(&exact(&e, &format!("הארץ {reading}"))),
+                [(0, true)],
+                "{right}: {reading}"
+            );
+        }
+    }
+}
+
 /// What phrases across line breaks cost on the real library: index space and
 /// query time, with and without the cross-line part. Indexes every
 /// `OTZARIA_XLINE_STEP`-th book of `OTZARIA_SEFORIM_DB` (default: all) into
