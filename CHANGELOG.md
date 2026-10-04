@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.0.0 – 2026-10-04
+
+> Breaking for every existing index: one built by 2.0.0 lacks the fields a
+> phrase across a line break is found by and is `rebuild_required`; and for
+> Dart code that constructs `SearchResult`, which has a new required field. So
+> it ships as 3.0.0, not as a 2.x release that `^2.0.0` would take on its own.
+
+### Breaking
+
+- **Index schema 5 gains `lineFirst`, `lineLast` (FAST) and `lineEdge`**: the
+  positions of each line's first and last content words, and their terms. The
+  compatibility check compares the whole Tantivy schema, so an index built by
+  2.0.0 is `rebuild_required`. (#42)
+- **`SearchResult.continuesToNextLine`** is a new required field. (#42)
+
+### Added
+
+- **A phrase that continues from the end of one line onto the start of the next
+  is found** (Otzaria/otzaria#1703). Exact phrases and advanced word-distance
+  phrases with all words required match every split of the phrase across one
+  line break, skipping leading and trailing enumerators such as `(א)` or `{ב}`;
+  a heading, an empty line, the end of a book or a dropped PDF line stops it.
+  The hit belongs to the first line and is counted once, so counts, facets and
+  grouping agree with the results; its snippet joins the two lines at a `<br>`
+  and `continuesToNextLine` is set, only when both lines read back as indexed.
+  Under relevance order a cross-line hit ranks below typical in-line hits.
+  Vocalized, fuzzy, scoped, partial and negative queries do not cross lines.
+  Paired readings stay one position at either edge. Facet filters prune the
+  first lines before positional verification. (#42)
+
+### Changed
+
+- **The tokenizer checks Hebrew letters and ASCII before the Unicode tables**:
+  boundary scanning is about 8x faster and the full indexing analyzer about 2x.
+  (#42)
+- **Precompiled binaries build on parallel runners**: Apple in three macOS jobs
+  (macOS, iOS, iOS simulator), Android cross-compiled from Linux, one ABI per
+  job. Publishing to pub.dev still waits for every binary to be verified.
+
 ## 2.0.0 – 2026-10-04
 
 > Breaking for Dart code that calls `addTextBook` or `addTextBookBytes`, which
