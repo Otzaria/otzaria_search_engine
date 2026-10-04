@@ -563,7 +563,7 @@ Checks whether an existing index is compatible with the current search engine sc
 
 The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies its full schema against the schemas this engine reads.
 
-This engine reads and creates schema version 5: the `chunkKey` column, `text`/`textVocalized` kept out of the store, and the fields official books' library text is read and checked by (`lineCheck`, `textStored`, `textVocalizedStored`). A version 4 index stores its text where this engine does not read it, and is `rebuild_required`; so is a version 5 index without those fields, since the check compares the index's whole Tantivy schema, not only the version its metadata declares.
+This engine reads and creates schema version 5: the `chunkKey` column, `text`/`textVocalized` kept out of the store, and the fields official books' library text is read and checked by (`lineCheck`, `textStored`, `textVocalizedStored`), and the fields a phrase that continues onto the next line is found by (`lineFirst`, `lineLast`, `lineEdge`). A version 4 index stores its text where this engine does not read it, and is `rebuild_required`; so is a version 5 index without those fields, since the check compares the index's whole Tantivy schema, not only the version its metadata declares.
 
 **Parameters:**
 - `path` (String): File system path of the Tantivy index directory
@@ -657,8 +657,15 @@ class SearchResult {
   bool isPdf;          // Whether document is PDF
   String filePath;     // Path to document file
   TextStatus textStatus; // ok | stale | unavailable
+  bool continuesToNextLine; // the phrase runs on into the next line (id + 1)
 }
 ```
+
+`continuesToNextLine` marks a hit whose phrase starts at the end of this line and
+continues at the start of the next one (see [Phrases across a line break](#phrases-across-a-line-break)).
+`text` is then the end of this line and the start of the next, joined at ` ¶ `, with the
+words of both lines painted. It is set only when both lines read back as indexed; a hit
+whose next line is `stale` or `unavailable` is shown like any other hit of this line.
 
 `textStatus` is always `ok` for text stored in the index. For `TextStorage.libraryDb`
 documents, `ok` means the displayed text is exactly the text that was indexed — not that
@@ -834,6 +841,37 @@ carries `mergedCount` (total group size) plus `merged` (up to 10 sibling
 locations — title/reference/id/segment/isPdf/filePath, no snippet).
 `SearchPageResult.groupCount` / the first `SearchStreamUpdate.groupCount` report
 the total number of groups; `totalCount` and `bookCounts` remain raw hit counts.
+
+### Phrases across a line break
+
+Every line of a book is one document, yet an exact phrase (`searchExact*`, the string
+`search*` API) and an advanced phrase (`searchAdvanced*` with `SearchScope.wordDistance`
+and all words required, including `distance`/`customSpacing`, word options and
+acronym expansions) are also found when they continue from the end of one line onto
+the start of the next. The hit belongs to the first line and is counted once — also when
+that line holds the phrase on its own as well — so counts, per-book counts, facets and
+grouping agree with the results. A phrase crosses at most one line break.
+
+- **What a line's edge is.** Leading and trailing enumerators — `(ג)`, `[יא]`, `{פ}`,
+  up to five letters, digits or quote marks in brackets — are not words of the text:
+  the phrase continues from the last word before a trailing enumerator to the first
+  word after a leading one. The words of both lines count toward `distance`.
+- **What stops a phrase.** A heading line (`<h…>`), a line without words, the end of a
+  book, and in a PDF a line dropped as extraction garbage. A PDF phrase may continue
+  onto the next page.
+- **Not across lines:** vocalized searches (`matchNikud`/`matchTaamim`), fuzzy search,
+  the `sameParagraph`/`sameSection` scopes and partial word-match modes (which already
+  ignore order within a line), negative queries (a negative phrase excludes only lines
+  that contain it), semantic search's lexical candidates, and documents added through
+  `addDocument`/`addDocumentsBatch`.
+- **Ranking.** Under `ResultsOrder.relevance` a cross-line hit scores half the BM25
+  score of one in-line occurrence on a line of average length, so it ranks below
+  typical in-line hits. Catalogue and generation orders are unaffected.
+
+The index records, per line, the positions of its first and last content words
+(`lineFirst`/`lineLast`, FAST) and their terms (`lineEdge`: `<word`, `>word`). A query
+matches each split of the phrase on its own — the left part anchored to the end of a
+line, the right part to the start of one — and joins them on consecutive document ids.
 
 ### Index Persistence
 

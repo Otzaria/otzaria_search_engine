@@ -29,6 +29,7 @@ use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
+use crate::cross_line;
 use crate::display_highlight;
 use crate::gap_phrase::{GapVerifiedPhraseQuery, TermListPhraseQuery};
 use crate::hebrew_query;
@@ -98,6 +99,11 @@ pub struct SearchResult {
     /// Whether `text` is the line this document was indexed from. Always
     /// [`TextStatus::Ok`] for text stored in the index; see [`TextStorage`].
     pub text_status: TextStatus,
+    /// The phrase continues from the end of this line onto the start of the next
+    /// line (the document with `id + 1`): `text` is the end of this line and the start
+    /// of the next, joined at a ` ¶ ` separator, with the phrase painted across it.
+    /// Such a hit is counted once, for this line.
+    pub continues_to_next_line: bool,
 }
 
 /// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
@@ -2454,6 +2460,9 @@ struct PhraseHighlight {
     /// must match the field the terms came from (`"hebrew"` for `text`,
     /// `"hebrew_vocalized"` for `textVocalized`).
     analyzer: &'static str,
+    /// The search also matches the phrase across a line break (see [`cross_line`]): a
+    /// hit without an in-line occurrence is shown joined with its next line.
+    cross_line: bool,
 }
 
 /// What a highlight-query builder resolves to: the flat term query that drives
@@ -3830,6 +3839,19 @@ fn index_schema() -> Schema {
     // whose text is in the library database.
     schema_builder.add_text_field(TEXT_STORED_FIELD, STORED);
     schema_builder.add_text_field(TEXT_VOCALIZED_STORED_FIELD, STORED);
+    // Where a phrase may continue from one line onto the next (see `cross_line`): the
+    // positions of the line's first and last content words, and their terms.
+    schema_builder.add_u64_field(cross_line::LINE_FIRST_FIELD, FAST);
+    schema_builder.add_u64_field(cross_line::LINE_LAST_FIELD, FAST);
+    schema_builder.add_text_field(
+        cross_line::LINE_EDGE_FIELD,
+        TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer("raw")
+                .set_fieldnorms(false)
+                .set_index_option(IndexRecordOption::Basic),
+        ),
+    );
     schema_builder.build()
 }
 
@@ -6422,6 +6444,8 @@ impl SearchEngine {
         let stores_text = |segment: usize| !library || kept_in_index.get(segment) == Some(&true);
         let stored_fields = self.stored_text_fields()?;
         let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
+        let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
+        let edge_analyzer = self.text_index_analyzer()?;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
@@ -6459,20 +6483,33 @@ impl SearchEngine {
         // also gets its vocalized rendering, for the `textVocalized` field
         // (the mark check is cheap and almost always short-circuits false).
         use rayon::prelude::*;
-        type Prepared = (String, Option<String>, u64, Option<u32>);
+        type Prepared = (
+            String,
+            Option<String>,
+            u64,
+            Option<u32>,
+            Option<cross_line::LineEdges>,
+        );
         let normalized: Vec<Prepared> = lines
             .par_iter()
             .enumerate()
-            .map(|(segment, raw_line)| {
-                let plain = hebrew_query::normalize_text_for_indexing(raw_line);
-                let vocalized = hebrew_query::contains_attached_marks(raw_line)
-                    .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
-                    .filter(|v| !v.is_empty());
-                let line_hash = line_dedup_hash(&plain);
-                let line_check =
-                    (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
-                (plain, vocalized, line_hash, line_check)
-            })
+            .map_init(
+                || edge_analyzer.clone(),
+                |analyzer, (segment, raw_line)| {
+                    let plain = hebrew_query::normalize_text_for_indexing(raw_line);
+                    let vocalized = hebrew_query::contains_attached_marks(raw_line)
+                        .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
+                        .filter(|v| !v.is_empty());
+                    let line_hash = line_dedup_hash(&plain);
+                    let line_check =
+                        (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
+                    // A heading interrupts the text: no phrase continues into or out of it.
+                    let edges = (!raw_line.starts_with("<h"))
+                        .then(|| cross_line::line_edges(analyzer, &plain))
+                        .flatten();
+                    (plain, vocalized, line_hash, line_check, edges)
+                },
+            )
             .collect();
         let prepare_time = prepare_started.elapsed();
 
@@ -6486,7 +6523,7 @@ impl SearchEngine {
                 let lines: Vec<LineRef<'_>> = normalized
                     .iter()
                     .zip(&reference_of_line)
-                    .map(|((plain, _, _, _), section)| LineRef {
+                    .map(|((plain, _, _, _, _), section)| LineRef {
                         text: plain,
                         section: u64::from(*section),
                     })
@@ -6499,7 +6536,7 @@ impl SearchEngine {
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        for (segment, (normalized_line, vocalized_line, line_hash, line_check)) in
+        for (segment, (normalized_line, vocalized_line, line_hash, line_check, edges)) in
             normalized.into_iter().enumerate()
         {
             let reference = references[reference_of_line[segment] as usize].as_str();
@@ -6528,6 +6565,9 @@ impl SearchEngine {
             }
             if let Some(vocalized) = &vocalized_line {
                 document.add_text(text_vocalized_f, vocalized);
+            }
+            if let Some(edges) = &edges {
+                edge_fields.add(&mut document, edges, true, true);
             }
             if let Some(check) = line_check {
                 document.add_u64(line_check_f, u64::from(check));
@@ -6612,6 +6652,8 @@ impl SearchEngine {
         let id_base = catalogue_id_base(catalogue_order)?;
         let chunk_key_f = self.chunk_key_field;
         let stored_fields = self.stored_text_fields()?;
+        let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
+        let edge_analyzer = self.text_index_analyzer()?;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -6623,20 +6665,30 @@ impl SearchEngine {
             .enumerate()
             .flat_map(|(page_idx, page)| page.text.split('\n').map(move |line| (page_idx, line)))
             .collect();
-        let prepared: Vec<(usize, String, bool)> = lines
+        type Prepared = (usize, String, bool, Option<cross_line::LineEdges>);
+        let prepared: Vec<Prepared> = lines
             .par_iter()
-            .map(|(page_idx, raw_line)| {
-                let normalized = hebrew_query::normalize_pdf_text_for_indexing(raw_line);
-                let is_garbage = hebrew_query::is_probably_garbage_pdf_text(&normalized);
-                (*page_idx, normalized, is_garbage)
-            })
+            .map_init(
+                || edge_analyzer.clone(),
+                |analyzer, (page_idx, raw_line)| {
+                    let normalized = hebrew_query::normalize_pdf_text_for_indexing(raw_line);
+                    let is_garbage = hebrew_query::is_probably_garbage_pdf_text(&normalized);
+                    let edges = (!is_garbage)
+                        .then(|| cross_line::line_edges(analyzer, &normalized))
+                        .flatten();
+                    (*page_idx, normalized, is_garbage, edges)
+                },
+            )
             .collect();
         let prepare_time = prepare_started.elapsed();
+        // A dropped line sits between its neighbours' consecutive ids: no
+        // phrase may continue across it.
+        let garbage: Vec<bool> = prepared.iter().map(|p| p.2).collect();
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
         let mut garbage_lines: u64 = 0;
-        for (page_idx, normalized, is_garbage) in prepared {
+        for (line, (page_idx, normalized, is_garbage, edges)) in prepared.into_iter().enumerate() {
             if is_garbage {
                 garbage_lines += 1;
                 continue;
@@ -6664,6 +6716,11 @@ impl SearchEngine {
             set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
+            }
+            if let Some(edges) = &edges {
+                let can_start = line == 0 || !garbage[line - 1];
+                let can_end = !garbage.get(line + 1).copied().unwrap_or(false);
+                edge_fields.add(&mut document, edges, can_start, can_end);
             }
             add_stored_text(&mut document, stored_fields, &normalized, None);
             writer.add_document(document)?;
@@ -7314,6 +7371,7 @@ impl SearchEngine {
             merged_count: 1,
             merged: Vec::new(),
             text_status: TextStatus::Ok,
+            continues_to_next_line: false,
         };
         if with_text {
             let documents = [(address, doc)];
@@ -7499,7 +7557,7 @@ impl SearchEngine {
         match_taamim: bool,
     ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (search_query, truncated) = self.build_exact_query(query, facets, &voc)?;
+        let (search_query, truncated) = self.build_exact_query_with(query, facets, &voc, false)?;
 
         // Retrieval honours the vocalization flags, but painting is always
         // mark-free over the stored `text` field: that is the copy the sidecar
@@ -7507,7 +7565,7 @@ impl SearchEngine {
         // expose no terms for it and leave every line unpainted. Facets are
         // dropped here — they filter documents, never highlights.
         let plain = VocalizedFlags::new(false, false);
-        let (display_query, _) = self.build_exact_query(query, &[], &plain)?;
+        let (display_query, _) = self.build_exact_query_with(query, &[], &plain, false)?;
         let searcher = self.index_reader.searcher();
         let HighlightPlan {
             query: plan_query,
@@ -7888,6 +7946,7 @@ impl SearchEngine {
             &voc,
             &scope,
             &match_mode,
+            true,
         )?;
         let (q, _) = self.apply_advanced_negative_query(
             q,
@@ -7959,6 +8018,7 @@ impl SearchEngine {
             &voc,
             &scope,
             &match_mode,
+            true,
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -8038,6 +8098,7 @@ impl SearchEngine {
                 &voc,
                 &scope,
                 &match_mode,
+                true,
             )?;
             let (q, _) = self.apply_advanced_negative_query(
                 q,
@@ -8121,6 +8182,7 @@ impl SearchEngine {
                 &voc,
                 &scope,
                 &match_mode,
+                true,
             )?;
             let (q, truncated) = self.apply_advanced_negative_query(
                 q,
@@ -8239,6 +8301,7 @@ impl SearchEngine {
             &voc,
             &scope,
             &WordMatch::from_api(word_match_mode, word_match_count),
+            true,
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -8336,6 +8399,7 @@ impl SearchEngine {
             &voc,
             &scope,
             &WordMatch::from_api(word_match_mode, word_match_count),
+            true,
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -8437,6 +8501,7 @@ impl SearchEngine {
             &voc,
             &scope,
             &WordMatch::from_api(word_match_mode, word_match_count),
+            true,
         )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
@@ -8796,6 +8861,59 @@ impl SearchEngine {
 
     /// `(textStored, textVocalizedStored)` — the display copies of
     /// [`TextStorage::InIndex`] documents.
+    #[cfg(test)]
+    pub(crate) fn text_analyzer_for_tests(&self) -> TextAnalyzer {
+        self.text_index_analyzer().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn searcher_for_tests(&self) -> Searcher {
+        self.index_reader.searcher()
+    }
+
+    /// The exact query, or the advanced one at `distance` when given, with or
+    /// without its cross-line part.
+    #[cfg(test)]
+    pub(crate) fn phrase_query_for_tests(
+        &self,
+        query: &str,
+        distance: Option<u32>,
+        cross_line: bool,
+    ) -> Box<dyn Query> {
+        let plain = VocalizedFlags::new(false, false);
+        match distance {
+            None => {
+                self.build_exact_query_with(query, &[], &plain, cross_line)
+                    .unwrap()
+                    .0
+            }
+            Some(distance) => {
+                self.build_advanced_query(
+                    query,
+                    distance,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    Vec::new(),
+                    &plain,
+                    &SearchScope::WordDistance,
+                    &WordMatch::All,
+                    cross_line,
+                )
+                .unwrap()
+                .0
+            }
+        }
+    }
+
+    /// The `text` field's indexing analyzer (with quote-free twins).
+    fn text_index_analyzer(&self) -> Result<TextAnalyzer> {
+        self.index
+            .tokenizers()
+            .get("hebrew")
+            .context("the hebrew analyzer is not registered")
+    }
+
     fn stored_text_fields(&self) -> Result<(Field, Field)> {
         Ok((
             self.schema.get_field(TEXT_STORED_FIELD)?,
@@ -8920,6 +9038,7 @@ impl SearchEngine {
             text_field,
             &SearchScope::WordDistance,
             &WordMatch::All,
+            true,
         )
     }
 
@@ -8952,6 +9071,7 @@ impl SearchEngine {
             voc,
             negative_scope,
             &WordMatch::All,
+            false,
         )?;
 
         // שלילה בטווח "תחת אותה כותרת" פוסלת *סעיפים שלמים*: השאילתה שנבנתה
@@ -9009,6 +9129,7 @@ impl SearchEngine {
         text_field: Field,
         scope: &SearchScope,
         match_mode: &WordMatch,
+        cross_line: bool,
     ) -> Result<(Box<dyn Query>, bool)> {
         // Resolved up front: the same facet filter both narrows the section
         // pre-pass (fewer candidate sections to intersect) and gates the
@@ -9049,7 +9170,13 @@ impl SearchEngine {
                 )?,
                 (SearchScope::WordDistance, WordMatch::All) => {
                     debug_assert_eq!(gaps.len() + 1, regex_terms.len());
-                    self.phrase_query_with_degrade(&regex_terms, gaps, text_field, max_expansions)?
+                    self.phrase_query_with_degrade(
+                        &regex_terms,
+                        gaps,
+                        text_field,
+                        max_expansions,
+                        cross_line,
+                    )?
                 }
             },
         };
@@ -9094,6 +9221,7 @@ impl SearchEngine {
         gaps: &[u32],
         text_field: Field,
         max_expansions: u32,
+        cross_line: bool,
     ) -> Result<(Box<dyn Query>, bool)> {
         let joined: Vec<String> = regex_terms
             .iter()
@@ -9112,15 +9240,24 @@ impl SearchEngine {
                 max_expansions,
             )?
         {
-            if slop_budget == 0 {
-                return Ok((Box::new(phrase_query), false));
-            }
-            return Ok((
+            let inline: Box<dyn Query> = if slop_budget == 0 {
+                Box::new(phrase_query)
+            } else {
                 Box::new(GapVerifiedPhraseQuery::new(
                     phrase_query,
                     text_field,
                     gaps.to_vec(),
-                )),
+                ))
+            };
+            if !cross_line {
+                return Ok((inline, false));
+            }
+            let words: Vec<cross_line::CrossLineWord> = regex_terms
+                .iter()
+                .map(|p| cross_line::CrossLineWord::Pattern(p.joined()))
+                .collect();
+            return Ok((
+                self.with_cross_line(inline, text_field, &words, gaps)?,
                 false,
             ));
         }
@@ -9178,12 +9315,27 @@ impl SearchEngine {
             truncated |= entry.truncated;
             position_terms.push(entry.terms.as_ref().clone());
         }
+        let words: Vec<cross_line::CrossLineWord> = position_terms
+            .iter()
+            .map(|terms| {
+                cross_line::CrossLineWord::Terms(
+                    terms
+                        .iter()
+                        .filter_map(|t| t.value().as_str().map(str::to_string))
+                        .collect(),
+                )
+            })
+            .collect();
+        let inline: Box<dyn Query> = Box::new(TermListPhraseQuery::new(
+            text_field,
+            position_terms,
+            gaps.to_vec(),
+        ));
+        if !cross_line {
+            return Ok((inline, truncated));
+        }
         Ok((
-            Box::new(TermListPhraseQuery::new(
-                text_field,
-                position_terms,
-                gaps.to_vec(),
-            )),
+            self.with_cross_line(inline, text_field, &words, gaps)?,
             truncated,
         ))
     }
@@ -9916,6 +10068,17 @@ impl SearchEngine {
         facets: &[String],
         voc: &VocalizedFlags,
     ) -> Result<(Box<dyn Query>, bool)> {
+        self.build_exact_query_with(query_str, facets, voc, true)
+    }
+
+    /// [`Self::build_exact_query`]; `cross_line: false` keeps a phrase inside one line.
+    fn build_exact_query_with(
+        &self,
+        query_str: &str,
+        facets: &[String],
+        voc: &VocalizedFlags,
+        cross_line: bool,
+    ) -> Result<(Box<dyn Query>, bool)> {
         if voc.any() {
             return self.build_exact_query_vocalized(query_str, facets, voc);
         }
@@ -9931,6 +10094,14 @@ impl SearchEngine {
                 terms.pop().unwrap(),
                 IndexRecordOption::Basic,
             )),
+            _ if cross_line => {
+                let words: Vec<cross_line::CrossLineWord> = token_texts
+                    .iter()
+                    .map(|t| cross_line::CrossLineWord::Terms(vec![t.clone()]))
+                    .collect();
+                let gaps = vec![0; words.len() - 1];
+                self.with_cross_line(Box::new(PhraseQuery::new(terms)), text_f, &words, &gaps)?
+            }
             _ => Box::new(PhraseQuery::new(terms)),
         };
         if facets.is_empty() {
@@ -9944,6 +10115,29 @@ impl SearchEngine {
                 false,
             ))
         }
+    }
+
+    /// `inline` or the same phrase continuing from the end of a line onto the next
+    /// line (see [`cross_line`]). Only the plain `text` field records line edges.
+    fn with_cross_line(
+        &self,
+        inline: Box<dyn Query>,
+        text_field: Field,
+        words: &[cross_line::CrossLineWord],
+        gaps: &[u32],
+    ) -> Result<Box<dyn Query>> {
+        if text_field != self.schema.get_field("text")? {
+            return Ok(inline);
+        }
+        Ok(
+            match cross_line::CrossLineQuery::new(&self.schema, text_field, words, gaps)? {
+                Some(cross) => Box::new(BooleanQuery::new(vec![
+                    (Occur::Should, inline),
+                    (Occur::Should, Box::new(cross)),
+                ])),
+                None => inline,
+            },
+        )
     }
 
     /// The vocalized arm of [`Self::build_exact_query`].
@@ -9983,6 +10177,7 @@ impl SearchEngine {
                     &gaps,
                     voc_field,
                     VOC_PHRASE_MAX_EXPANSIONS,
+                    false,
                 )?
             }
         };
@@ -10475,6 +10670,7 @@ impl SearchEngine {
         voc: &VocalizedFlags,
         scope: &SearchScope,
         match_mode: &WordMatch,
+        cross_line: bool,
     ) -> Result<AdvancedQueryBuild> {
         // The vocalized mode is requested either by the global API flags or
         // by a per-word "ניקוד"/"טעמים" option; the per-word requirement
@@ -10546,6 +10742,7 @@ impl SearchEngine {
             prepared.max_expansions,
             text_field,
             scope,
+            cross_line,
         )?;
         let (main_query, main_truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
@@ -10557,6 +10754,7 @@ impl SearchEngine {
             text_field,
             scope,
             match_mode,
+            cross_line,
         )?;
         let (query, truncated, acronym_patterns) = if acronym_alts.is_empty() {
             (main_query, main_truncated, Vec::new())
@@ -10603,6 +10801,7 @@ impl SearchEngine {
         max_expansions: u32,
         text_field: Field,
         scope: &SearchScope,
+        cross_line: bool,
     ) -> Result<Vec<(Box<dyn Query>, bool, Vec<String>)>> {
         let Some(dict) = self.acronym_dict.as_ref() else {
             return Ok(Vec::new());
@@ -10667,6 +10866,7 @@ impl SearchEngine {
                 text_field,
                 scope,
                 &WordMatch::All,
+                cross_line,
             )?;
             out.push((alt_query, truncated, literal_patterns));
         }
@@ -11609,6 +11809,7 @@ impl SearchEngine {
             per_word_terms,
             gaps: gaps.to_vec(),
             analyzer,
+            cross_line: !voc.any(),
         });
         Ok(HighlightPlan { query, phrase })
     }
@@ -11648,6 +11849,7 @@ impl SearchEngine {
                     per_word_terms,
                     gaps,
                     analyzer: "hebrew_vocalized",
+                    cross_line: false,
                 }),
             });
         }
@@ -11664,6 +11866,7 @@ impl SearchEngine {
                 per_word_terms,
                 gaps,
                 analyzer: "hebrew",
+                cross_line: true,
             }),
         })
     }
@@ -11691,6 +11894,7 @@ impl SearchEngine {
                 per_word_terms,
                 gaps,
                 analyzer: "hebrew",
+                cross_line: false,
             })
         } else {
             None
@@ -11953,6 +12157,22 @@ impl SearchEngine {
         window: Option<usize>,
     ) -> Option<String> {
         let word_count = phrase.per_word_terms.len();
+        let ranges = Self::phrase_occurrences(searcher, fragment, phrase)?;
+        let (fragment, ranges) = match window {
+            Some(budget) => crop_around_first_occurrence(fragment, &ranges, word_count, budget)?,
+            None => (fragment, ranges),
+        };
+        Some(Self::paint_ranges(fragment, ranges, hl))
+    }
+
+    /// The byte ranges of `fragment`'s complete phrase occurrences, one range per
+    /// word, occurrence after occurrence; `None` when there is none.
+    fn phrase_occurrences(
+        searcher: &Searcher,
+        fragment: &str,
+        phrase: &PhraseHighlight,
+    ) -> Option<Vec<(usize, usize)>> {
+        let word_count = phrase.per_word_terms.len();
         if word_count < 2 {
             return None;
         }
@@ -12046,14 +12266,15 @@ impl SearchEngine {
             ci += 1;
         }
 
-        if ranges.is_empty() {
-            return None;
-        }
-        let (fragment, mut ranges) = match window {
-            Some(budget) => crop_around_first_occurrence(fragment, &ranges, word_count, budget)?,
-            None => (fragment, ranges),
-        };
+        (!ranges.is_empty()).then_some(ranges)
+    }
 
+    /// `fragment` as HTML with `ranges` painted.
+    fn paint_ranges(
+        fragment: &str,
+        mut ranges: Vec<(usize, usize)>,
+        hl: &HighlightConfig,
+    ) -> String {
         // Same escaping as tantivy's `Snippet::to_html`. Ranges are built in
         // increasing, non-overlapping order; the guard is defensive.
         ranges.sort_by_key(|&(s, _)| s);
@@ -12070,7 +12291,34 @@ impl SearchEngine {
             start_from = e;
         }
         html.push_str(&htmlescape::encode_minimal(&fragment[start_from..]));
-        Some(html)
+        html
+    }
+
+    /// The snippet of a hit whose phrase continues onto the next line: the end of
+    /// `line` and the start of `next`, joined at [`cross_line::SNIPPET_LINE_BREAK`] and
+    /// painted. `None` when no phrase occurrence crosses the break.
+    fn cross_line_snippet_html(
+        searcher: &Searcher,
+        line: &str,
+        next: &str,
+        phrase: &PhraseHighlight,
+        hl: &HighlightConfig,
+    ) -> Option<String> {
+        let word_count = phrase.per_word_terms.len();
+        let (joined, line_break) = cross_line::joined_lines(line, next);
+        let ranges = Self::phrase_occurrences(searcher, &joined, phrase)?;
+        let crossing = ranges.chunks_exact(word_count).position(|occurrence| {
+            occurrence[0].0 < line_break.start && occurrence[word_count - 1].1 > line_break.end
+        })?;
+        let from_crossing = &ranges[crossing * word_count..];
+        let (fragment, ranges) = crop_around_first_occurrence(
+            &joined,
+            from_crossing,
+            word_count,
+            hl.max_chars as usize + cross_line::SNIPPET_LINE_BREAK.len(),
+        )
+        .unwrap_or((joined.as_str(), from_crossing.to_vec()));
+        Some(Self::paint_ranges(fragment, ranges, hl))
     }
 
     fn build_results(
@@ -12132,9 +12380,15 @@ impl SearchEngine {
             }
         }
         let texts = Self::resolve_hit_texts(schema, searcher, &documents, vocalized_field)?;
+        let next_lines = match phrase {
+            Some(pf) if pf.cross_line && !vocalized_field => {
+                Self::cross_line_next_lines(schema, searcher, &documents, &texts, pf)?
+            }
+            _ => Vec::new(),
+        };
 
         let mut results = Vec::with_capacity(documents.len());
-        for ((_, retrieved_doc), hit_text) in documents.iter().zip(texts) {
+        for (slot, ((_, retrieved_doc), hit_text)) in documents.iter().zip(texts).enumerate() {
             let title = retrieved_doc
                 .get_first(title_field)
                 .and_then(|v| v.as_str())
@@ -12165,15 +12419,23 @@ impl SearchEngine {
 
             let text_status = hit_text.status;
             let text = hit_text.display(vocalized_field);
-            let result_text = match text_status {
-                TextStatus::Ok => {
+            let cross_line_html = match (next_lines.get(slot), phrase) {
+                (Some(Some(next)), Some(pf)) => {
+                    Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
+                }
+                _ => None,
+            };
+            let continues_to_next_line = cross_line_html.is_some();
+            let result_text = match (text_status, cross_line_html) {
+                (TextStatus::Ok, Some(html)) => html,
+                (TextStatus::Ok, None) => {
                     Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
                         .unwrap_or(text)
                 }
                 // The line no longer matches what was indexed: painting the query's
                 // terms into it would claim a match the index never saw.
-                TextStatus::Stale => bounded_plain_snippet(&text, hl.max_chars),
-                TextStatus::Unavailable => String::new(),
+                (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
+                (TextStatus::Unavailable, _) => String::new(),
             };
 
             results.push(SearchResult {
@@ -12187,9 +12449,76 @@ impl SearchEngine {
                 merged_count: 1,
                 merged: Vec::new(),
                 text_status,
+                continues_to_next_line,
             });
         }
         Ok(results)
+    }
+
+    /// The next line's text for each hit whose phrase may continue onto it: a hit
+    /// without an in-line occurrence, on a line whose phrases may continue onto the
+    /// next one, when that line reads back as indexed. `None` for every other hit.
+    fn cross_line_next_lines(
+        schema: &Schema,
+        searcher: &Searcher,
+        documents: &[(DocAddress, TantivyDocument)],
+        texts: &[HitText],
+        phrase: &PhraseHighlight,
+    ) -> Result<Vec<Option<String>>> {
+        let id_field = schema.get_field("id")?;
+        let mut out = vec![None; documents.len()];
+        let mut next_documents = Vec::new();
+        let mut slots = Vec::new();
+        for (slot, ((address, document), text)) in documents.iter().zip(texts).enumerate() {
+            if text.status != TextStatus::Ok
+                || Self::phrase_occurrences(searcher, &text.plain, phrase).is_some()
+            {
+                continue;
+            }
+            let ends_open = searcher
+                .segment_reader(address.segment_ord)
+                .fast_fields()
+                .u64(cross_line::LINE_LAST_FIELD)?
+                .first(address.doc_id)
+                .is_some_and(|v| v > 0);
+            let Some(id) = document.get_first(id_field).and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            if !ends_open {
+                continue;
+            }
+            let next_query = TermQuery::new(
+                Term::from_field_u64(id_field, id + 1),
+                IndexRecordOption::Basic,
+            );
+            let Some((_, next)) = searcher
+                .search(&next_query, &TopDocs::with_limit(1).order_by_score())?
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let starts_open = searcher
+                .segment_reader(next.segment_ord)
+                .fast_fields()
+                .u64(cross_line::LINE_FIRST_FIELD)?
+                .first(next.doc_id)
+                .is_some_and(|v| v > 0);
+            if starts_open {
+                next_documents.push((next, searcher.doc::<TantivyDocument>(next)?));
+                slots.push(slot);
+            }
+        }
+        if next_documents.is_empty() {
+            return Ok(out);
+        }
+        let next_texts = Self::resolve_hit_texts(schema, searcher, &next_documents, false)?;
+        for (slot, text) in slots.into_iter().zip(next_texts) {
+            if text.status == TextStatus::Ok {
+                out[slot] = Some(text.plain);
+            }
+        }
+        Ok(out)
     }
 
     /// The highlighted snippet of `text`, or `None` when the generator found nothing
@@ -13226,6 +13555,7 @@ mod tests {
             ],
             gaps: vec![1000],
             analyzer: "hebrew",
+            cross_line: false,
         };
         let text = format!("משה {} ואהרן", "שלום ".repeat(100));
         assert!(SearchEngine::phrase_filtered_snippet_html(
@@ -13248,6 +13578,7 @@ mod tests {
             ],
             gaps: vec![0],
             analyzer: "hebrew",
+            cross_line: false,
         };
         // The final word produces an indexing-only quote-free twin at the same
         // position. That is one word, not a strict two-word phrase.
@@ -13305,6 +13636,7 @@ mod tests {
             ],
             gaps: vec![0],
             analyzer: "hebrew",
+            cross_line: false,
         };
         let field = engine.schema.get_field("text").unwrap();
         let query = engine
@@ -13389,6 +13721,7 @@ mod tests {
             ],
             gaps: vec![1000],
             analyzer: "hebrew",
+            cross_line: false,
         };
         let field = engine.schema.get_field("text").unwrap();
         let query = engine
@@ -13823,11 +14156,15 @@ mod tests {
     ]"#;
 
     /// The fields version 5 adds to the released version 4 schema, beside `chunkKey`: where
-    /// the text of a document is kept when it is not read from the library database.
-    const VERSION_5_FIELDS: [&str; 3] = [
+    /// the text of a document is kept when it is not read from the library database, and
+    /// where a phrase may continue from one line onto the next.
+    const VERSION_5_FIELDS: [&str; 6] = [
         LINE_CHECK_FIELD,
         TEXT_STORED_FIELD,
         TEXT_VOCALIZED_STORED_FIELD,
+        cross_line::LINE_FIRST_FIELD,
+        cross_line::LINE_LAST_FIELD,
+        cross_line::LINE_EDGE_FIELD,
     ];
 
     /// Version 5 is the released version 4 schema with `text` and `textVocalized` out of the
@@ -13927,6 +14264,16 @@ mod tests {
                     compatibility.reason
                 );
             }
+        }
+
+        // An index of this schema but one of those fields, as a build before it made one.
+        let current = serde_json::to_value(current_schema()).unwrap();
+        for name in VERSION_5_FIELDS {
+            let mut fields = current.as_array().unwrap().clone();
+            fields.retain(|field| field["name"] != name);
+            let dir = index_of_schema(JsonValue::Array(fields), Some(INDEX_SCHEMA_VERSION));
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert_eq!(compatibility.status, "rebuild_required", "without {name}");
         }
     }
 

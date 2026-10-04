@@ -7821,6 +7821,7 @@ impl SseDecode for crate::api::search_engine::SearchResult {
         let mut var_merged =
             <Vec<crate::api::search_engine::MergedSibling>>::sse_decode(deserializer);
         let mut var_textStatus = <crate::api::search_engine::TextStatus>::sse_decode(deserializer);
+        let mut var_continuesToNextLine = <bool>::sse_decode(deserializer);
         return crate::api::search_engine::SearchResult {
             title: var_title,
             reference: var_reference,
@@ -7832,6 +7833,7 @@ impl SseDecode for crate::api::search_engine::SearchResult {
             merged_count: var_mergedCount,
             merged: var_merged,
             text_status: var_textStatus,
+            continues_to_next_line: var_continuesToNextLine,
         };
     }
 }
@@ -9416,6 +9418,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SearchResult {
             self.merged_count.into_into_dart().into_dart(),
             self.merged.into_into_dart().into_dart(),
             self.text_status.into_into_dart().into_dart(),
+            self.continues_to_next_line.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -11315,6 +11318,7 @@ impl SseEncode for crate::api::search_engine::SearchResult {
         <u32>::sse_encode(self.merged_count, serializer);
         <Vec<crate::api::search_engine::MergedSibling>>::sse_encode(self.merged, serializer);
         <crate::api::search_engine::TextStatus>::sse_encode(self.text_status, serializer);
+        <bool>::sse_encode(self.continues_to_next_line, serializer);
     }
 }
 

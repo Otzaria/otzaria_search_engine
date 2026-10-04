@@ -1,4 +1,8 @@
 pub mod api;
+// ביטוי שנמשך משורה לשורה הבאה — מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור לו bindings.
+mod cross_line;
+#[cfg(test)]
+mod cross_line_tests;
 mod display_highlight;
 mod frb_generated;
 mod highlight_matcher;

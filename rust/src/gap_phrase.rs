@@ -242,28 +242,230 @@ impl Weight for TermListPhraseWeight {
     }
 }
 
-// Tiny term sets are cheaper to scan directly; beyond this crossover, the
+/// Tiny term sets are cheaper to scan directly; beyond this crossover, the
 // heap avoids touching the many cursors that do not occur in a candidate.
 const LINEAR_POSTINGS_LIMIT: usize = 8;
 
-struct GapVerifiedScorer {
-    inner: Box<dyn Scorer>,
-    /// Positional postings per word position (≥1 term per word).
-    word_postings: Vec<Vec<SegmentPostings>>,
-    /// Per word: `(current doc, postings index)`, smallest doc on top. A word
-    /// can carry thousands of terms; verifying a doc touches only the postings
-    /// that lag behind it or sit on it, instead of seeking every one of them.
-    heaps: Vec<BinaryHeap<Reverse<(DocId, usize)>>>,
-    gaps: Vec<u32>,
-    // Reused scratch buffers (verification runs per candidate doc).
-    /// Matches from the last candidate stay outside the heap. Seeking these
+/// One query word's positions, merged across every index term its pattern
+/// matched, read document by document from forward-only positional cursors.
+pub(crate) struct WordPositions {
+    postings: Vec<SegmentPostings>,
+    /// `(current doc, postings index)`, smallest doc on top. A word can carry
+    /// thousands of terms; reading a doc touches only the postings that lag
+    /// behind it or sit on it, instead of seeking every one of them.
+    heap: BinaryHeap<Reverse<(DocId, usize)>>,
+    /// Matches from the last doc stay outside the heap. Seeking these
     /// directly keeps dense term sets linear instead of repeatedly popping
     /// and reinserting each matching cursor.
-    on_doc: Vec<Vec<usize>>,
+    on_doc: Vec<usize>,
     pos_buf: Vec<u32>,
-    cur_positions: Vec<u32>,
+}
+
+impl WordPositions {
+    pub(crate) fn new(postings: Vec<SegmentPostings>) -> Self {
+        let heap = if postings.len() <= LINEAR_POSTINGS_LIMIT {
+            BinaryHeap::new()
+        } else {
+            postings
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.doc() != TERMINATED)
+                .map(|(i, p)| Reverse((p.doc(), i)))
+                .collect()
+        };
+        Self {
+            postings,
+            heap,
+            on_doc: Vec::new(),
+            pos_buf: Vec::new(),
+        }
+    }
+
+    /// Replaces `out` with this word's positions in `doc`, sorted. Successive
+    /// calls must not go back to an earlier doc: the cursors only seek forward.
+    pub(crate) fn positions_in(&mut self, doc: DocId, out: &mut Vec<u32>) {
+        out.clear();
+        let postings = &mut self.postings;
+        if postings.len() <= LINEAR_POSTINGS_LIMIT {
+            for posting in postings {
+                if posting.doc() < doc {
+                    posting.seek(doc);
+                }
+                if posting.doc() == doc {
+                    posting.positions(&mut self.pos_buf);
+                    out.extend_from_slice(&self.pos_buf);
+                }
+            }
+        } else {
+            let heap = &mut self.heap;
+            let pending = &mut self.on_doc;
+            if pending.len() * 2 >= postings.len() {
+                // Dense candidates favor a contiguous cursor sweep. Rebuild
+                // only the future heap in linear time, rather than paying heap
+                // operations or indirect indexing for most of the terms. A
+                // sparse next doc immediately returns to the heap path.
+                let mut future = std::mem::take(heap).into_vec();
+                future.clear();
+                pending.clear();
+                for (i, posting) in postings.iter_mut().enumerate() {
+                    let at = if posting.doc() < doc {
+                        posting.seek(doc)
+                    } else {
+                        posting.doc()
+                    };
+                    if at == doc {
+                        posting.positions(&mut self.pos_buf);
+                        out.extend_from_slice(&self.pos_buf);
+                        pending.push(i);
+                    } else if at != TERMINATED {
+                        future.push(Reverse((at, i)));
+                    }
+                }
+                *heap = BinaryHeap::from(future);
+            } else {
+                // `retain` does not rewrite indices until one cursor leaves
+                // the doc. Dense sets therefore take the same direct
+                // seek/positions path without redundant index compaction.
+                let pos_buf = &mut self.pos_buf;
+                pending.retain(|&i| {
+                    let at = postings[i].seek(doc);
+                    if at == doc {
+                        postings[i].positions(pos_buf);
+                        out.extend_from_slice(pos_buf);
+                        true
+                    } else {
+                        if at != TERMINATED {
+                            heap.push(Reverse((at, i)));
+                        }
+                        false
+                    }
+                });
+                while let Some(&Reverse((at, i))) = heap.peek() {
+                    if at > doc {
+                        break;
+                    }
+                    heap.pop();
+                    let next = if at < doc { postings[i].seek(doc) } else { at };
+                    if next == doc {
+                        postings[i].positions(pos_buf);
+                        out.extend_from_slice(pos_buf);
+                        pending.push(i);
+                    } else if next != TERMINATED {
+                        heap.push(Reverse((next, i)));
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+    }
+}
+
+/// Forward feasibility sweep over in-order word occurrences: after
+/// [`Self::start`] and one [`Self::extend`] per further word, [`Self::ends`]
+/// holds every position at which a valid chain over those words can end.
+/// Both lists are sorted, so each step is a linear two-pointer merge — no
+/// backtracking, and (unlike a greedy earliest-position chain) no false
+/// negatives when a later start is the only one whose window reaches the
+/// next word.
+#[derive(Default)]
+pub(crate) struct ChainSweep {
     feasible: Vec<u32>,
-    next_feasible: Vec<u32>,
+    next: Vec<u32>,
+}
+
+impl ChainSweep {
+    pub(crate) fn start(&mut self, first_word: &[u32]) {
+        self.feasible.clear();
+        self.feasible.extend_from_slice(first_word);
+    }
+
+    /// Keeps the positions of the next word reachable from a chain end with
+    /// at most `gap` intermediate words; false when none is.
+    pub(crate) fn extend(&mut self, positions: &[u32], gap: u32) -> bool {
+        // q extends a chain iff some feasible p satisfies
+        // q - gap - 1 <= p <= q - 1 (strictly after p, within the gap).
+        let window = gap as u64 + 1;
+        self.next.clear();
+        let mut j = 0usize;
+        for &q in positions {
+            let lo = (q as u64).saturating_sub(window);
+            while j < self.feasible.len() && (self.feasible[j] as u64) < lo {
+                j += 1;
+            }
+            if j < self.feasible.len() && self.feasible[j] < q {
+                self.next.push(q);
+            }
+        }
+        std::mem::swap(&mut self.feasible, &mut self.next);
+        !self.feasible.is_empty()
+    }
+
+    pub(crate) fn ends(&self) -> &[u32] {
+        &self.feasible
+    }
+
+    /// Runs the whole chain; false as soon as a word cannot extend it.
+    fn chain(&mut self, words: &[Vec<u32>], gaps: &[u32]) -> bool {
+        let Some((first, rest)) = words.split_first() else {
+            return false;
+        };
+        self.start(first);
+        !self.feasible.is_empty()
+            && rest
+                .iter()
+                .zip(gaps)
+                .all(|(positions, &gap)| self.extend(positions, gap))
+    }
+}
+
+/// The anchoring check of a phrase that ends a line: the fewest words between
+/// a chain's last word and position `last` (the line's last content word),
+/// when that is at most `max_slack`. `words` holds each word's sorted positions.
+pub(crate) fn end_anchored_slack(
+    sweep: &mut ChainSweep,
+    words: &[Vec<u32>],
+    gaps: &[u32],
+    last: u32,
+    max_slack: u32,
+) -> Option<u32> {
+    if !sweep.chain(words, gaps) {
+        return None;
+    }
+    let end = sweep.ends().iter().rev().find(|&&end| end <= last)?;
+    let slack = last - end;
+    (slack <= max_slack).then_some(slack)
+}
+
+/// The anchoring check of a phrase that starts a line: the fewest words
+/// between position `first` (the line's first content word) and a chain's first
+/// word, when that is at most `max_slack`.
+pub(crate) fn start_anchored_slack(
+    sweep: &mut ChainSweep,
+    words: &[Vec<u32>],
+    gaps: &[u32],
+    first: u32,
+    max_slack: u32,
+) -> Option<u32> {
+    let (head, rest) = words.split_first()?;
+    let window_end = first.saturating_add(max_slack);
+    head.iter()
+        .filter(|&&start| start >= first && start <= window_end)
+        .find(|&&start| {
+            sweep.start(&[start]);
+            rest.iter()
+                .zip(gaps)
+                .all(|(positions, &gap)| sweep.extend(positions, gap))
+        })
+        .map(|&start| start - first)
+}
+
+struct GapVerifiedScorer {
+    inner: Box<dyn Scorer>,
+    words: Vec<WordPositions>,
+    gaps: Vec<u32>,
+    // Reused scratch buffers (verification runs per candidate doc).
+    cur_positions: Vec<u32>,
+    sweep: ChainSweep,
 }
 
 impl GapVerifiedScorer {
@@ -272,31 +474,12 @@ impl GapVerifiedScorer {
         word_postings: Vec<Vec<SegmentPostings>>,
         gaps: Vec<u32>,
     ) -> Self {
-        let heaps = word_postings
-            .iter()
-            .map(|postings| {
-                if postings.len() <= LINEAR_POSTINGS_LIMIT {
-                    return BinaryHeap::new();
-                }
-                postings
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.doc() != TERMINATED)
-                    .map(|(i, p)| Reverse((p.doc(), i)))
-                    .collect()
-            })
-            .collect();
-        let on_doc = vec![Vec::new(); word_postings.len()];
         let mut scorer = Self {
             inner,
-            word_postings,
-            heaps,
+            words: word_postings.into_iter().map(WordPositions::new).collect(),
             gaps,
-            on_doc,
-            pos_buf: Vec::new(),
             cur_positions: Vec::new(),
-            feasible: Vec::new(),
-            next_feasible: Vec::new(),
+            sweep: ChainSweep::default(),
         };
         // A freshly built DocSet must already sit on its first matching doc.
         let mut doc = scorer.inner.doc();
@@ -307,120 +490,19 @@ impl GapVerifiedScorer {
     }
 
     /// Does `doc` contain positions `p0 < p1 < … < p_{k-1}` (one per word)
-    /// with `p_{i+1} - p_i - 1 <= gaps[i]` for every pair?
-    ///
-    /// Runs a forward feasibility sweep: `feasible` holds every position at
-    /// which a valid chain over words `0..=w` can end; each next word keeps
-    /// the positions reachable from any of them. Both lists are sorted, so
-    /// each step is a linear two-pointer merge — no backtracking, and (unlike
-    /// a greedy earliest-position chain) no false negatives when a later
-    /// start is the only one whose window reaches the next word.
+    /// with `p_{i+1} - p_i - 1 <= gaps[i]` for every pair? The inner scorer
+    /// emits docs in increasing order, so the word cursors only seek forward.
     fn verify(&mut self, doc: DocId) -> bool {
-        for w in 0..self.word_postings.len() {
-            // Gather this word's positions in `doc`, merged across all the
-            // index terms the word's pattern matched. The inner scorer emits
-            // docs in increasing order, so the postings only ever seek
-            // forward.
-            self.cur_positions.clear();
-            let postings = &mut self.word_postings[w];
-            if postings.len() <= LINEAR_POSTINGS_LIMIT {
-                for posting in postings {
-                    if posting.doc() < doc {
-                        posting.seek(doc);
-                    }
-                    if posting.doc() == doc {
-                        posting.positions(&mut self.pos_buf);
-                        self.cur_positions.extend_from_slice(&self.pos_buf);
-                    }
-                }
-            } else {
-                let heap = &mut self.heaps[w];
-                let pending = &mut self.on_doc[w];
-                if pending.len() * 2 >= postings.len() {
-                    // Dense candidates favor a contiguous cursor sweep.
-                    // Rebuild only the future heap in linear time, rather
-                    // than paying heap operations or indirect indexing for
-                    // most of the terms. A sparse next candidate immediately
-                    // returns to the heap path; no permanent mode switch.
-                    let mut future = std::mem::take(heap).into_vec();
-                    future.clear();
-                    pending.clear();
-                    for (i, posting) in postings.iter_mut().enumerate() {
-                        let at = if posting.doc() < doc {
-                            posting.seek(doc)
-                        } else {
-                            posting.doc()
-                        };
-                        if at == doc {
-                            posting.positions(&mut self.pos_buf);
-                            self.cur_positions.extend_from_slice(&self.pos_buf);
-                            pending.push(i);
-                        } else if at != TERMINATED {
-                            future.push(Reverse((at, i)));
-                        }
-                    }
-                    *heap = BinaryHeap::from(future);
-                } else {
-                    // `retain` does not rewrite indices until one cursor leaves
-                    // the candidate. Dense sets therefore take the same direct
-                    // seek/positions path without redundant index compaction.
-                    pending.retain(|&i| {
-                        let at = postings[i].seek(doc);
-                        if at == doc {
-                            postings[i].positions(&mut self.pos_buf);
-                            self.cur_positions.extend_from_slice(&self.pos_buf);
-                            true
-                        } else {
-                            if at != TERMINATED {
-                                heap.push(Reverse((at, i)));
-                            }
-                            false
-                        }
-                    });
-                    while let Some(&Reverse((at, i))) = heap.peek() {
-                        if at > doc {
-                            break;
-                        }
-                        heap.pop();
-                        let next = if at < doc { postings[i].seek(doc) } else { at };
-                        if next == doc {
-                            postings[i].positions(&mut self.pos_buf);
-                            self.cur_positions.extend_from_slice(&self.pos_buf);
-                            pending.push(i);
-                        } else if next != TERMINATED {
-                            heap.push(Reverse((next, i)));
-                        }
-                    }
-                }
-            }
+        for w in 0..self.words.len() {
+            self.words[w].positions_in(doc, &mut self.cur_positions);
             if self.cur_positions.is_empty() {
                 return false;
             }
-            self.cur_positions.sort_unstable();
-
             if w == 0 {
-                std::mem::swap(&mut self.feasible, &mut self.cur_positions);
-                continue;
-            }
-
-            // q extends a chain iff some feasible p satisfies
-            // q - gap - 1 <= p <= q - 1 (strictly after p, within the gap).
-            let window = self.gaps[w - 1] as u64 + 1;
-            self.next_feasible.clear();
-            let mut j = 0usize;
-            for &q in &self.cur_positions {
-                let lo = (q as u64).saturating_sub(window);
-                while j < self.feasible.len() && (self.feasible[j] as u64) < lo {
-                    j += 1;
-                }
-                if j < self.feasible.len() && self.feasible[j] < q {
-                    self.next_feasible.push(q);
-                }
-            }
-            if self.next_feasible.is_empty() {
+                self.sweep.start(&self.cur_positions);
+            } else if !self.sweep.extend(&self.cur_positions, self.gaps[w - 1]) {
                 return false;
             }
-            std::mem::swap(&mut self.feasible, &mut self.next_feasible);
         }
         true
     }
@@ -527,6 +609,35 @@ mod tests {
             })
         }
         extend(tokens, words, gaps, 0, None)
+    }
+
+    #[test]
+    fn anchored_slack_measures_the_words_to_the_line_edge() {
+        let mut sweep = ChainSweep::default();
+        // Words at positions: a {1, 6}, b {2, 7, 9}; gaps between a and b.
+        let words = [vec![1, 6], vec![2, 7, 9]];
+        assert_eq!(end_anchored_slack(&mut sweep, &words, &[0], 7, 0), Some(0));
+        assert_eq!(end_anchored_slack(&mut sweep, &words, &[0], 8, 0), None);
+        assert_eq!(end_anchored_slack(&mut sweep, &words, &[0], 8, 1), Some(1));
+        // `last` before every chain end: no chain ends on the line's content.
+        assert_eq!(end_anchored_slack(&mut sweep, &words, &[2], 1, 9), None);
+        assert_eq!(end_anchored_slack(&mut sweep, &words, &[2], 9, 0), Some(0));
+        assert_eq!(
+            start_anchored_slack(&mut sweep, &words, &[0], 1, 0),
+            Some(0)
+        );
+        assert_eq!(start_anchored_slack(&mut sweep, &words, &[0], 0, 0), None);
+        assert_eq!(
+            start_anchored_slack(&mut sweep, &words, &[0], 0, 1),
+            Some(1)
+        );
+        // The nearest start whose chain completes wins, not the nearest occurrence.
+        let words = [vec![1, 3], vec![9]];
+        assert_eq!(
+            start_anchored_slack(&mut sweep, &words, &[5], 1, 4),
+            Some(2)
+        );
+        assert_eq!(start_anchored_slack(&mut sweep, &words, &[5], 1, 1), None);
     }
 
     #[test]
