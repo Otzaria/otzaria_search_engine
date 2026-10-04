@@ -293,8 +293,8 @@ A release manifest's `requires` (`indexSchemaVersion`, `lineTextVersion`,
 `keyVersion`) and `builtBy` are information, and nothing checks them: the
 release's identity is what an install and an open check. The published v30
 release says `indexSchemaVersion: 5`, the schema whose `chunkKey` column its
-records are resolved by, and installs, opens and searches on a version 4 index
-all the same, with version 4's limits (below).
+records are resolved by, and installs, opens and searches on an index without a
+column this build uses all the same, with the limits below.
 
 The report says what the release was (`kind`: `base`, `delta` or `compacted`),
 the library version and generation the set stands at, the vectors it added and
@@ -361,8 +361,8 @@ A set's vectors are keyed by the text each was embedded from, not by where it
 sits in an index, so nothing ties the set to one index: every search resolves
 its hits against the index that is open, by the key of each line's text, which
 an index of schema version 5 keeps in its `chunkKey` column. A commit after
-opening leaves the set serving. On version 5 a line that moved is found where it
-is now, in its book or in another (version 4: see below); a text a book holds in
+opening leaves the set serving. With the column a line that moved is found where
+it is now, in its book or in another (without it: see below); a text a book holds in
 several places is a line for each, so ungrouped every one is a result. A hit
 is at most 32 lines: first one for each book that holds its text — each book
 the set records it in, or, when it left them, each book the index holds it in
@@ -379,11 +379,19 @@ shown as a lexical result; `fallbackReason` counts them. Under a filter, a text
 that moved or was copied into an admitted book since the set was built is found
 there, and only there: its vector is weighed at its own score beside the scan of
 the admitted books, whose results are exactly what they would be had nothing
-moved; that needs version 5 too.
+moved; that needs the column too.
 
-An index of schema version 4 has no `chunkKey` column — the published v30
-library index is one. Keys are recomputed from the stored text, which is
-slower; every line returned is still held to its whole key, and a passage a book
+A line of an official book whose text is in the library database
+(`TextStorage.libraryDb`) is keyed, checked and shown from its library row, read
+as a result reads it: a row changed since indexing is keyed as it reads now, so
+a vector of its old text is not shown for it; while the line source cannot be
+read (unconfigured, suspended, busy) the hits cannot be checked, and the
+semantic half falls back with a reason. The query cache keys a search by the
+line source's `generation` and suspension too.
+
+An index whose `chunkKey` column was written under another recipe — its metadata
+records another, or none — has no column this build uses. Keys are recomputed
+from the text, which is slower; every line returned is still held to its whole key, and a passage a book
 repeats is still a line for each, by its `lineHash`. A line under 20 characters
 is keyed with up to two neighbours on each side, so a short text a book holds
 in many places among other lines has its key only where the neighbours repeat
@@ -392,7 +400,7 @@ others are recomputed only where their neighbours' `lineHash`es can spell the
 hit's text, and a hit stops after 16 lines that were recomputed and did not
 hold its key — which takes neighbours too short to have a `lineHash` (under 12
 Hebrew letters), or one before the line that fills the 512-character cap alone
-— so such a hit may show fewer of a book's repeats than version 5 does. But a
+— so such a hit may show fewer of a book's repeats than the column does. But a
 record's line is found
 only at the line the set recorded or within 16 lines of it in the same book: a
 line moved further within its book, or a text moved to another book, is not
@@ -402,7 +410,7 @@ records as they are (re-anchoring needs the column). This matters only while
 the index and the vectors are of different library versions, or after the index
 changed on the device (a book added, reindexed or moved); an index and a set of
 the same library version agree line for line. A rebuild by this engine gives
-version 5. On an opened set the calls that build vectors are refused as
+the column. On an opened set the calls that build vectors are refused as
 read-only. `SemanticStatus` reports the open set's `vectorsLibraryVersion`,
 `vectorSegments` and `needsCompaction`. INT8 vectors from x86 and ARM CPUs meet
 at about cosine 0.999, the same order as INT8 against fp32.
@@ -555,7 +563,7 @@ Checks whether an existing index is compatible with the current search engine sc
 
 The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies its full schema against the schemas this engine reads.
 
-This engine reads schema versions 4 and 5, and creates 5. A version 4 index is `compatible` and needs no rebuild: it opens, searches and takes books as it always did, and stays version 4. It lacks only the `chunkKey` column, which only an index this engine creates has.
+This engine reads and creates schema version 5: the `chunkKey` column, `text`/`textVocalized` kept out of the store, and the fields official books' library text is read and checked by (`lineCheck`, `textStored`, `textVocalizedStored`). A version 4 index stores its text where this engine does not read it, and is `rebuild_required`; so is a version 5 index without those fields, since the check compares the index's whole Tantivy schema, not only the version its metadata declares.
 
 **Parameters:**
 - `path` (String): File system path of the Tantivy index directory
@@ -565,7 +573,7 @@ This engine reads schema versions 4 and 5, and creates 5. A version 4 index is `
 Common `status` values:
 - `compatible`: Otzaria metadata exists, declares a schema version this engine reads, and the index has that version's schema
 - `legacy_compatible`: Otzaria metadata is missing, but the full Tantivy schema is one this engine reads
-- `rebuild_required`: The index schema is older than version 4, or is not the schema its version has, and should be rebuilt
+- `rebuild_required`: The index schema is older than version 5, or is not the schema its version has, and should be rebuilt
 - `engine_too_old`: The index schema is newer than this engine supports
 - `missing_index`: The index directory does not exist
 - `invalid_index_path`: The given path is not a valid directory path

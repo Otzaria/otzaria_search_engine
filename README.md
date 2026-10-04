@@ -137,12 +137,12 @@ the set records: it reads which texts every book holds that the set does not
 record in it once per index generation, on its first search, and after a
 commit only the books the commit changed.
 
-An index of schema version 4 has no `chunkKey` column — the published v30
-library index is one — and gets less. Keys are recomputed from the stored text,
-which is slower. Every line a search returns is still held to its whole key,
+An index whose `chunkKey` column was written under another recipe has no
+column this build uses, and gets less. Keys are recomputed from the text, which
+is slower. Every line a search returns is still held to its whole key,
 and a passage a book holds in several places is still a line for each, found by
 its `lineHash`. But a record's line is found only at the line the set recorded,
-or within 16 lines of it in the same book, so on version 4:
+or within 16 lines of it in the same book, so without the column:
 
 - a line that moved further within its book is not found;
 - a text that moved to another book is not found, filtered or not;
@@ -151,7 +151,7 @@ or within 16 lines of it in the same book, so on version 4:
 - compaction keeps the set's records as they are: re-anchoring them needs the
   column.
 
-All of this needs schema version 5, which a rebuild by this engine gives. It
+All of this needs the column, which a rebuild by this engine gives. It
 matters only while the index and the vectors are of different library versions,
 or after the index was changed on the device — a book added, reindexed or
 moved: an index and a set of the same library version agree line for line, and
@@ -486,6 +486,11 @@ validate_semantic_vectors --index ./index --release ./published --release ./new 
 `release.json`), once per release, the published state first and the new
 release last; the set they install into is removed after. `--vectors` takes a
 set installed already instead.
+
+An index that keeps official books' text in the library database
+(`TextStorage.libraryDb`) is read with `--seforim-db <path>`, the database it was
+built from, opened read-only; a row that changed since is refused rather than
+keyed. `export_semantic_plan` and `build_semantic_artifact` take the same flag.
 
 | gate | runs with | passes when |
 | --- | --- | --- |
