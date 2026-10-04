@@ -704,6 +704,25 @@ fn a_damaged_warehouse_exits_2() {
     assert!(printed.contains("fails its check"), "{printed}");
 }
 
+#[test]
+fn an_unknown_warehouse_package_exits_2_before_recall() {
+    for field in ["checksum", "quantization"] {
+        let release = release(&books());
+        let path = release.warehouse.join("warehouse.json");
+        let mut metadata: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let package = &mut metadata["identity"]["passage_package"];
+        let mut value = package[field].as_str().unwrap().as_bytes().to_vec();
+        value[0] ^= 1;
+        package[field] = String::from_utf8(value).unwrap().into();
+        std::fs::write(&path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+        let out = release.path("report.json");
+        let (code, printed) = validate(&as_args(&all_gates(&release, &release.warehouse, &out)));
+        assert_eq!(code, 2, "{field}: {printed}");
+        assert!(printed.contains("fails its check"), "{printed}");
+        assert!(!out.exists(), "damaged metadata produced a gate report");
+    }
+}
+
 /// A number of queries to draw that no index could give, or none at all, is a wrong
 /// argument: exit 2, as for any, not a crash.
 #[test]

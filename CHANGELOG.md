@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Pin the semantic sidecar to `82a8d9e`: assembly and G6 reject a warehouse
+  whose passage package disagrees with the model family, the export plan, or
+  the installed segments' provenance. Checks run in the publishing pipeline.
+
 > Breaking for Dart code that constructs `SemanticConfigInput` or
 > `SemanticStatus`, that calls `searchSemantic`, or that catches the semantic
 > calls' `AnyhowException`, and for an application that configures a GGUF model,
