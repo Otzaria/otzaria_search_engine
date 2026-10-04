@@ -676,6 +676,10 @@ impl Global {
     fn drop_store(&mut self) {
         if let Some(store) = self.store.take() {
             store.close();
+            // SQLite's data_version is local to a connection. A reopened connection can
+            // report the same number for different text, so its query-cache keys must
+            // never reuse those of the closed connection.
+            self.generation += 1;
         }
     }
 }
@@ -758,6 +762,45 @@ pub(crate) fn status() -> Status {
         generation: g.generation,
         library_fallbacks: g.library_fallbacks,
     }
+}
+
+/// The library input to the semantic query cache, sampled before its lookup.
+///
+/// Read the connection's current data_version, not the version of the row caches: a
+/// lexical window may already have refreshed those after an unpaused write. This reads
+/// metadata only, without opening a database or reading/decoding any book content.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn query_cache_generation() -> (u64, Option<i64>, bool) {
+    let mut g = global();
+    let version = if g.busy_until.is_some_and(|until| Instant::now() < until) {
+        g.generation += 1;
+        None
+    } else {
+        match g
+            .store
+            .as_ref()
+            .map(|store| data_version(&store.conn))
+            .transpose()
+        {
+            Ok(version) => version,
+            Err(err) => {
+                if is_busy(&err) {
+                    // Share the window's backoff: do not wait for the same writer again
+                    // when the cache miss proceeds to resolving its candidate lines.
+                    g.busy_until = Some(Instant::now() + BUSY_BACKOFF);
+                }
+                // An unverifiable source must not admit a previously verified cached answer.
+                // Give each failed check a fresh key; a successful retry can be cached again.
+                g.generation += 1;
+                None
+            }
+        }
+    };
+    (
+        g.generation,
+        version,
+        g.suspend_depth > 0 || !g.owner_ports.is_empty(),
+    )
 }
 
 /// Counts a book asked for as `LibraryDb` and stored `InIndex`.
@@ -864,6 +907,96 @@ pub(crate) fn memory_for_tests() -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn query_cache_generation_tracks_commits_and_connection_reopens() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch(
+            "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);
+             INSERT INTO line VALUES (1, 1, 0, 'before');"
+        ).unwrap();
+        configure(path.to_str().unwrap()).unwrap();
+        let closed = query_cache_generation();
+        assert!(closed.1.is_none());
+        assert!(
+            !status().open,
+            "the cache check must not open an unused source"
+        );
+        let fetch = || {
+            with_store(|store| {
+                store.fetch_window(
+                    &[LineKey {
+                        book_id: 1,
+                        ordinal: 0,
+                    }],
+                    &[None],
+                )
+            })
+            .unwrap()
+        };
+        fetch();
+        let before = query_cache_generation();
+        assert!(before.1.is_some());
+        assert_eq!(
+            before,
+            query_cache_generation(),
+            "unchanged queries keep their cache key"
+        );
+        writer
+            .execute("UPDATE line SET content = 'after'", [])
+            .unwrap();
+        // Another window can consume the data_version change first; it must not hide
+        // the commit from the query cache's later check.
+        assert!(matches!(&fetch()[0], RowText::Found(text) if text == "after"));
+        let after = query_cache_generation();
+        assert_ne!(before, after);
+        assert_eq!(after, query_cache_generation());
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let busy = query_cache_generation();
+        assert!(busy.1.is_none());
+        assert!(
+            global().busy_until.is_some(),
+            "the metadata check shares the window's backoff"
+        );
+        assert_ne!(
+            busy,
+            query_cache_generation(),
+            "unverifiable answers cannot be reused"
+        );
+        assert!(matches!(
+            with_store(|_| Ok(())),
+            Err(SourceUnavailable::Busy)
+        ));
+        writer.execute_batch("COMMIT").unwrap();
+        // Advance the backoff without sleeping: a successful retry needs a new key.
+        global().busy_until = Some(Instant::now());
+        assert_ne!(busy, query_cache_generation());
+        global().drop_store();
+        assert_ne!(
+            closed,
+            query_cache_generation(),
+            "closed-source keys are not reused either"
+        );
+        fetch();
+        assert_ne!(
+            before,
+            query_cache_generation(),
+            "data_version restarts on a new connection"
+        );
+        assert_eq!(
+            before.1,
+            query_cache_generation().1,
+            "the reopened connection reuses the old SQLite counter in this fixture"
+        );
+        reset_for_tests();
+    }
 
     #[test]
     fn dead_owner_cleanup_preserves_live_and_anonymous_holds() {

@@ -22503,6 +22503,93 @@ mod tests {
             crate::line_source::reset_for_tests();
         }
 
+        /// A repeated query must verify the current library text even when an unpaused
+        /// writer changed it, including when a lexical window refreshed the row caches first.
+        #[test]
+        fn cached_library_hits_are_reverified_after_an_unpaused_write() {
+            let _guard = crate::line_source::TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for without_column in [false, true] {
+                for refresh_rows_first in [false, true] {
+                    for mode in [
+                        SemanticRetrievalMode::SemanticOnly,
+                        SemanticRetrievalMode::Hybrid,
+                    ] {
+                        crate::line_source::reset_for_tests();
+                        let dir = TempDir::new().unwrap();
+                        let db = dir.path().join("seforim.db");
+                        let rows = ["<h1>בראשית</h1>", PROBE];
+                        crate::external_text_tests::write_book(&db, 1, &rows);
+                        configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+                        let built = built_with(
+                            &dir,
+                            without_column,
+                            &[("id:1", rows.join("\n"))],
+                            TextStorage::LibraryDb,
+                            Some(&db),
+                        );
+                        let engine = open(&dir, built);
+                        let context = format!("without_column={without_column}, refresh_rows_first={refresh_rows_first}, mode={mode:?}");
+                        let probe_is_semantic = |r: &SemanticSearchResult| {
+                            r.segment == 1 && r.source != SemanticResultSource::Lexical
+                        };
+                        let first = search(&engine, mode);
+                        let coordinator = engine.semantic_engine().unwrap().coordinator;
+                        let hits_before_repeat = coordinator.get_telemetry_snapshot().cache_hits;
+                        let id = first
+                            .results
+                            .iter()
+                            .find(|r| probe_is_semantic(r))
+                            .unwrap_or_else(|| panic!("no semantic probe; {context}"))
+                            .id;
+                        // The second identical query exercises the warm cache.
+                        assert!(
+                            search(&engine, mode).results.iter().any(probe_is_semantic),
+                            "{context}"
+                        );
+                        assert!(
+                            coordinator.get_telemetry_snapshot().cache_hits > hits_before_repeat,
+                            "unchanged queries must still use the cache; {context}"
+                        );
+                        let conn = rusqlite::Connection::open(&db).unwrap();
+                        let update = |text: &str| {
+                            conn.execute(
+                                "UPDATE line_content SET content = ?1 WHERE id = \
+                                 (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 1)",
+                                [text],
+                            )
+                            .unwrap();
+                        };
+                        update("שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+                        if refresh_rows_first {
+                            let doc = engine.get_document_by_id(id).unwrap().unwrap();
+                            assert_eq!(doc.text_status, TextStatus::Stale, "{context}");
+                        }
+                        for _ in 0..2 {
+                            let response = search(&engine, mode);
+                            assert!(
+                                response.results.iter().all(|r| !probe_is_semantic(r)),
+                                "cached semantic hit survived changed text; {context}: {:?}",
+                                response
+                                    .results
+                                    .iter()
+                                    .map(|r| (&r.snippet_html, r.text_status, r.source))
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                        // A second commit must also discard any cached rejection.
+                        update(PROBE);
+                        assert!(
+                            search(&engine, mode).results.iter().any(probe_is_semantic),
+                            "restored row; {context}"
+                        );
+                    }
+                }
+            }
+            crate::line_source::reset_for_tests();
+        }
+
         /// A short line, under the 20 characters a line stands alone at, with letters enough
         /// for a `lineHash`.
         const SHORT: &str = "ויאמר משה אל העם";

@@ -1615,17 +1615,13 @@ impl CandidateResolver for LiveResolver<'_> {
     /// The index's generation, with the top bit set for a planned search: one that could not
     /// be planned answers without its arrivals, and the query cache must not hand that answer
     /// to one that was. The library database a line's text is read from is folded in: a new
-    /// database, or one that cannot be read now, is another answer.
+    /// database, a commit to it without suspension, or one that cannot be read now, is
+    /// another answer.
     fn generation(&self) -> u64 {
         use std::hash::{Hash, Hasher};
-        let library = crate::line_source::status();
+        let library = crate::line_source::query_cache_generation();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (
-            self.generation_id(),
-            library.generation,
-            library.suspend_depth > 0,
-        )
-            .hash(&mut hasher);
+        (self.generation_id(), library).hash(&mut hasher);
         let generation = hasher.finish() & !(1 << 63);
         if self.plan.is_some() {
             generation | 1 << 63
