@@ -21542,6 +21542,11 @@ mod tests {
         /// [`Built`] of `text` as the one book [`BOOK`], in an index of schema version 4 —
         /// no `chunkKey` column — when `version_4` asks.
         fn built_of(dir: &TempDir, version_4: bool, text: String) -> Built {
+            built_of_books(dir, version_4, &[(BOOK, text)])
+        }
+
+        /// [`built_of`] with each of `books`, `(path, text)`, a book of its own.
+        fn built_of_books(dir: &TempDir, version_4: bool, books: &[(&str, String)]) -> Built {
             let index = dir.path().join("index");
             fs::create_dir_all(&index).unwrap();
             if version_4 {
@@ -21550,17 +21555,19 @@ mod tests {
             }
             let mut engine = SearchEngine::new(index.to_str().unwrap());
             assert_eq!(engine.chunk_key_field.is_none(), version_4);
-            engine
-                .add_text_book(
-                    "בראשית".to_string(),
-                    "/root".to_string(),
-                    BOOK.to_string(),
-                    0,
-                    0,
-                    text,
-                    None,
-                )
-                .unwrap();
+            for (order, (path, text)) in books.iter().enumerate() {
+                engine
+                    .add_text_book(
+                        "בראשית".to_string(),
+                        "/root".to_string(),
+                        path.to_string(),
+                        order as u32,
+                        0,
+                        text.clone(),
+                        None,
+                    )
+                    .unwrap();
+            }
             engine.commit().unwrap();
 
             let chunking = production_chunking();
@@ -21965,6 +21972,51 @@ mod tests {
                 if version_4 {
                     assert_eq!(resolver_counts(&engine).1, MAX_FAILED_REPEATS);
                 }
+            }
+        }
+
+        /// A text the cap cut, held twice in each of two books among twenty other windows of
+        /// its short line: the first book's other windows do not spend the budget the second
+        /// book's repeat needs.
+        #[test]
+        fn a_capped_texts_repeat_in_a_second_book_is_found_within_the_budget() {
+            let long = |word: &str| format!("{word} ").repeat(40).trim_end().to_string();
+            let (a, b, c, d) = (long("אברהם"), long("יצחק"), long("ויעקב"), long("ויוסף"));
+            let capped = [a.as_str(), b.as_str(), SHORT, c.as_str(), d.as_str()];
+            let recurs = 20;
+            let text = book_of(
+                &capped,
+                recurs,
+                |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
+                &[&capped],
+            );
+            let query: String = window(&text, 0).chars().take(512).collect();
+            let other = "/books/exodus.txt";
+            let repeat = 5 * (recurs as u64 + 1) + 2;
+            for version_4 in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let books = [(BOOK, text.clone()), (other, text.clone())];
+                let engine = open(&dir, built_of_books(&dir, version_4, &books));
+
+                let response = semantic_page(&engine, query.trim_end(), 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let mut lines: Vec<(&str, u64)> = response
+                    .results
+                    .iter()
+                    .filter(|result| result.snippet_html == SHORT)
+                    .map(|result| (result.file_path.as_str(), result.segment))
+                    .take(4)
+                    .collect();
+                lines.sort();
+                assert_eq!(
+                    lines,
+                    [(other, 2), (other, repeat), (BOOK, 2), (BOOK, repeat)],
+                    "version 4: {version_4}"
+                );
             }
         }
 
