@@ -718,6 +718,13 @@ are now documented as development and testing scaffolding, not for the library.
 - **`otzaria_index_meta.json` is replaced atomically.** It was rewritten in
   place, so a crash mid-write left truncated JSON and the chunk-key recipe was
   lost without a warning; an unreadable one is now logged at warn.
+- **An install or compaction right after another is not refused as busy.**
+  The sidecar's set lock, released by closing its file, stayed held by a
+  process spawned meanwhile until it exec'd, so the next install could fail as
+  `vectorsBusy` (one CI run in about a hundred). An install and a compaction
+  now wait up to a second for the set's lock, which also covers an open's
+  cleanup. The sidecar's own fix, unlocking explicitly, is
+  Otzaria/otzaria-semantic-search#21, not pinned here.
 
 ## 0.9.0 – 2026-10-04
 
