@@ -2449,6 +2449,76 @@ fn an_install_or_compaction_under_another_process_lock_is_refused_as_busy() {
         .unwrap();
 }
 
+/// The set's lock held a moment after an install returned — as a process spawned during the
+/// install holds it until it execs — is waited out, by an install and by a compaction; a
+/// cancel ends the wait.
+#[test]
+fn an_install_or_compaction_waits_out_a_lock_held_a_moment() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    let install = |token: &SemanticCancellationToken| {
+        engine.install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest.clone())),
+            token,
+        )
+    };
+    let hold = || {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(library.vectors.join(".lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        lock
+    };
+    let held_for_a_moment = || {
+        let lock = hold();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(lock);
+        })
+    };
+
+    let holder = held_for_a_moment();
+    let installed = install(&token).expect("an install waits for the lock");
+    holder.join().unwrap();
+
+    let holder = held_for_a_moment();
+    engine
+        .compact_semantic_vectors(
+            dir_string(&library.vectors),
+            None,
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        )
+        .expect("a compaction waits for the lock");
+    holder.join().unwrap();
+    let info = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    assert!(info.generation > installed.generation);
+
+    let lock = hold();
+    let cancelled = SemanticCancellationToken::new();
+    cancelled.cancel();
+    let Err(error) = install(&cancelled) else {
+        panic!("a cancelled install must not install");
+    };
+    assert_eq!(
+        error.kind,
+        SemanticErrorKind::Cancelled,
+        "{}",
+        error.message
+    );
+    drop(lock);
+}
+
 /// An expansion is its install's until the install returns, though its file is written and
 /// closed before the sidecar takes it: its lock file stays locked all along, so an install
 /// in another process does not take the file for abandoned in between. One whose process is
