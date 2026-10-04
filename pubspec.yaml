@@ -16,6 +16,9 @@ dependencies:
   plugin_platform_interface: ^2.0.2
 
 dev_dependencies:
+  # SHA-256 of the stub model, which the FFI suite's artifact build declares in its
+  # model identity.
+  crypto: ^3.0.6
   ffi: ^2.2.0
   ffigen: ^21.0.0
   flutter_test:

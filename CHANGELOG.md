@@ -1,5 +1,789 @@
 # Changelog
 
+## Unreleased
+
+- Pin the semantic sidecar to `82a8d9e`: assembly and G6 reject a warehouse
+  whose passage package disagrees with the model family, the export plan, or
+  the installed segments' provenance. Checks run in the publishing pipeline.
+
+> Breaking for Dart code that constructs `SemanticConfigInput` or
+> `SemanticStatus`, that calls `searchSemantic`, or that catches the semantic
+> calls' `AnyhowException`, and for an application that configures a GGUF model,
+> so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its own
+> (see 0.8.0). An existing lexical index is not one of them: it opens, and
+> searches, as it did.
+
+**The application never builds the library's vectors.** The build machine
+embeds the whole library into a release of its vectors; the application
+installs it into a vector set with the new `installSemanticVectors`, opens the
+set with the new `openSemanticArtifact`, and embeds only the query.
+`configureSemantic`, `semanticIndexBooks`, `semanticIndexDiff`,
+`removeSemanticBooks` and `resetSemanticIndex` build vectors on the device, and
+are now documented as development and testing scaffolding, not for the library.
+
+### Breaking
+
+- **`SemanticConfigInput` states the whole recipe: four new required fields.**
+  `pooling`, `maxTokens`, `modelQuantization` and `embeddingTextVersion` were
+  taken silently from the sidecar's defaults, which fit only the Qwen3 GGUF
+  model 0.8.7 served, and recorded `model_quantization` as `"Q4"` where that
+  model's identity says `"Q4_K_M"`. Each is part of the index's identity, and
+  the ONNX model differs in all four, so they are now the caller's to state:
+
+  | field | Meivin ONNX |
+  | --- | --- |
+  | `pooling` | `'in-graph'` |
+  | `maxTokens` | 256 |
+  | `modelQuantization` | `'int8'` |
+  | `embeddingTextVersion` | 2 |
+
+  The Meivin column is its INT8 graph, `seforim-embed-round2-int8.onnx`, the
+  model the application uses: negligibly less accurate than the full-precision
+  `seforim-embed-round2-fp32.onnx` and a quarter of its size. The fp32 graph
+  remains an alternative under `'fp32'`, a different identity.
+
+  They map onto the sidecar's `pooling`, `embedding_max_tokens`,
+  `model_quantization` and `chunking.embedding_text_version`, and the sidecar
+  validates them when `configureSemantic` opens it. It refuses an unknown
+  pooling, a text recipe it has no code for, a cap below 2 and a cap above
+  65,536, which is also where a negative `maxTokens` lands: it arrives as a cap
+  in the billions. An empty `modelQuantization` is refused before that.
+  `configureSemantic` now compares all eight fields, so a different recipe
+  under the same model file is refused by name, like a different model,
+  instead of being accepted as a repeat.
+
+  **What changes for consumers.** Every construction has to pass the four
+  fields. The Otzaria app constructs `SemanticConfigInput` only in
+  `test/search/semantic_search_gateway_test.dart`. A sidecar root written by
+  0.8.7 or earlier holds vectors of the Qwen3 GGUF model, which no build serves
+  any more (next entry); the in-memory store needed a full re-index after every
+  restart anyway.
+- **GGUF models and llama.cpp are no longer supported: `semantic`, the
+  production feature, is the ONNX backend.** In 0.8.7 `semantic` was llama.cpp,
+  for the Qwen3 GGUF model. It is now the ONNX backend, for the Meivin model the
+  application uses, and ONNX is the only format any build serves: the
+  `semantic-llama` feature and its `semantic-real` alias are removed, so no
+  build compiles llama.cpp or ggml, through cmake or otherwise. The sidecar is
+  pinned at dc11d59, the merge that removed GGUF from it too. A GGUF model, or
+  any model path that does not end in `.onnx`, is refused by its name rather
+  than served: opening an artifact with it, or indexing with it on the
+  development path, throws a `SemanticError` of kind `modelInvalid` whose
+  `field` is `model_path`, with the sidecar's message ("… GGUF support was
+  removed …"). `backendNotInBuild` keeps its meaning: an ONNX graph on a build
+  without the ONNX backend. `cargokit.yaml` still builds `--features semantic`.
+  On Android and iOS, which have no ONNX backend, the production build serves
+  no model at all. The last commit of this plugin with GGUF support is eb42ebd.
+
+  The build settings only llama.cpp needed went with it. The podspecs no longer
+  link `c++` or the Accelerate, Metal, MetalKit and Foundation frameworks. The
+  plugin's Android `minSdkVersion`, and the Android platform the precompiled
+  binaries are built for, are back from 23 to 21, which only llama.cpp's
+  `posix_madvise` had raised. The Linux release container no longer installs
+  cmake or libclang-dev, and the Windows ARM release build sets only
+  `CC=clang-cl`, without Ninja or llama.cpp's C++ flags. Cargo.lock loses
+  llama-cpp-2, llama-cpp-sys-2, bindgen, cmake, clang-sys and the 14 other
+  crates only they pulled in.
+
+  **What changes for consumers.** An application that configures a GGUF model
+  has to move to the ONNX model: no build of this release serves the GGUF one.
+
+- **The semantic calls throw `SemanticError`, not `AnyhowException`.**
+  `configureSemantic`, `openSemanticArtifact`, `searchSemantic`,
+  `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks` and
+  `resetSemanticIndex` return `Result<_, SemanticError>` in Rust, which
+  flutter_rust_bridge throws as an exception class of its own, an
+  `FrbException` with `kind`, `message` and `field` (next entry); an
+  `on AnyhowException` clause no longer catches them. `message` is the text the
+  calls already produced, except that a context chain now reads on one line
+  (`reading …: …`), where the exception's debug rendering put each cause on a
+  `Caused by:` line of its own. No other API changes its error type.
+- **`searchSemantic` takes a required `cancellation`**, a
+  `SemanticCancellationToken` (next section). Required rather than optional
+  because flutter_rust_bridge 2.13 cannot pass an optional borrowed opaque
+  object: an `Option<&T>` argument generates Rust that does not compile, and
+  passing the token by value would move it, and dispose it on the Dart side. A
+  call with nothing to cancel passes `SemanticCancellationToken()`, which
+  changes nothing.
+- **`SemanticStatus` gains a required `state`**, and `errorKind` beside
+  `lastError`; **`SemanticSearchResponse` gains `fallbackKind`** beside
+  `fallbackReason`. Dart code that constructs a `SemanticStatus`, such as a test
+  fake, has to pass `state`.
+
+### Added
+
+- **New indexes store each line's chunk key, and a version 4 index keeps
+  working as it is.** A new `chunkKey` column holds, for every line
+  `addTextBook` adds, the key of the text the line is embedded as: the first
+  eight bytes of the SHA-256 of that text, read big-endian (the sidecar's
+  `ChunkKey::column_value`). It is 0 for a line the recipe does not embed, for
+  a PDF's lines, and for documents added one by one or in batches. The column
+  is what ties a stored vector to the lines that hold its text, by content
+  rather than position, so that a library update leaves the vector of every
+  unchanged line usable.
+
+  The key is computed after normalization, from what the index stores: the
+  line, its neighbours within two lines in its section, and the sections the
+  `<h` headings open. It uses the sidecar's own chunker under Meivin Round 2's
+  chunking, which is compiled in because indexing runs with no model. The
+  SHA-256 runs in parallel. `FAST` only: the column is neither indexed nor
+  stored. Measured on 300 books of the library, 286,235 lines, on an Apple M4:
+  the column costs 8.0 bytes a line, which is 55 MB over the library's 6.9
+  million lines, about 1.3% of the 3.9 GiB release index. The keys took 0.21 s
+  of an indexing run of about 3.1 s, which is 0.75 µs a line, or 1.9 µs a
+  line on one core: about 13 s of CPU for the whole library.
+
+  `INDEX_SCHEMA_VERSION` is 5, and **an index of version 4 is not rebuilt**.
+  `checkIndexCompatibility` reports it `compatible`. The engine opens it under
+  its own schema, searches it, and adds books to it as before, and it stays
+  version 4 with no column. Only an index this version creates, a new one or a
+  rebuild, has the column. Its `otzaria_index_meta.json` records the recipe the
+  column was written under: `line_text_version`, `chunk_key_version` and
+  `chunk_key_chunking_identity`. A column written under another recipe, or
+  under none that is known, counts as absent: it never means a rebuild, and
+  nothing writes to it. An engine before this one reports a version 5 index
+  as `engine_too_old`, which it is.
+
+  `semantic_keys::recompute_chunk_key` (Rust only) computes a line's key again
+  from the stored text of its window and the `sectionId` column. This is what
+  an index without a usable column is asked, and what a result is checked
+  against before it is shown.
+
+  Tested:
+  - a synthetic book keyed to the values Python's hashlib computes over
+    embedded strings written out by hand;
+  - every line recomputes to the key its column holds;
+  - the parallel keys equal the sidecar's `chunk_keys`;
+  - the compiled-in chunking is the one the model family publishes, against
+    the pinned sidecar's files in the real-model job;
+  - version 4's schema is the one in the release index's `meta.json`;
+  - a version 4 index, with or without its metadata, opens compatible,
+    searches, takes books without the field, and stays version 4;
+  - a new index records its recipe;
+  - every add path but `addTextBook` writes 0;
+  - a column under another recipe, or unparseable metadata, counts as absent
+    and leaves the index compatible.
+
+  A copy of the release index (6,042,284 lines, version 4) opened compatible
+  under this engine, served searches, and took a book. On the 300 books, every
+  line's column equalled its key recomputed from the stored text.
+- **Typed semantic failures and states, for an application to switch on.** The
+  sidecar types its errors and leaves turning them into user-facing states to
+  the host; now the plugin does. `SemanticErrorKind` names what stopped the
+  semantic path: no session open, or no semantic support in the build; the
+  vectors missing, corrupt, incompatible (with the first field that
+  disagreed) or not the release published; too little disk space to install
+  or compact them; the model missing, invalid or not the one its
+  identity describes, or its tokenizer missing; ONNX Runtime missing or
+  unusable; no backend for the model's format in this build; another session
+  open, a read-only session, a re-index needed, one query's semantic half
+  failed, a search cancelled; an invalid input; or an internal fault. `SemanticState` says what a
+  session can do: `notInBuild`, `notConfigured` and `ready` on the
+  application's path, and `empty`, `needsReindex` and `failed` for a session
+  built on the device. The doc comment of `SemanticErrorKind`, the README and
+  API_DOCUMENTATION have the table of each kind, what it means, and what the
+  application should do.
+
+  A kind is decided from the type of the failure, the sidecar's typed errors and
+  the plugin's own (the model identity, the chunking, sessions), and never by
+  reading a message. Where the sidecar uses one type for two states, a fact
+  decides: a set with neither `CURRENT` nor `PREVIOUS` makes unusable metadata
+  a missing set rather than a damaged one, and a file where ONNX Runtime is looked for makes a
+  runtime that did not load unusable rather than missing. The installation's own
+  identity values are checked first, by the sidecar's own functions, so a value
+  no build serves is `invalidInput` and what opening refuses after it is the
+  set's, the model's or the runtime's. The matches name every sidecar
+  variant with no wildcard, so a repin that adds one does not compile until it
+  is classified. Where nothing can place a failure precisely it gets the broad
+  kind that is true of it: a semantic half that failed during a search is
+  `queryFailed`, since the sidecar reports it as text only, and a development
+  session's `lastError` is `internal`, while the call that failed threw the
+  precise kind.
+
+  Tests produce each kind from the real failure: in
+  `rust/tests/semantic_artifact.rs`, a missing set, garbled pointers, a flipped
+  segment byte, a damaged block found by verifying, a truncated compressed
+  segment, every kind of wrong model identity, another chunking, a
+  missing, invalid or tokenizer-less model, an invalid identity value, a
+  manifest that is not the published one, a compaction threshold out of range,
+  the read-only refusals and a query with nothing to embed; in `rust/tests/semantic_mock_integration.rs`, the
+  development session's states and refusals; in the new
+  `rust/tests/semantic_onnx_errors.rs`, a GGUF model, which no build serves,
+  and an ONNX model with no runtime or one that does not load, which
+  needs neither the real model nor a runtime and so runs in every
+  `semantic-onnx` job; and a build without semantic support, in the unit tests.
+  The FFI suite matches its refusals by kind across the bridge.
+
+- **A semantic search can be cancelled.** The application searches as the user
+  types, so every query but the last is obsolete before it finishes, and a
+  semantic query embeds the text and then scans every vector, about a second
+  over the library. `SemanticCancellationToken` is an opaque object with a
+  factory constructor and a synchronous `cancel()` and `isCancelled`; Rust holds
+  the sidecar's own `CancellationToken` in it (the sidecar's since 62f0c44), and
+  `searchSemantic` borrows it, so the application keeps the object and cancels
+  it from the isolate that started the search while the search runs: both take
+  it by shared reference, and neither waits for the other. The search looks
+  before its lexical phase, hands the token to the sidecar's
+  `search_cancellable`, which looks before and after it embeds the query, every
+  1,024 records of the scan and around fusion, and looks again before it
+  hydrates and before it paints; a lexical fallback is looked at before it runs
+  and once its page is ready. The first look after a cancel throws
+  `SemanticError` with the new kind `cancelled`: not a failure, never answered
+  with lexical results instead, and, when the sidecar stops it, leaving its
+  caches untouched. Tested: in the unit tests, with a probe that cancels at a
+  chosen look, a search with a session stops at exactly that look in every mode,
+  the sidecar's own included (which fails if the token is not handed over), and
+  serves the same page afterwards; a pre-cancelled search does nothing in any
+  build; through the public API and across the bridge, a cancelled search throws
+  `cancelled` in every mode, the token outlives the search that borrowed it, and
+  `cancel()` returns while a search holds it.
+- **Every ranking parameter can be passed with a search.** `searchSemantic`
+  takes an optional `ranking`, a `SemanticRankingOptions`: the fusion strategy
+  (`SemanticFusionStrategy`: weighted, RRF with its `rrfK`, adaptive), one
+  `alphaOverride` or an alpha per kind of query (`SemanticQueryTypeAlphas`),
+  BM25's saturation `k`, the semantic threshold, the agreement, phrase,
+  rare-word and section bonuses and the duplicate penalty, metadata ranking and
+  the semantic candidate window's multiplier, mirroring the sidecar's
+  `RankingProfile` field for field and handed to it as `HybridSearchParams::ranking`
+  (since the sidecar's 62f0c44). Without it, or with the defaults, which the
+  Dart constructor carries and `SemanticRankingOptions.defaults()` reads from
+  the engine, a search ranks exactly as before: the defaults are the sidecar's
+  `Balanced` preset, value for value. **They are unmeasured placeholders**; calibrating
+  them needs a labelled relevance set, and this lets that happen from the
+  application without a release of the engine. An option out of its range, or
+  not a number, is refused before the search runs, with or without a session,
+  by the sidecar's own `RankingProfile::validate`: `invalidInput`, whose
+  `field` names the option (`alpha_by_query_type.short`, `rrf_k`), never a
+  clamped value. Values are passed as doubles and ranked at 32 bits. A build
+  without semantic support ignores them. Tested: the defaults map to the
+  preset exactly, every option to its own field, and every out-of-range value
+  is refused by name, in the unit tests; `None` and the defaults rank every
+  page alike to the bit, an RRF ranking scores the line both sides rank first
+  `1 / 31` from each, and a bad option is refused with no session open, in the
+  mock suite; and the same across the bridge, where the Dart defaults equal the
+  engine's.
+- **`openSemanticArtifact`: the application's semantic path.** It opens a
+  vector set read-only, verifies every field of its identity against this
+  installation, and serves `searchSemantic` from it with each result hydrated
+  from the lexical index. `SemanticArtifactInput` takes the set's directory,
+  the model file, the text of the model's identity file (the one the vectors
+  were built with, such as the sidecar's
+  `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
+  Runtime and the number of threads a search scans with. The sidecar is pinned
+  at 2663873, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  audit fixes, `scan-with`, `open-without-recovery`, `fusion-tie-order`,
+  `fix/g5-empty-sample`, `fix/install-lock-race`, `fix/windows-rename-retry`
+  and `fix/warehouse-integrity` merged, which keys a
+  vector by the text it was embedded from, so a set's
+  identity is a line recipe and a model family, with nothing positional in it:
+  - The text half is the line recipe of the index, which this plugin declares
+    as `LINE_TEXT_VERSION` 1: split on `\n`, `normalize_text_for_indexing`, a
+    line starting with `<h` opens a section, one document per line. The other
+    part of it is the sidecar's key version.
+  - The model half describes a family: `family_id`, `tokenizer_checksum`, the
+    recipe the vectors were built under, the chunking among it, and the
+    `query_packages` a query may come from, which are the INT8 and fp32
+    graphs. The graph at `modelPath` must be one of those packages, by its
+    checksum, and its tokenizer must be `tokenizer_checksum`; either refusal
+    is `modelIdentityMismatch`. A set chunked otherwise than this build keys
+    lines is `artifactIncompatible` on `model.chunking_identity`.
+
+  On an opened set, `semanticIndexBooks`, `removeSemanticBooks`,
+  `resetSemanticIndex`, `semanticIndexDiff` and `configureSemantic` are refused
+  as read-only. It takes the engine's read lock, so lexical search keeps
+  serving while the model and the vectors load.
+- **A set's hits are resolved against the open index, by the key of their
+  text.** Nothing ties a set to one index, and nothing is stamped into one: a
+  commit after opening leaves the set serving. Each hit the sidecar scans names
+  its records by book and a hint, the line it held when the set was built. The
+  plugin's resolver checks the hint, then the book's lines by distance from it,
+  then, for what its books no longer hold, every book's `chunkKey` column in one
+  pass, and remembers what it found nowhere until the index changes. On an index
+  without the column it recomputes the keys around the hint from the stored
+  text instead. Filters are applied by book, from a directory of the index's
+  books built once per index generation. On an index with the column (schema
+  version 5) a line that moved is found where it is now, and a text that left
+  its book for another is found there. On one of version 4 — the published v30
+  library index is one — a line is found only within 16 lines of where the set
+  recorded it, in the same book: not a line moved further, and not a text in
+  another book. That matters only while the index and the vectors are of
+  different library versions, or after the index changed on the device. A
+  line whose text is gone, or whose embedded text changed with its neighbours,
+  is not shown.
+  Results hydrate by their address in the index the search read, and every line
+  shown is checked first by recomputing its full 128-bit key from the stored
+  text: a semantic match that fails is dropped, and one the lexical side found
+  too is shown as lexical; the response's note counts them.
+- **Installing and keeping the library's vectors.** `installSemanticVectors`
+  installs a release, a segment and its manifest, into the set at `vectorsDir`,
+  checked against the manifest's published SHA-256 and this installation's
+  identity: a base replaces the set, a delta brings it to the next library
+  version, a segment compressed with zstd (`.oxv.zst`) is expanded first, and an
+  open session on the set moves onto the new generation. `semanticVectorsInfo`
+  reads what is installed from its small files; `compactSemanticVectors` merges
+  the set into one segment under a `SemanticCompactionPolicy`, the sidecar's
+  defaults on both sides of the bridge, and, given the index's library version,
+  re-anchors every record on the line that holds its text now;
+  `verifySemanticVectors` checks every block of every segment against its
+  checksum; and `semanticCoverage` counts the live lines the recipe embeds and
+  those the set holds. All are cancellable through a
+  `SemanticCancellationToken`, and the set is left as it was by any that is
+  refused, cancelled or cut off. A manifest's `requires` and `builtBy` are
+  information, and nothing checks them: the published v30 release says
+  `indexSchemaVersion: 5`, and installs, opens and serves on a version 4
+  index, with version 4's limits.
+  `SemanticStatus` gains `vectorsLibraryVersion`,
+  `vectorSegments` and `needsCompaction`, and `SemanticErrorKind` gains
+  `insufficientDiskSpace`. The decoder is the zstd crate tantivy already builds,
+  so `Cargo.lock` gains no crate; `sha2` is now a test dependency only.
+- **The ONNX embedding backend, `semantic-onnx`**, for ONNX graphs such as the
+  Meivin model. It links nothing native: the sidecar loads the ONNX Runtime
+  shared library when a model loads, from the path the application passes
+  (`onnxRuntimePath`, next entry), else `OTZARIA_ONNX_RUNTIME`, else the
+  platform's default file name beside the `.onnx` graph. **An application that
+  configures an ONNX model has to provide that library**; the reference is
+  Microsoft's ONNX Runtime 1.28.0 release, and the oldest runtime API accepted
+  is 1.17's. Without one that loads, opening a vector set (or, on the
+  development path, indexing) throws an error that says "ONNX Runtime could not
+  be loaded: …" and what each place held, not the no-backend error of a build
+  without it; semantic search reports itself unavailable, and lexical search is
+  unaffected. On macOS a Hardened Runtime application loads
+  only libraries signed by Apple or with its own Team ID, so the runtime belongs
+  inside the signed bundle, passed as `onnxRuntimePath`. The runtime is
+  not part of the model checksum. The backend is built for desktop targets only.
+- **`onnxRuntimePath`: the ONNX Runtime the application ships.**
+  `SemanticArtifactInput` and `SemanticConfigInput` gain an optional
+  `onnxRuntimePath`, the shared library an ONNX model runs on, which the plugin
+  hands to the sidecar as its `EmbeddingDeployment` (which the sidecar added in
+  62f0c44). It is the first place looked and, once passed, the
+  only one: a path that names no file is `onnxRuntimeMissing` and one that does
+  not load `onnxRuntimeUnusable`, never a fall-back to `OTZARIA_ONNX_RUNTIME` or
+  to the file beside the graph, which stay the second and third places; an empty
+  one is `invalidInput` before anything is opened. No identity reads it: the
+  manifest does not record it, and a vector set opens whatever it names. Both
+  calls compare it on a repeat all the same, since a process keeps the first
+  runtime it loads and cannot replace it: another path while a session is open
+  is a `sessionConflict` naming `onnx_runtime_path`, rather than a no-op that
+  would leave the caller believing its runtime is in use, and after
+  `disableSemantic` a session that names another runtime is
+  `onnxRuntimeUnusable` until the process restarts. The README and
+  API_DOCUMENTATION give the layout the application installs: `<root>/otzaria/`
+  holds `seforim.db` and the model package's folder (the graph,
+  `tokenizer.json` and the identity file `model.json`), `<root>/index/` the
+  lexical index, and `<root>/vectors/` the vector set; the
+  runtime ships with the application, or sits beside the graph as the build for
+  that machine. Microsoft's macOS build of 1.28.0 is arm64 only and needs macOS
+  14 (its `LC_BUILD_VERSION` minimum), so on macOS 12 and 13, which the plugin
+  supports, it is `onnxRuntimeUnusable`. Tested: a passed path that names no
+  file, and one that does not load, in `rust/tests/semantic_onnx_errors.rs`; the
+  comparison on a repeat and the empty path, for both calls, with the stand-in
+  and across the bridge; and in the real-model suite, the vector set opened on the
+  passed runtime alone, in a child process without `OTZARIA_ONNX_RUNTIME` and
+  with nothing beside the graph, and a second runtime refused after it.
+- **Tests against the real Meivin model**, `rust/tests/semantic_onnx_model.rs`:
+  a handful of lines indexed through the public API, and queries that must rank
+  the line they are about first. A ranking cannot tell whether the role
+  prefixes reached the model, so text recipe 2 is also checked against its
+  definition: it must score every pair exactly as recipe 1 does when handed the
+  `[PASSAGE] ` / `[QUERY] `-prefixed strings. A third runs the application's
+  path: the build binary embeds the lines into a base package and installs it,
+  and `openSemanticArtifact` opens the set and must rank the same lines first,
+  using the model's published identity files from `OTZARIA_TEST_ONNX_IDENTITY`.
+  `#[ignore]`d, and they skip loudly unless `OTZARIA_TEST_ONNX_MODEL`,
+  `OTZARIA_ONNX_RUNTIME` and, for the third, `OTZARIA_TEST_ONNX_IDENTITY` name
+  what they need; with `OTZARIA_REQUIRE_ONNX_MODEL` set, as the Dart suites
+  have `OTZARIA_REQUIRE_NATIVE`, each skip is a failure instead.
+- **`export_semantic_plan` writes the sidecar's plan of a vector build**, in one
+  step from the release index: `records.bin`, `books.json`, `embed.jsonl` and
+  `embed-manifest.json`, `tombstones.bin` and `plan-manifest.json`, each by the
+  sidecar's own writer, for its `embed-shard`, `warehouse-add` and `assemble`.
+  `--warehouse` leaves out of `embed.jsonl` every text the warehouse holds a
+  vector for, refusing a warehouse of another model or package, and
+  `--previous-ledger` splits the plan against the release before it, which
+  writes its tombstones. Lines are keyed from the text the index stores, under
+  the chunking compiled in, so a version 4 index plans as a version 5 one does;
+  a version 5 index's `chunkKey` column is held to that text line by line, and
+  a plan whose column disagrees fails the manifest's parity gate and the export.
+  A PDF's lines are not planned, since the index keys them 0 and a device never
+  resolves to one. On the v30 release index (6,042,284 lines in 7,376 books,
+  version 4) it plans 5,753,225 records and 5,510,809 distinct texts, leaving
+  out 132,076 PDF lines, in 60 s and 3.6 GB on an Apple M4. That index holds
+  53,493 line ids that two books share, which the build binary's corpus
+  refuses; the plan keys a line by its book and position and is not affected.
+  Tested over a small library, where the plan is byte for byte what the
+  sidecar's `plan_from_corpus` writes, from a version 5 and a version 4 index
+  alike.
+- **`validate_semantic_vectors` is the publishing pipeline's gate on a
+  release**, for what the sidecar's `assemble --verify` cannot check without
+  the release index. It installs the releases given with `--release` (the
+  published chain first, the new one last) into a set of its own as a device
+  installs them, or takes one installed already with `--vectors`, and checks
+  **G3**: every line of the index the recipe embeds has its text recorded by
+  the set in its own book, by all 128 bits of the key, and with `--plan`
+  every record of the plan is reachable in the set; **G4**: every record
+  resolves on the index by all 128 bits of its key, a
+  record of a book the index lacks counting as unresolved, and every line's
+  `chunkKey` column is its text's, with records off their hint reported and
+  failing it only past `--max-stale-hints`; and **G6**, with `--warehouse`,
+  `--model` and `--model-identity`: mean recall@10 and recall@50 of the set's
+  scan against the sidecar's exact `f32` reference over the warehouse, on
+  queries embedded once by the runtime query model, at least `--min-recall-10`
+  (0.98) and `--min-recall-50` (0.99). The queries are `--queries`, one per
+  line, or 200 spans of the index's lines drawn with a fixed seed. Recall is
+  counted over keys, which are distinct texts: a scan returns a text once,
+  however many books hold it, so repeated texts cannot take the top 50 as they
+  do on a page of lines. A release passes when every gate ran and passed: a
+  gate whose inputs are not given has not run, which fails it, unless the
+  caller skips that gate by name (`--skip G6`), which the output and the
+  report record; skipping all three is a wrong argument, since it validates
+  nothing. Exit 0 when every gate passed or was skipped so, 1 when one
+  failed or did not run, 2 for wrong arguments or inputs that do not read;
+  `--report` writes every gate's verdict and numbers as JSON. On the v30 set a scratch harness of
+  the same measurement gave recall@10 0.987 to 0.994 and recall@50, over
+  distinct texts, 0.993 to 0.995. Tested through the pipeline itself: a plan,
+  a warehouse of the stand-in's vectors, a base assembled and installed, which
+  passes; and a book gone, stale hints past the limit, a line of the index the
+  set does not cover (with no plan and no warehouse given), a plan the set
+  does not reach, a warehouse of other vectors and wrong arguments, which each
+  fail.
+- **Tests of the vector-set path with the stand-in**, `rust/tests/semantic_artifact.rs`:
+  a base package built by the binary from a small index, installed by the
+  binary and through the API, plain and compressed, opened, searched both ways
+  and hydrated; lines inserted above, moved to another book, gone, of a changed
+  context, in two books, and in a book moved to another category, on an index
+  with the column; on one of version 4, a line inserted above, a passage
+  repeated, compaction, coverage, and what it does not find (a line moved
+  beyond 16 lines, a text moved to another book, filtered or not); refusals
+  of every kind of wrong model identity, of another chunking, and of a manifest that is not the
+  published one; every build-side call refused as read-only; an install and a
+  compaction under an open session, which follows them; re-anchoring, which
+  needs the column and the set's library version; a damaged block found by
+  verifying and refused by opening after; and coverage, the same from the
+  column and recomputed. The FFI suite installs and opens a set across the
+  bridge too, so CI builds `build_semantic_artifact` beside the library, and
+  the package gains `crypto` as a dev dependency for the stub model's checksum.
+- **INT8 vectors depend on the CPU's INT8 kernels**, documented: ARM (KleidiAI)
+  and x86 (MLAS) land about cosine 0.999 apart, the same order as INT8 against
+  fp32, so a library built on x86 and queried on an ARM Mac meets at about
+  0.999. The sidecar records this as accepted, and as a measurement still to be
+  made on a weak PC.
+
+### Changed
+
+- **The sidecar is compiled into every build**, declared with
+  `default-features = false`, because a line's chunk key has to be the same
+  function of its text in every build: the release index is built once and
+  ships to every platform. `semantic-integration` and the backend features
+  still gate the code that talks to the sidecar. The inference crates (ort,
+  tokenizers, libloading) still come only with `semantic-onnx`, and only on
+  desktop targets, so an Android or iOS build pulls in none of them. Cargo.lock
+  gains no crate.
+- **The plugin calls the sidecar's `HybridCoordinator` itself**, not the
+  `OtzariaHybridEngine` wrapper, which turned every error into a string, so the
+  typed error reaches the classification; nothing else the wrapper did is lost.
+- **`build_semantic_artifact` writes a vector set's base package**: the segment
+  and its release manifest, whose SHA-256 it prints for the release to publish,
+  and installs it into a set with `--install`. It takes the library version
+  (`db_version`) and `--release-tag`, writes nothing into the lexical index,
+  and writes the sidecar's default codec (`i8-sym-vec`). `pack_semantic_artifact`,
+  which assembled the shards of the old artifact, says it is retired and exits
+  with status 2: the sidecar's `assemble` builds a release from a plan and its
+  vectors.
+- **The calls that build vectors on the device are documented as development
+  and testing scaffolding**: `configureSemantic`, `semanticIndexBooks`,
+  `semanticIndexDiff`, `removeSemanticBooks` and `resetSemanticIndex`, in their
+  doc comments (and so in the Dart docs), the README and API_DOCUMENTATION. They
+  are kept, since application code references them, and not `#[deprecated]`:
+  flutter_rust_bridge's codegen does not carry the attribute to Dart, so the
+  application would see nothing, while every Rust call site would warn, the
+  generated wrappers included.
+- **`build_semantic_artifact` documents an ONNX graph as `--model-file`**, and
+  its no-backend message names `semantic-onnx` and `semantic-mock`. The bins
+  that need no model no longer say "GGUF".
+- **The tests that drive the stand-in open it on a stub ONNX package**, where
+  they used a stub GGUF: the sidecar's `write_stub_onnx_package` in Rust, and a
+  Dart copy of it in the FFI suites, which compute its package checksum as the
+  sidecar defines it. The Rust ones run with `semantic-mock` and without
+  `semantic-onnx`, which would take the stub ahead of the stand-in and fail to
+  load it. Before, the binary's test was gated off `semantic-real` and the
+  corpus adapter's test had no gate at all, so llama.cpp could have claimed
+  their stub GGUF.
+- **CI checks, lints and runs the tests with `--features semantic-onnx`**, the
+  one job that runs the integration's tests without the stand-in, and exactly
+  what `semantic` turns on. The real-backend job compiles `semantic` on Linux,
+  macOS and Windows; nothing in CI compiles llama.cpp any more.
+- **CI runs the real-model tests on Linux, macOS and Windows.** The new "Real
+  ONNX model" job fetches the INT8 graph and its `tokenizer.json` from the
+  project's private Hugging Face mirror with the `OTZARIA_HF_TOKEN` secret and
+  checks their SHA-256, fetches Microsoft's ONNX Runtime 1.28.0 as the
+  sidecar's CI does, takes the model's identity files from the sidecar at the
+  pinned revision, and runs `rust/tests/semantic_onnx_model.rs` under
+  `OTZARIA_REQUIRE_ONNX_MODEL`. Without the secret it fails rather than skips;
+  it does not run for pull requests from forks, which get no secrets.
+
+### Fixed
+
+- **An unfiltered search finds a text copied or moved into a book, as a filter
+  admitting that book does.** A filtered search resolves each hit in the
+  admitted books its text arrived in since the set was built; an unfiltered
+  one looked beyond a hit's records only when none of them resolved, so a
+  passage copied into a new book was found under the new book's category and
+  not without a filter. On an index with the `chunkKey` column an unfiltered
+  search of an opened set is now planned too, for every book, and returns
+  every line of a hit a filtered search returns, within the 32-line cap and
+  one line of each book first. The plan is made once per index generation, on
+  the first unfiltered search, and a book's arrivals are kept with the set's
+  view, so after a commit only the books it changed are read; books are read
+  in parallel, as is the pass over the set's slots a new text needs. On a
+  synthetic library of the real one's size (6,910,850 lines in 7,765 books, as
+  many vectors; Apple M4), the first unfiltered search's plan takes 0.2 s,
+  0.5 s from a cold disk cache, and that search 0.54 to 0.88 s against 0.58 to
+  0.65 s before, since it reads much of what the search would; after a commit
+  adding a book the plan takes 11 ms, and after one copying 7,000 lines 21 to
+  33 ms. Later searches are unchanged: unfiltered p50 35.2 ms (35.1 to 35.5
+  before), under a category 14.8 to 16.2 ms (15.2 to 16.2). A plan that cannot
+  be made, because the index could not be read for it, leaves unfiltered
+  searches unplanned for that index generation, as they were before, and does
+  not fail them; a filtered search still fails its semantic half. A plan of
+  more than 200,000 arrivals (about 20 MB), a set that far behind its library,
+  is not held either, and unfiltered searches go unplanned; the arrivals found
+  are kept, so a later index generation gives up without asking the set again.
+  A cancelled plan keeps the books it read. On a version 4 index there are no
+  arrivals, filtered or not, so neither finds the copy; the lexical half of a
+  hybrid search does, filtered or not.
+- **A vector set installed again at its directory is planned afresh.** A set
+  removed and installed again there starts its generations over, and a
+  filtered search in the same index generation reused the plan made with the
+  set it replaced. Plans are now kept per opened view of a set, and let go
+  with it.
+- **A text that moved keeps every book's line when one book holds it more
+  than a thousand times.** A hit whose books no longer hold its text is looked
+  for in one pass over the whole `chunkKey` column, and the pass kept a text's
+  first 1,024 places in index order before a line of each book was chosen: a
+  book that holds the text 1,100 times took all of them, and a book added
+  after it, which holds it once, lost its line. The pass now keeps each book's
+  first 32 lines by position, and cuts to 1,024 by rank in the book, every
+  book's first line before any book's second; a book found after 1,024 others
+  is not kept. The cache it fills is bounded as before, 1,024 places a value.
+- **Every semantic line a search returns holds its vector's text by the whole
+  key, grouped siblings included.** The resolver found a vector's lines by
+  their `chunkKey` column, a key's first 64 bits, and only a page's primaries
+  were held to the full 128 before they were shown; a group's siblings were
+  hydrated as they came, so a line whose text was replaced while its column
+  value was kept could cross the bridge as the sibling of the line that does
+  hold the text. The resolver now checks every line it returns against the key
+  recomputed from the line's text and its neighbours' — at a hint, in a book
+  searched for a moved line, among a book's repeats, and in the pass over the
+  whole column — so a line that fails reaches neither fusion nor grouping nor a
+  page, and is counted in `fallbackReason` as primaries were. A line long
+  enough to stand alone is checked at one document rather than five: on a
+  synthetic set of 1,050,000 lines an unfiltered semantic-only search takes
+  8.4 ms where it took 10.9, since the page no longer checks its primaries
+  separately. Where the pass over the whole column found each value it looked
+  for — or that it found one nowhere — is kept for the index's generation (the
+  last 1,024 values, up to 1,024 places each), so a vector whose only line is
+  one a stale column holds costs one pass a generation, not one a search; and
+  the lines the pass finds share the cap as a hit's records do, one line of
+  each book first.
+- **A line no vector resolved is hydrated by its book and its id.** A grouped
+  sibling that only lexical search found, and a line of a session built on the
+  device, were looked up by id alone, and two books can share ids when an index
+  is updated book by book: such a sibling came back as another book's line.
+- **A passage a book holds in two places is a result for each.** A vector set
+  records a text once per book, at its first line, and the resolver stopped at
+  the first line that held it, so the second section's copy never came back,
+  even ungrouped. A hit now resolves in two passes, up to the sidecar's 32
+  lines a hit: first one line for each record — each book the set records the
+  text in, at its hint or where the book holds it now — and then, in that
+  order, each of those books' other lines of the same text, found by the
+  book's `chunkKey` values (its `lineHash` in a version 4 index), while the cap
+  lasts. So a book that repeats a passage forty times takes 31 of the 32 and
+  never the line of another book that holds it once. Without grouping each is
+  a result; grouped by section they head their sections' groups, and grouped
+  by text they are one group. Pagination is unchanged by it. A hit's lines
+  score alike, and an ungrouped page shows them in that order, every book's
+  line before any book's second: the sidecar (since 76900fd) breaks a tie in score
+  by the order the resolver returned the lines in, where it broke it by id.
+  By id, the repeats of the book first in the catalogue, numbered in a row,
+  came ahead of every other book's line. In the acceptance run on the
+  published v30 library, 9 of 200 unfiltered pages of twenty showed a repeat
+  before another book's line of the same text, and 3 were one text of one
+  book; now none are, and 1 is, a text whose hit found it in one book only.
+  On a session built on the device (the development path), ties now follow
+  the store's order, which is by semantic id.
+- **A short line a version 4 index holds in many places no longer slows a
+  search.** On an index without the `chunkKey` column, such as the published
+  v30 library index, a book's other lines of a hit's text are the lines of its
+  `lineHash`, and each was recomputed to see whether it holds the key. A line
+  under 20 characters is keyed with up to two neighbours on each side, so a
+  short text that recurs throughout a big book matched 119 to 949 lines by
+  `lineHash` and almost none by key. Each of them cost five documents read.
+  Once one of them is found not to hold the key, the others are recomputed
+  only when the `lineHash`es of their windows, which the columns give
+  without reading them, can spell the hit's text. A text whose lines hold
+  it, the common case, reads nothing more than before. Behind that, a hit
+  stops after 16 lines that were recomputed and did not hold its key: that
+  takes windows the column cannot tell apart, with neighbours under 12
+  Hebrew letters or one that fills the 512-character cap alone. A real
+  repeat, neighbours and all, is still found. On the published v30 index and
+  release, with 200 queries, a page of 20 and the query embedding cached, on
+  Apple M4, p50/p95/max in ms:
+
+  | search | this change | 1c27820 | bb57300 |
+  | --- | --- | --- | --- |
+  | unfiltered | 36.1/50.5/78 | 36.7/66.3/155 | 37.8/52.4/77 |
+  | under a category of 2,132 books | 12.2/53.8/282 | 12.2/53.2/277 | 22.6/63.7/286 |
+  | in one book | 2.7/4.2/6 | 2.7/4.2/6 | 14.9/15.6/19 |
+
+  Every line shown still holds its vector's text.
+- **A version 4 index finds a short line's repeats however their neighbours
+  are cut into lines.** The filter of the previous entry passed over a line
+  whose window held the hit's text cut into lines at other spaces: the same
+  key, other `lineHash`es. A book holding such a text three times showed all
+  three with the `chunkKey` column and two without it. A window is now passed
+  over only when its lines' `lineHash`es cannot join to the hit's text at any
+  of its spaces, which is exact for lines stored trimmed and single-spaced, as
+  every line is. A text the 512-character cap may have cut can be held by a
+  window that begins with one line longer than the cap, so its lines are all
+  candidates, within the budget of 16 a hit. Either way, the lines whose
+  windows begin as the hit's does are recomputed first, in every book of the
+  hit before the others in any. Running out of that
+  budget is now the only way a version 4 index misses a line of the hit's
+  `lineHash` that holds its key. A recompute also opens the `sectionId`
+  column once rather than once per document it reads, which on that index
+  cost about 120 µs each time. On a local version 4 library index of
+  6,042,284 lines, every one trimmed, single-spaced and with the `lineHash` of
+  its text, the 1,856 hits of short lines that recur 20 or more times in
+  their book:
+
+  | | before | after |
+  | --- | --- | --- |
+  | lines found holding the key | 1,351 | 1,352 |
+  | lines passed over that held it | 1 | 0 |
+  | failed recomputes, 1,219 hits on whole texts | 3,166 | 3,373 |
+  | failed recomputes, 637 hits on texts the cap cut | 4,749 | 10,192 |
+  | one short line recomputed, µs | 766 | 216 |
+
+  The latencies of the previous entry were not measured again.
+- **A filtered search finds a text that moved, or was copied, into a book it
+  admits.** The scan reads only the vectors with a record in an admitted book,
+  and a set's records are where its texts were when it was built, so under the
+  filter of the category a text had moved into, it was not there until the
+  vectors were updated. A filtered search of an opened set is now planned
+  first, when the index has the `chunkKey` column. An admitted book's live
+  texts that no live record of the set places in it are its arrivals, looked
+  for in it and held to their whole key. The vector of an arrival that no
+  admitted book's live records reach is named to the sidecar
+  (`CandidateResolver::unreached`), which weighs it at its own score beside
+  the scan of the admitted books and never in place of one of their hits: the
+  scan is not widened, so the admitted books' results are exactly what they
+  would be had nothing moved. Such a vector is resolved in the admitted books
+  the text arrived in, never in the books its records name. When nothing
+  moved the plan is the admitted books alone, as before. Liveness is the
+  set's own: a record counts when a scan reaches a live slot through it, and
+  a vector when its slot is live. The set is opened for it beside the session
+  without the set's lock and without recovery (the sidecar's
+  `open_without_recovery`), so planning never makes an install wait and never
+  cleans up on a search's thread. A book's arrivals are kept for the set's
+  generation under its postings (the segments that hold its lines, and their
+  deletions) and its text hash, so a plan after a commit that left a book
+  alone reads none of its lines; a plan per filter is kept for the index's
+  generation. A filtered search that cannot be planned, because the index
+  could not be read for it, fails its semantic half alone: the lexical
+  results are served with the reason, `fallbackKind` `queryFailed`. A version
+  4 index, which has no column (the published v30 library index is one),
+  scans the admitted books alone as before, so a text moved or copied into an
+  admitted book is not found under the filter there until the index is
+  rebuilt as version 5; an unfiltered search finds a copied text where the
+  set records it, until the vectors are updated. Measured on 1,050,000 lines in 1,501 books with
+  1,030,500 vectors (Apple M4, medians of five runs, against the widening this
+  replaces): a filter to one six-line book with a line copied into its
+  category from a 700-line book of another one keeps all six of its lines,
+  where the widened scan lost one, and finds the copy; searches under a
+  category of 50 books take 5.0 ms (6.4), under that one book 0.2 ms (0.4),
+  under a category after 50 texts were copied into one of its books 1.1 to
+  1.3 ms (1.0 to 1.1), and unfiltered 12.5 ms (14.2). The first search under
+  every book after texts moved takes 24 ms (17); the process holds 396 MB
+  after planning (394), the mapped index and vectors nearly all of it.
+- **A version installed already, published again, and a verification an
+  install overtook, are not damage.** The sidecar (04a2cc9) refuses a release
+  whose segment is a version the set has installed, published again with
+  other bytes, while a generation that opens serves the installed bytes:
+  `SegmentIdTaken`, which is `artifactIncompatible` with `field` `segment_id`
+  here, not `artifactCorrupt` — the set and the release are sound, the set
+  keeps what it serves, and downloading the release again would be refused
+  the same way. A scrub that read bytes an install has since replaced now
+  reports it and condemns nothing, and `verifySemanticVectors` throws
+  `vectorsBusy` for it, to verify again, rather than `artifactCorrupt`.
+  Installing a release again now repairs a damaged or condemned set; on a FAT
+  or exFAT drive on Windows close the session first, since a mapped segment
+  cannot be replaced there.
+  A cancelled verification records nothing, and a download in `incoming/` is
+  moved into the set only when the install succeeds (on Windows a read-only
+  one is copied).
+- **One install or compaction of a vector set at a time, and each expansion
+  its own.** A compressed release was expanded to `incoming/<download name>`
+  before the set was locked, so two installs of one set from downloads of the
+  same name wrote one file, and a valid release was refused as corrupt because
+  the other install was still writing over it. An install or a compaction now
+  holds the set for the process before it reads anything, and a second one is
+  refused at once as `vectorsBusy` with `field` `vectors_dir`, nothing read or
+  changed; one in another process meets it at the sidecar's lock, whose
+  refusal was `internal` and is now the same `vectorsBusy`. That is a kind of
+  its own, `SemanticErrorKind.vectorsBusy`, added last to the enum: try again
+  once the other has finished. It is not `sessionConflict`, whose answer —
+  `disableSemantic` — would close a session that is serving, for an install
+  that only has to wait. A compressed
+  segment is expanded into a file of the install's own, beside a lock file
+  the install holds from before the segment is written until it returns, so
+  an install in another process never takes it for abandoned — not while it
+  is written, and not once it is closed and waiting for the sidecar to take
+  it. Both are removed when the install returns, installed or not; the next
+  install of a set removes what a stopped process left there (a lock file
+  nothing holds), and an expansion file with no lock file once it is an hour
+  old. A lock file another process's cleanup takes in the instant between its
+  creation and its locking is given up for a new one, up to three times
+  before the install is refused as `vectorsBusy`.
+- **`validate_semantic_vectors` fails a gate with nothing to measure.** G3
+  passed an index with no keyed line or a plan with no record, G4 a set with no
+  record, and G6 a set with no live key (a recall of 1.0 against 0 keys), so an
+  empty index or set could be published. Each now fails; the report's fields
+  are unchanged, and a share of none shows as `n/a`, not 100%.
+- **`validate_semantic_vectors` refuses a damaged warehouse.** Opening one
+  checked its sizes and headers only, so a flipped bit in its vectors, or an
+  index entry pointing at another text's record, passed G6, which measures
+  against that same warehouse. The sidecar verifies the warehouse before its
+  exact reference since 2663873 (Otzaria/otzaria-semantic-search#22), pinned
+  here, so G6 refuses it with exit 2, naming what failed.
+  `export_semantic_plan --warehouse` takes a text whose index entry is corrupt
+  as not held, and plans it to be embedded.
+- **A commit on Windows no longer fails with "Access is denied" while something
+  holds `meta.json` open.** tantivy replaces `meta.json` on every commit and
+  merge, and `.managed.json` for every new segment file, by renaming a
+  temporary file over it, and Windows refuses that rename while any handle is
+  open on the file: the reader's own meta-file watcher, which opens `meta.json`
+  every 500 ms, an antivirus scan, or the search indexer. The commit failed
+  with `An IO error occurred: 'Access is denied. (os error 5)'`, intermittently
+  in Windows CI, and `optimize` or a background merge failed the same way. On
+  Windows the index's directory now replaces them with `std::fs::rename`, which
+  falls back to POSIX semantics, so a handle that shares delete access no longer
+  blocks it; a holder that does not is waited out for up to about two seconds.
+  A refusal that lasts longer is returned as before, and the next commit writes
+  what the failed one did not.
+- **`otzaria_index_meta.json` is replaced atomically.** It was rewritten in
+  place, so a crash mid-write left truncated JSON and the chunk-key recipe was
+  lost without a warning; an unreadable one is now logged at warn.
+- **An install or compaction right after another is not refused as busy.**
+  The sidecar's set lock, released by closing its file, stayed held by a
+  process spawned meanwhile until it exec'd, so the next install could fail as
+  `vectorsBusy` (one CI run in about a hundred). An install and a compaction
+  now wait up to a second for the set's lock before they are refused; a second
+  one in this process is still refused at once. The sidecar unlocks the set
+  explicitly since 5d71ae5 (Otzaria/otzaria-semantic-search#21), pinned here.
+- **Reopening the index writer is not refused by a process spawned
+  meanwhile.** tantivy's writer lock had the same flaw, so a writer reopened in
+  this process could fail with `LockBusy`. The index's directory now takes its
+  locks as tantivy did, and unlocks them before closing their files.
+
 ## 0.9.0 – 2026-10-04
 
 ### Breaking

@@ -121,7 +121,7 @@ class Target {
       }
     }
     if (Platform.isWindows) {
-      // Native C/C++ dependencies (such as llama.cpp) are not reliably
+      // Native C dependencies (the bundled SQLite, zstd) are not reliably
       // cross-compiled by a standard Windows toolchain. Mirror the Linux
       // behavior and publish only the host architecture by default.
       return [

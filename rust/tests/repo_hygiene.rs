@@ -7,8 +7,11 @@
 //!
 //! התיקון אחרי כל הרצת codegen (מתועד גם ב-`flutter_rust_bridge.yaml`):
 //! ```sh
-//! sed -i 's/[ \t]*$//' rust/src/frb_generated.rs
+//! sed -i 's/[[:blank:]]*$//' rust/src/frb_generated.rs      # Linux
+//! sed -i '' 's/[[:blank:]]*$//' rust/src/frb_generated.rs   # macOS
 //! ```
+//! `[[:blank:]]` ולא `[ \t]`: ה-sed של macOS קורא את `\t` בתוך סוגריים כ-`\`
+//! ו-`t`, ומוחק אותם מסוף השורה.
 
 use std::fs;
 use std::path::Path;
@@ -22,7 +25,7 @@ fn no_trailing_whitespace_in_rust_sources() {
         offenders.is_empty(),
         "trailing whitespace in Rust sources (the FRB codegen re-emits it in \
          frb_generated.rs on every `flutter_rust_bridge_codegen generate`; \
-         clean with `sed -i 's/[ \\t]*$//' <file>`):\n{}",
+         clean with `sed -i 's/[[:blank:]]*$//' <file>`, `sed -i ''` on macOS):\n{}",
         offenders.join("\n"),
     );
 }

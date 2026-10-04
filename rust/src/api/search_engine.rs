@@ -14,7 +14,6 @@ use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
-use tantivy::directory::MmapDirectory;
 use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
@@ -36,27 +35,45 @@ use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::highlight_matcher as display_highlight_matcher;
+use crate::index_directory::{atomic_replace, IndexDirectory};
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
+use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
+use crate::semantic_keys::{self, ChunkKeyRecipe};
+use otzaria_semantic_search::semantic::chunk_key::LineRef;
 
 #[cfg(feature = "semantic-integration")]
-use otzaria_semantic_search::api::hybrid_search::{
-    OtzariaHybridEngine, SearchRequest as SidecarSearchRequest,
+use crate::semantic_errors::{self, SidecarCall};
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::config::profiles::{
+    FusionStrategy, QueryTypeAlphas, RankingProfile, SearchProfile,
 };
 #[cfg(feature = "semantic-integration")]
-use otzaria_semantic_search::hybrid::coordinator::HybridCoordinator;
+use otzaria_semantic_search::errors::SemanticSearchError;
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::embedding::EmbeddingDeployment;
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::engine::{SemanticConfig, SemanticEngine};
 #[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::official_index::{
+    LocalModel, OfficialIndexConfig, OfficialSemanticIndex,
+};
+#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::types::{
     BookForIndexing as SidecarBookForIndexing, BookLine as SidecarBookLine,
-    GroupingMode as SidecarGroupingMode, LexicalCandidate as SidecarLexicalCandidate,
-    ResultSource as SidecarResultSource, SearchFilters as SidecarSearchFilters,
-    SearchMode as SidecarSearchMode,
+    ContentFingerprint as SidecarContentFingerprint, GroupingMode as SidecarGroupingMode,
+    LexicalCandidate as SidecarLexicalCandidate, ResultSource as SidecarResultSource,
+    SearchFilters as SidecarSearchFilters, SearchMode as SidecarSearchMode,
 };
+#[cfg(feature = "semantic-integration")]
+use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage, TextIdentity};
+#[cfg(feature = "semantic-integration")]
+use std::sync::{PoisonError, RwLock};
 
 // ── Public data types ──────────────────────────────────────────────────────────
 
@@ -305,21 +322,573 @@ pub enum SemanticResultSource {
     Both,
 }
 
-/// Configuration needed to open the semantic sidecar. The model itself is
-/// loaded lazily when indexing begins, so configuration is cheap; searches
-/// report a degraded state until indexing has loaded the model and produced
-/// vectors, instead of making the lexical engine unusable.
+/// Configuration for a semantic session whose vectors are built on this
+/// device, by [`SearchEngine::configure_semantic`] and
+/// [`SearchEngine::semantic_index_books`].
+///
+/// **Development and testing scaffolding.** The application never builds the
+/// library's vectors: the build machine embeds the library into an artifact,
+/// and the application opens it with [`SearchEngine::open_semantic_artifact`]
+/// and embeds only the query. This path is for the test suites, and for trying
+/// a model out before a build machine embeds a library with it.
+///
+/// The model itself is loaded lazily when indexing begins, so configuration is
+/// cheap; searches report a degraded state until indexing has loaded the model
+/// and produced vectors, instead of making the lexical engine unusable.
+///
+/// Every field but `root_dir` and `onnx_runtime_path` describes how the vectors
+/// are produced, and the sidecar records each one in its manifest as part of the
+/// index's identity (the model file by its checksum, once it has loaded). An index
+/// built under one value is reported as needing a full re-index under another,
+/// rather than having vectors that cannot be compared mixed into it.
+/// Nothing here is read from the model file, so the values must be the ones the
+/// model was built for. The model the application knows is the Meivin ONNX
+/// model: its INT8 graph by default, or the full-precision
+/// `seforim-embed-round2-fp32.onnx` published beside it, which differs only in
+/// `model_path` and `"fp32"`:
+///
+/// | field | Meivin ONNX |
+/// | --- | --- |
+/// | `model_path` | `seforim-embed-round2-int8.onnx` |
+/// | `embedding_dim` | 256 |
+/// | `pooling` | `"in-graph"` |
+/// | `max_tokens` | 256 |
+/// | `model_quantization` | `"int8"` |
+/// | `embedding_text_version` | 2 |
 pub struct SemanticConfigInput {
     pub root_dir: String,
+    /// The model file: an ONNX graph, a path ending in `.onnx` (in any letter
+    /// case), with its `tokenizer.json` in the same directory. ONNX Runtime is
+    /// the only embedding backend there is. GGUF models, which llama.cpp served
+    /// until it was removed, are not supported, and nor is any other file: a
+    /// path that does not end in `.onnx` is refused by its name when the model
+    /// loads, which indexing does, as `ModelInvalid` with `field` `model_path`.
+    /// An ONNX graph on a build without the ONNX backend fails to load as
+    /// `BackendNotInBuild`.
+    ///
+    /// An ONNX graph also needs the ONNX Runtime shared library, which this
+    /// library does not link but loads when the model loads, from the first of
+    /// three places that is set: [`Self::onnx_runtime_path`]; else the file named
+    /// by the `OTZARIA_ONNX_RUNTIME` environment variable; else the platform's
+    /// `onnxruntime.dll` / `libonnxruntime.so` / `libonnxruntime.dylib` beside
+    /// the graph. Without one that loads, loading the model fails with "ONNX
+    /// Runtime could not be loaded", which says what each place held. That is
+    /// not `BackendUnavailable`: the backend is in the build, and the fix is the
+    /// library, not a rebuild. Lexical search is unaffected either way.
     pub model_path: String,
     pub model_id: String,
     pub embedding_dim: u32,
+    /// How the model's output becomes one vector per text. `"in-graph"`, the
+    /// pooling the ONNX backend performs, means the graph itself emits the
+    /// finished sentence vector (the Meivin graph pools, projects and normalizes
+    /// inside), so nothing is pooled outside it. Spellings are matched exactly,
+    /// and a pooling the backend does not perform, such as `"mean"`, is refused
+    /// like an unknown one.
+    ///
+    /// Identity because the same weights pooled two ways produce two unrelated
+    /// vector spaces.
+    pub pooling: String,
+    /// The token cap per embedded text, counted the way the model's backend
+    /// counts it: the whole sequence. 256 for the Meivin graph, where `[CLS]`,
+    /// `[SEP]` and the role-prefix token all count. Longer texts are truncated,
+    /// and a cap that leaves no room for content is refused. So is a cap above
+    /// 65,536, past the context of any ONNX sentence encoder, when configuring:
+    /// a negative Dart value arrives here as a cap in the billions, and the
+    /// load-time probe of that many tokens could not even be allocated.
+    ///
+    /// Identity because a different cap cuts every long text somewhere else, and
+    /// so changes its vector. The manifest records the value requested here, not
+    /// one a backend may clamp it to.
+    pub max_tokens: u32,
+    /// The precision of the model's weights: `"int8"` for the Meivin INT8 graph
+    /// the application uses, and `"fp32"` for the full-precision graph published
+    /// beside it, which is a different identity. Not the precision the vectors
+    /// are stored at. Must not be empty.
+    ///
+    /// Identity because two quantizations of one model produce different
+    /// vectors. The model file's checksum catches such a swap as well, but only
+    /// once indexing has loaded the model; this label is compared the moment an
+    /// index is opened.
+    pub model_quantization: String,
+    /// Which text each chunk, and each query, carries to the model. Version 1
+    /// embeds the line itself, or a short line together with its neighbours.
+    /// Version 2 prefixes `"[PASSAGE] "` to that same text and `"[QUERY] "` to
+    /// the query: the Meivin model's learned role tokens, which it was trained to
+    /// see. A version the sidecar does not implement is refused.
+    ///
+    /// Identity because it changes the string that is embedded. It is folded
+    /// into the chunking identity that the manifest and every book record carry.
+    pub embedding_text_version: u32,
+    /// The ONNX Runtime shared library to load an ONNX model on, for an
+    /// application that ships the runtime itself: on macOS inside its signed
+    /// bundle, which is where a Hardened Runtime application can load it from.
+    /// An absolute path; a relative one is resolved against the process's
+    /// current directory.
+    ///
+    /// Passed, it is the first place the runtime is looked for and the only
+    /// one: a path that names no file is `OnnxRuntimeMissing` and one that does
+    /// not load `OnnxRuntimeUnusable`, never a fall-back to
+    /// `OTZARIA_ONNX_RUNTIME` or to the file beside the graph, which would run a
+    /// runtime the application did not choose. `None` looks at those two, in
+    /// that order (see [`Self::model_path`]). An empty path names nothing and is
+    /// refused as `InvalidInput`.
+    ///
+    /// Not identity: where the runtime lives decides no vector, the manifest does
+    /// not record it, and moving it invalidates nothing. It is an input of the
+    /// session all the same, compared as the others are, because ONNX Runtime is
+    /// loaded once per process and cannot be replaced: a repeat call naming
+    /// another runtime is a `SessionConflict`, where a no-op would leave the
+    /// caller believing the runtime it named is the one in use. After
+    /// [`SearchEngine::disable_semantic`], a session that names a runtime other
+    /// than the one this process already loaded is refused when its model loads,
+    /// as `OnnxRuntimeUnusable`, until the process restarts.
+    pub onnx_runtime_path: Option<String>,
+}
+
+/// What [`SearchEngine::open_semantic_artifact`] opens: the vector set installed on this
+/// device, built on the build machine from the library's text, and the model this device
+/// embeds queries with.
+///
+/// The set states the identity its vectors were built under, and opening compares every
+/// field of it with this installation's: the line recipe this build indexes with, the
+/// model's published identity file, and the store format this build reads. Nothing in
+/// this struct is a value to type in.
+///
+/// A stored vector is addressed by the key of the text it was embedded from, not by a line
+/// id, so the set needs no stamp in the lexical index and goes on serving it whatever is
+/// committed to it: every hit is tied to the lines that hold its text today when it is
+/// searched.
+///
+/// The application's installation, and where each input points:
+///
+/// ```text
+/// <root>/
+/// ├── otzaria/                  the data folder
+/// │   ├── seforim.db
+/// │   └── <model>/              the model package
+/// │       ├── seforim-embed-round2-int8.onnx      model_path
+/// │       ├── tokenizer.json
+/// │       └── model.json        the identity file: model_identity_json
+/// ├── index/                    the lexical index
+/// └── vectors/                  the vector set: vectors_dir
+/// ```
+///
+/// ONNX Runtime either ships with the application, which passes its path as
+/// `onnx_runtime_path` (on macOS from inside the signed bundle), or sits in `<model>/`
+/// beside the graph under the platform's file name, where it is found without one; it is
+/// then the build for that machine's operating system and architecture. Neither the
+/// identity file nor a runtime in that folder is part of the model package's checksum.
+pub struct SemanticArtifactInput {
+    /// The vector set's directory, `<root>/vectors`, where a release is installed: its
+    /// `CURRENT` generation, and the segments it names.
+    pub vectors_dir: String,
+    /// The model queries are embedded with: an `.onnx` graph, with its
+    /// `tokenizer.json` beside it, as for [`SemanticConfigInput::model_path`],
+    /// and needing the ONNX Runtime library described there.
+    pub model_path: String,
+    /// The text of the model's identity file: the JSON `ModelIdentity` the
+    /// vectors were built with, such as the sidecar's
+    /// `config/models/meivin-round2-onnx/model.json` for the Meivin model. Text
+    /// rather than a path, so an application can ship it as an asset.
+    ///
+    /// It describes the model family, every package of it the set may be queried
+    /// with among `query_packages`. Every field is compared: the family and recipe
+    /// fields with the set's; the graph at `model_path` must be one of
+    /// `query_packages`, by its checksum; and `tokenizer_checksum` is compared with
+    /// the tokenizer beside it once the model has loaded. So an identity file that
+    /// describes other weights is refused rather than trusted.
+    pub model_identity_json: String,
+    /// The ONNX Runtime library the application ships, as for
+    /// [`SemanticConfigInput::onnx_runtime_path`]: the first place looked and,
+    /// once passed, the only one; `None` for `OTZARIA_ONNX_RUNTIME` and then the
+    /// file beside the graph. Opening loads the model, so a runtime that is
+    /// missing or does not load is refused here, by kind. No identity field reads
+    /// it, so it makes no set the wrong one; it is part of what a repeat call is
+    /// compared on, since the process keeps the first runtime it loads.
+    pub onnx_runtime_path: Option<String>,
+    /// How many threads a search scans the set with: `None` for the sidecar's
+    /// default, half the cores and at most eight. `0` is refused.
+    pub scan_threads: Option<u32>,
+}
+
+/// A release of the library's vectors, as [`SearchEngine::install_semantic_vectors`]
+/// installs it: the segment and the release manifest published beside it.
+pub struct SemanticVectorsInstallInput {
+    /// The vector set to install into, `<root>/vectors`: created when it does not exist.
+    pub vectors_dir: String,
+    /// The release's segment, as downloaded: `.oxv`, or `.oxv.zst` compressed with zstd.
+    /// Inside the set's `incoming/` folder it is moved into the set; anywhere else it is
+    /// read and left where it is.
+    pub segment_path: String,
+    /// The release manifest published beside the segment (`release.json`), as published:
+    /// its bytes are what the published digest names.
+    pub manifest_json: String,
+    /// The SHA-256 of `manifest_json` as the release publishes it outside the manifest.
+    /// Without it an install detects damage and the wrong release, not one deliberately
+    /// rebuilt to match.
+    pub published_manifest_sha256: Option<String>,
+    /// The model identity this installation queries with, as for
+    /// [`SemanticArtifactInput::model_identity_json`]: a release it would not open is not
+    /// installed.
+    pub model_identity_json: String,
+}
+
+/// What a segment is to the set it joins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticVectorsPackageKind {
+    /// Every vector of one library version; replaces whatever the set held.
+    Base,
+    /// What changed from one library version to the next.
+    Delta,
+    /// A device's own merge of its set into one segment.
+    Compacted,
+}
+
+/// What [`SearchEngine::install_semantic_vectors`] did.
+pub struct SemanticVectorsInstallReport {
+    pub kind: SemanticVectorsPackageKind,
+    /// The library version the set stands at afterwards.
+    pub library_version: u32,
+    /// The set's live generation afterwards.
+    pub generation: u64,
+    pub segments: u32,
+    pub slots_added: u64,
+    /// Older vectors the release's tombstones deleted.
+    pub tombstones_applied: u64,
+    /// Older vectors of texts the release shipped again, deleted in favour of its own.
+    pub duplicates_removed: u64,
+    /// Records of the release whose text no older segment holds live.
+    pub foreign_unresolved: u64,
+    pub bytes_on_disk: u64,
+    /// Whether [`SearchEngine::compact_semantic_vectors`] would compact the set now.
+    pub needs_compaction: bool,
+    /// A delta the set already stood at or past: nothing changed. A base always replaces
+    /// the set, so it is never already applied.
+    pub already_applied: bool,
+}
+
+/// When [`SearchEngine::compact_semantic_vectors`] compacts, and how. The defaults are the
+/// sidecar's.
+// `non_opaque` so Dart constructs it with these defaults, as `SemanticRankingOptions`.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticCompactionPolicy {
+    /// Compact once the deltas together are this fraction of the base or more.
+    #[frb(default = 0.2)]
+    pub max_delta_ratio: f64,
+    /// Compact once the set has more segments than this.
+    #[frb(default = 4)]
+    pub max_segments: u32,
+    /// Compact once this fraction of the vectors is dead.
+    #[frb(default = 0.05)]
+    pub max_dead_ratio: f64,
+    /// Refuse to start without this many times the output's size free.
+    #[frb(default = 1.15)]
+    pub min_free_space_factor: f64,
+    /// Re-anchor every record on the live index, when it holds the set's library version
+    /// and has the `chunkKey` column.
+    #[frb(default = true)]
+    pub refresh_hints: bool,
+    /// Compact whatever the thresholds say.
+    #[frb(default = false)]
+    pub force: bool,
+}
+
+impl SemanticCompactionPolicy {
+    /// The policy a compaction passed none runs under, read from the engine.
+    #[frb(sync)]
+    pub fn defaults() -> Self {
+        Self {
+            max_delta_ratio: 0.2,
+            max_segments: 4,
+            max_dead_ratio: 0.05,
+            min_free_space_factor: 1.15,
+            refresh_hints: true,
+            force: false,
+        }
+    }
+}
+
+/// What [`SearchEngine::compact_semantic_vectors`] did.
+pub struct SemanticCompactionReport {
+    /// Whether the set was compacted; `reason` says why, or why not.
+    pub compacted: bool,
+    pub reason: String,
+    /// The set's live generation afterwards.
+    pub generation: u64,
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    pub slots_before: u64,
+    pub slots_after: u64,
+    /// Records whose book no longer holds their text, dropped.
+    pub records_pruned: u64,
+    /// Records moved to the line that holds their text now.
+    pub hints_refreshed: u64,
+    pub elapsed_ms: u64,
+}
+
+/// One segment of an installed vector set.
+pub struct SemanticSegmentInfo {
+    pub id: String,
+    pub kind: SemanticVectorsPackageKind,
+    pub from_library_version: u32,
+    pub to_library_version: u32,
+    pub slots: u64,
+    pub slots_dead: u64,
+    pub foreign_unresolved: u64,
+    pub size: u64,
+}
+
+/// What a vector set's directory holds, as [`SearchEngine::semantic_vectors_info`] reads it.
+pub struct SemanticVectorsInfo {
+    /// Whether anything is installed there; every other field is empty when not.
+    pub present: bool,
+    /// The set's identity as 64 hex digits: what a release must name to be installed.
+    pub identity_digest: String,
+    pub library_version: u32,
+    pub library_release_tag: String,
+    pub generation: u64,
+    pub segments: Vec<SemanticSegmentInfo>,
+    pub slots_live: u64,
+    pub slots_dead: u64,
+    pub bytes_on_disk: u64,
+    pub needs_compaction: bool,
+    /// The live generation did not open and the one before it was opened instead.
+    pub recovered_from_previous: bool,
+}
+
+/// What [`SearchEngine::verify_semantic_vectors`] read: every block of every segment of the
+/// set's live generation, each against its checksum.
+pub struct SemanticVectorsVerification {
+    pub generation: u64,
+    pub segments: u32,
+    pub bytes_checked: u64,
+    pub elapsed_ms: u64,
+}
+
+/// How much of the live index a vector set covers, as [`SearchEngine::semantic_coverage`]
+/// counts it.
+pub struct SemanticCoverage {
+    /// Live lines the recipe embeds: the lines a vector could exist for.
+    pub live_keyed_lines: u64,
+    /// Those whose text the set holds a vector for.
+    pub covered_lines: u64,
+    /// Books with a line the recipe embeds.
+    pub books_live: u32,
+    /// Books with a covered line.
+    pub books_covered: u32,
+    /// The library version the set stands at.
+    pub vectors_library_version: u32,
+    /// `covered_lines / live_keyed_lines`, or 0 when no line is keyed.
+    pub ratio: f64,
+}
+
+/// What stopped the semantic path, as a value an application can switch on to choose a
+/// message and an action. A [`SemanticError`] carries one when a semantic call fails,
+/// [`SemanticStatus::error_kind`] when a session cannot serve, and
+/// [`SemanticSearchResponse::fallback_kind`] when a search fell back to lexical results.
+///
+/// The message beside it is unchanged, and is still the one for a developer to read: it
+/// names every path, value and field involved. The kind is what to branch on, never the
+/// message. It is decided from the type of the failure, the sidecar's typed errors and this
+/// crate's own, and never by reading a message, so a reworded error cannot move a failure
+/// from one kind to another. Where the type alone cannot settle it, a fact does: whether the
+/// artifact's `manifest.json` exists (missing, or damaged), and whether there is a file where
+/// ONNX Runtime is looked for (missing, or unusable). A failure that still cannot be placed
+/// precisely gets the broad kind that is true of it, `Internal` last.
+///
+/// More kinds will be added. A Dart `switch` over this enum therefore needs a default
+/// branch, and a kind the application does not know yet is best handled as `internal`.
+///
+/// | kind | means | the application should | reported by |
+/// | --- | --- | --- | --- |
+/// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
+/// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
+/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on a FAT or exFAT drive on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
+/// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed. With `field` `segment_id`, installing: the release is a version the set has installed, published again with other bytes — a sound release, and a sound set, which keeps what it serves | install the vectors built for this application and this model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectors_dir` and open that | `open_semantic_artifact`, installing |
+/// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
+/// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
+/// | `ModelMissing` | there is no model file at `model_path` | download the model | `open_semantic_artifact`, `semantic_index_books` |
+/// | `TokenizerMissing` | an ONNX graph without its `tokenizer.json` beside it | install the model's whole package | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelInvalid` | the file at `model_path` is not a usable model (a truncated download, a placeholder), or its backend could not load it; or `model_path` names no ONNX graph, such as a GGUF, which no build serves since GGUF support was removed (`field` is `model_path` then) | download the model again; for a path that names no ONNX graph, install the ONNX model and point `model_path` at its graph | `open_semantic_artifact`, `semantic_index_books` |
+/// | `ModelIdentityMismatch` | the model identity in hand (`model_identity_json`, or the configuration) does not describe the model at `model_path`; `field` names what differs | ship the identity file published with this model, or the model it describes | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeMissing` | an ONNX model, and no ONNX Runtime library where one is looked for: an `onnx_runtime_path` that names no file; or, with none passed, `OTZARIA_ONNX_RUNTIME` unset or naming no file and none beside the graph | install ONNX Runtime where `onnx_runtime_path` names, or beside the model when none is passed | `open_semantic_artifact`, `semantic_index_books` |
+/// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
+/// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
+/// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
+/// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
+/// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
+/// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
+/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
+/// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
+/// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
+/// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read while it read them, and nothing was condemned | try again once it has finished; never `disable_semantic` for it | installing, compacting, verifying |
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticErrorKind {
+    /// No semantic session is open.
+    NotConfigured,
+    /// This library was built without semantic support.
+    FeatureNotInBuild,
+    /// No vector set at the vectors directory.
+    ArtifactMissing,
+    /// The vectors are damaged.
+    ArtifactCorrupt,
+    /// Sound vectors, built for another line recipe, model or store format.
+    ArtifactIncompatible,
+    /// The release is not the one whose digest was published.
+    ArtifactNotPublished,
+    /// Not enough free space to install or compact the vectors.
+    InsufficientDiskSpace,
+    /// No model file at the model path.
+    ModelMissing,
+    /// An ONNX graph without its `tokenizer.json`.
+    TokenizerMissing,
+    /// The model file is not a usable model, could not be loaded, or is no ONNX graph.
+    ModelInvalid,
+    /// The model identity in hand does not describe the model file.
+    ModelIdentityMismatch,
+    /// An ONNX model, and no ONNX Runtime library where one is looked for.
+    OnnxRuntimeMissing,
+    /// The ONNX Runtime library found cannot be used.
+    OnnxRuntimeUnusable,
+    /// No embedding backend for the model in this build: no ONNX backend here.
+    BackendNotInBuild,
+    /// Another semantic session is open, or this one with different inputs.
+    SessionConflict,
+    /// A call that builds vectors, on a read-only artifact.
+    ReadOnlySession,
+    /// A session built on this device holds vectors from another configuration.
+    ReindexRequired,
+    /// The semantic half of one search failed; lexical results were served.
+    QueryFailed,
+    /// The search was cancelled through its token before it finished.
+    Cancelled,
+    /// An input the call cannot take.
+    InvalidInput,
+    /// Anything else; the message says what.
+    Internal,
+    /// Another install or compaction of the same vector set is running; nothing was read or
+    /// changed, and an open session keeps serving. Try again once it has finished.
+    VectorsBusy,
+}
+
+/// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
+/// `FrbException`, where these calls used to throw `AnyhowException`: flutter_rust_bridge
+/// throws the error type of a `Result` as an exception class of its own.
+///
+/// `message` is the text the call has always produced, with every path, value and field that
+/// disagreed, and is for a developer to read. `kind` is what an application branches on —
+/// [`SemanticErrorKind`] says what each means and what to do — and `field` names the one
+/// field the failure is about, when there is one:
+///
+/// | kind | `field` |
+/// | --- | --- |
+/// | `ArtifactIncompatible` | the first field that disagreed, by its path in the set's identity: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, or `metadata_version`; for a delta that does not follow the set, `delta.identity`, `delta.codec_params` or `delta.from_library_version`; `segment_id`, installing a version the set has installed that was published again with other bytes |
+/// | `ArtifactCorrupt` | the identity field left unfilled, when that is the damage; `manifest_json`, for a release manifest that does not read |
+/// | `ModelInvalid` | `model_path`, when the path names no ONNX graph, such as a GGUF |
+/// | `ModelIdentityMismatch` | the key of the model identity that the model contradicts: `query_packages`, `tokenizer_checksum`, `embedding_dim` or `pooling` |
+/// | `VectorsBusy` | `vectors_dir`: the vector set another install or compaction is running on |
+/// | `InvalidInput` | the input at fault, when it is known: `model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`; for a ranking, the option as [`SemanticRankingOptions`] names it, `alpha_by_query_type.short` or `rrf_k` say; for a compaction, `policy.` and the [`SemanticCompactionPolicy`] option |
+///
+/// It is `None` for every other kind, and wherever the failure does not say.
+#[frb(dart_code = r#"
+  @override
+  String toString() =>
+      'SemanticError(${kind.name}${field == null ? '' : ', $field'}): $message';
+"#)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticError {
+    /// What went wrong, as the value to branch on.
+    pub kind: SemanticErrorKind,
+    /// The detailed description, as the call produced it before it had a kind.
+    pub message: String,
+    /// The field the failure is about, when it is about one.
+    pub field: Option<String>,
+}
+
+impl SemanticError {
+    pub(crate) fn new(kind: SemanticErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            field: None,
+        }
+    }
+
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    pub(crate) fn with_field(self, field: impl Into<String>) -> Self {
+        Self {
+            field: Some(field.into()),
+            ..self
+        }
+    }
+
+    /// What a search whose token was cancelled throws, wherever the cancel was noticed: by
+    /// this crate's own look at the token or by the sidecar's.
+    pub(crate) fn cancelled() -> Self {
+        Self::new(
+            SemanticErrorKind::Cancelled,
+            "the search was cancelled before it finished; nothing failed",
+        )
+    }
+}
+
+/// The message alone, as these errors read before they had a kind: Rust callers that format
+/// one see the same text Dart's `message` holds.
+impl std::fmt::Display for SemanticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SemanticError {}
+
+/// What a semantic call's `?` meets when the lexical index fails under it: the one source of
+/// `anyhow` errors on that path. A failure that has a kind of its own is converted where it
+/// arises, never through this, so what arrives here is `Internal`. The whole context chain
+/// is kept, on one line.
+impl From<anyhow::Error> for SemanticError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(SemanticErrorKind::Internal, format!("{error:#}"))
+    }
+}
+
+/// What the semantic session can do right now, the value a status view switches on.
+/// [`SemanticStatus::available`] says only whether semantic search is served; this says
+/// why it is not, and so what to offer.
+///
+/// Only `NotInBuild`, `NotConfigured`, `Ready` and `Stale` occur on the application's path.
+/// An artifact either opens and serves, or is refused by
+/// [`SearchEngine::open_semantic_artifact`] with a [`SemanticError`] and leaves no session
+/// behind; the other states belong to a session whose vectors are built on this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticState {
+    /// Semantic support is not compiled into this library: an explicit state rather than a
+    /// silent fallback. `error_kind` is `FeatureNotInBuild`.
+    NotInBuild,
+    /// No session is open: none was opened, or `disable_semantic` closed it. `error_kind` is
+    /// `NotConfigured`.
+    NotConfigured,
+    /// A session is open and serves semantic and hybrid search.
+    Ready,
+    /// A session built on this device is open and has nothing to serve yet: its model is not
+    /// loaded or it holds no vectors. Indexing is what loads the model.
+    Empty,
+    /// A session built on this device holds vectors built under another configuration, and
+    /// `needs_full_reindex` says which: reset it and index again.
+    NeedsReindex,
+    /// A session built on this device is open and cannot serve, for the reason in
+    /// `last_error`.
+    Failed,
 }
 
 /// A serializable, feature-independent projection of sidecar status. It is
 /// intentionally available without the `semantic` Cargo feature so Dart can
-/// render an explicit Disabled state rather than silently falling back.
+/// render an explicit `NotInBuild` state rather than silently falling back.
 pub struct SemanticStatus {
+    /// What the session can do, and the field to switch on.
+    pub state: SemanticState,
     pub enabled: bool,
     pub available: bool,
     pub model_loaded: bool,
@@ -332,6 +901,16 @@ pub struct SemanticStatus {
     pub vectors_persisted: bool,
     pub needs_full_reindex: Option<String>,
     pub last_error: Option<String>,
+    /// The kind of `last_error`, and `Some` exactly when it is. A session built on this
+    /// device reports its own failures as text only, so they are `Internal` here; the call
+    /// that failed, usually `semantic_index_books`, threw the precise kind.
+    pub error_kind: Option<SemanticErrorKind>,
+    /// The library version an opened vector set stands at; `None` for any other session.
+    pub vectors_library_version: Option<u32>,
+    /// The segments of an opened vector set; 0 for any other session.
+    pub vector_segments: u32,
+    /// Whether an opened vector set would be compacted now.
+    pub needs_compaction: bool,
 }
 
 pub struct SemanticBookLineInput {
@@ -436,6 +1015,13 @@ pub struct SemanticSearchResponse {
     pub executed_mode: SemanticExecutedMode,
     pub semantic_available: bool,
     pub fallback_reason: Option<String>,
+    /// Why the semantic path did not serve this search, when it was asked to and did not:
+    /// `NotConfigured`, `FeatureNotInBuild` or `QueryFailed`. `None` when
+    /// it served the search, and when it was not asked (`LexicalOnly`, or a quoted phrase
+    /// the sidecar answers lexically). `fallback_reason` can still carry a note then, about
+    /// stale records dropped or the candidate window capped, which has no kind:
+    /// `candidate_window_truncated` is the cap's typed flag.
+    pub fallback_kind: Option<SemanticErrorKind>,
     pub latency_ms: u64,
     /// The sidecar input window hit its hard memory-safety ceiling. This is
     /// separate from `truncated`, which belongs to lexical term expansion.
@@ -443,17 +1029,255 @@ pub struct SemanticSearchResponse {
     pub truncated: bool,
 }
 
-/// The four inputs that decide which vectors a sidecar session holds. Kept
-/// beside the open engine so [`SearchEngine::configure_semantic`] can tell a
-/// harmless repeat call from a real change of model or library root — see that
-/// method for why the difference matters.
+/// How the application abandons a [`SearchEngine::search_semantic`] that nobody is waiting
+/// for any more: one token per search, created where the search starts and cancelled when a
+/// newer query supersedes it.
+///
+/// The application searches as the user types, so every query but the last is obsolete
+/// before it finishes, and a semantic query embeds the text and then scans every stored
+/// vector, which over the library is on the order of a second; left to run, the abandoned
+/// queries queue up in front of the one that matters. A search whose token is cancelled
+/// stops at its next look at it and throws a [`SemanticError`] of kind `Cancelled`, and the
+/// search looks often: before its lexical phase, throughout the sidecar's semantic half,
+/// and before it hydrates and paints the page. The one stretch a cancel cannot cut short is
+/// the embedding of the query, a single inference. A cancelled search is not a failure: it
+/// is not answered with lexical results instead, since nobody is waiting for those either,
+/// and one the sidecar stops leaves nothing in its caches.
+///
+/// Opaque, and borrowed by the search rather than moved into it, so Dart keeps the object,
+/// and its [`Self::cancel`] reaches the search while it runs. Both take the token by shared
+/// reference, so neither waits for the other: `cancel` returns at once on the isolate that
+/// started the search. A token cannot be reset; a new search takes a new one. A search that
+/// passed its last look before the cancel returns its results all the same, so the
+/// application still tells which query a page answers.
+#[frb(opaque)]
+pub struct SemanticCancellationToken {
+    flag: SearchCancellation,
+}
+
+impl SemanticCancellationToken {
+    /// A token that is not cancelled.
+    #[frb(sync)]
+    pub fn new() -> Self {
+        Self {
+            flag: SearchCancellation::default(),
+        }
+    }
+
+    /// Ask the search holding this token to stop. Returns at once, whether the search has
+    /// not started, is running or has finished: it notices at its next look, not here.
+    /// Cancelling again changes nothing.
+    #[frb(sync)]
+    pub fn cancel(&self) {
+        self.flag.cancel();
+    }
+
+    /// Whether [`Self::cancel`] has been called.
+    #[frb(sync, getter)]
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.is_cancelled()
+    }
+}
+
+/// For Rust callers. Kept out of the bindings, where flutter_rust_bridge would export it as a
+/// second, asynchronous constructor beside [`SemanticCancellationToken::new`].
+impl Default for SemanticCancellationToken {
+    #[frb(ignore)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How [`SemanticRankingOptions::fusion_strategy`] combines the two sides' scores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticFusionStrategy {
+    /// By weight: `alpha` of the normalized BM25 score and `1 - alpha` of the semantic one,
+    /// with the agreement bonus and the other bonuses on top.
+    Weighted,
+    /// Reciprocal rank fusion, `1 / (rrf_k + rank)` from each side. It needs no calibration of
+    /// either side's scores; the semantic threshold only decides which semantic candidates
+    /// take part, and no bonus or penalty applies.
+    Rrf,
+    /// By weight, with BM25 min-max normalized when its scores run high.
+    Adaptive,
+}
+
+/// The lexical weight `alpha` for each kind of query the sidecar tells apart, by the words
+/// in it; `1 - alpha` goes to the semantic side. Each a number from 0 to 1. The defaults are
+/// the weights the ranking has always used, and are unmeasured (see
+/// [`SemanticRankingOptions`]).
+// `non_opaque` binds it as every struct of plain values is bound already. It is there
+// because an `#[frb]` on the struct is what takes the `#[frb(default)]`s off its fields,
+// where rustc would refuse them, and leaves them to the Dart constructor.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticQueryTypeAlphas {
+    /// A query with a quoted phrase: a verbatim lookup, where the lexical engine is
+    /// authoritative. At 1 a hybrid search does not ask the semantic path at all.
+    #[frb(default = 1.0)]
+    pub quoted_phrase: f64,
+    /// One or two words, one of them with a digit: a reference, such as a page or a verse.
+    #[frb(default = 0.85)]
+    pub exact_reference: f64,
+    /// One or two words without a digit.
+    #[frb(default = 0.7)]
+    pub short: f64,
+    /// Three or four words.
+    #[frb(default = 0.5)]
+    pub mixed: f64,
+    /// Five words or more: a question or a description more than a lookup.
+    #[frb(default = 0.3)]
+    pub conceptual: f64,
+    /// No words at all. Nothing can be embedded, so a hybrid search serves its lexical
+    /// results whatever this is; at 1 the semantic path is not even tried.
+    #[frb(default = 0.5)]
+    pub unknown: f64,
+}
+
+/// Every parameter a hybrid search ranks by, passed with one [`SearchEngine::search_semantic`]
+/// in place of the ranking the engine uses when it is passed none. What lets the application
+/// calibrate and tune the ranking without a release of the engine.
+///
+/// **The defaults are unmeasured placeholders.** They are the ranking the engine has always
+/// produced, the sidecar's `Balanced` preset value for value, and none has been checked
+/// against what a reader of this library finds relevant: each was reasoned from a scale (BM25's
+/// typical range, a cosine of about 0.1 meaning unrelated) or carried over from the
+/// literature, as RRF's `k` of 60 is. Calibrating them needs a labelled relevance set, Hebrew
+/// queries of every type each with the lines judged relevant to it; a metric over the page a
+/// user sees, nDCG@10 or recall at the page size; and runs over that set that vary one family
+/// of parameters at a time, the fusion strategy and RRF's `k` first, since RRF needs no score
+/// calibration, then alpha per query type, BM25's `k`, the semantic threshold and the bonuses.
+///
+/// The Dart constructor's defaults are these values, so a caller names only the options it
+/// changes; [`Self::defaults`] reads them from the engine. Passed as they are, they rank
+/// exactly as passing no options does.
+///
+/// | option | default | allowed |
+/// | --- | --- | --- |
+/// | `fusion_strategy` | `Weighted` | |
+/// | `rrf_k` | 60 | at least 1, when `fusion_strategy` is `Rrf`; read by nothing else |
+/// | `alpha_override` | none | 0 to 1 |
+/// | `alpha_by_query_type` | 1, 0.85, 0.7, 0.5, 0.3, 0.5 | each 0 to 1 |
+/// | `bm25_saturation_k` | 10 | above 0 |
+/// | `semantic_threshold` | 0 | 0 to 1 |
+/// | `agreement_bonus` | 0.1 | 0 to 1 |
+/// | `phrase_match_bonus`, `rare_term_bonus`, `section_coverage_bonus` | 0 | 0 to 1 |
+/// | `duplicate_penalty` | 0 | 0 to 1 |
+/// | `metadata_ranking_enabled` | false | |
+/// | `candidate_window_multiplier` | 2 | 1 to 10 |
+///
+/// A value outside its range, or one that is not a number, is refused before the search runs,
+/// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
+/// (`alpha_by_query_type.short`, `rrf_k`), rather than clamped into a value nobody chose: a
+/// calibration run is exactly where a substituted value would go unnoticed. The rules are the
+/// sidecar's own (`RankingProfile::validate`), applied to each value at the 32-bit precision the
+/// ranking computes in. A build without semantic support has no ranking to apply, and ignores
+/// the options as it ignores every semantic input.
+// `non_opaque` for the reason given on `SemanticQueryTypeAlphas`.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticRankingOptions {
+    /// How the two sides' scores are combined.
+    #[frb(default = "SemanticFusionStrategy.weighted")]
+    pub fusion_strategy: SemanticFusionStrategy,
+    /// RRF's `k`, for [`SemanticFusionStrategy::Rrf`]: the larger it is, the less the first
+    /// ranks of either side count over the ones after them.
+    #[frb(default = 60)]
+    pub rrf_k: u32,
+    /// One alpha for every query, in place of [`Self::alpha_by_query_type`].
+    pub alpha_override: Option<f64>,
+    /// The lexical weight for each kind of query, when [`Self::alpha_override`] is `None`.
+    #[frb(default = "const SemanticQueryTypeAlphas()")]
+    pub alpha_by_query_type: SemanticQueryTypeAlphas,
+    /// `k` in BM25's normalization `score / (k + score)`: where the curve bends, so that a
+    /// score well above it is hardly told apart from the scores above it.
+    #[frb(default = 10.0)]
+    pub bm25_saturation_k: f64,
+    /// Below this normalized similarity a semantic candidate contributes nothing. A cosine is
+    /// mapped to `(cosine + 1) / 2`, so an unrelated line, cosine 0, is 0.5.
+    #[frb(default = 0.0)]
+    pub semantic_threshold: f64,
+    /// Added to a line both sides found, in a hybrid search fused by weight.
+    #[frb(default = 0.1)]
+    pub agreement_bonus: f64,
+    /// Scaled by the share of the query's quoted phrases a line contains, and added.
+    #[frb(default = 0.0)]
+    pub phrase_match_bonus: f64,
+    /// Scaled by the share of the query's rare words a line contains, and added.
+    #[frb(default = 0.0)]
+    pub rare_term_bonus: f64,
+    /// Added to a line whose section holds another result.
+    #[frb(default = 0.0)]
+    pub section_coverage_bonus: f64,
+    /// Taken from every line after the first with the same text.
+    #[frb(default = 0.0)]
+    pub duplicate_penalty: f64,
+    /// Whether a semantic candidate gains a signal from its metadata, when fused by weight:
+    /// a primary source, by its book, and an era or a category the search's facets match.
+    #[frb(default = false)]
+    pub metadata_ranking_enabled: bool,
+    /// How many semantic candidates are fetched for each place in the candidate window.
+    #[frb(default = 2.0)]
+    pub candidate_window_multiplier: f64,
+}
+
+impl SemanticRankingOptions {
+    /// The ranking a search runs on when it is passed none, read from the engine: the defaults
+    /// of the Dart constructor, and unmeasured.
+    #[frb(sync)]
+    pub fn defaults() -> Self {
+        Self {
+            fusion_strategy: SemanticFusionStrategy::Weighted,
+            rrf_k: 60,
+            alpha_override: None,
+            alpha_by_query_type: SemanticQueryTypeAlphas {
+                quoted_phrase: 1.0,
+                exact_reference: 0.85,
+                short: 0.7,
+                mixed: 0.5,
+                conceptual: 0.3,
+                unknown: 0.5,
+            },
+            bm25_saturation_k: 10.0,
+            semantic_threshold: 0.0,
+            agreement_bonus: 0.1,
+            phrase_match_bonus: 0.0,
+            rare_term_bonus: 0.0,
+            section_coverage_bonus: 0.0,
+            duplicate_penalty: 0.0,
+            metadata_ranking_enabled: false,
+            candidate_window_multiplier: 2.0,
+        }
+    }
+}
+
+/// Every input that decides which vectors a sidecar session holds: the whole
+/// of [`SemanticConfigInput`]. Kept beside the open engine so
+/// [`SearchEngine::configure_semantic`] can tell a harmless repeat call from a
+/// real change of model, recipe or library root — see that method for why the
+/// difference matters.
+///
+/// All of it, not only the model and the root: a caller that switches pooling or
+/// text recipe under an unchanged model file is asking for different vectors
+/// just the same, and a key that ignored those fields would answer that request
+/// with a no-op and keep serving the old ones.
+///
+/// The runtime path decides no vector and is in the key all the same. The
+/// process keeps the first ONNX Runtime it loads, so a repeat call that names
+/// another one is not a repeat: answered with a no-op, it would leave the caller
+/// believing the runtime it named is the one embedding its queries.
 #[cfg(feature = "semantic-integration")]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SemanticConfigKey {
     root_dir: PathBuf,
     model_path: PathBuf,
     model_id: String,
     embedding_dim: u32,
+    pooling: String,
+    max_tokens: u32,
+    model_quantization: String,
+    embedding_text_version: u32,
+    onnx_runtime: Option<PathBuf>,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -464,6 +1288,11 @@ impl SemanticConfigKey {
             model_path: PathBuf::from(&config.model_path),
             model_id: config.model_id.clone(),
             embedding_dim: config.embedding_dim,
+            pooling: config.pooling.clone(),
+            max_tokens: config.max_tokens,
+            model_quantization: config.model_quantization.clone(),
+            embedding_text_version: config.embedding_text_version,
+            onnx_runtime: config.onnx_runtime_path.as_ref().map(PathBuf::from),
         }
     }
 
@@ -483,19 +1312,803 @@ impl SemanticConfigKey {
         if self.embedding_dim != other.embedding_dim {
             changed.push("embedding_dim");
         }
+        if self.pooling != other.pooling {
+            changed.push("pooling");
+        }
+        if self.max_tokens != other.max_tokens {
+            changed.push("max_tokens");
+        }
+        if self.model_quantization != other.model_quantization {
+            changed.push("model_quantization");
+        }
+        if self.embedding_text_version != other.embedding_text_version {
+            changed.push("embedding_text_version");
+        }
+        if self.onnx_runtime != other.onnx_runtime {
+            changed.push("onnx_runtime_path");
+        }
         changed.join(", ")
     }
 }
 
-/// An open sidecar session: the engine plus the configuration that produced it.
+/// Everything that decides which artifact session [`SearchEngine::open_semantic_artifact`]
+/// opens, so a repeat call can be told from a different one: the whole of
+/// [`SemanticArtifactInput`], the runtime path included for the reason
+/// [`SemanticConfigKey`] gives. The model identity is held parsed, so two spellings of the
+/// same JSON are one key.
 #[cfg(feature = "semantic-integration")]
-struct ConfiguredSemantic {
-    engine: OtzariaHybridEngine,
-    config: SemanticConfigKey,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SemanticArtifactKey {
+    vectors_dir: PathBuf,
+    model_path: PathBuf,
+    model: ModelIdentity,
+    onnx_runtime: Option<PathBuf>,
+    scan_threads: Option<u32>,
 }
 
 #[cfg(feature = "semantic-integration")]
-type SemanticRuntime = Option<ConfiguredSemantic>;
+impl SemanticArtifactKey {
+    /// Names the inputs that differ, by their names in [`SemanticArtifactInput`], as
+    /// [`SemanticConfigKey::changed_fields`] does for a development session.
+    fn changed_fields(&self, other: &Self) -> String {
+        [
+            ("vectors_dir", self.vectors_dir != other.vectors_dir),
+            ("model_path", self.model_path != other.model_path),
+            ("model_identity_json", self.model != other.model),
+            ("onnx_runtime_path", self.onnx_runtime != other.onnx_runtime),
+            ("scan_threads", self.scan_threads != other.scan_threads),
+        ]
+        .into_iter()
+        .filter_map(|(field, differs)| differs.then_some(field))
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+}
+
+/// Refuses an empty `onnx_runtime_path` before anything is opened.
+///
+/// The sidecar refuses an empty path too, but only once the model loads (for a development
+/// session, at the first indexing), and as a runtime it could not find. An empty path is not
+/// a missing file but a mistake in the call: `None` is how to pass none.
+#[cfg(feature = "semantic-integration")]
+fn check_onnx_runtime_path(path: Option<&str>) -> Result<(), SemanticError> {
+    if path == Some("") {
+        return Err(SemanticError::new(
+            SemanticErrorKind::InvalidInput,
+            "onnx_runtime_path is empty, so it names no file; pass the path of the ONNX \
+             Runtime library the application ships, or None to look for it through \
+             OTZARIA_ONNX_RUNTIME and then beside the model",
+        )
+        .with_field("onnx_runtime_path"));
+    }
+    Ok(())
+}
+
+/// A sidecar failure on the vector set at `vectors_dir`, read as `message`; a cancel reads
+/// as `doing` cancelled, which is not a failure and left the set as it was.
+#[cfg(feature = "semantic-integration")]
+fn vector_set_error(
+    error: &SemanticSearchError,
+    vectors_dir: &Path,
+    message: String,
+    doing: &str,
+) -> SemanticError {
+    match semantic_errors::sidecar_error(error, SidecarCall::VectorSet { vectors_dir }, message) {
+        SemanticError {
+            kind: SemanticErrorKind::Cancelled,
+            ..
+        } => SemanticError::new(
+            SemanticErrorKind::Cancelled,
+            format!("{doing} was cancelled before it finished; the set is as it was"),
+        ),
+        error => error,
+    }
+}
+
+/// Whether two paths name one directory, as written or as resolved.
+#[cfg(feature = "semantic-integration")]
+fn same_directory(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (fs::canonicalize(a), fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// `policy` as the sidecar takes it, refused as input when a threshold is out of range.
+#[cfg(feature = "semantic-integration")]
+fn compaction_policy(
+    policy: SemanticCompactionPolicy,
+) -> Result<otzaria_semantic_search::semantic::segment_set::CompactionPolicy, SemanticError> {
+    let ratio = |name: &str, value: f64| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(value)
+        } else {
+            Err(SemanticError::new(
+                SemanticErrorKind::InvalidInput,
+                format!("{name} is {value}, and a ratio is a finite number from 0"),
+            )
+            .with_field(format!("policy.{name}")))
+        }
+    };
+    let min_free_space_factor = policy.min_free_space_factor;
+    if !(min_free_space_factor.is_finite() && min_free_space_factor >= 1.0) {
+        return Err(SemanticError::new(
+            SemanticErrorKind::InvalidInput,
+            format!(
+                "min_free_space_factor is {min_free_space_factor}, and a compaction needs at \
+                 least its output's size free: a finite number from 1"
+            ),
+        )
+        .with_field("policy.min_free_space_factor"));
+    }
+    Ok(
+        otzaria_semantic_search::semantic::segment_set::CompactionPolicy {
+            max_delta_ratio: ratio("max_delta_ratio", policy.max_delta_ratio)?,
+            max_segments: policy.max_segments,
+            max_dead_ratio: ratio("max_dead_ratio", policy.max_dead_ratio)?,
+            min_free_space_factor,
+            refresh_hints: policy.refresh_hints,
+            force: policy.force,
+        },
+    )
+}
+
+/// What [`otzaria_semantic_search::semantic::segment_set::info`] read, as the API says it.
+#[cfg(feature = "semantic-integration")]
+fn vectors_info(
+    info: Option<otzaria_semantic_search::semantic::segment_set::SetInfo>,
+) -> SemanticVectorsInfo {
+    let Some(info) = info else {
+        return SemanticVectorsInfo {
+            present: false,
+            identity_digest: String::new(),
+            library_version: 0,
+            library_release_tag: String::new(),
+            generation: 0,
+            segments: Vec::new(),
+            slots_live: 0,
+            slots_dead: 0,
+            bytes_on_disk: 0,
+            needs_compaction: false,
+            recovered_from_previous: false,
+        };
+    };
+    SemanticVectorsInfo {
+        present: true,
+        identity_digest: info.identity_digest,
+        library_version: info.library_version,
+        library_release_tag: info.library_release_tag,
+        generation: info.generation,
+        segments: info
+            .segments
+            .into_iter()
+            .map(|segment| SemanticSegmentInfo {
+                id: segment.id,
+                kind: package_kind(segment.kind),
+                from_library_version: segment.from_library_version,
+                to_library_version: segment.to_library_version,
+                slots: segment.slots,
+                slots_dead: segment.slots_dead,
+                foreign_unresolved: segment.foreign_unresolved,
+                size: segment.size,
+            })
+            .collect(),
+        slots_live: info.slots_live,
+        slots_dead: info.slots_dead,
+        bytes_on_disk: info.bytes_on_disk,
+        needs_compaction: info.needs_compaction,
+        recovered_from_previous: info.recovered_from_previous,
+    }
+}
+
+/// `model_identity_json` as the model family it describes, or a refusal of it as input.
+#[cfg(feature = "semantic-integration")]
+fn parse_model_identity(json: &str) -> Result<ModelIdentity, SemanticError> {
+    serde_json::from_str(json).map_err(|err| {
+        SemanticError::new(
+            SemanticErrorKind::InvalidInput,
+            format!(
+                "model_identity_json is not a model identity: {err}. It is the JSON the \
+                 vectors were built with, such as the sidecar's \
+                 config/models/meivin-round2-onnx/model.json"
+            ),
+        )
+        .with_field("model_identity_json")
+    })
+}
+
+/// Refuses vectors built under another chunking than the one this build keys the index's
+/// lines under, the one compiled in: none of their keys could resolve, so they are refused
+/// by name rather than opened, or installed, to answer nothing.
+#[cfg(feature = "semantic-integration")]
+fn ensure_keyed_chunking(
+    model: &ModelIdentity,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<(), SemanticError> {
+    let keyed_under = ChunkKeyRecipe::current().chunking_identity;
+    if model.chunking_identity == keyed_under {
+        return Ok(());
+    }
+    Err(SemanticError::new(
+        SemanticErrorKind::ArtifactIncompatible,
+        refused(&format!(
+            "model.chunking_identity is {}, and this build keys the index's lines under \
+             chunking {keyed_under}, so no line could be resolved",
+            model.chunking_identity
+        )),
+    )
+    .with_field("model.chunking_identity"))
+}
+
+/// What this installation is, as a vector set or a release must agree with it: the line
+/// recipe this build indexes with, the model family it queries with, and the store it reads.
+#[cfg(feature = "semantic-integration")]
+fn installation_identity(
+    model: ModelIdentity,
+) -> otzaria_semantic_search::semantic::versioning::IndexVersion {
+    otzaria_semantic_search::semantic::versioning::IndexVersion {
+        text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
+        model,
+        store: otzaria_semantic_search::semantic::official_index::readable_store_identity(),
+    }
+}
+
+/// The sidecar's segment kinds, as the API names them.
+#[cfg(feature = "semantic-integration")]
+fn package_kind(
+    kind: otzaria_semantic_search::distribution::package::PackageKind,
+) -> SemanticVectorsPackageKind {
+    use otzaria_semantic_search::distribution::package::PackageKind;
+    match kind {
+        PackageKind::Base => SemanticVectorsPackageKind::Base,
+        PackageKind::Delta => SemanticVectorsPackageKind::Delta,
+        PackageKind::Compacted => SemanticVectorsPackageKind::Compacted,
+    }
+}
+
+/// The vector sets an install or a compaction in this process is working on, by their
+/// directories as resolved: see [`VectorSetWork`].
+#[cfg(feature = "semantic-integration")]
+static VECTOR_SET_WORK: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// An install's or a compaction's hold on one vector set in this process, taken before
+/// either reads anything and let go when dropped: one of them at a time per set, and a
+/// second is refused at once.
+///
+/// The sidecar locks a set itself, but an install takes that lock only once it has its
+/// segment in hand, and a compressed release is expanded before that. Two installs of one
+/// set would otherwise both expand, and the second would meet the first at the sidecar's
+/// lock only after spending the time and the space. Another process's install still meets
+/// this one at the sidecar's lock, which is refused the same way.
+#[cfg(feature = "semantic-integration")]
+struct VectorSetWork {
+    dir: PathBuf,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl VectorSetWork {
+    /// Hold the set at `vectors_dir` for `doing`, or refuse while something else does.
+    fn take(vectors_dir: &Path, doing: &str) -> Result<Self, SemanticError> {
+        let dir = resolved_dir(vectors_dir);
+        let mut work = VECTOR_SET_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if work.contains(&dir) {
+            return Err(vector_set_busy(vectors_dir, doing));
+        }
+        work.push(dir.clone());
+        Ok(Self { dir })
+    }
+}
+
+#[cfg(feature = "semantic-integration")]
+impl Drop for VectorSetWork {
+    fn drop(&mut self) {
+        VECTOR_SET_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|dir| *dir != self.dir);
+    }
+}
+
+/// `dir` as one path names it whatever way it is written: resolved when it exists, and
+/// otherwise, as before a first install creates it, its parent resolved and its name.
+#[cfg(feature = "semantic-integration")]
+fn resolved_dir(dir: &Path) -> PathBuf {
+    fs::canonicalize(dir).unwrap_or_else(|_| {
+        match (
+            dir.parent()
+                .and_then(|parent| fs::canonicalize(parent).ok()),
+            dir.file_name(),
+        ) {
+            (Some(parent), Some(name)) => parent.join(name),
+            _ => std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()),
+        }
+    })
+}
+
+/// What a scrub of the set at `vectors_dir` reports, as `verify_semantic_vectors` answers it:
+/// the verification, or `VectorsBusy` when an install replaced bytes the scrub had read while
+/// it read them — nothing was condemned, and what the set holds now was not checked.
+#[cfg(feature = "semantic-integration")]
+fn verification_of(
+    report: &otzaria_semantic_search::semantic::segment_set::ScrubReport,
+    vectors_dir: &Path,
+) -> Result<SemanticVectorsVerification, SemanticError> {
+    if report.superseded {
+        return Err(SemanticError::new(
+            SemanticErrorKind::VectorsBusy,
+            format!(
+                "the semantic vectors at {} changed while they were verified: an install \
+                 replaced bytes the check had read. Nothing was condemned; verify them again \
+                 once the install has finished",
+                vectors_dir.display()
+            ),
+        )
+        .with_field("vectors_dir"));
+    }
+    Ok(SemanticVectorsVerification {
+        generation: report.generation,
+        segments: report.segments,
+        bytes_checked: report.bytes_checked,
+        elapsed_ms: report.elapsed_ms,
+    })
+}
+
+/// What an install or a compaction of the set at `vectors_dir` is refused with while
+/// another of either runs: in this process ([`VectorSetWork`]), or in another, which the
+/// sidecar's lock on the set says. `VectorsBusy` about `vectors_dir`.
+#[cfg(feature = "semantic-integration")]
+fn vector_set_busy(vectors_dir: &Path, doing: &str) -> SemanticError {
+    SemanticError::new(
+        SemanticErrorKind::VectorsBusy,
+        format!(
+            "{doing} was refused: another install or compaction of the vector set at {} is \
+             running, and one finishes before the next starts. Nothing was read or changed; \
+             try again once it has finished",
+            vectors_dir.display()
+        ),
+    )
+    .with_field("vectors_dir")
+}
+
+/// How long an install or a compaction waits for the sidecar's lock on its set.
+#[cfg(feature = "semantic-integration")]
+const SET_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `attempt` again while the set's lock is held, for up to `wait`: something other than an
+/// install, such as an open's cleanup, can hold it a moment. A cancel ends the wait.
+#[cfg(feature = "semantic-integration")]
+fn waiting_for_set_lock<T>(
+    cancel: &SearchCancellation,
+    wait: std::time::Duration,
+    mut attempt: impl FnMut() -> Result<T, SemanticSearchError>,
+) -> Result<T, SemanticSearchError> {
+    use otzaria_semantic_search::errors::ArtifactError;
+    let deadline = Instant::now() + wait;
+    loop {
+        let result = attempt();
+        let held = matches!(
+            &result,
+            Err(SemanticSearchError::Artifact(ArtifactError::Io { source, .. }))
+                if source.kind() == std::io::ErrorKind::WouldBlock
+        );
+        if !held {
+            return result;
+        }
+        if cancel.is_cancelled() {
+            return Err(SemanticSearchError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// What an expansion is named in the set's `incoming/` folder: this prefix and a name of its
+/// own, with `.oxv` for the segment and [`EXPANSION_LOCK`] for its lock file.
+#[cfg(feature = "semantic-integration")]
+const EXPANDING_PREFIX: &str = ".expanding-";
+
+/// The suffix of an expansion's lock file, which its install holds locked from before the
+/// segment is written until the install returns, whatever the sidecar did with the segment.
+#[cfg(feature = "semantic-integration")]
+const EXPANSION_LOCK: &str = ".lock";
+
+/// How many lock files an expansion creates, each taken by another process's cleanup in the
+/// instant before it was locked, before the install is refused as busy.
+#[cfg(feature = "semantic-integration")]
+const EXPANSION_LOCK_ATTEMPTS: u32 = 3;
+
+/// How old an expansion's segment with no lock file beside it must be before an install
+/// removes it. A segment always has one while its install runs, so one without is debris;
+/// the age spares a segment whose lock file another process removed in the instant between
+/// its creation and its locking.
+#[cfg(feature = "semantic-integration")]
+const STRAY_EXPANSION_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Remove what expansions that never finished left in `incoming/`. An expansion's lock
+/// file that nothing holds locked is a process gone: its segment and the lock file go. One
+/// that is locked is an install still running — writing, or waiting for the sidecar to take
+/// what it wrote — and its files stay. A segment with no lock file goes once it is old. Best
+/// effort.
+#[cfg(feature = "semantic-integration")]
+fn remove_abandoned_expansions(incoming: &Path) {
+    let Ok(entries) = fs::read_dir(incoming) else {
+        return;
+    };
+    let names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(EXPANDING_PREFIX))
+        .collect();
+    let remove = |path: &Path| {
+        if let Err(err) = fs::remove_file(path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                debug!(
+                    "an abandoned expansion stays for now: {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    };
+    for name in &names {
+        let path = incoming.join(name);
+        if let Some(stem) = name.strip_suffix(EXPANSION_LOCK) {
+            let Ok(lock) = fs::OpenOptions::new().write(true).open(&path) else {
+                continue;
+            };
+            if lock.try_lock().is_ok() {
+                remove(&incoming.join(format!("{stem}.oxv")));
+                remove(&path);
+            }
+            continue;
+        }
+        let stem = name.strip_suffix(".oxv").unwrap_or(name);
+        if names.contains(&format!("{stem}{EXPANSION_LOCK}")) {
+            continue;
+        }
+        let old = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| {
+                modified
+                    .elapsed()
+                    .is_ok_and(|age| age > STRAY_EXPANSION_AGE)
+            });
+        if old {
+            remove(&path);
+        }
+    }
+}
+
+/// What a test runs with each expansion's lock file: see [`AFTER_EXPANSION_LOCK_FILE`].
+#[cfg(all(test, feature = "semantic-integration"))]
+type ExpansionLockHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(all(test, feature = "semantic-integration"))]
+thread_local! {
+    /// Called with each expansion's lock file as soon as it is created, before it is locked:
+    /// what a test does there is what another process's cleanup could do in that instant.
+    static AFTER_EXPANSION_LOCK_FILE: std::cell::RefCell<Option<ExpansionLockHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A segment expanded for an install, and the lock that keeps it the install's: dropping
+/// this removes the segment and then the lock file, after the install has returned,
+/// whatever the sidecar did with the segment.
+#[cfg(feature = "semantic-integration")]
+struct Expansion {
+    segment: tempfile::TempPath,
+    /// Locked from before the segment was created, so an install in another process never
+    /// takes the segment for abandoned: not while it is written, and not after it is
+    /// closed, while the sidecar verifies it and moves it into the set.
+    _lock: tempfile::NamedTempFile,
+}
+
+/// A zstd-compressed segment expanded into a file of its own in the set's `incoming/`
+/// folder, from which an install moves it into the set.
+///
+/// The name is the expansion's own, never the download's, so two expansions into one set
+/// cannot write one file. Its lock file is created and locked first and held until the
+/// [`Expansion`] is dropped. Looks at `cancel` between blocks of 1 MiB; `refused` words a
+/// failure.
+#[cfg(feature = "semantic-integration")]
+fn expand_segment(
+    compressed: &Path,
+    vectors_dir: &Path,
+    cancel: &SearchCancellation,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<Expansion, SemanticError> {
+    use std::io::{Read, Write};
+    let incoming = otzaria_semantic_search::semantic::segment_set::incoming_dir(vectors_dir);
+    // Writing it is the one step here that a full disk stops.
+    let writing = |err: std::io::Error| {
+        let kind = match err.kind() {
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => {
+                SemanticErrorKind::InsufficientDiskSpace
+            }
+            _ => SemanticErrorKind::Internal,
+        };
+        SemanticError::new(
+            kind,
+            refused(&format!("expanding into {}: {err}", incoming.display())),
+        )
+    };
+    fs::create_dir_all(&incoming).map_err(writing)?;
+    remove_abandoned_expansions(&incoming);
+    let source = fs::File::open(compressed).map_err(|err| {
+        SemanticError::new(
+            SemanticErrorKind::Internal,
+            refused(&format!("reading {}: {err}", compressed.display())),
+        )
+    })?;
+    let damaged = |err: std::io::Error| {
+        SemanticError::new(
+            SemanticErrorKind::ArtifactCorrupt,
+            refused(&format!(
+                "{} does not expand as zstd: {err}",
+                compressed.display()
+            )),
+        )
+    };
+    let mut decoder = zstd::stream::read::Decoder::new(source).map_err(damaged)?;
+    // Another process's cleanup can take a lock file in the instant between its creation and
+    // its locking — find it unlocked, take it for a process gone, and remove it. A lock file
+    // that cannot be locked, or is gone once it is, is given up for a new one.
+    let mut attempts = 0;
+    let lock = loop {
+        attempts += 1;
+        let lock = tempfile::Builder::new()
+            .prefix(EXPANDING_PREFIX)
+            .suffix(EXPANSION_LOCK)
+            .tempfile_in(&incoming)
+            .map_err(writing)?;
+        #[cfg(test)]
+        AFTER_EXPANSION_LOCK_FILE.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(lock.path());
+            }
+        });
+        let locked = match lock.as_file().try_lock() {
+            Ok(()) => lock.path().exists(),
+            Err(std::fs::TryLockError::WouldBlock) => false,
+            Err(std::fs::TryLockError::Error(err)) => return Err(writing(err)),
+        };
+        if locked {
+            break lock;
+        }
+        if attempts == EXPANSION_LOCK_ATTEMPTS {
+            return Err(SemanticError::new(
+                SemanticErrorKind::VectorsBusy,
+                refused(&format!(
+                    "another install's cleanup of {} took this one's expansion lock {attempts} \
+                     times; try again once it has finished",
+                    incoming.display()
+                )),
+            )
+            .with_field("vectors_dir"));
+        }
+    };
+    let stem = lock
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(EXPANSION_LOCK))
+        .expect("the lock file is named by its builder")
+        .to_owned();
+    let path = incoming.join(format!("{stem}.oxv"));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(writing)?;
+    let segment = match tempfile::TempPath::try_from_path(&path) {
+        Ok(segment) => segment,
+        Err(err) => {
+            let _ = fs::remove_file(&path);
+            return Err(writing(err));
+        }
+    };
+    let expansion = Expansion {
+        segment,
+        _lock: lock,
+    };
+    let mut sink = std::io::BufWriter::new(file);
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(SemanticError::new(
+                SemanticErrorKind::Cancelled,
+                "installing the vectors was cancelled before it finished; the set is as it was",
+            ));
+        }
+        let read = decoder.read(&mut buffer).map_err(damaged)?;
+        if read == 0 {
+            break;
+        }
+        sink.write_all(&buffer[..read]).map_err(writing)?;
+    }
+    sink.into_inner()
+        .map_err(|err| writing(err.into_error()))?
+        .sync_all()
+        .map_err(writing)?;
+    Ok(expansion)
+}
+
+/// The package of the family `model_identity_json` declares that the graph at `model_path` is,
+/// found by its checksum: the package this installation embeds queries with, and so the one
+/// it names to the artifact.
+///
+/// A graph that is no package of the family is refused before anything loads: the identity
+/// file describes other weights. A file that is no model at all is refused as the sidecar
+/// would refuse it when it loads, by kind.
+#[cfg(feature = "semantic-integration")]
+fn family_package(
+    key: &SemanticArtifactKey,
+    call: SidecarCall<'_>,
+    refused: &dyn Fn(&dyn std::fmt::Display) -> String,
+) -> Result<ModelPackage, SemanticError> {
+    use otzaria_semantic_search::errors::SemanticSearchError;
+    use otzaria_semantic_search::semantic::model_package::validate_model;
+
+    let package = validate_model(&key.model_path).map_err(|err| {
+        let err = SemanticSearchError::EmbeddingRuntime(err);
+        semantic_errors::sidecar_error(&err, call, refused(&err))
+    })?;
+    key.model
+        .query_packages
+        .iter()
+        .find(|declared| declared.checksum == package.checksum())
+        .cloned()
+        .ok_or_else(|| {
+            let declared = key
+                .model
+                .query_packages
+                .iter()
+                .map(|declared| format!("{} {}", declared.quantization, declared.checksum))
+                .collect::<Vec<_>>()
+                .join(", ");
+            SemanticError::new(
+                SemanticErrorKind::ModelIdentityMismatch,
+                format!(
+                    "model_identity_json declares query_packages '{declared}', but the model at \
+                     {} is the package '{}', which is none of them: the identity file describes \
+                     other weights",
+                    key.model_path.display(),
+                    package.checksum()
+                ),
+            )
+            .with_field("query_packages")
+        })
+}
+
+/// `options` as the sidecar's `RankingProfile`, refused by the sidecar's own
+/// `RankingProfile::validate` when a value is outside its range.
+///
+/// Every field is named, with no `..` from a preset, so that a repin that gives the profile
+/// another parameter fails to compile here until someone decides what the application passes
+/// for it. What is not a ranking parameter is the `Balanced` preset's, the one a search with no
+/// options ranks by: the label, which only telemetry reads, and the caches and telemetry, which
+/// change no ranking. The values are narrowed to the 32 bits the ranking computes in.
+#[cfg(feature = "semantic-integration")]
+fn ranking_profile(options: &SemanticRankingOptions) -> Result<RankingProfile, SemanticError> {
+    let preset = RankingProfile::from_profile(SearchProfile::Balanced);
+    let alphas = &options.alpha_by_query_type;
+    let profile = RankingProfile {
+        profile: preset.profile,
+        fusion_strategy: match options.fusion_strategy {
+            SemanticFusionStrategy::Weighted => FusionStrategy::Weighted,
+            SemanticFusionStrategy::Rrf => FusionStrategy::RRF { k: options.rrf_k },
+            SemanticFusionStrategy::Adaptive => FusionStrategy::Adaptive,
+        },
+        alpha_override: options.alpha_override.map(|alpha| alpha as f32),
+        alpha_by_query_type: QueryTypeAlphas {
+            quoted_phrase: alphas.quoted_phrase as f32,
+            exact_reference: alphas.exact_reference as f32,
+            short: alphas.short as f32,
+            mixed: alphas.mixed as f32,
+            conceptual: alphas.conceptual as f32,
+            unknown: alphas.unknown as f32,
+        },
+        bm25_saturation_k: options.bm25_saturation_k as f32,
+        semantic_threshold: options.semantic_threshold as f32,
+        agreement_bonus: options.agreement_bonus as f32,
+        phrase_match_bonus: options.phrase_match_bonus as f32,
+        rare_term_bonus: options.rare_term_bonus as f32,
+        section_coverage_bonus: options.section_coverage_bonus as f32,
+        duplicate_penalty: options.duplicate_penalty as f32,
+        metadata_ranking_enabled: options.metadata_ranking_enabled,
+        candidate_window_multiplier: options.candidate_window_multiplier as f32,
+        query_cache_enabled: preset.query_cache_enabled,
+        embedding_cache_enabled: preset.embedding_cache_enabled,
+        telemetry_enabled: preset.telemetry_enabled,
+    };
+    profile
+        .validate()
+        .map_err(|err| semantic_errors::ranking_error(&err))?;
+    Ok(profile)
+}
+
+/// An installed vector set as it was opened: the inputs it was opened with.
+#[cfg(feature = "semantic-integration")]
+struct OpenedArtifact {
+    key: SemanticArtifactKey,
+}
+
+/// Where a session's vectors come from.
+#[cfg(feature = "semantic-integration")]
+enum SemanticSource {
+    /// [`SearchEngine::configure_semantic`]: vectors embedded on this device, which the
+    /// application never does for the library — development and testing.
+    SelfBuilt(SemanticConfigKey),
+    /// [`SearchEngine::open_semantic_artifact`]: vectors built on the build machine, read
+    /// only. The application's path.
+    Artifact(OpenedArtifact),
+}
+
+/// An open sidecar session: the coordinator, and what it was opened from.
+#[cfg(feature = "semantic-integration")]
+struct ConfiguredSemantic {
+    /// The sidecar's `HybridCoordinator` itself, not the `OtzariaHybridEngine` wrapper the
+    /// sidecar offers as a bridge: that wrapper turns every error into its message, and one
+    /// failure could then be told from another only by reading it. The coordinator returns
+    /// the typed [`SemanticSearchError`](otzaria_semantic_search::errors::SemanticSearchError),
+    /// and the wrapper adds nothing else — the sidecar leaves the surface the application
+    /// sees to this layer. Behind an `Arc` for the reason the wrapper held one: a call
+    /// clones the handle and holds no lock while it runs.
+    coordinator: Arc<HybridCoordinator>,
+    source: SemanticSource,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl ConfiguredSemantic {
+    /// The model this session embeds with, which deciding a failure's kind can need: whether
+    /// there is an ONNX Runtime beside it.
+    fn model_path(&self) -> &Path {
+        match &self.source {
+            SemanticSource::SelfBuilt(key) => &key.model_path,
+            SemanticSource::Artifact(opened) => &opened.key.model_path,
+        }
+    }
+
+    /// The ONNX Runtime the session was opened with, the first place the sidecar looks.
+    fn onnx_runtime(&self) -> Option<&Path> {
+        match &self.source {
+            SemanticSource::SelfBuilt(key) => key.onnx_runtime.as_deref(),
+            SemanticSource::Artifact(opened) => opened.key.onnx_runtime.as_deref(),
+        }
+    }
+}
+
+/// What a semantic call works with once it has let go of the session lock: a clone of the
+/// coordinator handle, and where the session's model and runtime are.
+#[cfg(feature = "semantic-integration")]
+struct OpenSession {
+    coordinator: Arc<HybridCoordinator>,
+    model_path: PathBuf,
+    onnx_runtime: Option<PathBuf>,
+    /// The vector set an opened artifact serves; `None` for a session built on this device.
+    vectors_dir: Option<PathBuf>,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl OpenSession {
+    /// The call that a failure of this session's sidecar came from.
+    fn call(&self) -> SidecarCall<'_> {
+        SidecarCall::Session {
+            model_path: &self.model_path,
+            onnx_runtime: self.onnx_runtime.as_deref(),
+        }
+    }
+}
+
+/// Behind a lock, not a plain field, so that [`SearchEngine::open_semantic_artifact`] can
+/// take `&self`: opening loads the model and the artifact's vectors, and holding the whole
+/// engine's write lock for that long would stall every lexical search in the meantime.
+#[cfg(feature = "semantic-integration")]
+type SemanticRuntime = RwLock<Option<ConfiguredSemantic>>;
 #[cfg(not(feature = "semantic-integration"))]
 type SemanticRuntime = ();
 
@@ -943,8 +2556,34 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 //
 // v4: נוסף השדה `textHash` (FAST) — חתימת טקסט-בלבד לצד החתימה הקנונית,
 // כדי שאימות דריפט תוכן לא ייפסל משינויי metadata (סדר קטלוגי וכו').
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 4;
+//
+// v5: נוסף השדה `chunkKey` (FAST) — מפתח הטקסט שהשורה מוטמעת בו (ראו
+// semantic_keys), בסוף הסכימה. בניגוד לכל הקפיצות הקודמות, אינדקס v4 *אינו*
+// דורש בנייה מחדש: המנוע פותח אותו בסכימה שלו, מחפש בו וממשיך לכתוב אליו,
+// בלי העמודה (ראו MIN_READABLE_SCHEMA_VERSION). רק אינדקס חדש מקבל אותה.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
+/// The oldest schema version this engine opens, searches and writes to as it was built,
+/// with no rebuild: version 4, the schema before the `chunkKey` column. Such an index stays
+/// at version 4 and has no column, whatever is added to it; only an index this engine
+/// creates gets one. Every version in between is a version this engine reads, each with the
+/// one schema [`schema_of_version`] gives it.
+const MIN_READABLE_SCHEMA_VERSION: u32 = 4;
+/// The column that holds each line's chunk key: see [`crate::semantic_keys`].
+const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
+
+/// Version of the line recipe: how [`SearchEngine::add_text_book`] turns a book's text into
+/// the documents the index stores, which is the text every semantic chunk key is computed
+/// from. Version 1: the text is split on `\n`; every line becomes one document, a blank one
+/// included, whose `text` is [`normalize_text_for_indexing`] of it; and a line that starts
+/// with `<h` opens a new section and belongs to it.
+///
+/// Declared to the semantic sidecar as `text.line_text_version`, the half of a vector set's
+/// identity that only this crate can know. A change to any of the four — another split, a
+/// normalization that keeps or drops something else, another rule for sections — changes
+/// the text a line's key is computed from, so it is a new version, even where the schema
+/// does not change.
+pub(crate) const LINE_TEXT_VERSION: u32 = 1;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
@@ -1032,6 +2671,16 @@ fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
     (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
 }
 
+/// Records `key` in the `chunkKey` column, when the index has one this build writes: `0`
+/// for a line with no vector, a line's [`ChunkKey::column_value`] for one with a vector.
+///
+/// [`ChunkKey::column_value`]: otzaria_semantic_search::semantic::chunk_key::ChunkKey::column_value
+fn set_chunk_key(document: &mut TantivyDocument, field: Option<Field>, key: u64) {
+    if let Some(field) = field {
+        document.add_u64(field, key);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct IndexMetadata {
     format: String,
@@ -1039,6 +2688,53 @@ struct IndexMetadata {
     engine_version: String,
     tantivy_version: String,
     created_at_unix_seconds: u64,
+    /// The recipe the index's `chunkKey` column was written under, as [`ChunkKeyRecipe`]'s
+    /// three fields: recorded when an index with the column is created, and absent from an
+    /// index without one, or one whose recipe is not known.
+    ///
+    /// Read leniently: a value that does not parse is a recipe not known, which makes the
+    /// column count as absent, and never makes the metadata unreadable. A column can always
+    /// be recomputed from the text, so nothing in it is a reason to rebuild an index.
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    line_text_version: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    chunk_key_version: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    chunk_key_chunking_identity: Option<u64>,
+}
+
+impl IndexMetadata {
+    /// The recipe the `chunkKey` column was written under, when all of it is recorded.
+    fn chunk_key_recipe(&self) -> Option<ChunkKeyRecipe> {
+        Some(ChunkKeyRecipe {
+            line_text_version: self.line_text_version?,
+            key_version: self.chunk_key_version?,
+            chunking_identity: self.chunk_key_chunking_identity?,
+        })
+    }
+}
+
+/// A value, or `None` when it is not one: never an error, so one field cannot make the
+/// rest of a document unreadable.
+fn lenient<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = JsonValue::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -1306,6 +3002,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// FNV-1a מצטבר — הבסיס לכל חתימות התוכן. `feed_field` מקדים קידומת-אורך
 /// כדי ששרשורי שדות שונים לא יתלכדו ("אב"+"ג" מול "א"+"בג").
+#[derive(Clone, Copy)]
 struct Fnv(u64);
 
 impl Fnv {
@@ -1409,23 +3106,56 @@ const LINE_DEDUP_MIN_LETTERS: usize = 12;
 /// 0 שמור ל"אין חתימה" — פחות מ-[`LINE_DEDUP_MIN_LETTERS`] אותיות
 /// *עבריות* (אלפאנומרי משתתף בחתימה אך אינו נספר לסף).
 fn line_dedup_hash(normalized_text: &str) -> u64 {
-    let mut fnv = Fnv::new();
-    let mut letters = 0usize;
-    let mut buf = [0u8; 4];
-    for c in normalized_text.chars() {
-        if ('א'..='ת').contains(&c) {
-            letters += 1;
-        } else if !c.is_alphanumeric() {
-            continue;
-        }
-        for lower in c.to_lowercase() {
-            fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
+    let mut hasher = LineDedupHasher::new();
+    hasher.feed(normalized_text);
+    hasher.finish()
+}
+
+/// [`line_dedup_hash`] of `parts` joined with spaces, a part more each time: spaces take no
+/// part in it, so each part is fed once.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn line_dedup_hashes<'a>(parts: &'a [&str]) -> impl Iterator<Item = u64> + 'a {
+    let mut hasher = LineDedupHasher::new();
+    parts.iter().map(move |part| {
+        hasher.feed(part);
+        hasher.finish()
+    })
+}
+
+/// [`line_dedup_hash`], fed in parts.
+struct LineDedupHasher {
+    fnv: Fnv,
+    letters: usize,
+}
+
+impl LineDedupHasher {
+    fn new() -> Self {
+        Self {
+            fnv: Fnv::new(),
+            letters: 0,
         }
     }
-    if letters < LINE_DEDUP_MIN_LETTERS {
-        return 0;
+
+    fn feed(&mut self, text: &str) {
+        let mut buf = [0u8; 4];
+        for c in text.chars() {
+            if ('א'..='ת').contains(&c) {
+                self.letters += 1;
+            } else if !c.is_alphanumeric() {
+                continue;
+            }
+            for lower in c.to_lowercase() {
+                self.fnv.feed(lower.encode_utf8(&mut buf).as_bytes());
+            }
+        }
     }
-    fnv.finish()
+
+    fn finish(&self) -> u64 {
+        if self.letters < LINE_DEDUP_MIN_LETTERS {
+            return 0;
+        }
+        self.fnv.finish()
+    }
 }
 
 /// Mirrors the Dart `IndexingDocumentBuilder._updateReferenceTrail`: a new
@@ -1482,7 +3212,7 @@ fn check_index_compatibility_path(index_path: &Path) -> IndexCompatibility {
 /// אותה schema_version) — והאפליקציה נופלת בשקט לאינדקס זמני.
 /// גם meta.json חסר/פגום נחשב אי-התאמה: sidecar תקין לא מעיד כלום כשה-metadata
 /// של tantivy עצמו לא קריא, ופתיחת האינדקס תיכשל באותה מידה.
-fn stored_schema_mismatch(index_path: &Path) -> Option<String> {
+fn stored_schema_mismatch(index_path: &Path, version: u32, expected: &Schema) -> Option<String> {
     let raw = match fs::read_to_string(index_path.join("meta.json")) {
         Ok(raw) => raw,
         Err(err) => return Some(format!("tantivy meta.json is missing or unreadable: {err}")),
@@ -1495,8 +3225,10 @@ fn stored_schema_mismatch(index_path: &Path) -> Option<String> {
         return Some("tantivy meta.json has no schema entry".to_string());
     };
     match serde_json::from_value::<Schema>(schema_json) {
-        Ok(stored) if stored == current_schema() => None,
-        Ok(_) => Some("tantivy schema on disk differs from the engine schema".to_string()),
+        Ok(stored) if stored == *expected => None,
+        Ok(_) => Some(format!(
+            "tantivy schema on disk differs from the engine schema of version {version}"
+        )),
         Err(err) => Some(format!("stored tantivy schema is unreadable: {err}")),
     }
 }
@@ -1538,7 +3270,7 @@ fn check_sidecar_metadata(index_path: &Path, metadata_path: PathBuf) -> IndexCom
         );
     }
 
-    if metadata.schema_version < INDEX_SCHEMA_VERSION {
+    if metadata.schema_version < MIN_READABLE_SCHEMA_VERSION {
         return compatibility(
             false,
             "rebuild_required",
@@ -1558,7 +3290,11 @@ fn check_sidecar_metadata(index_path: &Path, metadata_path: PathBuf) -> IndexCom
         );
     }
 
-    if let Some(reason) = stored_schema_mismatch(index_path) {
+    // The schema the declared version has, and no other: a sidecar can declare a version
+    // its index was not built at, as an intermediate build did.
+    let expected = schema_of_version(metadata.schema_version)
+        .expect("every version from MIN_READABLE_SCHEMA_VERSION to INDEX_SCHEMA_VERSION has one");
+    if let Some(reason) = stored_schema_mismatch(index_path, metadata.schema_version, &expected) {
         return compatibility(
             false,
             "rebuild_required",
@@ -1615,16 +3351,16 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
         }
     };
 
-    if tantivy_schema_matches_current_version(&tantivy_metadata) {
+    if let Some(version) = readable_schema_version(&tantivy_metadata) {
         return compatibility(
             true,
             "legacy_compatible",
-            Some(INDEX_SCHEMA_VERSION),
+            Some(version),
             metadata_path,
-            Some(
-                "otzaria metadata is missing, but Tantivy schema matches the current engine"
-                    .to_string(),
-            ),
+            Some(format!(
+                "otzaria metadata is missing, but Tantivy schema matches the engine's schema \
+                 version {version}"
+            )),
         );
     }
 
@@ -1637,17 +3373,14 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
     )
 }
 
-/// Compares the full on-disk schema against the engine's current one — the
-/// same equality `Index::open_or_create` enforces — so a legacy index can't
-/// pass the check (e.g. on the `id` field alone) and then fail to open.
-fn tantivy_schema_matches_current_version(metadata: &JsonValue) -> bool {
-    let Some(schema_json) = metadata.get("schema") else {
-        return false;
-    };
-    match serde_json::from_value::<Schema>(schema_json.clone()) {
-        Ok(found_schema) => found_schema == current_schema(),
-        Err(_) => false,
-    }
+/// The version, of those this engine reads, whose schema the on-disk one is. Compares the
+/// full schema — the same equality `Index::open_or_create` enforces — so a legacy index
+/// can't pass the check (e.g. on the `id` field alone) and then fail to open.
+fn readable_schema_version(metadata: &JsonValue) -> Option<u32> {
+    let found: Schema = serde_json::from_value(metadata.get("schema")?.clone()).ok()?;
+    (MIN_READABLE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION)
+        .rev()
+        .find(|&version| schema_of_version(version).is_some_and(|schema| schema == found))
 }
 
 fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
@@ -1667,18 +3400,35 @@ fn inferred_legacy_schema_version(metadata: &JsonValue) -> Option<u32> {
     }
 }
 
-fn ensure_current_index_metadata(index_path: &Path) -> Result<()> {
+/// Writes the metadata of an index found without any (`legacy_compatible`), a new one
+/// included: the version its schema is, and — when that schema has the `chunkKey` column
+/// and the index holds no document yet (`empty`) — this build's chunk-key recipe, under
+/// which every key it will hold is computed. The recipe of a column that already holds keys
+/// cannot be read back from it, so it is left unrecorded, and the column counts as absent.
+fn ensure_current_index_metadata(index_path: &Path, empty: bool) -> Result<()> {
     let compatibility = check_index_compatibility_path(index_path);
-    if compatibility.compatible && compatibility.status != "compatible" {
-        write_current_index_metadata(index_path)?;
+    if !compatibility.compatible || compatibility.status == "compatible" {
+        return Ok(());
     }
-    Ok(())
+    let Some(version) = compatibility.found_schema_version else {
+        return Ok(());
+    };
+    let has_column =
+        schema_of_version(version).is_some_and(|schema| schema.get_field(CHUNK_KEY_FIELD).is_ok());
+    let recipe = (has_column && empty).then(ChunkKeyRecipe::current);
+    write_index_metadata(index_path, &index_metadata(version, recipe))
 }
 
+/// What a new index's metadata is, written into a directory a test made by other means.
+#[cfg(test)]
 fn write_current_index_metadata(index_path: &Path) -> Result<()> {
+    write_index_metadata(index_path, &current_index_metadata())
+}
+
+fn write_index_metadata(index_path: &Path, metadata: &IndexMetadata) -> Result<()> {
     let metadata_path = index_metadata_path(index_path);
-    let serialized = serde_json::to_string_pretty(&current_index_metadata())?;
-    fs::write(&metadata_path, format!("{serialized}\n")).with_context(|| {
+    let serialized = serde_json::to_string_pretty(metadata)?;
+    atomic_replace(&metadata_path, format!("{serialized}\n").as_bytes()).with_context(|| {
         format!(
             "failed to write index metadata to {}",
             metadata_path.display()
@@ -1686,17 +3436,80 @@ fn write_current_index_metadata(index_path: &Path) -> Result<()> {
     })
 }
 
+/// The metadata of a new index: this engine's schema version and chunk-key recipe.
+#[cfg(test)]
 fn current_index_metadata() -> IndexMetadata {
+    index_metadata(INDEX_SCHEMA_VERSION, Some(ChunkKeyRecipe::current()))
+}
+
+fn index_metadata(schema_version: u32, chunk_keys: Option<ChunkKeyRecipe>) -> IndexMetadata {
     IndexMetadata {
         format: INDEX_FORMAT.to_string(),
-        schema_version: INDEX_SCHEMA_VERSION,
+        schema_version,
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
         tantivy_version: TANTIVY_INDEX_VERSION.to_string(),
         created_at_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
+        line_text_version: chunk_keys.map(|recipe| recipe.line_text_version),
+        chunk_key_version: chunk_keys.map(|recipe| recipe.key_version),
+        chunk_key_chunking_identity: chunk_keys.map(|recipe| recipe.chunking_identity),
     }
+}
+
+/// The metadata an index directory holds, when it holds metadata this engine reads.
+fn read_index_metadata(index_path: &Path) -> Option<IndexMetadata> {
+    let path = index_metadata_path(index_path);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            warn!("index metadata {} is unreadable: {err}", path.display());
+            return None;
+        }
+    };
+    serde_json::from_str(&raw)
+        .inspect_err(|err| warn!("index metadata {} is invalid: {err}", path.display()))
+        .ok()
+}
+
+/// The index's `chunkKey` column, when it has one written under this build's recipe.
+///
+/// A version 4 index has none. A column whose metadata records another recipe, or none,
+/// is one this build does not use: it counts as absent, so nothing reads it and nothing is
+/// written to it, and the keys of the index's lines are computed from their text instead.
+pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option<Field> {
+    let field = schema.get_field(CHUNK_KEY_FIELD).ok()?;
+    let recorded = read_index_metadata(index_path).and_then(|metadata| metadata.chunk_key_recipe());
+    let current = ChunkKeyRecipe::current();
+    if recorded == Some(current) {
+        return Some(field);
+    }
+    info!(
+        "the index's chunkKey column was written under {recorded:?}, and this build computes \
+         {current:?}: the column counts as absent"
+    );
+    None
+}
+
+/// Opens the index in `directory` with the schema it was built with, or creates one with
+/// [`current_schema`] when there is none.
+///
+/// An index of an older version this engine reads is opened as it is: `open_or_create`
+/// refuses it under [`current_schema`], and it is opened again under the schema of each
+/// older version in turn. A schema none of them is stays refused, as the `SchemaError`
+/// `open_or_create` returns.
+fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
+    let mut opened = Index::open_or_create(directory.clone(), current_schema());
+    for version in (MIN_READABLE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).rev() {
+        if !matches!(opened, Err(tantivy::TantivyError::SchemaError(_))) {
+            break;
+        }
+        let schema = schema_of_version(version).expect("every readable version has a schema");
+        opened = Index::open_or_create(directory.clone(), schema);
+    }
+    opened
 }
 
 fn index_metadata_path(index_path: &Path) -> PathBuf {
@@ -1721,9 +3534,24 @@ fn compatibility(
     }
 }
 
-/// The schema this engine version requires. Kept in one place so `new()` and
-/// the legacy compatibility check can never drift apart.
+/// The schema of the indexes this engine creates, version [`INDEX_SCHEMA_VERSION`]. Kept in
+/// one place so `new()` and the compatibility checks can never drift apart.
 fn current_schema() -> Schema {
+    index_schema(true)
+}
+
+/// The one schema an index of `version` has, for the versions this engine reads.
+fn schema_of_version(version: u32) -> Option<Schema> {
+    match version {
+        INDEX_SCHEMA_VERSION => Some(index_schema(true)),
+        // The same fields in the same order, but the `chunkKey` column.
+        MIN_READABLE_SCHEMA_VERSION => Some(index_schema(false)),
+        _ => None,
+    }
+}
+
+/// The schema of version [`INDEX_SCHEMA_VERSION`], or of version 4 without `chunk_keys`.
+fn index_schema(chunk_keys: bool) -> Schema {
     let mut schema_builder = Schema::builder();
     // Deliberately NOT fast: a text fast field stores every raw line in a
     // columnar dictionary — a second full copy of the corpus — and nothing
@@ -1786,6 +3614,14 @@ fn current_schema() -> Schema {
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
     schema_builder.add_facet_field("topics", FacetOptions::default());
+    if chunk_keys {
+        // The key of the text the line is embedded as, `ChunkKey::column_value` (see
+        // `semantic_keys`): 0 for a line the recipe does not embed, a PDF's, and any line
+        // not added by `add_text_book`. FAST only: read columnar to tie a stored vector to
+        // the lines that hold its text; neither searched nor stored. Last, so every other
+        // field keeps the number it has in a version 4 index, which has no such field.
+        schema_builder.add_u64_field(CHUNK_KEY_FIELD, FAST);
+    }
     schema_builder.build()
 }
 
@@ -1880,7 +3716,14 @@ const VOC_VARIANTS_PER_TOKEN: usize = 128;
 const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
 
 pub struct SearchEngine {
+    /// The schema of the index this engine opened, which is the one it was built with: a
+    /// version 4 index has no `chunkKey` field, and is not given one.
     schema: Schema,
+    /// The `chunkKey` column, when the index has one this build uses: written under the
+    /// chunk-key recipe this build computes (see [`live_chunk_key_field`]). `None` for a
+    /// version 4 index, which has none, and for a column written under another recipe,
+    /// which counts as absent: nothing writes to it, and nothing reads it.
+    chunk_key_field: Option<Field>,
     /// The directory this engine opened. Retained only so a build can ask whether the
     /// index it is about to read is one this version reads — see
     /// [`Self::index_compatibility`].
@@ -1915,6 +3758,15 @@ pub struct SearchEngine {
     /// and semantic-index lifecycle; Tantivy remains owned by this engine.
     #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
     semantic_runtime: SemanticRuntime,
+    /// What resolving a vector set's hits against this index remembers from one search to
+    /// the next, for one generation of it: see [`crate::semantic_resolver`].
+    #[cfg(feature = "semantic-integration")]
+    semantic_resolver: Mutex<crate::semantic_resolver::ResolverCache>,
+    /// The open vector set's generation as a search plans its scan against it: see
+    /// [`crate::semantic_moves`]. Opened on the first planned search of a generation, and
+    /// let go when the session moves to another or closes.
+    #[cfg(feature = "semantic-integration")]
+    semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -1937,9 +3789,9 @@ impl SearchEngine {
     pub fn new(path: &str) -> Self {
         init_engine_logger();
         debug!("new path={}", path);
-        let schema = current_schema();
-        let mmap_directory = MmapDirectory::open(path).expect("unable to open mmap directory");
-        let index = match Index::open_or_create(mmap_directory, schema.clone()) {
+        let directory =
+            IndexDirectory::open(Path::new(path)).expect("unable to open mmap directory");
+        let index = match open_or_create_index(directory) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -1947,6 +3799,7 @@ impl SearchEngine {
             ),
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
+        let schema = index.schema();
         // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
         // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
         // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
@@ -2015,12 +3868,19 @@ impl SearchEngine {
             }
         };
 
-        if let Err(err) = ensure_current_index_metadata(Path::new(path)) {
-            debug!("failed to ensure index metadata: {err:#}");
+        // Nothing committed yet, so a chunk-key recipe recorded now describes every key the
+        // index will hold.
+        let empty = index
+            .searchable_segment_ids()
+            .is_ok_and(|segments| segments.is_empty());
+        if let Err(err) = ensure_current_index_metadata(Path::new(path), empty) {
+            warn!("failed to ensure index metadata: {err:#}");
         }
+        let chunk_key_field = live_chunk_key_field(&schema, Path::new(path));
 
         SearchEngine {
             schema,
+            chunk_key_field,
             index_path: PathBuf::from(path),
             index,
             index_writer,
@@ -2034,9 +3894,13 @@ impl SearchEngine {
             )),
             bulk_indexing: false,
             #[cfg(feature = "semantic-integration")]
-            semantic_runtime: None,
+            semantic_runtime: RwLock::new(None),
             #[cfg(not(feature = "semantic-integration"))]
             semantic_runtime: (),
+            #[cfg(feature = "semantic-integration")]
+            semantic_resolver: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_set_view: Mutex::default(),
         }
     }
 
@@ -2129,10 +3993,17 @@ impl SearchEngine {
 
     // ── Semantic sidecar API ────────────────────────────────────────────────
 
-    /// Open the semantic sidecar and wire it to the already-open Tantivy
-    /// engine. The sidecar owns semantic fusion; Tantivy stays owned here. When
-    /// this crate was built without the optional semantic feature this is a
-    /// no-op that returns an explicit Disabled status.
+    /// Open a semantic session whose vectors are built on this device, and wire
+    /// it to the already-open Tantivy engine. The sidecar owns semantic fusion;
+    /// Tantivy stays owned here. When this crate was built without the optional
+    /// semantic feature this is a no-op that returns an explicit `NotInBuild`
+    /// status.
+    ///
+    /// **Development and testing scaffolding.** The application never builds
+    /// the library's vectors; it opens the artifact the build machine made with
+    /// [`Self::open_semantic_artifact`]. Kept, and not deprecated, because the
+    /// test suites and existing application code call it. While an artifact is
+    /// open this is refused.
     ///
     /// **The sidecar's vector store is in-memory** (check
     /// [`SemanticStatus::vectors_persisted`]): vectors live only for the
@@ -2144,42 +4015,124 @@ impl SearchEngine {
     /// - Called again with the same inputs it is a no-op returning the current
     ///   status, so a caller that configures defensively cannot lose an index.
     /// - Called with different inputs while a session is open it fails and says
-    ///   which input changed. Switching model or library root is an explicit
-    ///   act: call [`Self::disable_semantic`] first and accept the rebuild.
-    pub fn configure_semantic(&mut self, config: SemanticConfigInput) -> Result<SemanticStatus> {
+    ///   which input changed. Switching model, text recipe or library root is an
+    ///   explicit act: call [`Self::disable_semantic`] first and accept the
+    ///   rebuild.
+    ///
+    /// A refusal is a [`SemanticError`]: `SessionConflict` while another session,
+    /// or this one with other inputs, is open, and `InvalidInput` for a value the
+    /// sidecar cannot serve. The model loads lazily, so a missing or unusable model,
+    /// or ONNX Runtime, is not refused here but by the first
+    /// [`Self::semantic_index_books`].
+    pub fn configure_semantic(
+        &mut self,
+        config: SemanticConfigInput,
+    ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
             let requested = SemanticConfigKey::from_input(&config);
-            if let Some(active) = &self.semantic_runtime {
-                if active.config == requested {
+            let active = self
+                .semantic_runtime
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            match active.as_ref().map(|active| &active.source) {
+                None => {}
+                Some(SemanticSource::SelfBuilt(key)) if *key == requested => {
                     return Ok(self.semantic_status());
                 }
-                return Err(anyhow::anyhow!(
-                    "the semantic sidecar is already configured and {} changed; the vector \
-                     store is in-memory, so re-opening would discard the vectors indexed in \
-                     this session. Call disable_semantic() first if that is intended",
-                    active.config.changed_fields(&requested)
-                ));
+                Some(SemanticSource::SelfBuilt(key)) => {
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::SessionConflict,
+                        format!(
+                            "the semantic sidecar is already configured and {} changed; the \
+                             vector store is in-memory, so re-opening would discard the vectors \
+                             indexed in this session. Call disable_semantic() first if that is \
+                             intended",
+                            key.changed_fields(&requested)
+                        ),
+                    ));
+                }
+                Some(SemanticSource::Artifact(opened)) => {
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::SessionConflict,
+                        format!(
+                            "a prebuilt semantic artifact is open ({}); configure_semantic would \
+                             replace it with vectors built on this device. Call \
+                             disable_semantic() first if that is intended",
+                            opened.key.vectors_dir.display()
+                        ),
+                    ));
+                }
             }
 
+            // The sidecar validates the rest of the configuration when it opens:
+            // pooling, text recipe and token cap. A blank quantization it would
+            // record as given, leaving an index whose identity names no weights.
+            if requested.model_quantization.trim().is_empty() {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
+                    "model_quantization is empty; it is part of the semantic index's \
+                     identity, so name the precision of the model's weights, e.g. \
+                     \"int8\" for the Meivin INT8 graph or \"fp32\" for the full-precision one",
+                )
+                .with_field("model_quantization"));
+            }
+            check_onnx_runtime_path(config.onnx_runtime_path.as_deref())?;
+            let embedding_max_tokens = usize::try_from(requested.max_tokens).map_err(|_| {
+                SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
+                    format!(
+                        "max_tokens {} does not fit this platform's address width",
+                        requested.max_tokens
+                    ),
+                )
+                .with_field("max_tokens")
+            })?;
+
+            // Each input lands on the one sidecar field that carries it. What stays
+            // at `SemanticConfig::default()` is not the caller's to choose:
+            // `vector_precision` is the store's format, `embedding_batch_size` is
+            // throughput, and the rest of the chunking recipe is the root
+            // `chunking.json` that both known models are built with.
             let mut semantic_config = SemanticConfig {
                 root_dir: requested.root_dir.clone(),
                 model_path: requested.model_path.clone(),
                 embedding_model_id: requested.model_id.clone(),
                 embedding_dim: requested.embedding_dim,
+                pooling: requested.pooling.clone(),
+                embedding_max_tokens,
+                model_quantization: requested.model_quantization.clone(),
+                // Where this machine keeps ONNX Runtime: a deployment fact the sidecar
+                // keeps out of the manifest, and the first place it looks. `None` leaves
+                // it to `OTZARIA_ONNX_RUNTIME` and then the file beside the graph.
+                deployment: EmbeddingDeployment {
+                    onnx_runtime: requested.onnx_runtime.clone(),
+                },
                 ..SemanticConfig::default()
             };
+            // The text recipe is part of the chunking configuration rather than a
+            // field of its own, because the chunker is what applies it and
+            // `ChunkerConfig::identity` is what records it.
+            semantic_config.chunking.embedding_text_version = requested.embedding_text_version;
             // Both dimensions must agree or the sidecar refuses the config, and
             // the store's path is derived from our root rather than the
             // sidecar's own default root.
             semantic_config.store.embedding_dim = requested.embedding_dim;
             semantic_config.store.db_path = requested.root_dir.join("vectors");
 
-            let engine = SemanticEngine::open(semantic_config)
-                .map_err(|err| anyhow::anyhow!("failed to open semantic sidecar: {err}"))?;
-            self.semantic_runtime = Some(ConfiguredSemantic {
-                engine: OtzariaHybridEngine::new(HybridCoordinator::new(Some(engine))),
-                config: requested,
+            let engine = SemanticEngine::open(semantic_config).map_err(|err| {
+                semantic_errors::sidecar_error(
+                    &err,
+                    SidecarCall::Configure,
+                    format!("failed to open semantic sidecar: {err}"),
+                )
+            })?;
+            *self
+                .semantic_runtime
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = Some(ConfiguredSemantic {
+                coordinator: Arc::new(HybridCoordinator::new(Some(engine))),
+                source: SemanticSource::SelfBuilt(requested),
             });
             Ok(self.semantic_status())
         }
@@ -2191,25 +4144,257 @@ impl SearchEngine {
         }
     }
 
-    /// Remove the configured sidecar without touching its on-disk files.
-    /// This is useful when an app switches library roots or wants lexical-only
-    /// operation for the current session, and it is the explicit way to allow a
-    /// subsequent [`Self::configure_semantic`] with different inputs.
+    /// Open the vector set installed on this device and serve semantic and hybrid
+    /// search from it, with every result hydrated from this Tantivy index as
+    /// [`Self::search_semantic`] always does. **This is the application's
+    /// semantic path**: the library's vectors are built on the build machine,
+    /// and the device embeds only the query. When this crate was built without
+    /// the optional semantic feature this is a no-op that returns an explicit
+    /// `NotInBuild` status.
     ///
-    /// Because the vector store is in-memory, this drops the session's vectors:
-    /// re-configuring afterwards needs a full semantic re-index.
-    pub fn disable_semantic(&mut self) {
+    /// Opening recovers what an interrupted install left, opens the generation
+    /// `CURRENT` names (or `PREVIOUS`, when it does not open), loads the model,
+    /// and verifies the set against this installation, all of it and before a
+    /// vector is read:
+    ///
+    /// | half | expected value, from | fixed by |
+    /// | --- | --- | --- |
+    /// | text | the line recipe this build indexes with, and the key function it computes keys with | a set built for this application's line recipe |
+    /// | model | `model_identity_json`, and the model at `model_path` once loaded | installing the model the set was built with |
+    /// | store | what this build can read | a build that reads the set's format |
+    ///
+    /// The set is not tied to one state of the index. Its vectors are addressed by
+    /// the key of the text they were embedded from, and each hit is resolved, on
+    /// every search, to the live lines that hold that text: lines added, deleted,
+    /// moved or renumbered since the set was built leave every unchanged line's
+    /// vector usable, and nothing goes stale.
+    ///
+    /// A mismatch is an error naming every field that disagreed, and nothing is
+    /// left open. On success the session is read-only: `semantic_index_books`,
+    /// `remove_semantic_books`, `reset_semantic_index` and `semantic_index_diff`
+    /// are refused by name, and so is [`Self::configure_semantic`].
+    ///
+    /// - Called again with the same inputs it is a no-op returning the status.
+    /// - Called while another session is open it fails: call
+    ///   [`Self::disable_semantic`] first.
+    ///
+    /// Every refusal is a [`SemanticError`] whose kind says which of these it was,
+    /// so the application can tell the user what to install: the vectors, the
+    /// model or ONNX Runtime. The table on [`SemanticErrorKind`] has each kind, and
+    /// `field` names the identity field that disagreed when the set was built for
+    /// something else.
+    ///
+    /// `&self`, unlike [`Self::configure_semantic`]: opening loads the model and
+    /// maps the set, which takes time, and a `&mut self` binding would hold the
+    /// engine's write lock throughout, stalling every lexical search.
+    pub fn open_semantic_artifact(
+        &self,
+        config: SemanticArtifactInput,
+    ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            self.semantic_runtime = None;
+            let model = parse_model_identity(&config.model_identity_json)?;
+            check_onnx_runtime_path(config.onnx_runtime_path.as_deref())?;
+            let scan_threads = match config.scan_threads {
+                Some(0) => {
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::InvalidInput,
+                        "scan_threads is 0, so no thread would scan; pass None for the \
+                         sidecar's default, or a number of threads from 1",
+                    )
+                    .with_field("scan_threads"))
+                }
+                threads => threads.and_then(|threads| NonZeroUsize::new(threads as usize)),
+            };
+            let key = SemanticArtifactKey {
+                vectors_dir: PathBuf::from(&config.vectors_dir),
+                model_path: PathBuf::from(&config.model_path),
+                model,
+                onnx_runtime: config.onnx_runtime_path.as_ref().map(PathBuf::from),
+                scan_threads: config.scan_threads,
+            };
+            if let Some(refusal) = self.refuse_second_session(&key) {
+                return refusal;
+            }
+
+            let refused = |err: &dyn std::fmt::Display| {
+                format!(
+                    "failed to open the semantic vectors at {}: {err}",
+                    key.vectors_dir.display()
+                )
+            };
+            let call = SidecarCall::OpenArtifact {
+                vectors_dir: &key.vectors_dir,
+                model_path: &key.model_path,
+                onnx_runtime: key.onnx_runtime.as_deref(),
+            };
+            // The installation's own half first, by the checks the sidecar makes of it
+            // before it reads the artifact: the sidecar reports a refusal of either side
+            // in the same types, and settling this one first is what makes the kind of
+            // whatever it refuses afterwards that of the artifact, the model or the
+            // runtime. None of them reads the package's precision, which is found next.
+            let family = LocalModel::of_family(key.model_path.clone(), &key.model, "");
+            semantic_errors::check_local_model(&family, |err| refused(err))?;
+            ensure_keyed_chunking(&key.model, &refused)?;
+            let package = family_package(&key, call, &refused)?;
+            let local = LocalModel {
+                model_quantization: package.quantization,
+                ..family
+            };
+            let index = OfficialSemanticIndex::open(OfficialIndexConfig {
+                vectors_dir: key.vectors_dir.clone(),
+                // The line recipe this build writes and recomputes keys under. A set keyed
+                // under another would resolve nothing, so it is refused by that field.
+                text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
+                model: local,
+                // As for `configure_semantic`. No identity field reads it, so it makes no
+                // set the wrong one.
+                deployment: EmbeddingDeployment {
+                    onnx_runtime: key.onnx_runtime.clone(),
+                },
+                scan_threads,
+            })
+            .map_err(|err| semantic_errors::sidecar_error(&err, call, refused(&err)))?;
+
+            // The field the sidecar takes from the loaded package rather than from the
+            // identity file. The artifact agreed with the package, so an identity file that
+            // disagrees with it describes other weights, and is refused rather than quietly
+            // outvoted.
+            let loaded = &index.identity().model;
+            if key.model.tokenizer_checksum != loaded.tokenizer_checksum {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ModelIdentityMismatch,
+                    format!(
+                        "model_identity_json declares tokenizer_checksum '{}', but the model \
+                         at {} has '{}', as does the vector set: the identity file describes \
+                         other weights",
+                        key.model.tokenizer_checksum,
+                        key.model_path.display(),
+                        loaded.tokenizer_checksum
+                    ),
+                )
+                .with_field("tokenizer_checksum"));
+            }
+
+            let mut active = self
+                .semantic_runtime
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            // Checked again under the lock: another call may have opened a session while
+            // this one was loading.
+            if let Some(existing) = active.as_ref() {
+                let same = Self::is_artifact_session(existing, &key);
+                drop(active);
+                return if same {
+                    Ok(self.semantic_status())
+                } else {
+                    Err(SemanticError::new(
+                        SemanticErrorKind::SessionConflict,
+                        format!(
+                            "another semantic session was opened while these vectors were \
+                             loading; call disable_semantic() first to open {}",
+                            key.vectors_dir.display()
+                        ),
+                    ))
+                };
+            }
+            *active = Some(ConfiguredSemantic {
+                coordinator: Arc::new(HybridCoordinator::with_official_index(index)),
+                source: SemanticSource::Artifact(OpenedArtifact { key }),
+            });
+            drop(active);
+            Ok(self.semantic_status())
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = config;
+            Ok(Self::semantic_disabled_status())
         }
     }
 
-    /// The open sidecar engine, or `None` when semantic search has not been
-    /// configured in this session.
+    /// Whether `active` is the artifact session `key` would open.
     #[cfg(feature = "semantic-integration")]
-    fn semantic_engine(&self) -> Option<&OtzariaHybridEngine> {
-        self.semantic_runtime.as_ref().map(|active| &active.engine)
+    fn is_artifact_session(active: &ConfiguredSemantic, key: &SemanticArtifactKey) -> bool {
+        matches!(&active.source, SemanticSource::Artifact(opened) if opened.key == *key)
+    }
+
+    /// What [`Self::open_semantic_artifact`] answers while a session is already open:
+    /// the status for a repeat of the same artifact, a `SessionConflict` for anything
+    /// else, and `None` when nothing is open.
+    #[cfg(feature = "semantic-integration")]
+    fn refuse_second_session(
+        &self,
+        key: &SemanticArtifactKey,
+    ) -> Option<Result<SemanticStatus, SemanticError>> {
+        let active = self
+            .semantic_runtime
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let refusal = match active.as_ref().map(|active| &active.source)? {
+            SemanticSource::Artifact(opened) if opened.key == *key => None,
+            SemanticSource::Artifact(opened) => Some(format!(
+                "a semantic vector set is already open ({}) and {} changed; call \
+                 disable_semantic() first to open {}",
+                opened.key.vectors_dir.display(),
+                opened.key.changed_fields(key),
+                key.vectors_dir.display()
+            )),
+            SemanticSource::SelfBuilt(_) => Some(format!(
+                "a semantic session with vectors built on this device is open \
+                 (configure_semantic); call disable_semantic() first to open {}",
+                key.vectors_dir.display()
+            )),
+        };
+        // Released before the status is read, which takes the lock again.
+        drop(active);
+        Some(match refusal {
+            None => Ok(self.semantic_status()),
+            Some(refusal) => Err(SemanticError::new(
+                SemanticErrorKind::SessionConflict,
+                refusal,
+            )),
+        })
+    }
+
+    /// Remove the configured sidecar without touching its on-disk files.
+    /// This is useful when an app switches library roots or wants lexical-only
+    /// operation for the current session, and it is the explicit way to allow a
+    /// subsequent [`Self::configure_semantic`] or [`Self::open_semantic_artifact`]
+    /// with different inputs.
+    ///
+    /// For a session from [`Self::configure_semantic`] this drops its vectors,
+    /// which are in memory only: configuring it again needs a full re-index. An
+    /// opened artifact is only closed; its files are untouched.
+    pub fn disable_semantic(&mut self) {
+        #[cfg(feature = "semantic-integration")]
+        {
+            *self
+                .semantic_runtime
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+            self.forget_set_view();
+        }
+    }
+
+    /// The open sidecar session, or `None` when semantic search has not been
+    /// configured in this session. A clone of the handle, which is an `Arc`, so no
+    /// lock is held while it is used.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_engine(&self) -> Option<OpenSession> {
+        self.semantic_runtime
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|active| OpenSession {
+                coordinator: Arc::clone(&active.coordinator),
+                model_path: active.model_path().to_path_buf(),
+                onnx_runtime: active.onnx_runtime().map(Path::to_path_buf),
+                vectors_dir: match &active.source {
+                    SemanticSource::Artifact(opened) => Some(opened.key.vectors_dir.clone()),
+                    SemanticSource::SelfBuilt(_) => None,
+                },
+            })
     }
 
     /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
@@ -2220,11 +4405,40 @@ impl SearchEngine {
     pub fn semantic_status(&self) -> SemanticStatus {
         #[cfg(feature = "semantic-integration")]
         {
-            if let Some(runtime) = self.semantic_engine() {
-                let status = runtime.get_semantic_status();
+            if let Some(session) = self.semantic_engine() {
+                let status = session.coordinator.status();
+                let available = status.available;
+                // A session that needs a full re-index is not served. `Failed` and `Empty`
+                // are a session built on this device's; an opened vector set serves its
+                // index whatever is committed to it, since its hits are resolved against
+                // the live index on every search.
+                let state = if status.needs_full_reindex.is_some() {
+                    SemanticState::NeedsReindex
+                } else if available {
+                    SemanticState::Ready
+                } else if status.last_error.is_some() {
+                    SemanticState::Failed
+                } else {
+                    SemanticState::Empty
+                };
+                // The sidecar keeps a session's failures as text, and a vector set reports
+                // none, so this is the text of a session built on this device: a failed
+                // model load or vector insert, or the note that an unusable manifest was
+                // moved aside. Its typed error went to the call that failed; the text alone
+                // is `Internal`.
+                let error_kind = status
+                    .last_error
+                    .as_ref()
+                    .map(|_| SemanticErrorKind::Internal);
+                let last_error = status.last_error;
+                let set = session.coordinator.vector_set_info();
                 return SemanticStatus {
+                    vectors_library_version: set.as_ref().map(|set| set.library_version),
+                    vector_segments: set.as_ref().map_or(0, |set| set.segments.len() as u32),
+                    needs_compaction: set.as_ref().is_some_and(|set| set.needs_compaction),
+                    state,
                     enabled: true,
-                    available: status.available,
+                    available,
                     model_loaded: status.model_loaded,
                     indexed_book_count: status.indexed_book_count,
                     vector_count: status.vector_count,
@@ -2234,7 +4448,8 @@ impl SearchEngine {
                     vector_backend: status.vector_backend,
                     vectors_persisted: status.vectors_persisted,
                     needs_full_reindex: status.needs_full_reindex,
-                    last_error: status.last_error,
+                    last_error,
+                    error_kind,
                 };
             }
             Self::semantic_not_configured_status()
@@ -2246,22 +4461,506 @@ impl SearchEngine {
         }
     }
 
+    /// Install a release of the library's vectors into the set at `vectors_dir`, creating
+    /// the set when there is none: a base replaces whatever the set holds, and a delta
+    /// brings it from the library version it stands at to the next. The release must be
+    /// of this installation — the line recipe this build indexes with, the model family
+    /// `model_identity_json` describes, chunked as this build keys lines, and the store
+    /// this build reads — and, given `published_manifest_sha256`, the one published.
+    ///
+    /// The set is locked throughout, and the new generation goes live in one flip: a
+    /// release that is refused, cancelled through `cancellation`, or cut off by a crash
+    /// leaves the set as it was. A segment compressed with zstd (`.zst`) is expanded into
+    /// a file of the install's own in the set's `incoming/` folder first, beside a lock file
+    /// the install holds until it returns, so it needs its expanded size free besides what
+    /// the install needs; both are gone when this returns, installed or not. An open session
+    /// on the same set is moved onto the new generation before this returns.
+    ///
+    /// One install or compaction of a set runs at a time. While another runs in this
+    /// process, this one is refused before it reads anything; otherwise it waits up to a
+    /// second for the set's lock before it is refused. Either way the refusal is
+    /// `VectorsBusy` about `vectors_dir`: nothing was changed, an open session keeps
+    /// serving, and the install can be tried again once the other has finished.
+    ///
+    /// Refusals are [`SemanticError`]s of the kinds in the table on
+    /// [`SemanticErrorKind`]: `ArtifactNotPublished` for a manifest that is not the
+    /// published one, `ArtifactIncompatible` for a release of another identity or a delta
+    /// that does not follow the set, `ArtifactCorrupt` for a segment that is not the one
+    /// its manifest describes, `InsufficientDiskSpace`, `VectorsBusy`, and
+    /// `Cancelled`.
+    ///
+    /// `&self`: it touches the vector set only, and a `&mut self` binding would hold the
+    /// engine's write lock while it copies a segment of hundreds of megabytes.
+    pub fn install_semantic_vectors(
+        &self,
+        input: SemanticVectorsInstallInput,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticVectorsInstallReport, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            use otzaria_semantic_search::semantic::segment_set::{
+                self, InstallExpectation, InstallSource,
+            };
+            let vectors_dir = PathBuf::from(&input.vectors_dir);
+            let refused = |err: &dyn std::fmt::Display| {
+                format!(
+                    "failed to install the semantic vectors into {}: {err}",
+                    vectors_dir.display()
+                )
+            };
+            let model = parse_model_identity(&input.model_identity_json)?;
+            ensure_keyed_chunking(&model, &refused)?;
+            let downloaded = PathBuf::from(&input.segment_path);
+            if !downloaded.is_file() {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
+                    refused(&format!(
+                        "segment_path names no file: {}",
+                        downloaded.display()
+                    )),
+                )
+                .with_field("segment_path"));
+            }
+            // A manifest that does not read is a damaged release, whatever the set holds;
+            // the sidecar's refusal of it would read as a set missing or damaged.
+            if let Err(err) = serde_json::from_str::<
+                otzaria_semantic_search::semantic::segment_set::ReleaseManifest,
+            >(&input.manifest_json)
+            {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ArtifactCorrupt,
+                    refused(&format!("the release manifest does not read: {err}")),
+                )
+                .with_field("manifest_json"));
+            }
+            let cancel = &cancellation.flag;
+            // Held until the session is on the new generation: nothing else installs into
+            // or compacts this set meanwhile, in this process.
+            let _work = VectorSetWork::take(&vectors_dir, "installing the vectors")?;
+            let compressed = downloaded.extension().is_some_and(|ext| ext == "zst");
+            // An expansion, removed when this is dropped — its segment, and then the lock
+            // that kept it this install's: an install moves the segment into the set, and a
+            // refused one leaves it where it was.
+            let expanded = if compressed {
+                Some(expand_segment(&downloaded, &vectors_dir, cancel, &refused)?)
+            } else {
+                None
+            };
+            let source = InstallSource {
+                segment: expanded
+                    .as_ref()
+                    .map_or(downloaded.as_path(), |expansion| &expansion.segment),
+                manifest_json: &input.manifest_json,
+            };
+            let expectation = InstallExpectation {
+                identity: installation_identity(model),
+                published_manifest_sha256: input.published_manifest_sha256,
+            };
+            let installed = waiting_for_set_lock(cancel, SET_LOCK_WAIT, || {
+                segment_set::install_package(&vectors_dir, &source, &expectation, cancel)
+            });
+            drop(expanded);
+            let report = installed.map_err(|err| {
+                vector_set_error(&err, &vectors_dir, refused(&err), "installing the vectors")
+            })?;
+            self.reload_open_vectors(&vectors_dir)?;
+            Ok(SemanticVectorsInstallReport {
+                kind: package_kind(report.kind),
+                library_version: report.library_version,
+                generation: report.generation,
+                segments: report.segments,
+                slots_added: report.slots_added,
+                tombstones_applied: report.tombstones_applied,
+                duplicates_removed: report.duplicates_removed,
+                foreign_unresolved: report.foreign_unresolved,
+                bytes_on_disk: report.bytes_on_disk,
+                needs_compaction: report.needs_compaction,
+                already_applied: report.already_applied,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (input, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Merge the set at `vectors_dir` into one segment, when `policy` (or, with `None`, the
+    /// sidecar's defaults, [`SemanticCompactionPolicy::defaults`]) asks for it; the report
+    /// says whether it did, and why. Deltas pile up as the library is updated, and each one
+    /// a search scans costs it time; the set wants compacting when
+    /// [`SemanticVectorsInfo::needs_compaction`] says so.
+    ///
+    /// `live_library_version` is the library version the open index holds, which the
+    /// application knows and the index does not. When it is the set's own, and the index
+    /// has the `chunkKey` column, every record is moved onto the live line that holds its
+    /// text, and records whose book no longer holds it are dropped; otherwise records are
+    /// kept as they are, which costs nothing but the space.
+    ///
+    /// Locked and crash-safe as an install is, and cancellable: a cancelled or failed
+    /// compaction leaves the set as it was. It refuses to start without
+    /// `min_free_space_factor` times the output's size free, as `InsufficientDiskSpace`,
+    /// and while another install or compaction of the set runs, as `VectorsBusy` about
+    /// `vectors_dir`, waiting for the set's lock as an install does. An open session on the
+    /// same set is moved onto the compacted generation.
+    pub fn compact_semantic_vectors(
+        &self,
+        vectors_dir: String,
+        live_library_version: Option<u32>,
+        policy: Option<SemanticCompactionPolicy>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticCompactionReport, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            use crate::semantic_resolver::{LiveKeys, LiveResolver};
+            use otzaria_semantic_search::semantic::resolve::LiveKeySource;
+            use otzaria_semantic_search::semantic::segment_set;
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let failed = |err: &SemanticSearchError| {
+                vector_set_error(
+                    err,
+                    &vectors_dir,
+                    format!(
+                        "failed to compact the semantic vectors at {}: {err}",
+                        vectors_dir.display()
+                    ),
+                    "compacting the vectors",
+                )
+            };
+            let policy =
+                compaction_policy(policy.unwrap_or_else(SemanticCompactionPolicy::defaults))?;
+            // As an install holds it, and for as long.
+            let _work = VectorSetWork::take(&vectors_dir, "compacting the vectors")?;
+            let resolver = LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .map_err(|err| failed(&err.into()))?;
+            let live = live_library_version.and_then(|version| LiveKeys::new(&resolver, version));
+            let report = waiting_for_set_lock(&cancellation.flag, SET_LOCK_WAIT, || {
+                segment_set::compact(
+                    &vectors_dir,
+                    &policy,
+                    live.as_ref().map(|live| live as &dyn LiveKeySource),
+                    &cancellation.flag,
+                )
+            })
+            .map_err(|err| failed(&err))?;
+            if report.compacted {
+                self.reload_open_vectors(&vectors_dir)?;
+            }
+            Ok(SemanticCompactionReport {
+                compacted: report.compacted,
+                reason: report.reason,
+                generation: report.generation,
+                bytes_before: report.bytes_before,
+                bytes_after: report.bytes_after,
+                slots_before: report.slots_before,
+                slots_after: report.slots_after,
+                records_pruned: report.records_pruned,
+                hints_refreshed: report.hints_refreshed,
+                elapsed_ms: report.elapsed_ms,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, live_library_version, policy, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// What is installed at `vectors_dir`, from its small files alone: nothing is opened,
+    /// mapped or cleaned up, so it is cheap enough to ask before every download. Nothing
+    /// installed is not an error: [`SemanticVectorsInfo::present`] is `false` then.
+    /// `ArtifactCorrupt` when what is there does not read.
+    pub fn semantic_vectors_info(
+        &self,
+        vectors_dir: String,
+    ) -> Result<SemanticVectorsInfo, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let info = otzaria_semantic_search::semantic::segment_set::info(&vectors_dir).map_err(
+                |err| {
+                    vector_set_error(
+                        &err,
+                        &vectors_dir,
+                        format!(
+                            "failed to read the semantic vectors at {}: {err}",
+                            vectors_dir.display()
+                        ),
+                        "reading the vectors",
+                    )
+                },
+            )?;
+            Ok(vectors_info(info))
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = vectors_dir;
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Read every block of every segment of the set at `vectors_dir` and check it against
+    /// its checksum: the check opening leaves out, to run on demand, such as after a crash
+    /// or before reporting a problem. It reads the whole set, so it takes the time a read of
+    /// that many bytes takes, and stops at a cancel.
+    ///
+    /// A damaged segment is marked so that every later open refuses it, and this returns
+    /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
+    /// again if it is gone. On a FAT or exFAT drive on Windows a repair under the same
+    /// segment fails while a session holds the set open, since a mapped file cannot be
+    /// replaced there: close the session (`disable_semantic`) before installing it. An open
+    /// session keeps what it has mapped until it is closed. `ArtifactMissing` when nothing is
+    /// installed there.
+    ///
+    /// An install that replaced bytes the verification had read, while it read them, is
+    /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`
+    /// — verify again once the install has finished. A cancelled verification records
+    /// nothing.
+    pub fn verify_semantic_vectors(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticVectorsVerification, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let report = otzaria_semantic_search::semantic::segment_set::scrub(
+                &vectors_dir,
+                &cancellation.flag,
+            )
+            .map_err(|err| {
+                vector_set_error(
+                    &err,
+                    &vectors_dir,
+                    format!(
+                        "the semantic vectors at {} did not verify: {err}",
+                        vectors_dir.display()
+                    ),
+                    "verifying the vectors",
+                )
+            })?;
+            verification_of(&report, &vectors_dir)
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// How much of the open index the set at `vectors_dir` covers: the live lines the
+    /// recipe embeds, and how many of them the set holds a vector for. From the `chunkKey`
+    /// column, one pass over it; on an index without the column, every book's keys are
+    /// recomputed from its stored text, which reads the whole store. Cancellable.
+    ///
+    /// A line is covered when any slot of the set holds its text's key, including a slot a
+    /// later delta deleted; a release deletes only texts no line of its library holds, so
+    /// that counts a line of an index older than the set at most.
+    pub fn semantic_coverage(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticCoverage, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::oxv::reader::Segment;
+            use otzaria_semantic_search::semantic::segment_set;
+            let vectors_dir = PathBuf::from(&vectors_dir);
+            let cancel = &cancellation.flag;
+            let failed = |err: &SemanticSearchError| {
+                vector_set_error(
+                    err,
+                    &vectors_dir,
+                    format!(
+                        "failed to count what the semantic vectors at {} cover: {err}",
+                        vectors_dir.display()
+                    ),
+                    "counting the coverage",
+                )
+            };
+            let Some(info) = segment_set::info(&vectors_dir).map_err(|err| failed(&err))? else {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::ArtifactMissing,
+                    format!(
+                        "no semantic vectors are installed at {}",
+                        vectors_dir.display()
+                    ),
+                )
+                .with_field("vectors_dir"));
+            };
+            let mut keys = Vec::new();
+            for segment in &info.segments {
+                if cancel.is_cancelled() {
+                    return Err(failed(&SemanticSearchError::Cancelled));
+                }
+                // Where the set keeps its segments, as the sidecar lays it out.
+                let path = vectors_dir
+                    .join("segments")
+                    .join(format!("{}.oxv", segment.id));
+                let opened = Segment::open(&path).map_err(|err| failed(&err.into()))?;
+                keys.extend((0..opened.slot_count()).map(|slot| opened.key(slot).column_value()));
+            }
+            keys.sort_unstable();
+            keys.dedup();
+            let coverage = LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .and_then(|resolver| resolver.coverage(&keys, cancel))
+            .map_err(|err| failed(&err.into()))?;
+            Ok(SemanticCoverage {
+                live_keyed_lines: coverage.keyed_lines,
+                covered_lines: coverage.covered_lines,
+                books_live: coverage.books_live,
+                books_covered: coverage.books_covered,
+                vectors_library_version: info.library_version,
+                ratio: if coverage.keyed_lines == 0 {
+                    0.0
+                } else {
+                    coverage.covered_lines as f64 / coverage.keyed_lines as f64
+                },
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Move the open session onto the generation an install or a compaction made live, when
+    /// it serves the set at `vectors_dir`; nothing otherwise.
+    #[cfg(feature = "semantic-integration")]
+    fn reload_open_vectors(&self, vectors_dir: &Path) -> Result<(), SemanticError> {
+        let coordinator = {
+            let active = self
+                .semantic_runtime
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            match active.as_ref() {
+                Some(ConfiguredSemantic {
+                    coordinator,
+                    source: SemanticSource::Artifact(opened),
+                }) if same_directory(&opened.key.vectors_dir, vectors_dir) => {
+                    Arc::clone(coordinator)
+                }
+                _ => return Ok(()),
+            }
+        };
+        // The view of the generation the session leaves, which on Windows would keep its
+        // segments from being removed.
+        self.forget_set_view();
+        coordinator
+            .reload_semantic_vectors()
+            .map(drop)
+            .map_err(|err| {
+                vector_set_error(
+                    &err,
+                    vectors_dir,
+                    format!(
+                        "the semantic vectors at {} changed, and the open session could not move \
+                     onto them, so it serves the generation it had: {err}",
+                        vectors_dir.display()
+                    ),
+                    "reloading the vectors",
+                )
+            })
+    }
+
+    /// The view a search plans its scan by, of the set at `vectors_dir` as its
+    /// generation `generation` is: the one kept, or one opened now. `None` when the set has
+    /// moved on from that generation — the session follows it, and a later search plans
+    /// against it — or its segments do not open, which the session's own open would have
+    /// refused; the search then scans the admitted books alone.
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_set_view(
+        &self,
+        vectors_dir: &Path,
+        generation: u64,
+    ) -> Option<Arc<crate::semantic_moves::SetView>> {
+        let mut kept = self
+            .semantic_set_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(view) = kept.as_ref() {
+            if view.generation() == generation && same_directory(view.dir(), vectors_dir) {
+                return Some(Arc::clone(view));
+            }
+        }
+        *kept = match crate::semantic_moves::SetView::open(vectors_dir, generation) {
+            Ok(view) => view.map(Arc::new),
+            Err(err) => {
+                warn!(
+                    "the vector set at {} could not be read to plan searches, which go \
+                     unplanned: {err}",
+                    vectors_dir.display()
+                );
+                None
+            }
+        };
+        kept.clone()
+    }
+
+    /// Let go of the kept view, and the plans made with it: the session moved to another
+    /// generation, or closed.
+    #[cfg(feature = "semantic-integration")]
+    fn forget_set_view(&self) {
+        *self
+            .semantic_set_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        self.semantic_resolver
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_plans();
+    }
+
+    #[cfg(not(feature = "semantic-integration"))]
+    fn semantic_not_in_build() -> SemanticError {
+        SemanticError::new(
+            SemanticErrorKind::FeatureNotInBuild,
+            "semantic support is not compiled into this build",
+        )
+    }
+
     /// Index or replace semantic vectors for complete books. The caller should
     /// use the same fingerprint it uses in `semantic_index_diff`; line ids must
     /// be the global Tantivy document ids so semantic-only results can hydrate.
+    ///
+    /// **Development and testing scaffolding**, for a session from
+    /// [`Self::configure_semantic`]: this embeds books on the device, which the
+    /// application never does for the library. On an artifact opened with
+    /// [`Self::open_semantic_artifact`] it is refused as read-only.
     ///
     /// Takes `&self` on purpose. It mutates only the sidecar, which serializes
     /// indexing behind its own mutex and releases the engine lock between
     /// books. Declaring `&mut self` would make flutter_rust_bridge take a write
     /// lock on the whole engine for the entire run, blocking every concurrent
     /// *lexical* search for as long as the library takes to embed.
+    ///
+    /// The first call with something to embed loads the model, so this is where
+    /// a session from [`Self::configure_semantic`] meets a missing or unusable
+    /// model, tokenizer or ONNX Runtime, each as its own [`SemanticErrorKind`];
+    /// `ReindexRequired` when the session holds vectors from another
+    /// configuration, and `ReadOnlySession` on an opened artifact.
     pub fn semantic_index_books(
         &self,
         books: Vec<SemanticBookInput>,
-    ) -> Result<SemanticIndexingSummary> {
+    ) -> Result<SemanticIndexingSummary, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticIndexingSummary {
                     enabled: false,
                     books_indexed: 0,
@@ -2293,9 +4992,16 @@ impl SearchEngine {
                         .collect(),
                 })
                 .collect();
-            let summary = runtime
+            let summary = session
+                .coordinator
                 .index_books(&sidecar_books)
-                .map_err(|err| anyhow::anyhow!("semantic indexing failed: {err}"))?;
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic indexing failed: {err}"),
+                    )
+                })?;
             let summary = summary.unwrap_or_default();
             Ok(SemanticIndexingSummary {
                 enabled: true,
@@ -2322,20 +5028,38 @@ impl SearchEngine {
     /// Compare the semantic manifest with the book fingerprints stored in the
     /// lexical index. A `contentHash` of zero is deliberately surfaced as
     /// `unverifiable_books` rather than treated as an up-to-date PDF.
-    pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff> {
+    ///
+    /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
+    /// is: it answers which books this device should embed. On an opened
+    /// artifact it is refused as read-only, since nothing there is re-indexed.
+    pub fn semantic_index_diff(&self) -> Result<SemanticIndexDiff, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(Self::semantic_disabled_diff());
             };
-            let fingerprints = self.get_book_fingerprints()?;
+            // Raw lexical hashes, each as the sidecar's own conversion reads one: zero is
+            // "no fingerprint", so a PDF lands in `unverifiable_books` and never passes
+            // for up to date.
+            let fingerprints = self
+                .get_book_fingerprints()?
+                .into_iter()
+                .map(|(book, hash)| (book, SidecarContentFingerprint::from_lexical_hash(hash)))
+                .collect();
             // The sidecar now separates "the semantic path is off" from "the comparison
             // itself failed": the first is `Ok(None)`, the second an error. Collapsing
             // them would report a broken manifest as a disabled feature, and the app
             // would offer indexing as the fix.
-            let diff = runtime
-                .get_semantic_index_diff_from_lexical_hashes(&fingerprints)
-                .map_err(|err| anyhow::anyhow!("semantic index diff failed: {err}"))?;
+            let diff = session
+                .coordinator
+                .semantic_index_diff(&fingerprints)
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic index diff failed: {err}"),
+                    )
+                })?;
             let Some(diff) = diff else {
                 return Ok(Self::semantic_disabled_diff());
             };
@@ -2360,22 +5084,32 @@ impl SearchEngine {
     /// Remove vector records for books previously reported as `removed_books`.
     /// This never deletes lexical Tantivy documents.
     ///
+    /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
+    /// is; refused as read-only on an opened artifact.
+    ///
     /// `&self` for the same reason as [`Self::semantic_index_books`].
     pub fn remove_semantic_books(
         &self,
         source_book_keys: Vec<String>,
-    ) -> Result<SemanticRemoveResult> {
+    ) -> Result<SemanticRemoveResult, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticRemoveResult {
                     enabled: false,
                     vectors_removed: 0,
                 });
             };
-            let removed = runtime
+            let removed = session
+                .coordinator
                 .remove_semantic_books(&source_book_keys)
-                .map_err(|err| anyhow::anyhow!("semantic remove failed: {err}"))?
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic remove failed: {err}"),
+                    )
+                })?
                 .unwrap_or(0);
             Ok(SemanticRemoveResult {
                 enabled: true,
@@ -2396,19 +5130,29 @@ impl SearchEngine {
     /// Discard all sidecar vectors and manifest book entries. Lexical Tantivy
     /// documents are untouched, so a full semantic rebuild can follow safely.
     ///
+    /// **Development and testing scaffolding**, as [`Self::semantic_index_books`]
+    /// is; refused as read-only on an opened artifact.
+    ///
     /// `&self` for the same reason as [`Self::semantic_index_books`].
-    pub fn reset_semantic_index(&self) -> Result<SemanticResetResult> {
+    pub fn reset_semantic_index(&self) -> Result<SemanticResetResult, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            let Some(session) = self.semantic_engine() else {
                 return Ok(SemanticResetResult {
                     enabled: false,
                     vectors_removed: 0,
                 });
             };
-            let removed = runtime
+            let removed = session
+                .coordinator
                 .reset_semantic_index()
-                .map_err(|err| anyhow::anyhow!("semantic reset failed: {err}"))?
+                .map_err(|err| {
+                    semantic_errors::sidecar_error(
+                        &err,
+                        session.call(),
+                        format!("semantic reset failed: {err}"),
+                    )
+                })?
                 .unwrap_or(0);
             Ok(SemanticResetResult {
                 enabled: true,
@@ -2426,8 +5170,33 @@ impl SearchEngine {
     }
 
     /// Search through the sidecar exactly once. Tantivy supplies scored lexical
-    /// candidates; `OtzariaHybridEngine` alone performs hybrid fusion/grouping.
-    /// Semantic-only items are hydrated from Tantivy before crossing FFI.
+    /// candidates; the sidecar's coordinator alone performs hybrid fusion/grouping.
+    /// Semantic-only items are hydrated from Tantivy before crossing FFI. The
+    /// same for an artifact opened with [`Self::open_semantic_artifact`] and a
+    /// development session, except that a stale artifact (the index committed
+    /// to since it was opened) is not asked, and the lexical fallback says why.
+    ///
+    /// A semantic path that cannot serve is not an error here: the response falls
+    /// back to lexical results and says why, in `fallback_reason` and, as a value
+    /// to branch on, `fallback_kind`. What fails the call is the lexical half
+    /// failing, which is an `Internal` [`SemanticError`].
+    ///
+    /// `ranking` replaces, for this search, every parameter hybrid ranking runs on (see
+    /// [`SemanticRankingOptions`], whose defaults are unmeasured). `None` ranks by the preset
+    /// every search has used, exactly as before, and so does
+    /// [`SemanticRankingOptions::defaults`]. An option outside its range is refused before the
+    /// search runs, as `InvalidInput` naming it, whether or not a session is open to rank by
+    /// it: a build without semantic support ignores the options.
+    ///
+    /// `cancellation` abandons the search: once it is cancelled, the next look at it
+    /// ends the search with a `Cancelled` [`SemanticError`], never with lexical results
+    /// in its place. The search looks before its lexical phase, hands the token to the
+    /// sidecar, which looks throughout the semantic half (before and after it embeds the
+    /// query, every 1,024 records of the vector scan, before and after fusion), and looks
+    /// again before it hydrates the sidecar's results and before it paints the page; a
+    /// lexical fallback is looked at before it runs and once its page is ready. Required,
+    /// since flutter_rust_bridge 2.13 cannot pass an optional borrowed opaque type: an
+    /// application with nothing to cancel passes a fresh token, which changes nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn search_semantic(
         &self,
@@ -2441,11 +5210,21 @@ impl SearchEngine {
         grouping: Option<SemanticGroupingMode>,
         match_nikud: bool,
         match_taamim: bool,
-    ) -> Result<SemanticSearchResponse> {
+        ranking: Option<SemanticRankingOptions>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticSearchResponse, SemanticError> {
         let started = Instant::now();
+        let cancel = &cancellation.flag;
+        // Before anything, the sidecar's own first look included: a search cancelled before
+        // it starts costs nothing.
+        search_cancellation::look(cancel, SearchCheckpoint::Start)?;
         #[cfg(feature = "semantic-integration")]
         {
-            let Some(runtime) = self.semantic_engine() else {
+            // By the rules the coordinator checks it by, but before the lexical phase rather
+            // than after it, and whether or not there is a session to rank: an option out of
+            // range is a mistake in the call, and a fallback would hide it.
+            let ranking = ranking.as_ref().map(ranking_profile).transpose()?;
+            let Some(session) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
                     &facets,
@@ -2457,8 +5236,12 @@ impl SearchEngine {
                     grouping,
                     match_nikud,
                     match_taamim,
-                    Some("semantic sidecar has not been configured".to_string()),
+                    SemanticError::new(
+                        SemanticErrorKind::NotConfigured,
+                        "semantic sidecar has not been configured",
+                    ),
                     started.elapsed().as_millis() as u64,
+                    cancel,
                 );
             };
             // Ask the coordinator for a prefix wider than the requested page,
@@ -2517,50 +5300,139 @@ impl SearchEngine {
                     )?,
                 }
             };
-            let result = runtime
-                .search(SidecarSearchRequest {
-                    query,
+            // The live index a vector set's hits are resolved against, at the generation this
+            // search reads. A session built on this device never asks it.
+            let unreadable = |err: otzaria_semantic_search::semantic::resolve::ResolveError| {
+                if err == otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled {
+                    return SemanticError::cancelled();
+                }
+                SemanticError::new(
+                    SemanticErrorKind::Internal,
+                    format!("the index could not be read to resolve semantic results: {err}"),
+                )
+            };
+            let mut resolver = crate::semantic_resolver::LiveResolver::new(
+                self.index_reader.searcher(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+            )
+            .map_err(unreadable)?;
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: (!facets.is_empty()).then_some(facets),
+                include_pdf: None,
+            };
+            // Planned against the generation the session serves, for texts that moved since the
+            // set was built: see `crate::semantic_moves`.
+            if let (Some(vectors_dir), false) = (
+                &session.vectors_dir,
+                matches!(retrieval_mode, SemanticRetrievalMode::LexicalOnly),
+            ) {
+                if resolver.has_column() {
+                    if let Some(view) = session
+                        .coordinator
+                        .vector_set_info()
+                        .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
+                    {
+                        // A filtered plan that cannot be made fails the semantic half alone; an
+                        // unfiltered one goes unplanned.
+                        match resolver.plan(&filters, &view, cancel) {
+                            Ok(_) => {}
+                            Err(
+                                otzaria_semantic_search::semantic::resolve::ResolveError::Cancelled,
+                            ) => {
+                                return Err(SemanticError::cancelled());
+                            }
+                            Err(error) => {
+                                warn!("a filtered semantic search could not be planned: {error}");
+                                resolver.fail(error);
+                            }
+                        }
+                    }
+                }
+            }
+            // The sidecar's first act is to look at the token, so this crate does not look
+            // here itself; a test is told how far the search got.
+            search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
+            let result = session
+                .coordinator
+                .search_cancellable(
+                    &query,
                     lexical_candidates,
-                    limit: Some(candidate_window),
-                    offset: Some(0),
-                    grouping: grouping.map(|value| match value {
-                        SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
-                        SemanticGroupingMode::IdenticalText => SidecarGroupingMode::IdenticalText,
-                    }),
-                    filters: Some(SidecarSearchFilters {
-                        book_paths: None,
-                        facets: (!facets.is_empty()).then_some(facets),
-                        include_pdf: None,
-                    }),
-                    force_mode: Some(match retrieval_mode {
-                        SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
-                        SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
-                        SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
-                    }),
-                    // Both are per-request overrides the sidecar added; `None` keeps its
-                    // configured profile and flags, which is what this call has always
-                    // used. Choosing either from here is S5's decision, not a repin's.
-                    profile: None,
-                    feature_flags: None,
-                })
-                .map_err(|err| anyhow::anyhow!("semantic search failed: {err}"))?;
+                    &HybridSearchParams {
+                        limit: candidate_window as usize,
+                        offset: 0,
+                        grouping: grouping.map(|value| match value {
+                            SemanticGroupingMode::SameSection => SidecarGroupingMode::SameSection,
+                            SemanticGroupingMode::IdenticalText => {
+                                SidecarGroupingMode::IdenticalText
+                            }
+                        }),
+                        filters: Some(filters),
+                        force_mode: Some(match retrieval_mode {
+                            SemanticRetrievalMode::Hybrid => SidecarSearchMode::Hybrid,
+                            SemanticRetrievalMode::SemanticOnly => SidecarSearchMode::SemanticOnly,
+                            SemanticRetrievalMode::LexicalOnly => SidecarSearchMode::LexicalOnly,
+                        }),
+                        // `ranking` is the caller's, and replaces the preset `profile` names
+                        // when it is passed; `None` ranks by that preset exactly as before.
+                        // The preset and the feature flags, which clamp where `ranking` is
+                        // refused, stay the sidecar's defaults.
+                        profile: None,
+                        feature_flags: None,
+                        ranking,
+                    },
+                    &resolver,
+                    cancel,
+                )
+                .map_err(|err| semantic_errors::search_error(&err, session.call()))?;
+            // Hydration is a lookup per result, and nobody may be waiting for them.
+            search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;
+            // A semantic half that failed is folded into the result as text, and only
+            // then: a `LexicalOnly` request, or a quoted phrase the coordinator answers
+            // lexically, carries no reason. The coordinator stringifies the failure, so
+            // its type does not reach here, and `QueryFailed` is the kind that is true of
+            // all of them; the notes appended below are about a search that did run, and
+            // have none.
+            let fallback_kind = result
+                .fallback_reason
+                .as_ref()
+                .map(|_| SemanticErrorKind::QueryFailed);
 
-            // Phase 1 — drop stale primaries across the whole window, keeping
-            // the hydrated document so the surviving page needs no second
-            // lookup. Only a `needs_hydration` item can be stale: a lexical
-            // candidate came from this same searcher in this same request, so it
-            // is live by construction and needs no existence check.
-            //
-            // This has to precede pagination, or a dropped record would leave a
-            // hole on one page and shift the next.
+            // Every line a vector set's hit was resolved to, by (book, id): where it is in
+            // the searcher the resolver read. Empty for a session built on this device, whose
+            // lines are hydrated by book and id.
+            let records = resolver.records();
+            // A semantic match is a line that holds the text its vector was embedded from by
+            // all 128 bits of the key: the resolver checks every line it returns, primaries
+            // and grouped siblings alike, before fusion sees any, and counts those it drops.
+            // One lexical search also found is still a lexical result.
+            let unverified = resolver.unverified();
+
+            // Phase 1 — hydrate the whole window, keeping the hydrated document so the
+            // surviving page needs no second lookup. Only a `needs_hydration` item can be
+            // stale: a lexical candidate came from this same index in this same request, so
+            // it is live by construction. This has to precede pagination, or a dropped item
+            // would leave a hole on one page and shift the next.
             let mut surviving = Vec::with_capacity(result.results.len());
             let mut stale_primaries_dropped = 0u32;
             for item in result.results {
+                let record = records.get(&(item.file_path.clone(), item.id)).copied();
                 if !item.needs_hydration {
                     surviving.push((item, None));
                     continue;
                 }
-                match self.get_document_by_id(item.id)? {
+                let hydrated = match record {
+                    // By the address the line was resolved at, in the searcher that
+                    // resolved it: two books' lines can share an id, and an address cannot.
+                    Some(record) => {
+                        Some(self.document_at(resolver.searcher(), record.address, item.id)?)
+                    }
+                    // A line no vector set resolved, by its book and its id together, for
+                    // the same reason.
+                    None => self.document_in_book(resolver.searcher(), &item.file_path, item.id)?,
+                };
+                match hydrated {
                     Some(document) => surviving.push((item, Some(document))),
                     // A semantic record whose Tantivy document disappeared is
                     // stale. Never send its old metadata to Dart: a failed or
@@ -2580,6 +5452,7 @@ impl SearchEngine {
                 .skip(offset as usize)
                 .take(limit as usize)
                 .collect();
+            search_cancellation::look(cancel, SearchCheckpoint::Painting)?;
 
             let painter = match highlight {
                 Some(highlight) if !page.is_empty() => {
@@ -2598,7 +5471,21 @@ impl SearchEngine {
                 let mut page_stale_siblings = 0u32;
                 let mut merged = Vec::with_capacity(item.merged.len());
                 for sibling in item.merged {
-                    match self.get_document_by_id(sibling.id)? {
+                    let hydrated = match records.get(&(sibling.file_path.clone(), sibling.id)) {
+                        Some(record) => Some(self.document_at(
+                            resolver.searcher(),
+                            record.address,
+                            sibling.id,
+                        )?),
+                        // A sibling only lexical search found is of the group's book too:
+                        // hydrated by that book and its id, never by the id alone.
+                        None => self.document_in_book(
+                            resolver.searcher(),
+                            &sibling.file_path,
+                            sibling.id,
+                        )?,
+                    };
+                    match hydrated {
                         Some(document) => merged.push(MergedSibling {
                             title: document.title,
                             reference: document.reference,
@@ -2696,6 +5583,16 @@ impl SearchEngine {
                     None => stale_reason,
                 });
             }
+            if unverified > 0 {
+                let unverified_reason = format!(
+                    "{unverified} semantic match(es) were not shown as such: their line no \
+                     longer holds the text the vector was embedded from"
+                );
+                fallback_reason = Some(match fallback_reason {
+                    Some(reason) => format!("{reason}; {unverified_reason}"),
+                    None => unverified_reason,
+                });
+            }
             if candidate_window_capped {
                 let cap_reason = format!(
                     "semantic candidate window capped at {MAX_SEMANTIC_CANDIDATE_WINDOW} \
@@ -2723,6 +5620,7 @@ impl SearchEngine {
                 },
                 semantic_available: result.semantic_available,
                 fallback_reason,
+                fallback_kind,
                 latency_ms: started.elapsed().as_millis() as u64,
                 candidate_window_truncated: candidate_window_capped,
                 truncated,
@@ -2731,6 +5629,8 @@ impl SearchEngine {
 
         #[cfg(not(feature = "semantic-integration"))]
         {
+            // No sidecar, so nothing to rank by them, and no rules to check them by.
+            let _ = ranking;
             self.semantic_lexical_fallback_response(
                 &query,
                 &facets,
@@ -2742,33 +5642,42 @@ impl SearchEngine {
                 grouping,
                 match_nikud,
                 match_taamim,
-                Some("semantic support is not compiled into this build".to_string()),
+                SemanticError::new(
+                    SemanticErrorKind::FeatureNotInBuild,
+                    "semantic support is not compiled into this build",
+                ),
                 started.elapsed().as_millis() as u64,
+                cancel,
             )
         }
     }
 
     #[cfg(not(feature = "semantic-integration"))]
     fn semantic_disabled_status() -> SemanticStatus {
-        SemanticStatus {
-            enabled: false,
-            available: false,
-            model_loaded: false,
-            indexed_book_count: 0,
-            vector_count: 0,
-            model_id: String::new(),
-            embedding_dim: 0,
-            embedding_backend: None,
-            vector_backend: String::new(),
-            vectors_persisted: false,
-            needs_full_reindex: None,
-            last_error: Some("semantic support is not compiled into this build".to_string()),
-        }
+        Self::semantic_closed_status(
+            SemanticState::NotInBuild,
+            SemanticError::new(
+                SemanticErrorKind::FeatureNotInBuild,
+                "semantic support is not compiled into this build",
+            ),
+        )
     }
 
     #[cfg(feature = "semantic-integration")]
     fn semantic_not_configured_status() -> SemanticStatus {
+        Self::semantic_closed_status(
+            SemanticState::NotConfigured,
+            SemanticError::new(
+                SemanticErrorKind::NotConfigured,
+                "semantic sidecar has not been configured",
+            ),
+        )
+    }
+
+    /// The status when no session is open, in `state`, for the reason `why` gives.
+    fn semantic_closed_status(state: SemanticState, why: SemanticError) -> SemanticStatus {
         SemanticStatus {
+            state,
             enabled: false,
             available: false,
             model_loaded: false,
@@ -2780,7 +5689,11 @@ impl SearchEngine {
             vector_backend: String::new(),
             vectors_persisted: false,
             needs_full_reindex: None,
-            last_error: Some("semantic sidecar has not been configured".to_string()),
+            last_error: Some(why.message),
+            error_kind: Some(why.kind),
+            vectors_library_version: None,
+            vector_segments: 0,
+            needs_compaction: false,
         }
     }
 
@@ -2797,6 +5710,10 @@ impl SearchEngine {
         }
     }
 
+    /// The lexical results a search falls back to when the sidecar is not asked, with `why`
+    /// as the response's `fallback_reason` and `fallback_kind`. The search's token is looked
+    /// at once the page is ready, so a search cancelled while its fallback ran is cancelled
+    /// rather than served.
     #[allow(clippy::too_many_arguments)]
     fn semantic_lexical_fallback_response(
         &self,
@@ -2810,9 +5727,12 @@ impl SearchEngine {
         grouping: Option<SemanticGroupingMode>,
         match_nikud: bool,
         match_taamim: bool,
-        fallback_reason: Option<String>,
+        why: SemanticError,
         latency_ms: u64,
-    ) -> Result<SemanticSearchResponse> {
+        cancel: &SearchCancellation,
+    ) -> Result<SemanticSearchResponse, SemanticError> {
+        let fallback_reason = Some(why.message);
+        let fallback_kind = Some(why.kind);
         if matches!(requested_mode, SemanticRetrievalMode::SemanticOnly) {
             let count = match lexical_mode {
                 SemanticLexicalMode::Exact => self.count_exact_with_status(
@@ -2829,6 +5749,7 @@ impl SearchEngine {
                     match_taamim,
                 )?,
             };
+            search_cancellation::look(cancel, SearchCheckpoint::Fallback)?;
             return Ok(SemanticSearchResponse {
                 results: Vec::new(),
                 total_count: 0,
@@ -2839,6 +5760,7 @@ impl SearchEngine {
                 executed_mode: SemanticExecutedMode::SemanticOnly,
                 semantic_available: false,
                 fallback_reason,
+                fallback_kind,
                 latency_ms,
                 candidate_window_truncated: false,
                 truncated: count.truncated,
@@ -2916,6 +5838,7 @@ impl SearchEngine {
                 }
             })
             .collect();
+        search_cancellation::look(cancel, SearchCheckpoint::Fallback)?;
         Ok(SemanticSearchResponse {
             total_count: page.total_count,
             lexical_total_count: page.total_count,
@@ -2926,6 +5849,7 @@ impl SearchEngine {
             executed_mode: SemanticExecutedMode::LexicalOnly,
             semantic_available: false,
             fallback_reason,
+            fallback_kind,
             latency_ms,
             candidate_window_truncated: false,
             truncated: page.truncated,
@@ -2992,6 +5916,8 @@ impl SearchEngine {
             ),
             line_hash_f    => line_dedup_hash(&normalized_text)
         );
+        // Not a line of a book, so no key: only `add_text_book` knows a line's neighbours.
+        set_chunk_key(&mut document, self.chunk_key_field, 0);
         for facet in _extra_facets.iter().flatten() {
             document.add_facet(topics_f, Facet::from_text(facet)?);
         }
@@ -3032,6 +5958,7 @@ impl SearchEngine {
             generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
@@ -3055,6 +5982,7 @@ impl SearchEngine {
                 ),
                 line_hash_f    => line_hash
             );
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -3188,6 +6116,7 @@ impl SearchEngine {
         );
         let text_hash = content_fingerprint(text);
         let id_base = catalogue_id_base(catalogue_order)?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
@@ -3239,6 +6168,27 @@ impl SearchEngine {
             .collect();
         let prepare_time = prepare_started.elapsed();
 
+        // The key each line's vector is stored under: the production recipe over the text
+        // the index stores and the sections the headings open, which the passes above just
+        // made. Only for a column in use — a version 4 index has none, and one written under
+        // another recipe counts as absent.
+        let keys_started = Instant::now();
+        let chunk_keys: Vec<u64> = match chunk_key_f {
+            Some(_) => {
+                let lines: Vec<LineRef<'_>> = normalized
+                    .iter()
+                    .zip(&reference_of_line)
+                    .map(|((plain, _, _), section)| LineRef {
+                        text: plain,
+                        section: u64::from(*section),
+                    })
+                    .collect();
+                semantic_keys::column_values(&lines)
+            }
+            None => Vec::new(),
+        };
+        let keys_time = keys_started.elapsed();
+
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
         for (segment, (normalized_line, vocalized_line, line_hash)) in
@@ -3263,6 +6213,8 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(generation_order, id),
                 line_hash_f    => line_hash
             );
+            let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
+            set_chunk_key(&mut document, chunk_key_f, chunk_key);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -3275,7 +6227,7 @@ impl SearchEngine {
         let enqueue_time = enqueue_started.elapsed();
         info!(
             "add_text_book '{title}': {ordinal} docs, {text_bytes} bytes in {:?} \
-             (prepare {prepare_time:?}, enqueue {enqueue_time:?})",
+             (prepare {prepare_time:?}, keys {keys_time:?}, enqueue {enqueue_time:?})",
             started.elapsed()
         );
         Ok(ordinal as u32)
@@ -3340,6 +6292,7 @@ impl SearchEngine {
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
         let id_base = catalogue_id_base(catalogue_order)?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -3388,6 +6341,8 @@ impl SearchEngine {
                 generation_sort_f => generation_sort_key(generation_order, id),
                 line_hash_f    => line_hash
             );
+            // A PDF's lines are not the library's text, so no vector is built from them.
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -3456,6 +6411,7 @@ impl SearchEngine {
             generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let chunk_key_f = self.chunk_key_field;
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
@@ -3480,6 +6436,7 @@ impl SearchEngine {
                 ),
                 line_hash_f    => line_hash
             );
+            set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -3957,8 +6914,48 @@ impl SearchEngine {
         let Some((_, addr)) = top_docs.into_iter().next() else {
             return Ok(None);
         };
+        self.document_at(&searcher, addr, id).map(Some)
+    }
 
-        let doc = searcher.doc::<TantivyDocument>(addr)?;
+    /// The line `id` of the book `file_path` in `searcher`, as [`Self::get_document_by_id`]
+    /// reads a line: found by the book and the id together, because two books' lines can
+    /// share an id — an index updated book by book can give two books one catalogue
+    /// position. `None` when the book holds no such line.
+    #[cfg(feature = "semantic-integration")]
+    fn document_in_book(
+        &self,
+        searcher: &Searcher,
+        file_path: &str,
+        id: u64,
+    ) -> Result<Option<SearchResult>> {
+        let book = TermQuery::new(
+            Term::from_field_text(self.schema.get_field("filePath")?, file_path),
+            IndexRecordOption::Basic,
+        );
+        let line = TermQuery::new(
+            Term::from_field_u64(self.schema.get_field("id")?, id),
+            IndexRecordOption::Basic,
+        );
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, Box::new(book) as Box<dyn Query>),
+            (Occur::Must, Box::new(line) as Box<dyn Query>),
+        ]);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
+        let Some((_, address)) = top_docs.into_iter().next() else {
+            return Ok(None);
+        };
+        self.document_at(searcher, address, id).map(Some)
+    }
+
+    /// The stored fields of the document at `address` in `searcher`, as a result: what a
+    /// result is hydrated from. `id` is the document's, as the caller found it.
+    fn document_at(
+        &self,
+        searcher: &Searcher,
+        address: DocAddress,
+        id: u64,
+    ) -> Result<SearchResult> {
+        let doc = searcher.doc::<TantivyDocument>(address)?;
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
         let text_f = self.schema.get_field("text")?;
@@ -3966,7 +6963,7 @@ impl SearchEngine {
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
 
-        Ok(Some(SearchResult {
+        Ok(SearchResult {
             title: doc
                 .get_first(title_f)
                 .and_then(|v| v.as_str())
@@ -3998,7 +6995,7 @@ impl SearchEngine {
                 .to_string(),
             merged_count: 1,
             merged: Vec::new(),
-        }))
+        })
     }
 
     /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -10123,7 +13120,7 @@ mod tests {
     fn old_sidecar_schema_requires_rebuild() {
         let dir = TempDir::new().unwrap();
         let mut metadata = current_index_metadata();
-        metadata.schema_version = INDEX_SCHEMA_VERSION - 1;
+        metadata.schema_version = MIN_READABLE_SCHEMA_VERSION - 1;
         fs::write(
             index_metadata_path(dir.path()),
             serde_json::to_string_pretty(&metadata).unwrap(),
@@ -10135,8 +13132,9 @@ mod tests {
         assert_eq!(compatibility.status, "rebuild_required");
         assert_eq!(
             compatibility.found_schema_version,
-            Some(INDEX_SCHEMA_VERSION - 1)
+            Some(MIN_READABLE_SCHEMA_VERSION - 1)
         );
+        assert!(compatibility.reason.unwrap().contains("older than"));
     }
 
     #[test]
@@ -10209,7 +13207,7 @@ mod tests {
             b.add_text_field("filePath", TEXT | STORED);
             b.add_facet_field("topics", FacetOptions::default());
             let old_schema = b.build();
-            let mmap = MmapDirectory::open(dir.path()).unwrap();
+            let mmap = tantivy::directory::MmapDirectory::open(dir.path()).unwrap();
             Index::open_or_create(mmap, old_schema).unwrap();
         }
 
@@ -10226,6 +13224,372 @@ mod tests {
             .unwrap();
     }
 
+    // ── The chunkKey column, and version 4 indexes beside it ───────────────
+
+    /// The schema of a real version 4 index, as the `meta.json` of the library's release
+    /// index (6,042,284 lines, built by the engine before the `chunkKey` column) holds it.
+    const RELEASED_VERSION_4_SCHEMA: &str = r#"[
+        {"name": "text", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew"}, "stored": true, "fast": false}},
+        {"name": "textVocalized", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew_vocalized"}, "stored": true, "fast": false}},
+        {"name": "reference", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "title", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": true, "fast": false}},
+        {"name": "id", "type": "u64", "options": {"indexed": true, "fieldnorms": true, "fast": true, "stored": true}},
+        {"name": "segment", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "isPdf", "type": "bool", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "filePath", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": true, "tokenizer": "raw"}, "stored": true, "fast": true}},
+        {"name": "contentHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "textHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "sectionId", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "generationSort", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "topics", "type": "facet", "options": {"stored": false}}
+    ]"#;
+
+    /// Version 4's schema is the one version 4 indexes have, and version 5's is that and
+    /// `chunkKey` after it, so every other field keeps its number.
+    #[test]
+    fn version_5_is_version_4_and_a_chunk_key_column_after_it() {
+        let released: Schema = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
+        assert_eq!(schema_of_version(4), Some(released.clone()));
+
+        let current = current_schema();
+        assert_eq!(
+            schema_of_version(INDEX_SCHEMA_VERSION),
+            Some(current.clone())
+        );
+        let fields: Vec<_> = current.fields().map(|(_, entry)| entry.clone()).collect();
+        let released_fields: Vec<_> = released.fields().map(|(_, entry)| entry.clone()).collect();
+        assert_eq!(fields[..fields.len() - 1], released_fields[..]);
+
+        let chunk_key = fields.last().unwrap();
+        assert_eq!(chunk_key.name(), CHUNK_KEY_FIELD);
+        assert!(chunk_key.is_fast());
+        assert!(!chunk_key.is_indexed());
+        assert!(!chunk_key.is_stored());
+        assert_eq!(chunk_key.field_type().value_type(), Type::U64);
+
+        for version in [MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
+            assert_eq!(schema_of_version(version), None, "{version}");
+        }
+    }
+
+    /// The metadata a test writes into an index directory it made by other means.
+    fn write_metadata(dir: &TempDir, metadata: &IndexMetadata) {
+        write_index_metadata(dir.path(), metadata).unwrap();
+    }
+
+    fn read_metadata(dir: &TempDir) -> JsonValue {
+        serde_json::from_str(&fs::read_to_string(index_metadata_path(dir.path())).unwrap()).unwrap()
+    }
+
+    /// An index the engine before the column left: version 4's schema, version 4's
+    /// metadata, and a book.
+    fn version_4_index() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Index::create_in_dir(dir.path(), schema_of_version(4).unwrap()).unwrap();
+        write_metadata(&dir, &index_metadata(4, None));
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        engine
+            .add_text_book(
+                "בראשית".to_string(),
+                "/root".to_string(),
+                "/books/genesis.txt".to_string(),
+                0,
+                0,
+                "בראשית ברא אלהים את השמים ואת הארץ\nוהארץ היתה תהו ובהו".to_string(),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        dir
+    }
+
+    /// What the `chunkKey` column holds for each live document, by id: `None` for a
+    /// document with no value, and for every document of an index without the column.
+    fn chunk_key_values(engine: &SearchEngine) -> Vec<Option<u64>> {
+        let searcher = engine.index_reader.searcher();
+        let mut values = Vec::new();
+        for reader in searcher.segment_readers() {
+            let ids = reader.fast_fields().u64("id").unwrap();
+            let column = reader
+                .fast_fields()
+                .column_opt::<u64>(CHUNK_KEY_FIELD)
+                .unwrap();
+            for doc in reader.doc_ids_alive() {
+                let value = column.as_ref().and_then(|column| column.first(doc));
+                values.push((ids.first(doc).unwrap(), value));
+            }
+        }
+        values.sort_unstable();
+        values.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// **An index built before the column is not rebuilt.** It opens compatible, under its
+    /// own schema; it is searched as it was; it takes new books, which get no field; and it
+    /// stays version 4, with no recipe recorded.
+    #[test]
+    fn a_version_4_index_opens_searches_and_takes_books_as_it_is() {
+        let dir = version_4_index();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible, "{:?}", compatibility.reason);
+        assert_eq!(compatibility.status, "compatible");
+        assert_eq!(compatibility.found_schema_version, Some(4));
+
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        assert_eq!(engine.schema, schema_of_version(4).unwrap());
+        assert!(engine.schema.get_field(CHUNK_KEY_FIELD).is_err());
+        assert_eq!(engine.chunk_key_field, None);
+        assert_eq!(
+            engine.count(vec!["ברא".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+
+        engine
+            .add_text_book(
+                "שמות".to_string(),
+                "/root".to_string(),
+                "/books/exodus.txt".to_string(),
+                1,
+                0,
+                "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
+                None,
+            )
+            .unwrap();
+        engine
+            .add_pdf_book(
+                "סרוק".to_string(),
+                "/root".to_string(),
+                "/books/scan.pdf".to_string(),
+                2,
+                0,
+                vec![PdfPageInput {
+                    page_index: 0,
+                    reference: "עמוד 1".to_string(),
+                    text: "ויאמר משה אל העם אל תיראו".to_string(),
+                }],
+                None,
+            )
+            .unwrap();
+        add(&mut engine, 99, "שורה שנוספה לבדה", "/books/loose.txt");
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(
+            engine.count(vec!["שמות".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+        assert_eq!(
+            engine.count(vec!["משה".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+        assert_eq!(
+            engine.count(vec!["ברא".to_string()], &[], 0, 100).unwrap(),
+            1
+        );
+        assert_eq!(chunk_key_values(&engine), vec![None; 5]);
+        drop(engine);
+
+        let metadata = read_metadata(&dir);
+        assert_eq!(metadata["schema_version"], 4);
+        for field in [
+            "line_text_version",
+            "chunk_key_version",
+            "chunk_key_chunking_identity",
+        ] {
+            assert!(metadata.get(field).is_none(), "{field}");
+        }
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible);
+        assert_eq!(compatibility.found_schema_version, Some(4));
+    }
+
+    /// A version 4 index whose metadata is missing is found by its Tantivy schema, and given
+    /// version 4's metadata back: no column, so no recipe.
+    #[test]
+    fn a_version_4_index_without_metadata_gets_version_4_metadata() {
+        let dir = version_4_index();
+        fs::remove_file(index_metadata_path(dir.path())).unwrap();
+
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(compatibility.compatible);
+        assert_eq!(compatibility.status, "legacy_compatible");
+        assert_eq!(compatibility.found_schema_version, Some(4));
+
+        let engine = SearchEngine::new(dir.path().to_str().unwrap());
+        assert_eq!(engine.chunk_key_field, None);
+        drop(engine);
+        let metadata = read_metadata(&dir);
+        assert_eq!(metadata["schema_version"], 4);
+        assert!(metadata.get("line_text_version").is_none());
+        assert_eq!(
+            check_index_compatibility(dir_path_string(&dir)).status,
+            "compatible"
+        );
+    }
+
+    /// A new index is version 5: it has the column, its metadata records the recipe the
+    /// column is written under, and the engine writes to it.
+    #[test]
+    fn a_new_index_has_the_column_and_records_its_recipe() {
+        let (mut engine, dir) = make_engine();
+        let field = engine.schema.get_field(CHUNK_KEY_FIELD).unwrap();
+        assert_eq!(engine.chunk_key_field, Some(field));
+
+        let metadata = read_metadata(&dir);
+        assert_eq!(metadata["schema_version"], INDEX_SCHEMA_VERSION);
+        let recipe = ChunkKeyRecipe::current();
+        assert_eq!(metadata["line_text_version"], recipe.line_text_version);
+        assert_eq!(metadata["line_text_version"], LINE_TEXT_VERSION);
+        assert_eq!(metadata["chunk_key_version"], recipe.key_version);
+        assert_eq!(
+            metadata["chunk_key_chunking_identity"].as_u64(),
+            Some(recipe.chunking_identity)
+        );
+
+        engine
+            .add_text_book(
+                "בראשית".to_string(),
+                "/root".to_string(),
+                "/books/genesis.txt".to_string(),
+                0,
+                0,
+                "בראשית ברא אלהים את השמים ואת הארץ\nאו".to_string(),
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        let values = chunk_key_values(&engine);
+        assert_eq!(values.len(), 2);
+        assert!(values[0].is_some_and(|key| key != 0), "{values:?}");
+        assert_eq!(values[1], Some(0), "two characters are not embedded");
+    }
+
+    /// Every path but `add_text_book` adds lines that are not a book's, so nothing knows
+    /// their neighbours: they are written 0, "not embedded".
+    #[test]
+    fn every_other_add_path_writes_zero() {
+        let (mut engine, _dir) = make_engine();
+        let line = "שורה ארוכה דיה כדי לעמוד בפני עצמה";
+        let input = |id: u64| DocumentInput {
+            id,
+            title: "t".to_string(),
+            reference: "r".to_string(),
+            topics: "/root".to_string(),
+            text: line.to_string(),
+            segment: 0,
+            is_pdf: false,
+            file_path: "/books/loose.txt".to_string(),
+            content_hash: None,
+            text_hash: None,
+            section_id: None,
+            generation_order: None,
+            text_vocalized: None,
+            extra_facets: None,
+        };
+        add(&mut engine, 1, line, "/books/loose.txt");
+        engine.add_documents_batch(vec![input(2)]).unwrap();
+        engine.upsert_documents_batch(vec![input(3)]).unwrap();
+        engine
+            .upsert_document(
+                4,
+                "t",
+                "r",
+                "/root",
+                line,
+                0,
+                false,
+                "/books/loose.txt",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(chunk_key_values(&engine), vec![Some(0); 4]);
+    }
+
+    /// **A column written under another recipe is not a rebuild.** The index stays
+    /// compatible, its column counts as absent — nothing is written to it — and a metadata
+    /// value that does not parse is a recipe not known rather than unreadable metadata.
+    #[test]
+    fn a_column_written_under_another_recipe_counts_as_absent() {
+        let other_recipes: [(&str, JsonValue); 4] = [
+            ("line_text_version", json!(LINE_TEXT_VERSION + 1)),
+            ("chunk_key_version", json!(99)),
+            ("chunk_key_chunking_identity", json!(1)),
+            ("line_text_version", json!("one")),
+        ];
+        for (field, value) in other_recipes {
+            let (mut engine, dir) = make_engine();
+            engine
+                .add_text_book(
+                    "בראשית".to_string(),
+                    "/root".to_string(),
+                    "/books/genesis.txt".to_string(),
+                    0,
+                    0,
+                    "בראשית ברא אלהים את השמים ואת הארץ".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            drop(engine);
+
+            let mut metadata = read_metadata(&dir);
+            metadata[field] = value.clone();
+            fs::write(index_metadata_path(dir.path()), metadata.to_string()).unwrap();
+
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(compatibility.compatible, "{field}={value}");
+            assert_eq!(compatibility.status, "compatible", "{field}={value}");
+            assert_eq!(
+                compatibility.found_schema_version,
+                Some(INDEX_SCHEMA_VERSION)
+            );
+
+            let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+            assert_eq!(engine.chunk_key_field, None, "{field}={value}");
+            engine
+                .add_text_book(
+                    "שמות".to_string(),
+                    "/root".to_string(),
+                    "/books/exodus.txt".to_string(),
+                    1,
+                    0,
+                    "ואלה שמות בני ישראל הבאים מצרימה".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            engine.index_reader.reload().unwrap();
+            assert_eq!(
+                engine.count(vec!["שמות".to_string()], &[], 0, 100).unwrap(),
+                1
+            );
+            let values = chunk_key_values(&engine);
+            assert_eq!(values.len(), 2);
+            assert!(values[0].is_some(), "the first book's keys stay");
+            assert_eq!(values[1], None, "{field}={value}: nothing writes to it");
+            // The metadata is left as it was found: only a new index records a recipe.
+            assert_eq!(read_metadata(&dir)[field], value);
+        }
+    }
+
+    /// What a build reports when no session is open: no session, or no semantic support at
+    /// all, each as a state and as the kind of `last_error`.
+    #[cfg(feature = "semantic-integration")]
+    const CLOSED: (SemanticState, SemanticErrorKind) = (
+        SemanticState::NotConfigured,
+        SemanticErrorKind::NotConfigured,
+    );
+    #[cfg(not(feature = "semantic-integration"))]
+    const CLOSED: (SemanticState, SemanticErrorKind) = (
+        SemanticState::NotInBuild,
+        SemanticErrorKind::FeatureNotInBuild,
+    );
+
     #[test]
     fn semantic_status_is_explicit_before_configuration() {
         let (engine, _dir) = make_engine();
@@ -10233,6 +13597,167 @@ mod tests {
         assert!(!status.enabled);
         assert!(!status.available);
         assert!(status.last_error.is_some());
+        assert_eq!(
+            (status.state, status.error_kind),
+            (CLOSED.0, Some(CLOSED.1))
+        );
+    }
+
+    /// Without the integration every semantic call is answered, and none fails: the opening
+    /// calls return the `NotInBuild` status, the build-side calls report themselves
+    /// disabled, and a search serves lexical results whose fallback kind says why.
+    #[cfg(not(feature = "semantic-integration"))]
+    #[test]
+    fn a_build_without_semantic_support_says_so_in_every_semantic_call() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 41, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let configured = engine
+            .configure_semantic(SemanticConfigInput {
+                root_dir: "/nowhere".to_string(),
+                model_path: "/nowhere/model.onnx".to_string(),
+                model_id: "m".to_string(),
+                embedding_dim: 256,
+                pooling: "in-graph".to_string(),
+                max_tokens: 256,
+                model_quantization: "int8".to_string(),
+                embedding_text_version: 2,
+                onnx_runtime_path: None,
+            })
+            .unwrap();
+        let opened = engine
+            .open_semantic_artifact(SemanticArtifactInput {
+                vectors_dir: "/nowhere/vectors".to_string(),
+                model_path: "/nowhere/model.onnx".to_string(),
+                model_identity_json: "not even JSON".to_string(),
+                onnx_runtime_path: None,
+                scan_threads: None,
+            })
+            .unwrap();
+        for status in [configured, opened, engine.semantic_status()] {
+            assert_eq!(status.state, SemanticState::NotInBuild);
+            assert_eq!(
+                status.error_kind,
+                Some(SemanticErrorKind::FeatureNotInBuild)
+            );
+            assert!(!status.enabled && !status.available);
+        }
+
+        assert!(!engine.semantic_index_books(Vec::new()).unwrap().enabled);
+        assert!(!engine.semantic_index_diff().unwrap().enabled);
+        assert!(!engine.remove_semantic_books(Vec::new()).unwrap().enabled);
+        assert!(!engine.reset_semantic_index().unwrap().enabled);
+
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::SemanticOnly,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let response = engine
+                .search_semantic(
+                    "שלום".to_string(),
+                    Vec::new(),
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    1,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                response.fallback_kind,
+                Some(SemanticErrorKind::FeatureNotInBuild),
+                "{mode:?}"
+            );
+            assert!(!response.semantic_available, "{mode:?}");
+        }
+    }
+
+    /// A lexical failure under a semantic call is what `?` turns into a `SemanticError`, and
+    /// it is `Internal`, with the whole context chain in the message.
+    #[test]
+    fn an_anyhow_error_under_a_semantic_call_is_internal_and_keeps_its_chain() {
+        let error = SemanticError::from(
+            anyhow::anyhow!("the segment file is gone").context("reading the index"),
+        );
+        assert_eq!(error.kind, SemanticErrorKind::Internal);
+        assert_eq!(error.message, "reading the index: the segment file is gone");
+        assert_eq!(error.field, None);
+        assert_eq!(error.to_string(), error.message);
+    }
+
+    /// A search whose token was cancelled before it started does nothing at all, in every
+    /// build and every mode, and says so by kind rather than with lexical results. One
+    /// cancelled while its lexical fallback ran is cancelled too, and an uncancelled token
+    /// changes nothing.
+    #[test]
+    fn a_cancelled_search_throws_cancelled_and_an_uncancelled_one_is_served() {
+        use search_cancellation::{cancelling_at, SearchCheckpoint as At};
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 41, "שלום עולם", "/books/a.txt");
+        engine.commit().unwrap();
+        let search = |mode, token: &SemanticCancellationToken| {
+            engine.search_semantic(
+                "שלום".to_string(),
+                Vec::new(),
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                1,
+                mode,
+                None,
+                false,
+                false,
+                None,
+                token,
+            )
+        };
+        let cancelled = |result: Result<SemanticSearchResponse, SemanticError>| match result {
+            Ok(response) => panic!(
+                "a cancelled search was served, with {:?}",
+                response.fallback_kind
+            ),
+            Err(error) => error,
+        };
+
+        let before = SemanticCancellationToken::new();
+        before.cancel();
+        assert!(before.is_cancelled());
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::SemanticOnly,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let (result, reached) = cancelling_at(None, || search(mode, &before));
+            assert_eq!(cancelled(result), SemanticError::cancelled(), "{mode:?}");
+            assert_eq!(
+                reached,
+                [At::Start],
+                "{mode:?}: nothing ran past the first look"
+            );
+
+            let during = SemanticCancellationToken::new();
+            let (result, reached) = cancelling_at(Some(At::Fallback), || search(mode, &during));
+            assert_eq!(
+                cancelled(result).kind,
+                SemanticErrorKind::Cancelled,
+                "{mode:?}"
+            );
+            assert_eq!(reached, [At::Start, At::Fallback], "{mode:?}");
+
+            let fresh = SemanticCancellationToken::new();
+            let (result, reached) = cancelling_at(None, || search(mode, &fresh));
+            let response = result.unwrap();
+            assert_eq!(response.fallback_kind, Some(CLOSED.1), "{mode:?}");
+            assert_eq!(reached, [At::Start, At::Fallback], "{mode:?}");
+            assert!(!fresh.is_cancelled());
+        }
     }
 
     #[test]
@@ -10253,6 +13778,8 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
+                &SemanticCancellationToken::new(),
             )
             .unwrap();
 
@@ -10262,6 +13789,7 @@ mod tests {
         assert_eq!(response.results[0].id, 41);
         assert_eq!(response.results[0].source, SemanticResultSource::Lexical);
         assert!(response.fallback_reason.is_some());
+        assert_eq!(response.fallback_kind, Some(CLOSED.1));
     }
 
     fn disable_auto_merge(engine: &SearchEngine) {
@@ -11628,6 +15156,49 @@ mod tests {
         assert!(after.contains(&large_id));
         assert_eq!(engine.get_document_count(), 9);
         assert_eq!(count_hits(&engine, "שלום"), 9);
+    }
+
+    // A handle like the one the reader's meta-file watcher opens every 500 ms: replacing
+    // meta.json under it failed the commit with "Access is denied. (os error 5)".
+    #[cfg(windows)]
+    #[test]
+    fn replace_meta_json_while_a_reader_holds_it() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/1.txt");
+        let held = fs::File::open(dir.path().join("meta.json")).unwrap();
+        engine.commit().unwrap();
+        drop(held);
+        assert_eq!(count_hits(&engine, "שלום"), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replace_meta_json_held_past_the_retries_fails_and_the_next_commit_recovers() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/1.txt");
+        // FILE_SHARE_READ | FILE_SHARE_WRITE: no delete sharing, which blocks even std's rename.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(dir.path().join("meta.json"))
+            .unwrap();
+        let error = engine.commit().unwrap_err();
+        assert!(error.to_string().contains("os error 5"), "{error}");
+        drop(held);
+        engine.commit().unwrap();
+        assert_eq!(count_hits(&engine, "שלום"), 1);
+    }
+
+    #[test]
+    fn index_metadata_survives_a_write_that_fails_before_its_rename() {
+        let dir = TempDir::new().unwrap();
+        write_index_metadata(dir.path(), &index_metadata(4, None)).unwrap();
+        let before = fs::read(index_metadata_path(dir.path())).unwrap();
+        crate::index_directory::fail_next_rename();
+        assert!(write_current_index_metadata(dir.path()).is_err());
+        assert_eq!(fs::read(index_metadata_path(dir.path())).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     /// גדלים סינתטיים: כאן נבדק הכלל עצמו, בלי לתלות אותו בגודל שסגמנט
@@ -17157,6 +20728,18 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn line_dedup_hashes_are_the_hashes_of_the_parts_joined() {
+        let parts = ["אמר", "רבי עקיבא,", "", "כל ישראל", "יש להם חלק 15", "A"];
+        let hashes: Vec<u64> = line_dedup_hashes(&parts).collect();
+        for (at, hash) in hashes.iter().enumerate() {
+            assert_eq!(*hash, line_dedup_hash(&parts[..=at].join(" ")), "{at}");
+        }
+        assert_eq!(hashes[2], 0);
+        assert_ne!(hashes[3], 0);
+    }
+
     #[test]
     fn bounded_groups_cap_keeps_counting_existing_groups() {
         // מילוי התקרה; קבוצה קיימת ממשיכה לצבור גם בתקרה, וקבוצות גרועות
@@ -17240,5 +20823,1730 @@ mod tests {
         bounded.add_entry((1u8, 999_999), (999_999, 999_999, DocAddress::new(0, 3)));
         assert!(!bounded.groups.contains_key(&(1u8, 999_999)));
         assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
+    }
+
+    /// [`SemanticConfigKey`] and the mapping [`SearchEngine::configure_semantic`] performs.
+    ///
+    /// Nothing here loads a model — configuring is lazy — so every build with the
+    /// integration runs it, whichever backends it has, including none.
+    #[cfg(feature = "semantic-integration")]
+    mod semantic_configuration {
+        use super::*;
+        use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
+        use otzaria_semantic_search::semantic::recipe::EmbeddingTextRecipe;
+
+        /// What the sidecar writes when it opens, and so the witness of an open.
+        const MANIFEST: &str = "semantic_manifest.json";
+
+        /// A field's name, and one edit of that field alone.
+        type FieldEdit = (&'static str, fn(&mut SemanticConfigInput));
+
+        /// The Meivin ONNX identity the application uses, the INT8 graph, rooted in `root`.
+        fn meivin(root: &Path) -> SemanticConfigInput {
+            SemanticConfigInput {
+                root_dir: root.join("semantic").to_string_lossy().into_owned(),
+                model_path: root
+                    .join("seforim-embed-round2-int8.onnx")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_id: "ArieLLL123/judaic-semantic-round2-onnx-zayit".to_string(),
+                embedding_dim: 256,
+                pooling: "in-graph".to_string(),
+                max_tokens: 256,
+                model_quantization: "int8".to_string(),
+                embedding_text_version: 2,
+                onnx_runtime_path: None,
+            }
+        }
+
+        /// The full-precision graph published beside it, rooted in `root`: an identity of its
+        /// own, which differs from [`meivin`] in the graph and the quantization alone.
+        fn meivin_fp32(root: &Path) -> SemanticConfigInput {
+            SemanticConfigInput {
+                model_path: root
+                    .join("seforim-embed-round2-fp32.onnx")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_quantization: "fp32".to_string(),
+                ..meivin(root)
+            }
+        }
+
+        fn manifest(root_dir: &str) -> JsonValue {
+            let path = Path::new(root_dir).join(MANIFEST);
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            serde_json::from_str(&text).unwrap()
+        }
+
+        #[test]
+        fn an_identical_configuration_is_the_same_key_and_names_no_change() {
+            let root = Path::new("/library");
+            let active = SemanticConfigKey::from_input(&meivin(root));
+            let repeat = SemanticConfigKey::from_input(&meivin(root));
+
+            assert_eq!(active, repeat);
+            assert_eq!(active.changed_fields(&repeat), "");
+        }
+
+        /// One row per field of [`SemanticConfigInput`]: a key that left one out would
+        /// answer a request for different vectors with a no-op.
+        #[test]
+        fn a_change_to_any_single_input_is_detected_and_named() {
+            let root = Path::new("/library");
+            let active = SemanticConfigKey::from_input(&meivin(root));
+            let changes: [FieldEdit; 9] = [
+                ("root_dir", |c| c.root_dir.push_str("-elsewhere")),
+                ("model_path", |c| c.model_path.push_str(".bak")),
+                ("model_id", |c| c.model_id.push_str("-v2")),
+                ("embedding_dim", |c| c.embedding_dim = 768),
+                // Compared as given: whether a backend performs it is the sidecar's to say.
+                ("pooling", |c| c.pooling = "mean".to_string()),
+                ("max_tokens", |c| c.max_tokens = 512),
+                ("model_quantization", |c| {
+                    c.model_quantization = "fp32".to_string()
+                }),
+                ("embedding_text_version", |c| c.embedding_text_version = 1),
+                // Not identity, and a change all the same: the process keeps the first
+                // runtime it loads.
+                ("onnx_runtime_path", |c| {
+                    c.onnx_runtime_path = Some("/app/Frameworks/libonnxruntime.dylib".into())
+                }),
+            ];
+
+            for (field, change) in changes {
+                let mut input = meivin(root);
+                change(&mut input);
+                let requested = SemanticConfigKey::from_input(&input);
+                assert_ne!(active, requested, "{field} must be part of the key");
+                assert_eq!(active.changed_fields(&requested), field);
+            }
+        }
+
+        #[test]
+        fn switching_models_names_every_input_that_differs() {
+            let root = Path::new("/library");
+            let int8 = SemanticConfigKey::from_input(&meivin(root));
+            let fp32 = SemanticConfigKey::from_input(&meivin_fp32(root));
+            assert_eq!(int8.changed_fields(&fp32), "model_path, model_quantization");
+
+            // Another encoder altogether: every input but the root differs, and each is named,
+            // in the order the configuration declares them.
+            let other = SemanticConfigKey::from_input(&SemanticConfigInput {
+                model_path: root
+                    .join("another-encoder.onnx")
+                    .to_string_lossy()
+                    .into_owned(),
+                model_id: "example/another-encoder".to_string(),
+                embedding_dim: 768,
+                pooling: "mean".to_string(),
+                max_tokens: 512,
+                model_quantization: "fp32".to_string(),
+                embedding_text_version: 1,
+                onnx_runtime_path: Some("/app/Frameworks/libonnxruntime.dylib".to_string()),
+                ..meivin(root)
+            });
+            assert_eq!(
+                int8.changed_fields(&other),
+                "model_path, model_id, embedding_dim, pooling, max_tokens, \
+                 model_quantization, embedding_text_version, onnx_runtime_path"
+            );
+        }
+
+        /// Both halves of the contract, through the method itself. Opening the sidecar
+        /// writes its manifest, so the manifest is deleted after the first call: a repeat
+        /// or a refusal that re-opened anything would write it back.
+        #[test]
+        fn configure_semantic_ignores_a_repeat_and_refuses_a_change_by_name() {
+            let (mut engine, _index) = make_engine();
+            let semantic = TempDir::new().unwrap();
+            let config = || meivin(semantic.path());
+            engine
+                .configure_semantic(config())
+                .expect("the Meivin identity configures");
+            let manifest = Path::new(&config().root_dir).join(MANIFEST);
+            assert!(manifest.exists(), "opening the sidecar writes its manifest");
+            fs::remove_file(&manifest).unwrap();
+
+            let status = engine
+                .configure_semantic(config())
+                .expect("an identical repeat is accepted");
+            assert!(status.enabled);
+            assert!(!manifest.exists(), "an identical repeat must not re-open");
+
+            let changes: [FieldEdit; 4] = [
+                ("pooling", |c| c.pooling = "mean".to_string()),
+                ("max_tokens", |c| c.max_tokens = 512),
+                ("model_quantization", |c| {
+                    c.model_quantization = "fp32".to_string()
+                }),
+                ("embedding_text_version", |c| c.embedding_text_version = 1),
+            ];
+            for (field, change) in changes {
+                let mut input = config();
+                change(&mut input);
+                let error = match engine.configure_semantic(input) {
+                    Ok(_) => panic!("changing {field} while a session is open must fail"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.message.contains(&format!("and {field} changed")),
+                    "the refusal must name {field}: {}",
+                    error.message
+                );
+                assert_eq!(error.kind, SemanticErrorKind::SessionConflict, "{field}");
+            }
+            assert!(
+                !manifest.exists(),
+                "a refused change must not re-open either"
+            );
+        }
+
+        /// The mapping, read back from what the sidecar recorded. The model id, dimension,
+        /// pooling, cap and quantization all differ from the sidecar's own defaults, so an
+        /// input left to its default shows up as the default. The text version is recorded
+        /// only inside the chunking identity, so there is one configuration per recipe the
+        /// sidecar implements, and each must record its own.
+        #[test]
+        fn configure_semantic_hands_each_input_to_the_sidecar() {
+            let (mut engine, _index) = make_engine();
+            for recipe in EmbeddingTextRecipe::ALL {
+                let semantic = TempDir::new().unwrap();
+                let input = SemanticConfigInput {
+                    embedding_text_version: recipe.version(),
+                    ..meivin(semantic.path())
+                };
+                let root_dir = input.root_dir.clone();
+                engine
+                    .configure_semantic(input)
+                    .unwrap_or_else(|error| panic!("text recipe {}: {error:#}", recipe.version()));
+
+                let recorded = manifest(&root_dir);
+                assert_eq!(
+                    recorded["embedding_model_id"],
+                    "ArieLLL123/judaic-semantic-round2-onnx-zayit"
+                );
+                assert_eq!(recorded["embedding_dim"], 256);
+                assert_eq!(recorded["pooling"], "in-graph");
+                assert_eq!(recorded["embedding_max_tokens"], 256);
+                assert_eq!(recorded["model_quantization"], "int8");
+                let chunking = ChunkerConfig {
+                    embedding_text_version: recipe.version(),
+                    ..ChunkerConfig::default()
+                };
+                assert_eq!(recorded["chunking_identity"], chunking.identity());
+
+                engine.disable_semantic();
+            }
+        }
+
+        /// A refusal is what proves a value reaches the sidecar: every default the
+        /// sidecar would otherwise fill in is valid, so only a forwarded value can be
+        /// refused. A refused configuration leaves no session behind.
+        #[test]
+        fn a_value_the_sidecar_cannot_serve_is_refused_when_configuring() {
+            let (mut engine, _index) = make_engine();
+            let semantic = TempDir::new().unwrap();
+            let spoiled: [FieldEdit; 5] = [
+                ("last_token", |c| c.pooling = "last_token".to_string()),
+                ("embedding_max_tokens", |c| c.max_tokens = 1),
+                ("model_quantization", |c| {
+                    c.model_quantization = " ".to_string()
+                }),
+                ("embedding_text_version", |c| c.embedding_text_version = 99),
+                // Refused here rather than as a runtime the first indexing cannot find.
+                ("onnx_runtime_path", |c| {
+                    c.onnx_runtime_path = Some(String::new())
+                }),
+            ];
+
+            for (named, spoil) in spoiled {
+                let mut input = meivin(semantic.path());
+                spoil(&mut input);
+                let error = match engine.configure_semantic(input) {
+                    Ok(_) => panic!("a configuration with a bad {named} must be refused"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.message.contains(named),
+                    "the refusal must name {named}: {}",
+                    error.message
+                );
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{named}");
+            }
+            engine
+                .configure_semantic(meivin(semantic.path()))
+                .expect("a refused configuration leaves no session behind");
+        }
+
+        /// The ONNX token cap has a ceiling, 65,536, and it binds before the manifest
+        /// records the cap. `u32::MAX` is the case it exists for: a negative Dart value
+        /// arrives as a cap in the billions, and the load-time probe of that many tokens
+        /// cannot be allocated. The ceiling itself is accepted.
+        #[test]
+        fn an_onnx_cap_past_the_ceiling_is_refused_when_configuring() {
+            const CEILING: u32 = 65_536;
+            let (mut engine, _index) = make_engine();
+
+            for cap in [CEILING + 1, u32::MAX] {
+                let semantic = TempDir::new().unwrap();
+                let input = SemanticConfigInput {
+                    max_tokens: cap,
+                    ..meivin(semantic.path())
+                };
+                let root_dir = input.root_dir.clone();
+                let error = match engine.configure_semantic(input) {
+                    Ok(_) => panic!("an ONNX cap of {cap} must be refused"),
+                    Err(error) => error,
+                };
+                let message = &error.message;
+                assert!(
+                    message.contains(&format!("embedding_max_tokens is {cap}"))
+                        && message.contains(&CEILING.to_string()),
+                    "the refusal must name the cap and the ceiling: {message}"
+                );
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+                assert!(
+                    !Path::new(&root_dir).join(MANIFEST).exists(),
+                    "a refused cap must not be recorded as an index's identity"
+                );
+            }
+
+            let root = TempDir::new().unwrap();
+            engine
+                .configure_semantic(SemanticConfigInput {
+                    max_tokens: CEILING,
+                    ..meivin(root.path())
+                })
+                .unwrap_or_else(|error| panic!("a cap of {CEILING}: {error:#}"));
+        }
+    }
+
+    /// [`SemanticRankingOptions`] as the sidecar's `RankingProfile`, and what the sidecar's rules
+    /// refuse of it. Nothing here searches, so every build with the integration runs it.
+    #[cfg(feature = "semantic-integration")]
+    mod semantic_ranking {
+        use super::*;
+
+        /// The options a test changes one field of.
+        fn defaults() -> SemanticRankingOptions {
+            SemanticRankingOptions::defaults()
+        }
+
+        /// The defaults are the preset a search passed no options ranks by, value for value:
+        /// what keeps passing them from moving a single score.
+        #[test]
+        fn the_defaults_are_the_preset_a_search_without_options_ranks_by() {
+            assert_eq!(
+                ranking_profile(&defaults()).unwrap(),
+                RankingProfile::from_profile(SearchProfile::Balanced)
+            );
+        }
+
+        /// Each option lands on the profile field of its name, narrowed to 32 bits: values
+        /// that differ from one another and from the defaults, so a swap or a dropped field
+        /// shows.
+        #[test]
+        fn each_option_reaches_the_profile_field_it_names() {
+            let options = SemanticRankingOptions {
+                fusion_strategy: SemanticFusionStrategy::Rrf,
+                rrf_k: 30,
+                alpha_override: Some(0.25),
+                alpha_by_query_type: SemanticQueryTypeAlphas {
+                    quoted_phrase: 0.9,
+                    exact_reference: 0.8,
+                    short: 0.6,
+                    mixed: 0.4,
+                    conceptual: 0.2,
+                    unknown: 0.1,
+                },
+                bm25_saturation_k: 5.0,
+                semantic_threshold: 0.55,
+                agreement_bonus: 0.2,
+                phrase_match_bonus: 0.15,
+                rare_term_bonus: 0.05,
+                section_coverage_bonus: 0.03,
+                duplicate_penalty: 0.08,
+                metadata_ranking_enabled: true,
+                candidate_window_multiplier: 3.0,
+            };
+            let preset = RankingProfile::from_profile(SearchProfile::Balanced);
+            assert_eq!(
+                ranking_profile(&options).unwrap(),
+                RankingProfile {
+                    profile: preset.profile,
+                    fusion_strategy: FusionStrategy::RRF { k: 30 },
+                    alpha_override: Some(0.25),
+                    alpha_by_query_type: QueryTypeAlphas {
+                        quoted_phrase: 0.9,
+                        exact_reference: 0.8,
+                        short: 0.6,
+                        mixed: 0.4,
+                        conceptual: 0.2,
+                        unknown: 0.1,
+                    },
+                    bm25_saturation_k: 5.0,
+                    semantic_threshold: 0.55,
+                    agreement_bonus: 0.2,
+                    phrase_match_bonus: 0.15,
+                    rare_term_bonus: 0.05,
+                    section_coverage_bonus: 0.03,
+                    duplicate_penalty: 0.08,
+                    metadata_ranking_enabled: true,
+                    candidate_window_multiplier: 3.0,
+                    query_cache_enabled: preset.query_cache_enabled,
+                    embedding_cache_enabled: preset.embedding_cache_enabled,
+                    telemetry_enabled: preset.telemetry_enabled,
+                }
+            );
+            for (strategy, expected) in [
+                (SemanticFusionStrategy::Weighted, FusionStrategy::Weighted),
+                (SemanticFusionStrategy::Adaptive, FusionStrategy::Adaptive),
+            ] {
+                let options = SemanticRankingOptions {
+                    fusion_strategy: strategy,
+                    ..defaults()
+                };
+                assert_eq!(ranking_profile(&options).unwrap().fusion_strategy, expected);
+            }
+        }
+
+        /// Each option outside its range is refused, as `InvalidInput` naming it by its name
+        /// in the options, and never clamped; the ends of every range are accepted, and RRF's
+        /// `k` is held to its range only where RRF reads it.
+        #[test]
+        fn an_option_out_of_range_is_refused_by_its_name() {
+            type Spoil = fn(&mut SemanticRankingOptions);
+            let cases: [(&str, Spoil); 20] = [
+                ("rrf_k", |o| {
+                    o.fusion_strategy = SemanticFusionStrategy::Rrf;
+                    o.rrf_k = 0;
+                }),
+                ("alpha_override", |o| o.alpha_override = Some(1.5)),
+                ("alpha_override", |o| o.alpha_override = Some(f64::NAN)),
+                ("alpha_by_query_type.quoted_phrase", |o| {
+                    o.alpha_by_query_type.quoted_phrase = -0.1
+                }),
+                ("alpha_by_query_type.exact_reference", |o| {
+                    o.alpha_by_query_type.exact_reference = 1.01
+                }),
+                ("alpha_by_query_type.short", |o| {
+                    o.alpha_by_query_type.short = f64::INFINITY
+                }),
+                ("alpha_by_query_type.mixed", |o| {
+                    o.alpha_by_query_type.mixed = 2.0
+                }),
+                ("alpha_by_query_type.conceptual", |o| {
+                    o.alpha_by_query_type.conceptual = f64::NAN
+                }),
+                ("alpha_by_query_type.unknown", |o| {
+                    o.alpha_by_query_type.unknown = -1.0
+                }),
+                ("bm25_saturation_k", |o| o.bm25_saturation_k = 0.0),
+                // Positive as a double, and zero in the 32 bits the ranking computes in.
+                ("bm25_saturation_k", |o| o.bm25_saturation_k = 1e-60),
+                ("semantic_threshold", |o| o.semantic_threshold = 1.5),
+                ("agreement_bonus", |o| o.agreement_bonus = -0.1),
+                ("phrase_match_bonus", |o| o.phrase_match_bonus = 10.0),
+                ("rare_term_bonus", |o| o.rare_term_bonus = f64::NAN),
+                ("section_coverage_bonus", |o| o.section_coverage_bonus = 1.5),
+                ("duplicate_penalty", |o| o.duplicate_penalty = -0.5),
+                ("candidate_window_multiplier", |o| {
+                    o.candidate_window_multiplier = 0.5
+                }),
+                ("candidate_window_multiplier", |o| {
+                    o.candidate_window_multiplier = 11.0
+                }),
+                ("candidate_window_multiplier", |o| {
+                    o.candidate_window_multiplier = f64::NEG_INFINITY
+                }),
+            ];
+            for (field, spoil) in cases {
+                let mut options = defaults();
+                spoil(&mut options);
+                let error = ranking_profile(&options).expect_err(field);
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput, "{field}");
+                assert_eq!(error.field.as_deref(), Some(field), "{}", error.message);
+                assert!(
+                    error
+                        .message
+                        .starts_with("the ranking passed with this search is refused: "),
+                    "{}",
+                    error.message
+                );
+            }
+
+            let unread = SemanticRankingOptions {
+                rrf_k: 0,
+                ..defaults()
+            };
+            assert!(ranking_profile(&unread).is_ok(), "only RRF reads its k");
+            let ends = SemanticRankingOptions {
+                fusion_strategy: SemanticFusionStrategy::Rrf,
+                rrf_k: 1,
+                alpha_override: Some(0.0),
+                alpha_by_query_type: SemanticQueryTypeAlphas {
+                    quoted_phrase: 0.0,
+                    exact_reference: 1.0,
+                    short: 0.0,
+                    mixed: 1.0,
+                    conceptual: 0.0,
+                    unknown: 1.0,
+                },
+                bm25_saturation_k: f64::from(f32::MIN_POSITIVE),
+                semantic_threshold: 1.0,
+                agreement_bonus: 0.0,
+                phrase_match_bonus: 1.0,
+                rare_term_bonus: 0.0,
+                section_coverage_bonus: 1.0,
+                duplicate_penalty: 0.0,
+                metadata_ranking_enabled: true,
+                candidate_window_multiplier: 10.0,
+            };
+            ranking_profile(&ends)
+                .expect("the ends of every range are values a calibration may land on");
+        }
+    }
+
+    /// Where a search with a session stops once its token is cancelled, at each look in
+    /// turn: the sidecar's own first look, which sees the token only if this crate handed it
+    /// over, and this crate's before hydration and before painting. The probe cancels at the
+    /// look a test names, so where the search stops is the test's choice, not a race.
+    ///
+    /// On the stand-in, which serves the stub ONNX package only in a build without the ONNX
+    /// backend, as in the integration suites.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
+    mod semantic_cancellation {
+        use super::*;
+        use crate::search_cancellation::{cancelling_at, SearchCheckpoint as At};
+        use otzaria_semantic_search::semantic::embedding::mock::write_stub_onnx_package;
+
+        const BOOK: &str = "/books/genesis.txt";
+        const LINES: [(u64, &str); 3] = [
+            (1, "בראשית ברא אלהים את השמים ואת הארץ"),
+            (2, "והארץ היתה תהו ובהו וחשך על פני תהום"),
+            (3, "ויאמר אלהים יהי אור ויהי אור"),
+        ];
+        /// Every look a search that is served reaches, in order.
+        const SERVED: [At; 4] = [At::Start, At::Sidecar, At::Hydration, At::Painting];
+
+        /// An engine over [`LINES`] with a development session on the stand-in that has
+        /// embedded every one of them, and the directories that have to outlive it.
+        fn indexed() -> (SearchEngine, TempDir, TempDir) {
+            let (mut engine, index) = make_engine();
+            for (id, text) in LINES {
+                add(&mut engine, id, text, BOOK);
+            }
+            engine.commit().unwrap();
+            let semantic = TempDir::new().unwrap();
+            let model = write_stub_onnx_package(&semantic.path().join("model"));
+            engine
+                .configure_semantic(SemanticConfigInput {
+                    root_dir: semantic
+                        .path()
+                        .join("semantic")
+                        .to_string_lossy()
+                        .into_owned(),
+                    model_path: model.to_string_lossy().into_owned(),
+                    model_id: "test-mock".to_string(),
+                    embedding_dim: 64,
+                    pooling: "in-graph".to_string(),
+                    max_tokens: 512,
+                    model_quantization: "int8".to_string(),
+                    embedding_text_version: 1,
+                    onnx_runtime_path: None,
+                })
+                .unwrap();
+            let indexed = engine
+                .semantic_index_books(vec![SemanticBookInput {
+                    source_book_key: BOOK.to_string(),
+                    title: "title".to_string(),
+                    content_fingerprint: 1,
+                    is_pdf: false,
+                    topics: "/root".to_string(),
+                    extra_facets: Vec::new(),
+                    lines: LINES
+                        .iter()
+                        .map(|&(id, text)| SemanticBookLineInput {
+                            line_id: id,
+                            section_id: id,
+                            text: text.to_string(),
+                            line_hash: id,
+                            reference: "ref".to_string(),
+                            segment: 0,
+                        })
+                        .collect(),
+                }])
+                .unwrap();
+            assert_eq!(indexed.chunks_written, LINES.len() as u32);
+            (engine, index, semantic)
+        }
+
+        /// What a page is, as bits: an uncancelled search after the cancelled ones must
+        /// answer exactly as one before them did.
+        fn page(response: &SemanticSearchResponse) -> Vec<(u64, u32, Option<u32>)> {
+            response
+                .results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.id,
+                        hit.fused_score.to_bits(),
+                        hit.semantic_score.map(f32::to_bits),
+                    )
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_search_stops_at_the_look_it_was_cancelled_at_and_the_session_serves_on() {
+            let (engine, _index, _semantic) = indexed();
+            let search = |mode, token: &SemanticCancellationToken| {
+                engine.search_semantic(
+                    LINES[2].1.to_string(),
+                    Vec::new(),
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    None,
+                    token,
+                )
+            };
+
+            for mode in [
+                SemanticRetrievalMode::Hybrid,
+                SemanticRetrievalMode::SemanticOnly,
+                SemanticRetrievalMode::LexicalOnly,
+            ] {
+                let (served, reached) =
+                    cancelling_at(None, || search(mode, &SemanticCancellationToken::new()));
+                let served = served.unwrap();
+                assert_eq!(reached, SERVED, "{mode:?}");
+                assert_eq!(served.fallback_kind, None, "{mode:?}");
+                assert!(!served.results.is_empty(), "{mode:?}");
+
+                // Cancelled as the token is handed over, the search stops at the sidecar's
+                // own look and never reaches hydration: had the token not been handed over,
+                // it would have run on to this crate's next look.
+                for (cancel_at, stops_after) in
+                    [(At::Sidecar, 2), (At::Hydration, 3), (At::Painting, 4)]
+                {
+                    let token = SemanticCancellationToken::new();
+                    let (result, reached) = cancelling_at(Some(cancel_at), || search(mode, &token));
+                    match result {
+                        Ok(_) => panic!("{mode:?}: cancelled at {cancel_at:?}, and served"),
+                        Err(error) => assert_eq!(
+                            error,
+                            SemanticError::cancelled(),
+                            "{mode:?} at {cancel_at:?}"
+                        ),
+                    }
+                    assert_eq!(
+                        reached,
+                        SERVED[..stops_after],
+                        "{mode:?}: cancelled at {cancel_at:?}"
+                    );
+                }
+
+                let (after, _) =
+                    cancelling_at(None, || search(mode, &SemanticCancellationToken::new()));
+                assert_eq!(
+                    page(&after.unwrap()),
+                    page(&served),
+                    "{mode:?}: the cancelled searches changed what the session serves"
+                );
+            }
+        }
+    }
+
+    /// A verification that an install overtook — it read bytes the install has since
+    /// replaced — condemned nothing, and is answered as a busy set, to verify again; one
+    /// that was not is the report.
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn a_verification_an_install_overtook_is_busy_and_not_damage() {
+        use otzaria_semantic_search::semantic::segment_set::ScrubReport;
+        let report = |superseded| ScrubReport {
+            generation: 3,
+            segments: 2,
+            bytes_checked: 10,
+            elapsed_ms: 1,
+            superseded,
+        };
+        let verified = verification_of(&report(false), Path::new("/vectors")).unwrap();
+        assert_eq!(
+            (
+                verified.generation,
+                verified.segments,
+                verified.bytes_checked
+            ),
+            (3, 2, 10)
+        );
+        let Err(overtaken) = verification_of(&report(true), Path::new("/vectors")) else {
+            panic!("a verification an install overtook is no report of the set");
+        };
+        assert_eq!(
+            (overtaken.kind, overtaken.field.as_deref()),
+            (SemanticErrorKind::VectorsBusy, Some("vectors_dir"))
+        );
+    }
+
+    /// The wait for a set's lock ends when the lock is free, when it runs out, and on a
+    /// cancel, even one seen only once the wait has run out.
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn a_wait_for_the_set_lock_ends_free_out_of_time_or_cancelled() {
+        use otzaria_semantic_search::errors::ArtifactError;
+        use std::time::Duration;
+        let held = || -> Result<(), SemanticSearchError> {
+            Err(SemanticSearchError::Artifact(ArtifactError::Io {
+                context: "locking".to_string(),
+                source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
+            }))
+        };
+        let token = SearchCancellation::new();
+        let mut attempts = 0;
+        let freed = waiting_for_set_lock(&token, Duration::from_secs(5), || {
+            attempts += 1;
+            if attempts < 3 {
+                held()
+            } else {
+                Ok(())
+            }
+        });
+        assert!(freed.is_ok() && attempts == 3);
+        let busy = waiting_for_set_lock(&token, Duration::ZERO, held);
+        assert!(matches!(busy, Err(SemanticSearchError::Artifact(_))));
+        token.cancel();
+        let cancelled = waiting_for_set_lock(&token, Duration::ZERO, held);
+        assert!(matches!(cancelled, Err(SemanticSearchError::Cancelled)));
+    }
+
+    /// A displayed semantic result is checked against its vector by the full 128-bit key,
+    /// recomputed from the line's text: a line whose column agrees by 64 bits and whose
+    /// text does not is not shown as a semantic match.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
+    mod semantic_verification {
+        use super::*;
+        use crate::semantic_corpus::TantivyCorpus;
+        use crate::semantic_keys::production_chunking;
+        use crate::semantic_resolver::MAX_FAILED_REPEATS;
+        use otzaria_semantic_search::cancellation::CancellationToken;
+        use otzaria_semantic_search::distribution::builder::{
+            build, BuildRequest, RELEASE_MANIFEST_FILENAME, SEGMENT_FILENAME,
+        };
+        use otzaria_semantic_search::distribution::corpus::CorpusIndex;
+        use otzaria_semantic_search::semantic::embedding::mock;
+        use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
+        use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+        use otzaria_semantic_search::semantic::segment_set::{
+            install_package, InstallExpectation, InstallSource,
+        };
+        use otzaria_semantic_search::semantic::versioning::IndexVersion;
+
+        const BOOK: &str = "/books/genesis.txt";
+        const PROBE: &str = "ויאמר אלהים יהי אור ויהי אור";
+
+        /// An index of one book, and a base package built from it: what a release is made of.
+        struct Built {
+            engine: SearchEngine,
+            model: ModelIdentity,
+            model_file: PathBuf,
+            /// The package: its segment and its release manifest.
+            package: PathBuf,
+            manifest_sha256: String,
+            identity: IndexVersion,
+        }
+
+        /// An index of one book, a vector set built from it and installed, and the set open.
+        fn opened(dir: &TempDir) -> SearchEngine {
+            open(dir, built(dir))
+        }
+
+        /// `built` installed into `dir`'s vector set, and the set open.
+        fn open(dir: &TempDir, built: Built) -> SearchEngine {
+            let vectors = dir.path().join("vectors");
+            install_package(
+                &vectors,
+                &InstallSource {
+                    segment: &built.package.join(SEGMENT_FILENAME),
+                    manifest_json: &fs::read_to_string(
+                        built.package.join(RELEASE_MANIFEST_FILENAME),
+                    )
+                    .unwrap(),
+                },
+                &InstallExpectation {
+                    identity: built.identity.clone(),
+                    published_manifest_sha256: Some(built.manifest_sha256.clone()),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            built
+                .engine
+                .open_semantic_artifact(SemanticArtifactInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    model_path: built.model_file.to_string_lossy().into_owned(),
+                    model_identity_json: serde_json::to_string(&built.model).unwrap(),
+                    onnx_runtime_path: None,
+                    scan_threads: None,
+                })
+                .unwrap();
+            built.engine
+        }
+
+        /// [`Built`]: the index and the package, nothing installed.
+        fn built(dir: &TempDir) -> Built {
+            built_of(
+                dir,
+                false,
+                format!("בראשית ברא אלהים את השמים ואת הארץ\n{PROBE}"),
+            )
+        }
+
+        /// [`Built`] of `text` as the one book [`BOOK`], in an index of schema version 4 —
+        /// no `chunkKey` column — when `version_4` asks.
+        fn built_of(dir: &TempDir, version_4: bool, text: String) -> Built {
+            built_of_books(dir, version_4, &[(BOOK, text)])
+        }
+
+        /// [`built_of`] with each of `books`, `(path, text)`, a book of its own.
+        fn built_of_books(dir: &TempDir, version_4: bool, books: &[(&str, String)]) -> Built {
+            let index = dir.path().join("index");
+            fs::create_dir_all(&index).unwrap();
+            if version_4 {
+                Index::create_in_dir(&index, schema_of_version(4).unwrap()).unwrap();
+                write_index_metadata(&index, &index_metadata(4, None)).unwrap();
+            }
+            let mut engine = SearchEngine::new(index.to_str().unwrap());
+            assert_eq!(engine.chunk_key_field.is_none(), version_4);
+            for (order, (path, text)) in books.iter().enumerate() {
+                engine
+                    .add_text_book(
+                        "בראשית".to_string(),
+                        "/root".to_string(),
+                        path.to_string(),
+                        order as u32,
+                        0,
+                        text.clone(),
+                        None,
+                    )
+                    .unwrap();
+            }
+            engine.commit().unwrap();
+
+            let chunking = production_chunking();
+            let model_file = mock::write_stub_onnx_package(&dir.path().join("model"));
+            let model = ModelIdentity {
+                family_id: "test-mock@0000000".to_string(),
+                tokenizer_checksum: mock::stub_tokenizer_checksum(),
+                embedding_dim: 64,
+                pooling: "in-graph".to_string(),
+                max_tokens: 512,
+                embedding_text_version: chunking.embedding_text_version,
+                normalization_version: chunking.normalization_version,
+                chunking_identity: chunking.identity(),
+                query_packages: vec![ModelPackage {
+                    checksum: validate_onnx_package(&model_file)
+                        .unwrap()
+                        .checksum()
+                        .to_string(),
+                    quantization: "int8".to_string(),
+                }],
+            };
+            let corpus = TantivyCorpus::from_engine(&engine, 30, "", chunking.clone()).unwrap();
+            let package = dir.path().join("package");
+            let report = build(
+                BuildRequest {
+                    output_path: package.clone(),
+                    model_path: model_file.clone(),
+                    model: model.clone(),
+                    chunking,
+                    created_at: "2026-10-01T00:00:00Z".to_string(),
+                    batch_size: 2,
+                    codec: Default::default(),
+                    allow_non_semantic_backend: true,
+                },
+                &corpus,
+            )
+            .unwrap();
+            let identity = IndexVersion {
+                text: corpus.identity().unwrap().text,
+                model: model.clone(),
+                store: readable_store_identity(),
+            };
+            drop(corpus);
+            Built {
+                engine,
+                model,
+                model_file,
+                package,
+                manifest_sha256: report.manifest_sha256,
+                identity,
+            }
+        }
+
+        /// The probe line's id and the value its `chunkKey` column holds.
+        fn probe(engine: &SearchEngine) -> (u64, u64) {
+            let searcher = engine.index_reader.searcher();
+            let text_f = engine.schema.get_field("text").unwrap();
+            for (ord, reader) in searcher.segment_readers().iter().enumerate() {
+                let ids = reader.fast_fields().u64("id").unwrap();
+                let keys = reader.fast_fields().u64(CHUNK_KEY_FIELD).unwrap();
+                for doc in reader.doc_ids_alive() {
+                    let stored: TantivyDocument =
+                        searcher.doc(DocAddress::new(ord as u32, doc)).unwrap();
+                    if stored.get_first(text_f).and_then(|v| v.as_str()) == Some(PROBE) {
+                        return (ids.first(doc).unwrap(), keys.first(doc).unwrap());
+                    }
+                }
+            }
+            panic!("the probe line is indexed")
+        }
+
+        /// The probe line replaced by `text`, with the probe's id, its section and — the
+        /// forgery — the probe's column value: a document the column cannot tell from the
+        /// line the vector was built from.
+        fn forge(engine: &mut SearchEngine, text: &str) {
+            let (id, column) = probe(engine);
+            let schema = engine.schema.clone();
+            let field = |name: &str| schema.get_field(name).unwrap();
+            let mut document = doc!(
+                field("title") => "בראשית",
+                field("reference") => "בראשית",
+                field("text") => text,
+                field("id") => id,
+                field("segment") => 1u64,
+                field("isPdf") => false,
+                field("filePath") => BOOK,
+                field("topics") => Facet::from_text("/root").unwrap(),
+                field("contentHash") => 0u64,
+                field("textHash") => 0u64,
+                field("sectionId") => id & !0xFFFF_FFFF,
+                field("generationSort") => 0u64,
+                field("lineHash") => 0u64
+            );
+            document.add_u64(field(CHUNK_KEY_FIELD), column);
+            let writer = engine.writer_mut().unwrap();
+            writer.delete_term(Term::from_field_u64(field("id"), id));
+            writer.add_document(document).unwrap();
+            engine.commit().unwrap();
+        }
+
+        fn search(engine: &SearchEngine, mode: SemanticRetrievalMode) -> SemanticSearchResponse {
+            engine
+                .search_semantic(
+                    PROBE.to_string(),
+                    Vec::new(),
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        }
+
+        #[test]
+        fn the_probe_line_is_a_semantic_match_before_anything_is_forged() {
+            let dir = TempDir::new().unwrap();
+            let engine = opened(&dir);
+            let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+            let top = response.results.first().expect("a semantic hit");
+            assert_eq!(top.snippet_html, PROBE);
+            assert_eq!(top.source, SemanticResultSource::Semantic);
+            assert!(response.fallback_reason.is_none());
+        }
+
+        #[test]
+        fn a_line_whose_text_is_not_the_vectors_is_not_shown_as_semantic() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, "שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+
+            let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+            assert!(
+                response
+                    .results
+                    .iter()
+                    .all(|result| result.file_path != BOOK || result.segment != 1),
+                "the forged line is not shown as the vector's: {:?}",
+                response
+                    .results
+                    .iter()
+                    .map(|result| &result.snippet_html)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                response
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("were not shown as such")),
+                "{:?}",
+                response.fallback_reason
+            );
+        }
+
+        /// A short line, under the 20 characters a line stands alone at, with letters enough
+        /// for a `lineHash`.
+        const SHORT: &str = "ויאמר משה אל העם";
+        /// How many times the books below hold [`SHORT`] among lines of their own.
+        const RECURS: usize = 300;
+
+        /// [`SHORT`] in the window its key spans.
+        const FIRST: [&str; 5] = [
+            "ויקרא משה אל כל ישראל ויאמר אליהם",
+            "שמע ישראל את החוקים ואת המשפטים",
+            SHORT,
+            "אשר אנכי דובר באזניכם היום",
+            "ולמדתם אותם ושמרתם לעשותם",
+        ];
+
+        /// [`FIRST`] cut into lines at another space: the same key, other `lineHash`es.
+        const RESPLIT: [&str; 5] = [
+            "ויקרא משה אל כל ישראל",
+            "ויאמר אליהם שמע ישראל את החוקים ואת המשפטים",
+            SHORT,
+            FIRST[3],
+            FIRST[4],
+        ];
+
+        /// Blocks of [`SHORT`] in its window: `first`, `recurs` of `neighbour(n)`, `last`.
+        fn book_of(
+            first: &[&str; 5],
+            recurs: usize,
+            neighbour: impl Fn(usize) -> String,
+            last: &[&[&str; 5]],
+        ) -> String {
+            let blocks = (0..recurs).map(|block| {
+                let n = 4 * block;
+                [
+                    neighbour(n),
+                    neighbour(n + 1),
+                    SHORT.to_string(),
+                    neighbour(n + 2),
+                    neighbour(n + 3),
+                ]
+                .join("\n")
+            });
+            std::iter::once(first.join("\n"))
+                .chain(blocks)
+                .chain(last.iter().map(|block| block.join("\n")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        /// [`FIRST`], `RECURS` blocks of `neighbour(n)`, and [`FIRST`] again.
+        fn recurring(neighbour: impl Fn(usize) -> String) -> String {
+            book_of(&FIRST, RECURS, neighbour, &[&FIRST])
+        }
+
+        /// The line of each result of `response` that is [`SHORT`], in the page's order.
+        fn shorts(response: &SemanticSearchResponse) -> Vec<u64> {
+            response
+                .results
+                .iter()
+                .filter(|result| result.snippet_html == SHORT)
+                .map(|result| result.segment)
+                .collect()
+        }
+
+        /// The text of `block`'s short line as it is embedded: what a query must repeat for
+        /// that line's vector to come first.
+        fn window(text: &str, block: usize) -> String {
+            text.lines()
+                .skip(5 * block)
+                .take(5)
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        fn resolver_counts(engine: &SearchEngine) -> (u64, usize) {
+            let cache = engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            (cache.recomputes, cache.worst_failures)
+        }
+
+        fn semantic_page(engine: &SearchEngine, query: &str, limit: u32) -> SemanticSearchResponse {
+            engine
+                .search_semantic(
+                    query.to_string(),
+                    Vec::new(),
+                    limit,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::SemanticOnly,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        }
+
+        /// R2 of the acceptance run. Without the column a short line's repeats are the lines
+        /// of its `lineHash` — here three hundred and one — and its key spans its neighbours,
+        /// which differ at all but one. A hit recomputes one line that does not hold its key,
+        /// then reads its span, and the others' windows cannot spell the text: all the hits a
+        /// page of ten scans for recompute fewer lines together than one of them did alone,
+        /// three hundred. The real repeat, neighbours and all, is still a result.
+        #[test]
+        fn a_short_line_recurring_among_other_lines_is_bounded_and_keeps_its_real_repeat() {
+            let dir = TempDir::new().unwrap();
+            let text = recurring(|n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"));
+            let engine = open(&dir, built_of(&dir, true, text.clone()));
+
+            let response = semantic_page(&engine, &window(&text, 0), 10);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let shorts: Vec<u64> = response
+                .results
+                .iter()
+                .filter(|result| result.snippet_html == SHORT)
+                .map(|result| result.segment)
+                .collect();
+            let repeat = 5 * (RECURS as u64 + 1) + 2;
+            assert_eq!(
+                shorts[..2],
+                [2, repeat],
+                "the line and its real repeat, first"
+            );
+
+            let (recomputes, worst) = resolver_counts(&engine);
+            assert!(
+                worst <= 1,
+                "a hit recomputed {worst} lines that did not hold its key"
+            );
+            assert!(recomputes < RECURS as u64, "{recomputes} keys recomputed");
+        }
+
+        /// Neighbours with no `lineHash` — under twelve letters — leave the windows nothing to
+        /// tell apart, and every block's line is a candidate for every other's. A hit then
+        /// stops after [`MAX_FAILED_REPEATS`] lines recomputed that did not hold its key: a
+        /// page of one scans for four hits, and recomputes at most four budgets' worth, where
+        /// each hit read three hundred lines before.
+        #[test]
+        fn a_short_line_whose_windows_cannot_be_told_apart_stops_at_the_budget() {
+            let dir = TempDir::new().unwrap();
+            let text = recurring(|n| format!("פסוק {n}"));
+            let engine = open(&dir, built_of(&dir, true, text.clone()));
+
+            let response = semantic_page(&engine, &window(&text, 1), 1);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let (recomputes, worst) = resolver_counts(&engine);
+            assert_eq!(worst, MAX_FAILED_REPEATS, "every hit reached the budget");
+            assert!(
+                recomputes <= 4 * MAX_FAILED_REPEATS as u64,
+                "{recomputes} keys recomputed"
+            );
+        }
+
+        /// A text held three times, once cut into lines at other spaces, after a line that
+        /// fails: all three are shown, with the column or without.
+        #[test]
+        fn a_repeat_whose_lines_are_cut_at_other_spaces_is_found_with_the_column_or_without() {
+            let text = book_of(
+                &FIRST,
+                1,
+                |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
+                &[&RESPLIT, &FIRST],
+            );
+            for version_4 in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let engine = open(&dir, built_of(&dir, version_4, text.clone()));
+
+                let response = semantic_page(&engine, &window(&text, 0), 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let shorts = shorts(&response);
+                assert_eq!(
+                    shorts.get(..3),
+                    Some(&[2, 12, 17][..]),
+                    "version 4: {version_4}; every line of the text, first: {shorts:?}"
+                );
+            }
+        }
+
+        /// R2's shape at the size of the library's worst book: a failed recompute per hit,
+        /// and the real repeats, however they are cut into lines, still shown.
+        #[test]
+        fn a_short_line_among_nine_hundred_others_costs_one_failure_and_keeps_every_repeat() {
+            let dir = TempDir::new().unwrap();
+            let recurs = 900;
+            let text = book_of(
+                &FIRST,
+                recurs,
+                |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
+                &[&RESPLIT, &FIRST],
+            );
+            let engine = open(&dir, built_of(&dir, true, text.clone()));
+
+            let response = semantic_page(&engine, &window(&text, 0), 10);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let repeats = [5 * (recurs as u64 + 1) + 2, 5 * (recurs as u64 + 2) + 2];
+            assert_eq!(shorts(&response)[..3], [2, repeats[0], repeats[1]]);
+            let (recomputes, worst) = resolver_counts(&engine);
+            assert_eq!(worst, 1, "failed recomputes of the worst hit");
+            assert!(recomputes < 20, "{recomputes} keys recomputed");
+        }
+
+        /// A real repeat behind more candidates the columns cannot tell from it than the budget
+        /// allows is shown with the column, and not without it.
+        #[test]
+        fn a_repeat_past_the_budget_is_found_only_with_the_column() {
+            let first = ["פסוק א", "פסוק ב", SHORT, "פסוק ג", "פסוק ד"];
+            let recurs = 2 * MAX_FAILED_REPEATS;
+            let text = book_of(&first, recurs, |n| format!("פסוק {n}"), &[&first]);
+            let repeat = 5 * (recurs as u64 + 1) + 2;
+            for version_4 in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let engine = open(&dir, built_of(&dir, version_4, text.clone()));
+
+                let response = semantic_page(&engine, &window(&text, 0), 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let shorts = shorts(&response);
+                assert!(shorts.contains(&2), "{shorts:?}");
+                assert_eq!(shorts.contains(&repeat), !version_4, "{shorts:?}");
+                if version_4 {
+                    assert_eq!(resolver_counts(&engine).1, MAX_FAILED_REPEATS);
+                }
+            }
+        }
+
+        /// A text the cap cut, held twice in each of two books among twenty other windows of
+        /// its short line: the first book's other windows do not spend the budget the second
+        /// book's repeat needs.
+        #[test]
+        fn a_capped_texts_repeat_in_a_second_book_is_found_within_the_budget() {
+            let long = |word: &str| format!("{word} ").repeat(40).trim_end().to_string();
+            let (a, b, c, d) = (long("אברהם"), long("יצחק"), long("ויעקב"), long("ויוסף"));
+            let capped = [a.as_str(), b.as_str(), SHORT, c.as_str(), d.as_str()];
+            let recurs = 20;
+            let text = book_of(
+                &capped,
+                recurs,
+                |n| format!("שורה {n} של הספר הגדול שאינה חוזרת בשום מקום"),
+                &[&capped],
+            );
+            let query: String = window(&text, 0).chars().take(512).collect();
+            let other = "/books/exodus.txt";
+            let repeat = 5 * (recurs as u64 + 1) + 2;
+            for version_4 in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let books = [(BOOK, text.clone()), (other, text.clone())];
+                let engine = open(&dir, built_of_books(&dir, version_4, &books));
+
+                let response = semantic_page(&engine, query.trim_end(), 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let mut lines: Vec<(&str, u64)> = response
+                    .results
+                    .iter()
+                    .filter(|result| result.snippet_html == SHORT)
+                    .map(|result| (result.file_path.as_str(), result.segment))
+                    .take(4)
+                    .collect();
+                lines.sort();
+                assert_eq!(
+                    lines,
+                    [(other, 2), (other, repeat), (BOOK, 2), (BOOK, repeat)],
+                    "version 4: {version_4}"
+                );
+            }
+        }
+
+        /// A filtered search after a commit that left the book it admits alone plans again —
+        /// a commit is a new generation of the index — and reads none of the book's lines:
+        /// its postings are the segments they were, so the arrivals the view keeps for them
+        /// hold.
+        #[test]
+        fn a_plan_after_a_commit_that_left_its_book_alone_reads_none_of_it() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let filtered = |engine: &SearchEngine| {
+                engine
+                    .search_semantic(
+                        PROBE.to_string(),
+                        vec!["/root".to_string()],
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let walks = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .walks
+            };
+            assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
+            assert_eq!(walks(&engine), 1, "the first plan reads the book");
+            engine
+                .add_text_book(
+                    "ספר אחר".to_string(),
+                    "/other".to_string(),
+                    "/books/other.txt".to_string(),
+                    1,
+                    0,
+                    "שורה בספר אחר ארוכה דיה לעמוד לבדה".to_string(),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
+            assert_eq!(
+                walks(&engine),
+                0,
+                "a plan of the new generation reads none of the book it admits"
+            );
+        }
+
+        const OTHER: &str = "/books/other.txt";
+
+        fn unfiltered(
+            engine: &SearchEngine,
+            query: &str,
+            mode: SemanticRetrievalMode,
+        ) -> Result<SemanticSearchResponse, SemanticError> {
+            engine.search_semantic(
+                query.to_string(),
+                Vec::new(),
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                mode,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+        }
+
+        /// The probe's lines an unfiltered semantic-only search returns, as (book, line).
+        fn probe_lines(engine: &SearchEngine) -> Vec<(String, u64)> {
+            let response = unfiltered(engine, PROBE, SemanticRetrievalMode::SemanticOnly).unwrap();
+            assert!(
+                response.semantic_available,
+                "{:?}",
+                response.fallback_reason
+            );
+            response
+                .results
+                .into_iter()
+                .filter(|result| result.snippet_html == PROBE)
+                .map(|result| (result.file_path, result.segment))
+                .collect()
+        }
+
+        fn walks(engine: &SearchEngine) -> u64 {
+            engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .walks
+        }
+
+        /// A book that holds the probe at its line 1, committed.
+        fn add_copy(engine: &mut SearchEngine, book: &str, order: u32) {
+            engine
+                .add_text_book(
+                    "ספר אחר".to_string(),
+                    "/other".to_string(),
+                    book.to_string(),
+                    order,
+                    0,
+                    format!("שורה בספר אחר ארוכה דיה לעמוד לבדה\n{PROBE}"),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+        }
+
+        /// An unfiltered search plans the whole library once a generation, and after a commit
+        /// reads only the book it added.
+        #[test]
+        fn an_unfiltered_plan_reads_each_book_once_and_then_only_what_a_commit_added() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            assert_eq!(probe_lines(&engine), [(BOOK.to_string(), 1)]);
+            assert_eq!(walks(&engine), 1);
+            unfiltered(
+                &engine,
+                "בראשית ברא אלהים",
+                SemanticRetrievalMode::SemanticOnly,
+            )
+            .unwrap();
+            assert_eq!(walks(&engine), 1, "the plan is kept for the generation");
+            add_copy(&mut engine, OTHER, 1);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+            assert_eq!(walks(&engine), 1, "only the book the commit added");
+        }
+
+        /// An unfiltered plan that fails leaves its search unplanned, semantic half and all,
+        /// and is not tried again in that generation of the index.
+        #[test]
+        fn an_unfiltered_search_whose_plan_fails_goes_unplanned() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
+            let failed = unfiltered(&engine, PROBE, SemanticRetrievalMode::Hybrid);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
+            let failed = failed.unwrap();
+            assert!(failed.semantic_available, "{:?}", failed.fallback_reason);
+            assert!(failed.results.iter().any(|result| result.file_path == BOOK
+                && result.segment == 1
+                && result.semantic_score.is_some()));
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1)],
+                "not tried again"
+            );
+            add_copy(&mut engine, "/books/third.txt", 2);
+            assert_eq!(
+                probe_lines(&engine).len(),
+                3,
+                "planned in the next generation"
+            );
+        }
+
+        /// Past its cap of arrivals the unfiltered plan is not held, and searches go unplanned.
+        #[test]
+        fn an_unfiltered_plan_past_its_cap_goes_unplanned() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            add_copy(&mut engine, "/books/third.txt", 2);
+            let cap = crate::semantic_resolver::LIBRARY_CAP.with(|cap| cap.replace(1));
+            let capped = probe_lines(&engine);
+            crate::semantic_resolver::LIBRARY_CAP.with(|limit| limit.set(cap));
+            assert_eq!(capped, [(BOOK.to_string(), 1)]);
+            add_copy(&mut engine, "/books/fourth.txt", 3);
+            assert_eq!(probe_lines(&engine).len(), 4);
+        }
+
+        fn lookups(engine: &SearchEngine) -> u64 {
+            engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .lookups
+        }
+
+        /// Past the cap, the arrivals found are kept: the next generation gives up without
+        /// asking the set again.
+        #[test]
+        fn an_unfiltered_plan_past_its_cap_asks_the_set_once() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            add_copy(&mut engine, "/books/third.txt", 2);
+            add_copy(&mut engine, "/books/fourth.txt", 3);
+            let cap = crate::semantic_resolver::LIBRARY_CAP.with(|cap| cap.replace(1));
+            let first = probe_lines(&engine);
+            let first_lookups = lookups(&engine);
+            engine
+                .delete_documents_by_file_path("/books/fourth.txt")
+                .unwrap();
+            engine.commit().unwrap();
+            let second = probe_lines(&engine);
+            let second_lookups = lookups(&engine);
+            crate::semantic_resolver::LIBRARY_CAP.with(|limit| limit.set(cap));
+            assert_eq!(first, [(BOOK.to_string(), 1)]);
+            assert_eq!(second, [(BOOK.to_string(), 1)]);
+            assert_eq!((first_lookups, second_lookups), (1, 0));
+        }
+
+        /// A plan its token cancelled is not one that failed: the next search plans.
+        #[test]
+        fn a_cancelled_plan_is_not_a_failed_one() {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::resolve::ResolveError;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            assert_eq!(
+                resolver.plan(&filters, &view, &cancel).err(),
+                Some(ResolveError::Cancelled)
+            );
+            drop(resolver);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+        }
+
+        /// A plan cancelled before it asks the set keeps the books it read.
+        #[test]
+        fn a_cancelled_plan_keeps_the_books_it_read() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            crate::semantic_resolver::CANCEL_LOOKUPS.with(|cancel| cancel.set(true));
+            let cancelled = unfiltered(&engine, PROBE, SemanticRetrievalMode::SemanticOnly);
+            crate::semantic_resolver::CANCEL_LOOKUPS.with(|cancel| cancel.set(false));
+            assert_eq!(
+                cancelled.err().map(|error| error.kind),
+                Some(SemanticErrorKind::Cancelled)
+            );
+            assert_eq!(walks(&engine), 2);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+            assert_eq!(walks(&engine), 2, "no book read again");
+        }
+
+        /// A vector whose line's column is stale resolves nowhere: its record's line and every
+        /// line its column value is found at hold another key. That is looked for across the
+        /// whole index once in a generation of it, not by every search that hits the vector.
+        #[test]
+        fn a_key_only_a_stale_column_holds_is_looked_for_once_a_generation() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, "שורה אחרת לגמרי שאין לה דבר עם הווקטור");
+            let passes = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .passes
+            };
+            // Two queries, so that the second is not answered from the query cache: the set
+            // holds two vectors, and every search scans both.
+            for (query, expected) in [(PROBE, 1), ("בראשית ברא אלהים", 1)] {
+                let response = engine
+                    .search_semantic(
+                        query.to_string(),
+                        Vec::new(),
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap();
+                assert!(
+                    response
+                        .results
+                        .iter()
+                        .all(|result| result.file_path != BOOK || result.segment != 1),
+                    "{query}: the stale line is not the vector's"
+                );
+                assert_eq!(passes(&engine), expected, "{query}");
+            }
+        }
+
+        /// A filtered search that cannot be planned — the index could not be read for it —
+        /// is a semantic half that failed, as one whose resolver cannot read the index is:
+        /// the lexical results are served, with the reason, and the next search is planned.
+        #[test]
+        fn a_filtered_search_that_cannot_be_planned_falls_back_with_a_reason() {
+            let dir = TempDir::new().unwrap();
+            let engine = opened(&dir);
+            let filtered = |query: &str| {
+                engine.search_semantic(
+                    query.to_string(),
+                    vec!["/root".to_string()],
+                    10,
+                    0,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::Hybrid,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+            };
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
+            let failed = filtered(PROBE);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
+            let failed = failed.expect("a fallback, not an error of the call");
+            assert!(!failed.semantic_available);
+            assert_eq!(failed.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+            assert!(
+                failed
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("a test made planning fail")),
+                "{:?}",
+                failed.fallback_reason
+            );
+            assert!(
+                failed
+                    .results
+                    .iter()
+                    .any(|result| result.snippet_html.contains("ויאמר")
+                        && result.source == SemanticResultSource::Lexical),
+                "the lexical results are served"
+            );
+
+            let planned = filtered("ויאמר אלהים יהי אור").unwrap();
+            assert!(planned.semantic_available, "{:?}", planned.fallback_reason);
+            assert_eq!(planned.fallback_kind, None);
+        }
+
+        /// Another process's cleanup can take an expansion's lock file in the instant between
+        /// its creation and its locking: lock it, take it for a process gone, and remove it.
+        /// The install then takes a lock file of its own again and goes on — whether the
+        /// cleaner still holds the one it took, or has removed it and let go — and leaves
+        /// nothing in `incoming/`.
+        #[test]
+        fn an_expansion_lock_another_cleanup_takes_first_is_taken_again() {
+            use std::sync::{Arc, Mutex};
+            let dir = TempDir::new().unwrap();
+            let built = built(&dir);
+            let compressed = dir.path().join("segment.oxv.zst");
+            fs::write(
+                &compressed,
+                zstd::stream::encode_all(
+                    fs::File::open(built.package.join(SEGMENT_FILENAME)).unwrap(),
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let vectors = dir.path().join("vectors");
+            // The cleaner: the first lock file it holds and removes, the second it removes
+            // and lets go of, the rest it leaves alone.
+            let calls = Arc::new(Mutex::new(0u32));
+            let held: Arc<Mutex<Option<fs::File>>> = Arc::new(Mutex::new(None));
+            {
+                let (calls, held) = (Arc::clone(&calls), Arc::clone(&held));
+                super::AFTER_EXPANSION_LOCK_FILE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+                        let mut calls = calls.lock().unwrap();
+                        *calls += 1;
+                        if *calls <= 2 {
+                            let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+                            file.try_lock().unwrap();
+                            fs::remove_file(path).unwrap();
+                            *held.lock().unwrap() = (*calls == 1).then_some(file);
+                        }
+                    }));
+                });
+            }
+            let installed = built.engine.install_semantic_vectors(
+                SemanticVectorsInstallInput {
+                    vectors_dir: vectors.to_string_lossy().into_owned(),
+                    segment_path: compressed.to_string_lossy().into_owned(),
+                    manifest_json: fs::read_to_string(
+                        built.package.join(RELEASE_MANIFEST_FILENAME),
+                    )
+                    .unwrap(),
+                    published_manifest_sha256: Some(built.manifest_sha256.clone()),
+                    model_identity_json: serde_json::to_string(&built.model).unwrap(),
+                },
+                &SemanticCancellationToken::new(),
+            );
+            super::AFTER_EXPANSION_LOCK_FILE.with(|hook| *hook.borrow_mut() = None);
+            drop(held.lock().unwrap().take());
+            if let Err(error) = &installed {
+                panic!("the install is not refused: {error:?}");
+            }
+            assert_eq!(*calls.lock().unwrap(), 3, "a lock file a third time");
+            let left: Vec<String> = fs::read_dir(vectors.join("incoming"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert_eq!(left, Vec::<String>::new());
+        }
+
+        /// One lexical search also found keeps its lexical half alone.
+        #[test]
+        fn a_line_lexical_search_also_found_keeps_its_lexical_half() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            forge(&mut engine, &format!("{PROBE} ועוד מילים שלא היו בו"));
+
+            let response = search(&engine, SemanticRetrievalMode::Hybrid);
+            let forged = response
+                .results
+                .iter()
+                .find(|result| result.file_path == BOOK && result.segment == 1)
+                .expect("lexical search finds the forged line");
+            assert_eq!(forged.source, SemanticResultSource::Lexical);
+            assert_eq!(forged.semantic_score, None);
+            assert!(forged.lexical_score.is_some());
+        }
     }
 }

@@ -33,6 +33,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_SearchEnginePtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEnginePtr;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_SemanticCancellationTokenPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationTokenPtr;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
@@ -51,6 +55,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticCancellationToken
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
     dynamic raw,
   );
 
@@ -75,6 +85,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticCancellationToken
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
     dynamic raw,
   );
 
@@ -116,6 +132,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCancellationToken
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
   RustStreamSink<List<SearchResult>>
   dco_decode_StreamSink_list_search_result_Sse(dynamic raw);
 
@@ -151,6 +173,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double dco_decode_box_autoadd_f_32(dynamic raw);
 
   @protected
+  double dco_decode_box_autoadd_f_64(dynamic raw);
+
+  @protected
   HighlightConfig dco_decode_box_autoadd_highlight_config(dynamic raw);
 
   @protected
@@ -163,12 +188,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchResult dco_decode_box_autoadd_search_result(dynamic raw);
 
   @protected
+  SemanticArtifactInput dco_decode_box_autoadd_semantic_artifact_input(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticCompactionPolicy dco_decode_box_autoadd_semantic_compaction_policy(
+    dynamic raw,
+  );
+
+  @protected
   SemanticConfigInput dco_decode_box_autoadd_semantic_config_input(dynamic raw);
+
+  @protected
+  SemanticErrorKind dco_decode_box_autoadd_semantic_error_kind(dynamic raw);
 
   @protected
   SemanticGroupingMode dco_decode_box_autoadd_semantic_grouping_mode(
     dynamic raw,
   );
+
+  @protected
+  SemanticRankingOptions dco_decode_box_autoadd_semantic_ranking_options(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsInstallInput
+  dco_decode_box_autoadd_semantic_vectors_install_input(dynamic raw);
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
@@ -292,6 +339,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticSegmentInfo> dco_decode_list_semantic_segment_info(dynamic raw);
+
+  @protected
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
@@ -316,6 +366,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double? dco_decode_opt_box_autoadd_f_32(dynamic raw);
 
   @protected
+  double? dco_decode_opt_box_autoadd_f_64(dynamic raw);
+
+  @protected
   HighlightConfig? dco_decode_opt_box_autoadd_highlight_config(dynamic raw);
 
   @protected
@@ -328,7 +381,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchResult? dco_decode_opt_box_autoadd_search_result(dynamic raw);
 
   @protected
+  SemanticCompactionPolicy?
+  dco_decode_opt_box_autoadd_semantic_compaction_policy(dynamic raw);
+
+  @protected
+  SemanticErrorKind? dco_decode_opt_box_autoadd_semantic_error_kind(
+    dynamic raw,
+  );
+
+  @protected
   SemanticGroupingMode? dco_decode_opt_box_autoadd_semantic_grouping_mode(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticRankingOptions? dco_decode_opt_box_autoadd_semantic_ranking_options(
     dynamic raw,
   );
 
@@ -392,16 +459,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchStreamUpdate dco_decode_search_stream_update(dynamic raw);
 
   @protected
+  SemanticArtifactInput dco_decode_semantic_artifact_input(dynamic raw);
+
+  @protected
   SemanticBookInput dco_decode_semantic_book_input(dynamic raw);
 
   @protected
   SemanticBookLineInput dco_decode_semantic_book_line_input(dynamic raw);
 
   @protected
+  SemanticCompactionPolicy dco_decode_semantic_compaction_policy(dynamic raw);
+
+  @protected
+  SemanticCompactionReport dco_decode_semantic_compaction_report(dynamic raw);
+
+  @protected
   SemanticConfigInput dco_decode_semantic_config_input(dynamic raw);
 
   @protected
+  SemanticCoverage dco_decode_semantic_coverage(dynamic raw);
+
+  @protected
+  SemanticError dco_decode_semantic_error(dynamic raw);
+
+  @protected
+  SemanticErrorKind dco_decode_semantic_error_kind(dynamic raw);
+
+  @protected
   SemanticExecutedMode dco_decode_semantic_executed_mode(dynamic raw);
+
+  @protected
+  SemanticFusionStrategy dco_decode_semantic_fusion_strategy(dynamic raw);
 
   @protected
   SemanticGroupingMode dco_decode_semantic_grouping_mode(dynamic raw);
@@ -414,6 +502,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticLexicalMode dco_decode_semantic_lexical_mode(dynamic raw);
+
+  @protected
+  SemanticQueryTypeAlphas dco_decode_semantic_query_type_alphas(dynamic raw);
+
+  @protected
+  SemanticRankingOptions dco_decode_semantic_ranking_options(dynamic raw);
 
   @protected
   SemanticRemoveResult dco_decode_semantic_remove_result(dynamic raw);
@@ -434,7 +528,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticSearchResult dco_decode_semantic_search_result(dynamic raw);
 
   @protected
+  SemanticSegmentInfo dco_decode_semantic_segment_info(dynamic raw);
+
+  @protected
+  SemanticState dco_decode_semantic_state(dynamic raw);
+
+  @protected
   SemanticStatus dco_decode_semantic_status(dynamic raw);
+
+  @protected
+  SemanticVectorsInfo dco_decode_semantic_vectors_info(dynamic raw);
+
+  @protected
+  SemanticVectorsInstallInput dco_decode_semantic_vectors_install_input(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsInstallReport dco_decode_semantic_vectors_install_report(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsPackageKind dco_decode_semantic_vectors_package_kind(
+    dynamic raw,
+  );
+
+  @protected
+  SemanticVectorsVerification dco_decode_semantic_vectors_verification(
+    dynamic raw,
+  );
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
@@ -479,6 +602,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCancellationToken
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RegexBenchmarker
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -499,6 +628,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SearchEngine
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticCancellationToken
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
     SseDeserializer deserializer,
   );
 
@@ -550,6 +685,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCancellationToken
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<List<SearchResult>>
   sse_decode_StreamSink_list_search_result_Sse(SseDeserializer deserializer);
 
@@ -587,6 +728,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double sse_decode_box_autoadd_f_32(SseDeserializer deserializer);
 
   @protected
+  double sse_decode_box_autoadd_f_64(SseDeserializer deserializer);
+
+  @protected
   HighlightConfig sse_decode_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   );
@@ -607,12 +751,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticArtifactInput sse_decode_box_autoadd_semantic_artifact_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticCompactionPolicy sse_decode_box_autoadd_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticConfigInput sse_decode_box_autoadd_semantic_config_input(
     SseDeserializer deserializer,
   );
 
   @protected
+  SemanticErrorKind sse_decode_box_autoadd_semantic_error_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticGroupingMode sse_decode_box_autoadd_semantic_grouping_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRankingOptions sse_decode_box_autoadd_semantic_ranking_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsInstallInput
+  sse_decode_box_autoadd_semantic_vectors_install_input(
     SseDeserializer deserializer,
   );
 
@@ -774,6 +944,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticSegmentInfo> sse_decode_list_semantic_segment_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
 
   @protected
@@ -802,6 +977,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double? sse_decode_opt_box_autoadd_f_32(SseDeserializer deserializer);
 
   @protected
+  double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer);
+
+  @protected
   HighlightConfig? sse_decode_opt_box_autoadd_highlight_config(
     SseDeserializer deserializer,
   );
@@ -822,7 +1000,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCompactionPolicy?
+  sse_decode_opt_box_autoadd_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticErrorKind? sse_decode_opt_box_autoadd_semantic_error_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticGroupingMode? sse_decode_opt_box_autoadd_semantic_grouping_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRankingOptions? sse_decode_opt_box_autoadd_semantic_ranking_options(
     SseDeserializer deserializer,
   );
 
@@ -894,6 +1088,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticArtifactInput sse_decode_semantic_artifact_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticBookInput sse_decode_semantic_book_input(
     SseDeserializer deserializer,
   );
@@ -904,12 +1103,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticCompactionPolicy sse_decode_semantic_compaction_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticCompactionReport sse_decode_semantic_compaction_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticConfigInput sse_decode_semantic_config_input(
     SseDeserializer deserializer,
   );
 
   @protected
+  SemanticCoverage sse_decode_semantic_coverage(SseDeserializer deserializer);
+
+  @protected
+  SemanticError sse_decode_semantic_error(SseDeserializer deserializer);
+
+  @protected
+  SemanticErrorKind sse_decode_semantic_error_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticExecutedMode sse_decode_semantic_executed_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticFusionStrategy sse_decode_semantic_fusion_strategy(
     SseDeserializer deserializer,
   );
 
@@ -930,6 +1155,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticLexicalMode sse_decode_semantic_lexical_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticQueryTypeAlphas sse_decode_semantic_query_type_alphas(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticRankingOptions sse_decode_semantic_ranking_options(
     SseDeserializer deserializer,
   );
 
@@ -964,7 +1199,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticSegmentInfo sse_decode_semantic_segment_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticState sse_decode_semantic_state(SseDeserializer deserializer);
+
+  @protected
   SemanticStatus sse_decode_semantic_status(SseDeserializer deserializer);
+
+  @protected
+  SemanticVectorsInfo sse_decode_semantic_vectors_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsInstallInput sse_decode_semantic_vectors_install_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsInstallReport sse_decode_semantic_vectors_install_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsPackageKind sse_decode_semantic_vectors_package_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticVectorsVerification sse_decode_semantic_vectors_verification(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
@@ -1016,6 +1284,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    SemanticCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -1039,6 +1314,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SearchEngine self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    SemanticCancellationToken self,
     SseSerializer serializer,
   );
 
@@ -1100,6 +1382,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    SemanticCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_list_search_result_Sse(
     RustStreamSink<List<SearchResult>> self,
     SseSerializer serializer,
@@ -1152,6 +1441,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_f_32(double self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_highlight_config(
     HighlightConfig self,
     SseSerializer serializer,
@@ -1176,14 +1468,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_semantic_artifact_input(
+    SemanticArtifactInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_compaction_policy(
+    SemanticCompactionPolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_semantic_config_input(
     SemanticConfigInput self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_box_autoadd_semantic_error_kind(
+    SemanticErrorKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_semantic_grouping_mode(
     SemanticGroupingMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_ranking_options(
+    SemanticRankingOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_semantic_vectors_install_input(
+    SemanticVectorsInstallInput self,
     SseSerializer serializer,
   );
 
@@ -1383,6 +1705,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_semantic_segment_info(
+    List<SemanticSegmentInfo> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
 
   @protected
@@ -1414,6 +1742,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_f_32(double? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_highlight_config(
     HighlightConfig? self,
     SseSerializer serializer,
@@ -1438,8 +1769,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_semantic_compaction_policy(
+    SemanticCompactionPolicy? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_error_kind(
+    SemanticErrorKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_semantic_grouping_mode(
     SemanticGroupingMode? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_semantic_ranking_options(
+    SemanticRankingOptions? self,
     SseSerializer serializer,
   );
 
@@ -1531,6 +1880,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_artifact_input(
+    SemanticArtifactInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_book_input(
     SemanticBookInput self,
     SseSerializer serializer,
@@ -1543,14 +1898,47 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_compaction_policy(
+    SemanticCompactionPolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_compaction_report(
+    SemanticCompactionReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_config_input(
     SemanticConfigInput self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_semantic_coverage(
+    SemanticCoverage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_error(SemanticError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_semantic_error_kind(
+    SemanticErrorKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_executed_mode(
     SemanticExecutedMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_fusion_strategy(
+    SemanticFusionStrategy self,
     SseSerializer serializer,
   );
 
@@ -1575,6 +1963,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_lexical_mode(
     SemanticLexicalMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_query_type_alphas(
+    SemanticQueryTypeAlphas self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_ranking_options(
+    SemanticRankingOptions self,
     SseSerializer serializer,
   );
 
@@ -1615,8 +2015,47 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_segment_info(
+    SemanticSegmentInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_state(SemanticState self, SseSerializer serializer);
+
+  @protected
   void sse_encode_semantic_status(
     SemanticStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_info(
+    SemanticVectorsInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_install_input(
+    SemanticVectorsInstallInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_install_report(
+    SemanticVectorsInstallReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_package_kind(
+    SemanticVectorsPackageKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_vectors_verification(
+    SemanticVectorsVerification self,
     SseSerializer serializer,
   );
 
@@ -1756,5 +2195,39 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEnginePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationTokenPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationTokenPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationTokenPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_otzaria_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationTokenPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }
