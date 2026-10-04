@@ -874,6 +874,9 @@ The index records, per line, the positions of its first and last content words
 (`lineFirst`/`lineLast`, FAST) and their terms (`lineEdge`: `<word`, `>word`). A query
 matches each split of the phrase on its own — the left part anchored to the end of a
 line, the right part to the start of one — and joins them on consecutive document ids.
+Facet filters restrict the attributed first line before positional verification;
+the continuation is still read from its immediate neighbour. A rare continuation
+can drive neighbour lookups instead of scanning a broad selection of first lines.
 
 ### Index Persistence
 
