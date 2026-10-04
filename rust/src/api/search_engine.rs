@@ -705,7 +705,7 @@ pub struct SemanticCoverage {
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
 /// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on a FAT or exFAT drive on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
 /// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed. With `field` `segment_id`, installing: the release is a version the set has installed, published again with other bytes — a sound release, and a sound set, which keeps what it serves | install the vectors built for this application and this model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectors_dir` and open that | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
@@ -4678,10 +4678,11 @@ impl SearchEngine {
     ///
     /// A damaged segment is marked so that every later open refuses it, and this returns
     /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
-    /// again if it is gone. On Windows a repair under the same segment fails while a
-    /// session holds the set open, since a mapped file cannot be replaced: close the session
-    /// (`disable_semantic`) before installing it. An open session keeps what it has mapped
-    /// until it is closed. `ArtifactMissing` when nothing is installed there.
+    /// again if it is gone. On a FAT or exFAT drive on Windows a repair under the same
+    /// segment fails while a session holds the set open, since a mapped file cannot be
+    /// replaced there: close the session (`disable_semantic`) before installing it. An open
+    /// session keeps what it has mapped until it is closed. `ArtifactMissing` when nothing is
+    /// installed there.
     ///
     /// An install that replaced bytes the verification had read, while it read them, is
     /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`

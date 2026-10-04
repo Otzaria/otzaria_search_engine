@@ -324,9 +324,10 @@ is; an open session follows it.
 its checksum, the check opening leaves out; it reads the whole set. A damaged
 segment is marked so that every later open refuses it, and the call throws
 `artifactCorrupt`: installing the release again repairs the set (download it
-again if it is gone). On Windows a repair under the same segment fails while a
-session holds the set open, since a mapped file cannot be replaced, so close
-the session (`disableSemantic`) before installing it. An install that replaced
+again if it is gone). On a FAT or exFAT drive on Windows a repair under the
+same segment fails while a session holds the set open, since a mapped file
+cannot be replaced there, so close the session (`disableSemantic`) before
+installing it. An install that replaced
 bytes the check had read, while it read them, is not damage: nothing is
 condemned, and the call throws `vectorsBusy`, to verify again once the install
 has finished. A cancelled verification records nothing. `semanticCoverage` counts the open index's live lines the
@@ -518,7 +519,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `notConfigured` | `state`, `fallbackKind` | no session is open | open the vector set |
 | `featureNotInBuild` | `state`, `fallbackKind` | no semantic support in this build | hide semantic search |
 | `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing at `vectorsDir`, or nothing ever installed there (no `CURRENT` or `PREVIOUS`) | download and install the vectors |
-| `artifactCorrupt` | opening, installing, verifying, `semanticVectorsInfo` | a set whose pointers, metadata or segments do not open or fail their checksums, an identity left unfilled (`field`), or a release whose segment is not the one its manifest describes | install the release again, which repairs the set (download it again if it is gone); on Windows, close the session first |
+| `artifactCorrupt` | opening, installing, verifying, `semanticVectorsInfo` | a set whose pointers, metadata or segments do not open or fail their checksums, an identity left unfilled (`field`), or a release whose segment is not the one its manifest describes | install the release again, which repairs the set (download it again if it is gone); on a FAT or exFAT drive on Windows, close the session first |
 | `artifactIncompatible` | opening, installing | sound vectors built for something else; `field` is the first field that disagreed: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, `metadata_version`, or for a delta that does not follow the set `delta.*`. Installing, `field` `segment_id`: the release is a version the set has installed, published again with other bytes; the set is sound and keeps what it serves | install the vectors built for this application and model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectorsDir` and open that |
 | `artifactNotPublished` | `installSemanticVectors` | the manifest is not the one whose digest was published | download the official release |
 | `insufficientDiskSpace` | installing, compacting | more free space is needed than the device has | free space, and try again |

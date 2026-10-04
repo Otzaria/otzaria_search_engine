@@ -14490,10 +14490,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// A damaged segment is marked so that every later open refuses it, and this returns
   /// `ArtifactCorrupt`: install the release again, which repairs the set — downloading it
-  /// again if it is gone. On Windows a repair under the same segment fails while a
-  /// session holds the set open, since a mapped file cannot be replaced: close the session
-  /// (`disable_semantic`) before installing it. An open session keeps what it has mapped
-  /// until it is closed. `ArtifactMissing` when nothing is installed there.
+  /// again if it is gone. On a FAT or exFAT drive on Windows a repair under the same
+  /// segment fails while a session holds the set open, since a mapped file cannot be
+  /// replaced there: close the session (`disable_semantic`) before installing it. An open
+  /// session keeps what it has mapped until it is closed. `ArtifactMissing` when nothing is
+  /// installed there.
   ///
   /// An install that replaced bytes the verification had read, while it read them, is
   /// not damage: nothing is condemned, and this returns `VectorsBusy` about `vectors_dir`
