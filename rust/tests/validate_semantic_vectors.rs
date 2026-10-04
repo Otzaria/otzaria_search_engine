@@ -11,8 +11,11 @@
 
 use otzaria_semantic_search::distribution::assemble::{assemble, AssembleRequest, EpochChoice};
 use otzaria_semantic_search::distribution::gates::simulate_device;
+use otzaria_semantic_search::distribution::ledger::Ledger;
 use otzaria_semantic_search::distribution::package::PackageKind;
-use otzaria_semantic_search::distribution::plan::{EmbedManifest, Plan};
+use otzaria_semantic_search::distribution::plan::{
+    EmbedManifest, Parity, Plan, PlanCounts, PlanManifest, RecordsWriter, BOOKS_FILE, RECORDS_FILE,
+};
 use otzaria_semantic_search::distribution::shard::{
     embed_shard, ShardManifest, ShardPolicy, WorkerInfo, KEYS_FILE, MODE_MOCK, SHARD_FORMAT,
     SHARD_FORMAT_VERSION, SHARD_MANIFEST_FILE, VECTORS_FILE,
@@ -412,6 +415,7 @@ fn a_release_assembled_from_its_index_passes_every_gate() {
     assert_eq!(report["skipped"], serde_json::json!([]));
     let (status, g3) = gate(&report, "G3");
     assert_eq!(status, "passed", "{printed}");
+    assert!(printed.contains("(100.0000%)"), "{printed}");
     assert_eq!(g3["keyedLines"], g3["coveredLines"]);
     assert_eq!(g3["uncoveredLines"], 0);
     assert_eq!(g3["plan"]["records"], g3["plan"]["reachable"]);
@@ -724,6 +728,167 @@ fn skipping_every_gate_is_a_wrong_argument() {
     assert!(!out.exists(), "no verdict is written");
 }
 
+/// The plan of the release after `release`, with no record: one no planner writes, since
+/// both refuse a library with nothing to embed.
+fn empty_plan(release: &Release) -> PathBuf {
+    let manifest = Plan::open(&release.plan).unwrap().manifest;
+    let ledger = Ledger::open(&release.assembled, Some(30)).unwrap();
+    let dir = release.path("empty-plan");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(release.plan.join(BOOKS_FILE), dir.join(BOOKS_FILE)).unwrap();
+    RecordsWriter::create(&dir.join(RECORDS_FILE))
+        .unwrap()
+        .finish()
+        .unwrap();
+    PlanManifest::write(
+        &dir,
+        manifest.identity,
+        31,
+        "v31-20261002000000".to_string(),
+        Some(ledger.as_previous()),
+        PlanCounts::default(),
+        Parity::default(),
+        CREATED_AT.to_string(),
+    )
+    .unwrap();
+    dir
+}
+
+/// `release` and then the delta of `plan`, an [`empty_plan`], installed: every key
+/// tombstoned, none live. A base of no slot does not install.
+fn empty_set(release: &Release, plan: &Path) -> PathBuf {
+    let delta = release.path("empty-delta");
+    assemble(&AssembleRequest {
+        plan: &Plan::open(plan).unwrap(),
+        warehouse: &Warehouse::open(&release.warehouse).unwrap(),
+        kind: PackageKind::Delta,
+        previous: Some(&Ledger::open(&release.assembled, Some(30)).unwrap()),
+        epoch: EpochChoice::Previous,
+        out_dir: delta.clone(),
+        created_at: CREATED_AT.to_string(),
+        built_by: None,
+    })
+    .unwrap();
+    let vectors = release.path("empty-vectors");
+    simulate_device(&vectors, &[&release.assembled, &delta]).unwrap();
+    vectors
+}
+
+/// A plan of no record, for a set that covers its index: G3 fails on the plan.
+#[test]
+fn an_empty_plan_fails_coverage() {
+    let release = release(&books());
+    let out = release.path("report.json");
+    let (code, printed) = validate(&[
+        "--index",
+        release.index.to_str().unwrap(),
+        "--vectors",
+        release.vectors.to_str().unwrap(),
+        "--plan",
+        empty_plan(&release).to_str().unwrap(),
+        "--report",
+        out.to_str().unwrap(),
+        "--skip",
+        "G6",
+    ]);
+    assert_eq!(code, 1, "{printed}");
+    let report = report(&out);
+    let (status, g3) = gate(&report, "G3");
+    assert_eq!(status, "failed", "{printed}");
+    assert_eq!(g3["uncoveredLines"], 0);
+    assert_eq!(g3["plan"]["records"], 0);
+    assert_eq!(gate(&report, "G4").0, "passed", "{printed}");
+}
+
+/// A set with no live key, against an index that has lines: G3 fails on the lines it does
+/// not cover, and G4 and G6, with no record to resolve and no key to recall against, fail
+/// too, so skipping G3 does not let it through.
+#[test]
+fn a_set_with_no_live_key_fails_every_gate() {
+    let release = release(&books());
+    let out = release.path("report.json");
+    let mut args = vec![
+        "--vectors".to_string(),
+        empty_set(&release, &empty_plan(&release))
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    args.extend(gate_inputs(&release, &release.warehouse, &out));
+    let (code, printed) = validate(&as_args(&args));
+    assert_eq!(code, 1, "{printed}");
+    let all = report(&out);
+    assert_eq!(all["set"]["slotsLive"], 0);
+    assert_eq!(gate(&all, "G3").0, "failed", "{printed}");
+    let (status, g4) = gate(&all, "G4");
+    assert_eq!(status, "failed", "{printed}");
+    assert_eq!(g4["records"], 0);
+    let (status, g6) = gate(&all, "G6");
+    assert_eq!(status, "failed", "{printed}");
+    assert_eq!(g6["exactKeys"], 0);
+    assert_eq!(g6["queries"], 200, "{g6}");
+
+    args.extend(["--skip".to_string(), "G3".to_string()]);
+    let (code, printed) = validate(&as_args(&args));
+    assert_eq!(code, 1, "{printed}");
+    let skipped = report(&out);
+    assert_eq!(gate(&skipped, "G4").0, "failed", "{printed}");
+    assert_eq!(gate(&skipped, "G6").0, "failed", "{printed}");
+}
+
+/// An index of no book: G3 has no keyed line to measure, and fails, whatever the set. With
+/// the empty set and plan too, every gate has nothing to measure, and every gate fails.
+#[test]
+fn an_empty_index_passes_no_gate() {
+    let release = release(&books());
+    let index = release.path("empty-index");
+    std::fs::create_dir_all(&index).unwrap();
+    add_books(&index, &[]);
+    let queries = release.path("queries.txt");
+    std::fs::write(&queries, "שורה של ספר\n").unwrap();
+    let out = release.path("report.json");
+    let run = |vectors: &Path, plan: &Path| {
+        validate(&[
+            "--index",
+            index.to_str().unwrap(),
+            "--vectors",
+            vectors.to_str().unwrap(),
+            "--plan",
+            plan.to_str().unwrap(),
+            "--warehouse",
+            release.warehouse.to_str().unwrap(),
+            "--model",
+            release.model_file.to_str().unwrap(),
+            "--model-identity",
+            release.identity.to_str().unwrap(),
+            "--queries",
+            queries.to_str().unwrap(),
+            "--report",
+            out.to_str().unwrap(),
+        ])
+    };
+
+    let (code, printed) = run(&release.vectors, &release.plan);
+    assert_eq!(code, 1, "{printed}");
+    let wrong_index = report(&out);
+    let (status, g3) = gate(&wrong_index, "G3");
+    assert_eq!(status, "failed", "{printed}");
+    assert_eq!(g3["keyedLines"], 0);
+    assert_eq!(g3["plan"]["records"], g3["plan"]["reachable"]);
+
+    let plan = empty_plan(&release);
+    let (code, printed) = run(&empty_set(&release, &plan), &plan);
+    assert_eq!(code, 1, "{printed}");
+    let report = report(&out);
+    assert_eq!(report["passed"], false);
+    for name in ["G3", "G4", "G6"] {
+        assert_eq!(gate(&report, name).0, "failed", "{name}: {printed}");
+    }
+    assert!(
+        !printed.contains("0000%"),
+        "none of none is no share: {printed}"
+    );
+}
+
 /// Arguments that are wrong, and inputs that do not read, exit 2 without a verdict.
 #[test]
 fn wrong_arguments_and_unreadable_inputs_exit_2() {
@@ -760,6 +925,22 @@ fn wrong_arguments_and_unreadable_inputs_exit_2() {
             release.assembled.to_str().unwrap(),
         ],
         vec!["--index", index, "--release", index],
+        vec![
+            "--index",
+            index,
+            "--vectors",
+            vectors,
+            "--max-stale-hints",
+            "NaN",
+        ],
+        vec![
+            "--index",
+            index,
+            "--vectors",
+            vectors,
+            "--min-recall-10",
+            "NaN",
+        ],
         vec!["--index", index, "--vectors", vectors, "--skip", "G5"],
         vec!["--index", index, "--vectors", vectors, "--skip"],
     ] {

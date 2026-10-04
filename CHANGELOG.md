@@ -666,6 +666,11 @@ are now documented as development and testing scaffolding, not for the library.
   old. A lock file another process's cleanup takes in the instant between its
   creation and its locking is given up for a new one, up to three times
   before the install is refused as `vectorsBusy`.
+- **`validate_semantic_vectors` fails a gate with nothing to measure.** G3
+  passed an index with no keyed line or a plan with no record, G4 a set with no
+  record, and G6 a set with no live key (a recall of 1.0 against 0 keys), so an
+  empty index or set could be published. Each now fails; the report's fields
+  are unchanged, and a share of none shows as `n/a`, not 100%.
 
 ## 0.9.0 – 2026-10-04
 
