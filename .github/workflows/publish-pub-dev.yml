@@ -1,6 +1,7 @@
 name: Publish to pub.dev
 
 # מופעל מדחיפת תג גרסה (release-tag.yml יוצר אותו מקומיט שהודעתו מספר בלבד),
+# בונה ומאמת קודם את כל הבינאריים מאותו קומיט,
 # ומפרסם דרך Automated publishing של pub.dev: האימות נעשה באסימון OIDC של
 # ההרצה, ולכן אין כאן שום סוד של חשבון pub.dev.
 on:
@@ -10,8 +11,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  # id-token נדרש כדי שההרצה תוכל לבקש את אסימון ה-OIDC.
-  id-token: write
   contents: read
 
 concurrency:
@@ -19,26 +18,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify the tag matches pubspec version
+        env:
+          TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          pubspec_version="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1 | tr -d '\r')"
+          if [ "$REF_TYPE" != "tag" ] || [ "$TAG" != "v$pubspec_version" ]; then
+            echo "::error::הפרסום חייב לרוץ על תג v$pubspec_version שתואם ל-pubspec.yaml (התקבל $REF_TYPE $TAG)."
+            exit 1
+          fi
+          echo "מפרסם $pubspec_version לאחר אימות הבינאריים." >> "$GITHUB_STEP_SUMMARY"
+
+  binaries:
+    name: Build and verify all precompiled binaries
+    needs: validate
+    permissions:
+      contents: write
+    uses: ./.github/workflows/precompiled-binaries.yml
+    secrets:
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+
   publish:
     name: flutter pub publish
+    needs: binaries
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Only publishing may request a pub.dev OIDC token.
+      id-token: write
     # רשת ביטחון: כשל אימות אינו נכשל אלא נתלה — pub מרים שרת מקומי וממתין
     # ל-redirect שלא יגיע לעולם, והג'וב היה מחזיק runner עד תום 6 שעות.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-
-      - name: Verify the tag matches pubspec version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          pubspec_version="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1 | tr -d '\r')"
-          if [ "$TAG" != "v$pubspec_version" ]; then
-            echo "::error::התג $TAG אינו תואם ל-version: $pubspec_version שב-pubspec.yaml."
-            exit 1
-          fi
-          echo "מפרסם $pubspec_version." >> "$GITHUB_STEP_SUMMARY"
+        with:
+          ref: ${{ github.sha }}
 
       - uses: subosito/flutter-action@v2
         with:
@@ -48,6 +73,11 @@ jobs:
       # תחת dart טהור — ולכן flutter, כמו בשאר ה-workflows כאן.
       - name: flutter pub get
         run: flutter pub get
+
+      # Keep the existing --force warning policy: FRB is intentionally pinned
+      # to match Rust/generated code, so pub warns about its exact constraint.
+      - name: Validate the pub.dev package
+        run: flutter pub publish --dry-run --ignore-warnings
 
       # ה-pub המצורף ל-Flutter אינו מבצע בעצמו את חילוף ה-OIDC מול pub.dev:
       # הוא מתעלם מהאסימון שגיטהאב הנפיק (אימתנו שהוא זמין בשלב) ונופל למסלול

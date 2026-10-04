@@ -1,7 +1,8 @@
 name: Release Tag
 
 # קומיט שכל הודעתו היא מספר גרסה (למשל "0.8.1") מתויג אוטומטית ב-v0.8.1,
-# ואז מפעיל את publish-pub-dev.yml על ה-ref של התג.
+# ואז מפעיל את publish-pub-dev.yml על ה-ref של התג. תהליך הפרסום בונה
+# ומאמת קודם את כל הבינאריים, גם כשהקומיט משנה רק את הגרסה ב-pubspec.yaml.
 #
 # למה workflow_dispatch ולא להסתמך על דחיפת התג: דחיפה עם GITHUB_TOKEN אינה
 # מפעילה workflows אחרים, ומפתחות פריסה חסומים במאגר הזה. workflow_dispatch
@@ -30,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           # דרוש כדי לזהות תג קיים לאותה גרסה.
           fetch-depth: 0
 
