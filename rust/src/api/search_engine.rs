@@ -3762,8 +3762,8 @@ pub struct SearchEngine {
     /// the next, for one generation of it: see [`crate::semantic_resolver`].
     #[cfg(feature = "semantic-integration")]
     semantic_resolver: Mutex<crate::semantic_resolver::ResolverCache>,
-    /// The open vector set's generation as a filtered search plans its scan against it: see
-    /// [`crate::semantic_moves`]. Opened on the first filtered search of a generation, and
+    /// The open vector set's generation as a search plans its scan against it: see
+    /// [`crate::semantic_moves`]. Opened on the first planned search of a generation, and
     /// let go when the session moves to another or closes.
     #[cfg(feature = "semantic-integration")]
     semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
@@ -4878,7 +4878,7 @@ impl SearchEngine {
             })
     }
 
-    /// The view a filtered search plans its scan by, of the set at `vectors_dir` as its
+    /// The view a search plans its scan by, of the set at `vectors_dir` as its
     /// generation `generation` is: the one kept, or one opened now. `None` when the set has
     /// moved on from that generation — the session follows it, and a later search plans
     /// against it — or its segments do not open, which the session's own open would have
@@ -4902,8 +4902,8 @@ impl SearchEngine {
             Ok(view) => view.map(Arc::new),
             Err(err) => {
                 warn!(
-                    "the vector set at {} could not be read to plan filtered searches, which \
-                     scan the books they admit alone: {err}",
+                    "the vector set at {} could not be read to plan searches, which go \
+                     unplanned: {err}",
                     vectors_dir.display()
                 );
                 None
@@ -4912,13 +4912,18 @@ impl SearchEngine {
         kept.clone()
     }
 
-    /// Let go of the kept view: the session moved to another generation, or closed.
+    /// Let go of the kept view, and the plans made with it: the session moved to another
+    /// generation, or closed.
     #[cfg(feature = "semantic-integration")]
     fn forget_set_view(&self) {
         *self
             .semantic_set_view
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
+        self.semantic_resolver
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_plans();
     }
 
     #[cfg(not(feature = "semantic-integration"))]
@@ -5317,22 +5322,20 @@ impl SearchEngine {
                 facets: (!facets.is_empty()).then_some(facets),
                 include_pdf: None,
             };
-            // A filtered search of an opened vector set is planned against the generation the
-            // session serves: texts that moved into an admitted book since the set was built
-            // are looked for there, and the vectors of those no admitted book's records reach
-            // are weighed besides the scan of the admitted books, which is not widened.
+            // Planned against the generation the session serves, for texts that moved since the
+            // set was built: see `crate::semantic_moves`.
             if let (Some(vectors_dir), false) = (
                 &session.vectors_dir,
                 matches!(retrieval_mode, SemanticRetrievalMode::LexicalOnly),
             ) {
-                if filters.compile().is_some() {
+                if resolver.has_column() {
                     if let Some(view) = session
                         .coordinator
                         .vector_set_info()
                         .and_then(|info| self.semantic_set_view(vectors_dir, info.generation))
                     {
-                        // A plan that cannot be made fails the semantic half alone, which
-                        // falls back to the lexical results with the reason.
+                        // A filtered plan that cannot be made fails the semantic half alone; an
+                        // unfiltered one goes unplanned.
                         match resolver.plan(&filters, &view, cancel) {
                             Ok(_) => {}
                             Err(
@@ -22140,6 +22143,226 @@ mod tests {
                 0,
                 "a plan of the new generation reads none of the book it admits"
             );
+        }
+
+        const OTHER: &str = "/books/other.txt";
+
+        fn unfiltered(
+            engine: &SearchEngine,
+            query: &str,
+            mode: SemanticRetrievalMode,
+        ) -> Result<SemanticSearchResponse, SemanticError> {
+            engine.search_semantic(
+                query.to_string(),
+                Vec::new(),
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                mode,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+        }
+
+        /// The probe's lines an unfiltered semantic-only search returns, as (book, line).
+        fn probe_lines(engine: &SearchEngine) -> Vec<(String, u64)> {
+            let response = unfiltered(engine, PROBE, SemanticRetrievalMode::SemanticOnly).unwrap();
+            assert!(
+                response.semantic_available,
+                "{:?}",
+                response.fallback_reason
+            );
+            response
+                .results
+                .into_iter()
+                .filter(|result| result.snippet_html == PROBE)
+                .map(|result| (result.file_path, result.segment))
+                .collect()
+        }
+
+        fn walks(engine: &SearchEngine) -> u64 {
+            engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .walks
+        }
+
+        /// A book that holds the probe at its line 1, committed.
+        fn add_copy(engine: &mut SearchEngine, book: &str, order: u32) {
+            engine
+                .add_text_book(
+                    "ספר אחר".to_string(),
+                    "/other".to_string(),
+                    book.to_string(),
+                    order,
+                    0,
+                    format!("שורה בספר אחר ארוכה דיה לעמוד לבדה\n{PROBE}"),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+        }
+
+        /// An unfiltered search plans the whole library once a generation, and after a commit
+        /// reads only the book it added.
+        #[test]
+        fn an_unfiltered_plan_reads_each_book_once_and_then_only_what_a_commit_added() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            assert_eq!(probe_lines(&engine), [(BOOK.to_string(), 1)]);
+            assert_eq!(walks(&engine), 1);
+            unfiltered(
+                &engine,
+                "בראשית ברא אלהים",
+                SemanticRetrievalMode::SemanticOnly,
+            )
+            .unwrap();
+            assert_eq!(walks(&engine), 1, "the plan is kept for the generation");
+            add_copy(&mut engine, OTHER, 1);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+            assert_eq!(walks(&engine), 1, "only the book the commit added");
+        }
+
+        /// An unfiltered plan that fails leaves its search unplanned, semantic half and all,
+        /// and is not tried again in that generation of the index.
+        #[test]
+        fn an_unfiltered_search_whose_plan_fails_goes_unplanned() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
+            let failed = unfiltered(&engine, PROBE, SemanticRetrievalMode::Hybrid);
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
+            let failed = failed.unwrap();
+            assert!(failed.semantic_available, "{:?}", failed.fallback_reason);
+            assert!(failed.results.iter().any(|result| result.file_path == BOOK
+                && result.segment == 1
+                && result.semantic_score.is_some()));
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1)],
+                "not tried again"
+            );
+            add_copy(&mut engine, "/books/third.txt", 2);
+            assert_eq!(
+                probe_lines(&engine).len(),
+                3,
+                "planned in the next generation"
+            );
+        }
+
+        /// Past its cap of arrivals the unfiltered plan is not held, and searches go unplanned.
+        #[test]
+        fn an_unfiltered_plan_past_its_cap_goes_unplanned() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            add_copy(&mut engine, "/books/third.txt", 2);
+            let cap = crate::semantic_resolver::LIBRARY_CAP.with(|cap| cap.replace(1));
+            let capped = probe_lines(&engine);
+            crate::semantic_resolver::LIBRARY_CAP.with(|limit| limit.set(cap));
+            assert_eq!(capped, [(BOOK.to_string(), 1)]);
+            add_copy(&mut engine, "/books/fourth.txt", 3);
+            assert_eq!(probe_lines(&engine).len(), 4);
+        }
+
+        fn lookups(engine: &SearchEngine) -> u64 {
+            engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .lookups
+        }
+
+        /// Past the cap, the arrivals found are kept: the next generation gives up without
+        /// asking the set again.
+        #[test]
+        fn an_unfiltered_plan_past_its_cap_asks_the_set_once() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            add_copy(&mut engine, "/books/third.txt", 2);
+            add_copy(&mut engine, "/books/fourth.txt", 3);
+            let cap = crate::semantic_resolver::LIBRARY_CAP.with(|cap| cap.replace(1));
+            let first = probe_lines(&engine);
+            let first_lookups = lookups(&engine);
+            engine
+                .delete_documents_by_file_path("/books/fourth.txt")
+                .unwrap();
+            engine.commit().unwrap();
+            let second = probe_lines(&engine);
+            let second_lookups = lookups(&engine);
+            crate::semantic_resolver::LIBRARY_CAP.with(|limit| limit.set(cap));
+            assert_eq!(first, [(BOOK.to_string(), 1)]);
+            assert_eq!(second, [(BOOK.to_string(), 1)]);
+            assert_eq!((first_lookups, second_lookups), (1, 0));
+        }
+
+        /// A plan its token cancelled is not one that failed: the next search plans.
+        #[test]
+        fn a_cancelled_plan_is_not_a_failed_one() {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::resolve::ResolveError;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            assert_eq!(
+                resolver.plan(&filters, &view, &cancel).err(),
+                Some(ResolveError::Cancelled)
+            );
+            drop(resolver);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+        }
+
+        /// A plan cancelled before it asks the set keeps the books it read.
+        #[test]
+        fn a_cancelled_plan_keeps_the_books_it_read() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            crate::semantic_resolver::CANCEL_LOOKUPS.with(|cancel| cancel.set(true));
+            let cancelled = unfiltered(&engine, PROBE, SemanticRetrievalMode::SemanticOnly);
+            crate::semantic_resolver::CANCEL_LOOKUPS.with(|cancel| cancel.set(false));
+            assert_eq!(
+                cancelled.err().map(|error| error.kind),
+                Some(SemanticErrorKind::Cancelled)
+            );
+            assert_eq!(walks(&engine), 2);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+            assert_eq!(walks(&engine), 2, "no book read again");
         }
 
         /// A vector whose line's column is stale resolves nowhere: its record's line and every

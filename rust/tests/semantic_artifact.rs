@@ -1420,6 +1420,79 @@ fn a_moved_passage_one_book_repeats_leaves_the_other_book_its_line() {
     assert_eq!(lines.len(), 31, "{lines:?}");
 }
 
+/// F3 of the second audit: a moved passage one new book holds 1,100 times, past the 1,024
+/// places a text kept, and a later book once. That book keeps its line, filtered or not.
+#[test]
+fn a_moved_passage_one_book_holds_past_the_places_kept_leaves_the_other_book_its_line() {
+    let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+    let opening = "שורה פותחת בספר הישן ארוכה דיה לעמוד לבדה";
+    let (old, many, once) = ("/books/old.txt", "/books/many.txt", "/books/once.txt");
+    let library = build_library_of(
+        &[("ישן", "/א", old, 0, format!("{opening}\n{passage}"))],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    replace_book(&mut engine, ("ישן", "/א", old, 0, opening.to_string()));
+    add_books(
+        &mut engine,
+        &[(
+            "רבים",
+            "/חדש/רבים",
+            many,
+            1,
+            vec![passage; 1_100].join("\n"),
+        )],
+    );
+    add_books(
+        &mut engine,
+        &[(
+            "יחיד",
+            "/חדש/יחיד",
+            once,
+            2,
+            format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+        )],
+    );
+    for facets in [vec![], vec!["/חדש"]] {
+        let response = engine
+            .search_semantic(
+                passage.to_string(),
+                facets.iter().map(|facet| facet.to_string()).collect(),
+                50,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        let of = |book: &str| -> Vec<u64> {
+            response
+                .results
+                .iter()
+                .filter(|hit| hit.file_path == book && hit.snippet_html == passage)
+                .map(|hit| hit.segment)
+                .collect()
+        };
+        assert_eq!(of(once), [1], "the other book's line, under {facets:?}");
+        assert_eq!(
+            of(many),
+            (0..31).collect::<Vec<u64>>(),
+            "the rest of the cap, in the book's order, under {facets:?}"
+        );
+    }
+}
+
 /// A line whose `chunkKey` column holds a vector's key and whose text is another is no line
 /// of that vector's, whatever card it would be on: not a result, not a grouped sibling,
 /// under any grouping and in either mode that searches semantically. The index is edited
@@ -1828,8 +1901,8 @@ fn review_e_widening_crowds_out_the_admitted_books() {
 }
 
 /// A text copied into a book of another category, and still in its own, is found under
-/// either filter, each in its own book. An unfiltered search finds it where the set records
-/// it until the vectors are updated.
+/// either filter, each in its own book. Unfiltered, the book the set records it in comes
+/// first.
 #[test]
 fn a_text_copied_into_another_category_is_found_under_each_filter() {
     let library = build_library();
@@ -1881,6 +1954,102 @@ fn a_text_copied_within_its_category_is_found_in_both_books() {
         .collect();
     found.sort();
     assert_eq!(found, [(BERACHOT.to_string(), 0), (copy.to_string(), 0)]);
+}
+
+/// F2 of the second audit: a passage copied into a new book after opening. Unfiltered finds
+/// every line its filter does; on version 4, which has no arrivals, neither finds the copy.
+#[test]
+fn a_text_copied_into_a_new_book_is_found_unfiltered_where_its_filter_finds_it() {
+    for version_4 in [false, true] {
+        let library = build_library_of(&default_books(), version_4);
+        let mut engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        let copy = "/books/copy.txt";
+        add_books(
+            &mut engine,
+            &[(
+                "עותק",
+                "/עותקים",
+                copy,
+                2,
+                format!("שורה פותחת בספר העותק ארוכה דיה לעמוד\n{BERACHOT_TEXT}"),
+            )],
+        );
+        let lines = |facets: &[&str]| -> BTreeSet<(String, u64)> {
+            semantic_lines(&engine, BERACHOT_TEXT, facets)
+                .into_iter()
+                .filter(|(_, text, _)| text == BERACHOT_TEXT)
+                .map(|(book, _, line)| (book, line))
+                .collect()
+        };
+        let context = format!("version 4: {version_4}");
+        let filtered = lines(&["/עותקים"]);
+        let unfiltered = lines(&[]);
+        assert!(
+            filtered.is_subset(&unfiltered),
+            "every line the filter finds is a line unfiltered: {filtered:?}, {unfiltered:?}, \
+             {context}"
+        );
+        let original = (BERACHOT.to_string(), 0);
+        let copied = (copy.to_string(), 1);
+        if version_4 {
+            assert_eq!(filtered, BTreeSet::new(), "{context}");
+            assert_eq!(unfiltered, BTreeSet::from([original]), "{context}");
+        } else {
+            assert_eq!(filtered, BTreeSet::from([copied.clone()]), "{context}");
+            assert_eq!(unfiltered, BTreeSet::from([original, copied]), "{context}");
+        }
+    }
+}
+
+/// A set removed and installed again at its directory starts its generations over; plans
+/// made with the set it replaced are not used for it.
+#[test]
+fn a_set_installed_again_at_its_directory_is_planned_afresh() {
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let copy = "/books/copy.txt";
+    let mut books = default_books();
+    books.push((
+        "עותק",
+        "/עותקים",
+        copy,
+        5,
+        format!("פתיחה לספר העותק ארוכה דיה\n{BERACHOT_TEXT}"),
+    ));
+    let old = build_library_of(&books, false);
+    let other = build_library_of(&default_books(), false);
+    let mut engine = old.engine();
+    let lines = |engine: &SearchEngine, facets: &[&str]| -> BTreeSet<(String, u64)> {
+        semantic_lines(engine, BERACHOT_TEXT, facets)
+            .into_iter()
+            .filter(|(_, text, _)| text == BERACHOT_TEXT)
+            .map(|(book, _, line)| (book, line))
+            .collect()
+    };
+    let both = BTreeSet::from([(BERACHOT.to_string(), 0), (copy.to_string(), 1)]);
+    engine.open_semantic_artifact(old.input()).unwrap();
+    assert_eq!(lines(&engine, &[]), both);
+
+    // The set that does not record the copy, at the same directory and generation.
+    engine.disable_semantic();
+    std::fs::remove_dir_all(&old.vectors).unwrap();
+    copy_dir(&other.vectors, &old.vectors);
+    engine.open_semantic_artifact(old.input()).unwrap();
+    let filtered = lines(&engine, &["/עותקים"]);
+    let unfiltered = lines(&engine, &[]);
+    assert_eq!(filtered, BTreeSet::from([(copy.to_string(), 1)]));
+    assert_eq!(unfiltered, both, "the copy is an arrival of the new set's");
 }
 
 /// A text two admitted books hold, each many times over, and the set records in neither: more

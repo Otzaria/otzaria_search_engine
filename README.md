@@ -132,7 +132,10 @@ from the text the index holds. Under a filter, a text that moved or was copied
 into a book the filter admits since the set was built is found there, and only
 there: its vector is weighed at its own score beside the scan of the admitted
 books, which is not widened, so their results are exactly what they would be
-had nothing moved.
+had nothing moved. An unfiltered search finds it there too, beside the lines
+the set records: it reads which texts every book holds that the set does not
+record in it once per index generation, on its first search, and after a
+commit only the books the commit changed.
 
 An index of schema version 4 has no `chunkKey` column — the published v30
 library index is one — and gets less. Keys are recomputed from the stored text,

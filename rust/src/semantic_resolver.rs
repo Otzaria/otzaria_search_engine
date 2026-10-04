@@ -51,18 +51,19 @@
 //! ([`CandidateResolver::unreached`]), which weighs them besides the scan of the admitted
 //! books, each at its own score and none in place of one of the admitted books' hits. The
 //! scan itself is the admitted books', whatever moved. See [`crate::semantic_moves`].
+//! An unfiltered search plans every book the same way.
 //!
 //! # What is cached
 //!
 //! Per generation of the index (a commit is a new one): the books with the facets a filter
 //! needs, built on the first filtered search; each book's lines, ordinal to document, for
 //! the [`BOOK_CACHE`] books asked about last; where the passes over the whole column found
-//! the [`MOVED_CACHE`] values they looked for last, found or not; and the plans of the
-//! [`PLAN_CACHE`] filters searched with last. A book's arrivals are kept with the set's
-//! view, under the book's postings and its text hash, across generations.
+//! the [`MOVED_CACHE`] values they looked for last, found or not; the plans of the
+//! [`PLAN_CACHE`] filters searched with last, and the unfiltered one. A book's arrivals are
+//! kept with the set's view, under the book's postings and its text hash, across generations.
 
 use crate::semantic_keys::{context_window, production_chunking, recompute_chunk_keys, KeySpan};
-use crate::semantic_moves::{Arrival, Postings, SetView};
+use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
@@ -71,9 +72,10 @@ use otzaria_semantic_search::semantic::resolve::{
     MAX_RECORDS_PER_HIT,
 };
 use otzaria_semantic_search::semantic::types::{CompiledFilters, SearchFilters};
-use std::collections::{HashMap, HashSet};
+use rayon::prelude::*;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tantivy::columnar::Column;
 use tantivy::schema::{Facet, Field, IndexRecordOption, Value};
@@ -89,15 +91,23 @@ const PLAN_CACHE: usize = 16;
 thread_local! {
     /// Set by a test, on its own thread, to make every plan fail as an unreadable index would.
     pub(crate) static FAIL_PLANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by a test to cancel a plan just before it looks texts up in the set.
+    pub(crate) static CANCEL_LOOKUPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// [`LIBRARY_ARRIVALS`], as a test sets it.
+    pub(crate) static LIBRARY_CAP: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(LIBRARY_ARRIVALS) };
 }
+
+/// The most arrivals the plan of unfiltered searches holds: about 20 MB with the view's,
+/// some 3% of the library's lines. A set further behind goes unplanned until it is updated.
+const LIBRARY_ARRIVALS: usize = 200_000;
 
 /// How many values' places a pass over the whole column found are kept between searches,
 /// for one generation of the index.
 const MOVED_CACHE: usize = 1024;
 
-/// The most places of one value a pass over the whole column keeps: far more than a hit
-/// resolves to, few enough that a text the library holds thousands of times is not kept
-/// whole.
+/// The most places of one value a pass over the whole column keeps: [`MAX_LINES_PER_HIT`]
+/// per book at most, and every book's first before any book's second ([`FairPlaces`]).
 const MOVED_PLACES: usize = 1024;
 
 /// How far from its hint a hit's text is looked for, in lines, when keys are recomputed from
@@ -126,15 +136,19 @@ pub(crate) struct ResolverCache {
     generation: u64,
     books: Option<Arc<BookDirectory>>,
     lines: Option<LruCache<Arc<str>, Arc<BookLines>>>,
-    /// Where a pass over the whole column found each value it looked for, in index order:
-    /// lines whose column holds it, not yet held to any key; none for a value it found
-    /// nowhere.
+    /// Where a pass over the whole column found each value it looked for, every book's first
+    /// line before any book's second: not yet held to any key; none for a value found nowhere.
     moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
     /// The plans of the filters searched with last.
     plans: Option<LruCache<PlanKey, Arc<ScanPlan>>>,
+    /// The plan of unfiltered searches, by view; `None` when they go unplanned.
+    library: Option<(u64, Option<Arc<ScanPlan>>)>,
     /// How many books' postings plans walked in this generation.
     #[cfg(test)]
     pub(crate) walks: u64,
+    /// How many times plans looked texts up in the set in this generation.
+    #[cfg(test)]
+    pub(crate) lookups: u64,
     /// How many passes over the whole column searches made in this generation.
     #[cfg(test)]
     pub(crate) passes: u64,
@@ -148,22 +162,21 @@ pub(crate) struct ResolverCache {
     pub(crate) worst_failures: usize,
 }
 
-/// What a scan plan is of: a generation of one set, and a filter.
+/// What a scan plan is of: a view of the set, and a filter.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PlanKey {
-    vectors_dir: PathBuf,
-    set_generation: u64,
+    view: u64,
     filters: String,
 }
 
-/// How a filtered search scans and resolves: see [`LiveResolver::plan`].
+/// How a planned search scans and resolves: see [`LiveResolver::plan`].
 pub(crate) struct ScanPlan {
-    /// What the scan reads: the admitted books, and nothing else.
-    books: BookSet,
+    /// What the scan reads: the admitted books, and nothing else; `None` for every book.
+    books: Option<BookSet>,
     /// Each text an admitted book holds and no live record of the set places in it, by
     /// column value: the admitted books it is in, in name order, each with the first line
     /// of it that holds it.
-    arrivals: HashMap<u64, Vec<(Arc<str>, u32)>>,
+    arrivals: PlanArrivals,
     /// The vectors of the arrivals no admitted book's live records reach, sorted: what the
     /// sidecar weighs besides the scan.
     unreached: Vec<SlotRef>,
@@ -193,6 +206,12 @@ impl ResolverCache {
         self.plans.get_or_insert_with(|| {
             LruCache::new(NonZeroUsize::new(PLAN_CACHE).expect("the cache holds plans"))
         })
+    }
+
+    /// Let go of every plan, when the view they were made with is let go.
+    pub(crate) fn forget_plans(&mut self) {
+        self.plans = None;
+        self.library = None;
     }
 
     fn moved(&mut self) -> &mut LruCache<u64, Arc<[DocAddress]>> {
@@ -245,6 +264,55 @@ impl BookLines {
             let after = Some(centre + step).filter(|&at| at < len);
             before.into_iter().chain(after)
         })
+    }
+}
+
+/// One value's places, of each book its [`MAX_LINES_PER_HIT`] first lines, cut to
+/// [`MOVED_PLACES`] by rank in their book, then by the order the books were found in.
+#[derive(Default)]
+struct FairPlaces {
+    /// `(ordinal, place)` per book. A book found after [`MOVED_PLACES`] others is never kept.
+    books: Vec<Vec<(u32, DocAddress)>>,
+    order: HashMap<Arc<str>, usize>,
+}
+
+impl FairPlaces {
+    fn push(&mut self, book: Arc<str>, ordinal: u32, place: DocAddress) {
+        let at = match self.order.entry(book) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(_) if self.books.len() >= MOVED_PLACES => return,
+            Entry::Vacant(entry) => {
+                self.books.push(Vec::new());
+                *entry.insert(self.books.len() - 1)
+            }
+        };
+        let places = &mut self.books[at];
+        places.push((ordinal, place));
+        if places.len() >= 2 * MAX_LINES_PER_HIT {
+            Self::first_lines(places);
+        }
+    }
+
+    fn first_lines(places: &mut Vec<(u32, DocAddress)>) {
+        places.sort_unstable();
+        places.truncate(MAX_LINES_PER_HIT);
+    }
+
+    /// Every book's first line, in the order the books were found, then every book's second.
+    fn into_places(self) -> Vec<DocAddress> {
+        let mut ranked: Vec<(usize, usize, DocAddress)> = Vec::new();
+        for (order, mut places) in self.books.into_iter().enumerate() {
+            Self::first_lines(&mut places);
+            ranked.extend(
+                places
+                    .into_iter()
+                    .enumerate()
+                    .map(|(rank, (_, place))| (rank, order, place)),
+            );
+        }
+        ranked.sort_unstable_by_key(|&(rank, order, _)| (rank, order));
+        ranked.truncate(MOVED_PLACES);
+        ranked.into_iter().map(|(_, _, place)| place).collect()
     }
 }
 
@@ -864,32 +932,63 @@ impl<'a> LiveResolver<'a> {
     }
 
     /// One pass over every `chunkKey` column for the values `wanted` holds: where each
-    /// is, in index order.
+    /// is, every book's first line before any book's second ([`FairPlaces`]).
     fn find_everywhere(
         &self,
         wanted: &HashSet<u64>,
         cancel: &CancellationToken,
     ) -> Result<HashMap<u64, Vec<DocAddress>>, ResolveError> {
-        let mut found: HashMap<u64, Vec<DocAddress>> = HashMap::new();
+        let mut found: HashMap<u64, FairPlaces> = HashMap::new();
         for (segment_ord, reader) in self.searcher.segment_readers().iter().enumerate() {
             let Some(column) = &self.columns[segment_ord].chunk_key else {
                 continue;
             };
+            let paths = reader
+                .fast_fields()
+                .str("filePath")
+                .map_err(index_error)?
+                .ok_or_else(|| index_error("the index has no filePath column"))?;
+            // By name, so a book is one book whatever segments hold it.
+            let mut names: HashMap<u64, Arc<str>> = HashMap::new();
             for (checked, doc) in reader.doc_ids_alive().enumerate() {
                 if checked % 65_536 == 0 && cancel.is_cancelled() {
                     return Err(ResolveError::Cancelled);
                 }
-                if let Some(value) = column.first(doc) {
-                    if value != 0 && wanted.contains(&value) {
-                        found
-                            .entry(value)
-                            .or_default()
-                            .push(DocAddress::new(segment_ord as u32, doc));
-                    }
+                let Some(value) = column.first(doc) else {
+                    continue;
+                };
+                if value == 0 || !wanted.contains(&value) {
+                    continue;
                 }
+                let Some(ord) = paths.term_ords(doc).next() else {
+                    continue;
+                };
+                let book = match names.get(&ord) {
+                    Some(book) => Arc::clone(book),
+                    None => {
+                        let mut name = String::new();
+                        paths.ord_to_str(ord, &mut name).map_err(index_error)?;
+                        let book: Arc<str> = name.into();
+                        names.insert(ord, Arc::clone(&book));
+                        book
+                    }
+                };
+                // Ids compose `(catalogue_order + 1) << 32` and `ordinal + 1`.
+                let ordinal = self.columns[segment_ord]
+                    .id
+                    .first(doc)
+                    .map_or(u32::MAX, |id| (id & 0xFFFF_FFFF).saturating_sub(1) as u32);
+                found.entry(value).or_default().push(
+                    book,
+                    ordinal,
+                    DocAddress::new(segment_ord as u32, doc),
+                );
             }
         }
-        Ok(found)
+        Ok(found
+            .into_iter()
+            .map(|(value, places)| (value, places.into_places()))
+            .collect())
     }
 
     /// The book a document belongs to, and its position among the book's lines.
@@ -1035,18 +1134,9 @@ impl LiveResolver<'_> {
 }
 
 impl LiveResolver<'_> {
-    /// Plan the scan of a search filtered by `filters`, over the set `view` describes, and
-    /// keep the plan for this search's [`CandidateResolver::admissible_books`] and
-    /// [`CandidateResolver::resolve`]: `None` without the column, or for filters that admit
-    /// every book, and the search scans and resolves as it did. Kept for the generation of
-    /// the index and of the set, per filter.
-    ///
-    /// What it reads the first time: the directory of books; each admitted book's postings
-    /// as the segments that hold it, and for a book whose arrivals the view does not know for
-    /// those, one pass over them for its text hash and its column, and the set's live
-    /// records of it; when an admitted book has arrivals not looked up before, one pass over
-    /// the set's slots for all of them; and when any admitted book has arrivals, the set's
-    /// live records of every admitted book, for which of them those reach already.
+    /// Plan this search's scan over the set `view` describes, for `filters` or, with none,
+    /// for every book ([`Self::plan_library`]). `None` without the column. Kept per index
+    /// generation, view and filter.
     pub(crate) fn plan(
         &mut self,
         filters: &SearchFilters,
@@ -1057,7 +1147,7 @@ impl LiveResolver<'_> {
             return Ok(None);
         }
         let Some(compiled) = filters.compile() else {
-            return Ok(None);
+            return self.plan_library(view, cancel);
         };
         #[cfg(test)]
         if FAIL_PLANS.with(std::cell::Cell::get) {
@@ -1065,8 +1155,7 @@ impl LiveResolver<'_> {
         }
         let generation = self.generation_id();
         let key = PlanKey {
-            vectors_dir: view.dir().to_path_buf(),
-            set_generation: view.generation(),
+            view: view.id(),
             filters: format!("{filters:?}"),
         };
         if let Some(plan) = self
@@ -1093,100 +1182,16 @@ impl LiveResolver<'_> {
             .collect();
         admitted.sort();
 
-        // Each admitted book's arrivals: known for its postings or its text, or read now —
-        // and those read now are looked up in the set together, in one pass over it.
-        let mut slots: HashMap<u64, Vec<SlotRef>> = HashMap::new();
-        let mut arrivals: HashMap<u64, Vec<(Arc<str>, u32)>> = HashMap::new();
-        let mut unknown: Vec<(&Arc<str>, Unread)> = Vec::new();
+        let mut books = Vec::with_capacity(admitted.len());
         for name in &admitted {
-            if cancel.is_cancelled() {
-                return Err(ResolveError::Cancelled);
-            }
             // A PDF's lines are keyed 0: it holds no text of the set's.
-            if directory.books[*name].is_pdf {
-                continue;
-            }
-            match self.arrivals(name, view)? {
-                BookArrivals::Known(known) => {
-                    for arrival in known.iter() {
-                        let value = arrival.slot.key.column_value();
-                        slots.entry(value).or_default().push(arrival.slot);
-                        arrivals
-                            .entry(value)
-                            .or_default()
-                            .push((Arc::clone(name), arrival.ordinal));
-                    }
-                }
-                BookArrivals::Read(Unread {
-                    postings,
-                    text_hash,
-                    values,
-                }) => {
-                    if !values.is_empty() {
-                        unknown.push((
-                            name,
-                            Unread {
-                                postings,
-                                text_hash,
-                                values,
-                            },
-                        ));
-                    } else {
-                        view.remember_arrivals(
-                            Arc::clone(name),
-                            postings,
-                            text_hash,
-                            Arc::from([]),
-                        );
-                    }
-                }
+            if !directory.books[*name].is_pdf {
+                books.push((Arc::clone(name), self.postings(name)?));
             }
         }
-        if !unknown.is_empty() {
-            // A text the set holds no live vector of is nothing to look for.
-            let wanted: HashSet<u64> = unknown
-                .iter()
-                .flat_map(|(_, unread)| unread.values.iter().map(|(value, _)| *value))
-                .collect();
-            let held = view
-                .live_slots(&wanted, cancel)
-                .ok_or(ResolveError::Cancelled)?;
-            for (
-                name,
-                Unread {
-                    postings,
-                    text_hash,
-                    values,
-                },
-            ) in unknown
-            {
-                let mut found: Vec<Arrival> = values
-                    .iter()
-                    .filter_map(|(value, ordinal)| {
-                        Some(held.get(value)?.iter().map(|slot| Arrival {
-                            slot: *slot,
-                            ordinal: *ordinal,
-                        }))
-                    })
-                    .flatten()
-                    .collect();
-                found.sort_unstable();
-                for arrival in &found {
-                    let value = arrival.slot.key.column_value();
-                    slots.entry(value).or_default().push(arrival.slot);
-                    arrivals
-                        .entry(value)
-                        .or_default()
-                        .push((Arc::clone(name), arrival.ordinal));
-                }
-                view.remember_arrivals(Arc::clone(name), postings, text_hash, found.into());
-            }
-        }
-        // A text with two live slots — which a set does not hold — is one arrival of a book,
-        // and the books came in name order.
-        for books in arrivals.values_mut() {
-            books.dedup_by(|a, b| a.0 == b.0);
-        }
+        let (slots, arrivals) = self
+            .gather_arrivals(books, view, usize::MAX, cancel)?
+            .unwrap_or_default();
 
         // An arrival some admitted book's live records reach is scanned already; the vectors
         // of the others are weighed besides the scan.
@@ -1207,7 +1212,7 @@ impl LiveResolver<'_> {
             );
         }
         let plan = Arc::new(ScanPlan {
-            books: admitted.iter().map(|name| name.as_ref()).collect(),
+            books: Some(admitted.iter().map(|name| name.as_ref()).collect()),
             arrivals,
             unreached,
             set_generation: view.generation(),
@@ -1222,11 +1227,106 @@ impl LiveResolver<'_> {
         Ok(Some(plan))
     }
 
-    /// `book`'s arrivals, when the view knows them for the book's postings — which reads
-    /// none of its lines — or for its text; otherwise the texts its live lines hold that no
-    /// live record of the set places in it, by column value, sorted, with what they were
-    /// read from. One pass over the book's postings reads its text hash and its column.
-    fn arrivals(&self, book: &Arc<str>, view: &SetView) -> Result<BookArrivals, ResolveError> {
+    /// The plan of an unfiltered search: every book's arrivals, nothing unreached. `None`,
+    /// kept for the generation, when it cannot be made or would be too large.
+    fn plan_library(
+        &mut self,
+        view: &SetView,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Arc<ScanPlan>>, ResolveError> {
+        let generation = self.generation_id();
+        let kept = self
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .at(generation)
+            .library
+            .as_ref()
+            .filter(|(id, _)| *id == view.id())
+            .map(|(_, plan)| plan.clone());
+        let plan = match kept {
+            Some(plan) => plan,
+            None => {
+                let plan = match self.build_library_plan(view, cancel) {
+                    Err(ResolveError::Cancelled) => return Err(ResolveError::Cancelled),
+                    Err(error) => {
+                        log::warn!("unfiltered semantic searches go unplanned: {error}");
+                        None
+                    }
+                    Ok(plan) => plan,
+                };
+                self.cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .at(generation)
+                    .library = Some((view.id(), plan.clone()));
+                plan
+            }
+        };
+        self.plan.clone_from(&plan);
+        Ok(plan)
+    }
+
+    fn build_library_plan(
+        &self,
+        view: &SetView,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Arc<ScanPlan>>, ResolveError> {
+        #[cfg(test)]
+        if FAIL_PLANS.with(std::cell::Cell::get) {
+            return Err(index_error("a test made planning fail"));
+        }
+        #[cfg(test)]
+        let cap = LIBRARY_CAP.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        let cap = LIBRARY_ARRIVALS;
+        let books = self.library_postings()?;
+        let Some((_, arrivals)) = self.gather_arrivals(books, view, cap, cancel)? else {
+            log::warn!(
+                "more than {cap} texts arrived in books since the vector set was built; \
+                 unfiltered semantic searches go unplanned until it is updated"
+            );
+            return Ok(None);
+        };
+        Ok(Some(Arc::new(ScanPlan {
+            books: None,
+            arrivals,
+            unreached: Vec::new(),
+            set_generation: view.generation(),
+        })))
+    }
+
+    /// Every book with a `filePath` term in the index, in name order, with its postings:
+    /// each segment's term dictionary read once.
+    fn library_postings(&self) -> Result<Vec<(Arc<str>, Postings)>, ResolveError> {
+        let mut books: BTreeMap<Arc<str>, Postings> = BTreeMap::new();
+        for reader in self.searcher.segment_readers() {
+            let inverted = reader.inverted_index(self.file_path).map_err(index_error)?;
+            let mut terms = inverted.terms().stream().map_err(index_error)?;
+            while terms.advance() {
+                let Ok(name) = std::str::from_utf8(terms.key()) else {
+                    continue;
+                };
+                let posting = (reader.segment_id(), reader.num_deleted_docs());
+                match books.get_mut(name) {
+                    Some(postings) => postings.push(posting),
+                    None => {
+                        books.insert(Arc::from(name), vec![posting]);
+                    }
+                }
+            }
+        }
+        Ok(books
+            .into_iter()
+            .map(|(name, mut postings)| {
+                postings.sort_unstable();
+                (name, postings)
+            })
+            .collect())
+    }
+
+    /// `book`'s postings: the segments whose term dictionary holds it.
+    fn postings(&self, book: &str) -> Result<Postings, ResolveError> {
         let term = Term::from_field_text(self.file_path, book);
         let mut postings: Postings = Vec::new();
         for reader in self.searcher.segment_readers() {
@@ -1241,8 +1341,133 @@ impl LiveResolver<'_> {
         }
         // By segment, whatever order a searcher lists them in.
         postings.sort_unstable();
-        if let Some(known) = view.known_arrivals(book, &postings) {
-            return Ok(BookArrivals::Known(known));
+        Ok(postings)
+    }
+
+    /// The arrivals of `books`, given with their postings: by column value, the live slots
+    /// of each text's vector, and the books it arrived in, in name order, with their first
+    /// line of it. Those the view does not know are looked up in the set in one pass.
+    /// `None` past `cap` arrivals.
+    fn gather_arrivals(
+        &self,
+        books: Vec<(Arc<str>, Postings)>,
+        view: &SetView,
+        cap: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Gathered>, ResolveError> {
+        let read = books
+            .into_par_iter()
+            .map(|(name, postings)| {
+                if cancel.is_cancelled() {
+                    return Err(ResolveError::Cancelled);
+                }
+                let arrivals = self.arrivals(&name, postings, view)?;
+                Ok((name, arrivals))
+            })
+            .collect::<Result<Vec<_>, ResolveError>>()?;
+        let mut known: Vec<(Arc<str>, Arc<[Arrival]>)> = Vec::new();
+        let mut unknown: Vec<(Arc<str>, Unread)> = Vec::new();
+        for (name, read) in read {
+            match read {
+                BookArrivals::Known(arrivals) => known.push((name, arrivals)),
+                BookArrivals::Read(unread) if !unread.values.is_empty() => {
+                    unknown.push((name, unread));
+                }
+                BookArrivals::Read(_) => {}
+            }
+        }
+        let mut count: usize = known.iter().map(|(_, arrivals)| arrivals.len()).sum();
+        if count > cap {
+            return Ok(None);
+        }
+        if !unknown.is_empty() {
+            #[cfg(test)]
+            {
+                if CANCEL_LOOKUPS.with(std::cell::Cell::get) {
+                    return Err(ResolveError::Cancelled);
+                }
+                self.cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .at(self.generation_id())
+                    .lookups += 1;
+            }
+            // A text the set holds no live vector of is nothing to look for.
+            let wanted: HashSet<u64> = unknown
+                .iter()
+                .flat_map(|(_, unread)| unread.values.iter().map(|(value, _)| *value))
+                .collect();
+            let mut held = view
+                .live_slots(&wanted, cancel)
+                .ok_or(ResolveError::Cancelled)?;
+            held.sort_unstable_by_key(|slot| (slot.key.column_value(), slot.seg, slot.slot));
+            let slots_of = |value: u64| {
+                let at = held.partition_point(|slot| slot.key.column_value() < value);
+                held[at..]
+                    .iter()
+                    .take_while(move |slot| slot.key.column_value() == value)
+            };
+            for (name, unread) in unknown {
+                let mut found: Vec<Arrival> = unread
+                    .values
+                    .iter()
+                    .flat_map(|&(value, ordinal)| {
+                        slots_of(value).map(move |slot| Arrival {
+                            slot: *slot,
+                            ordinal,
+                        })
+                    })
+                    .collect();
+                found.sort_unstable();
+                let found: Arc<[Arrival]> = found.into();
+                view.remember_arrivals(
+                    Arc::clone(&name),
+                    unread.postings,
+                    unread.text_hash,
+                    Known::Arrivals(Arc::clone(&found)),
+                );
+                count += found.len();
+                known.push((name, found));
+            }
+        }
+        // Remembered past the cap too, so the next generation stops at the count above.
+        if count > cap {
+            return Ok(None);
+        }
+        let mut slots: HashMap<u64, Vec<SlotRef>> = HashMap::new();
+        let mut arrivals: PlanArrivals = HashMap::new();
+        for (name, found) in &known {
+            for arrival in found.iter() {
+                let value = arrival.slot.key.column_value();
+                slots.entry(value).or_default().push(arrival.slot);
+                arrivals
+                    .entry(value)
+                    .or_default()
+                    .push((Arc::clone(name), arrival.ordinal));
+            }
+        }
+        // By name, whatever the view knew. A text with two live slots — which a set does not
+        // hold — is one arrival of a book.
+        for books in arrivals.values_mut() {
+            books.sort_by(|a, b| a.0.cmp(&b.0));
+            books.dedup_by(|a, b| a.0 == b.0);
+        }
+        Ok(Some((slots, arrivals)))
+    }
+
+    /// `book`'s arrivals, when the view knows them for the book's postings — which reads
+    /// none of its lines — or for its text; otherwise the texts its live lines hold that no
+    /// live record of the set places in it, by column value, sorted, with what they were
+    /// read from. One pass over the book's postings reads its text hash and its column.
+    fn arrivals(
+        &self,
+        book: &Arc<str>,
+        postings: Postings,
+        view: &SetView,
+    ) -> Result<BookArrivals, ResolveError> {
+        let term = Term::from_field_text(self.file_path, book);
+        if let Some((text_hash, known)) = view.known_arrivals(book, &postings) {
+            return Ok(BookArrivals::of(known, postings, text_hash));
         }
         #[cfg(test)]
         {
@@ -1284,7 +1509,7 @@ impl LiveResolver<'_> {
         // Lines of two texts of the book — a reindex cut short — have no hash to keep by.
         let text_hash = text_hash.filter(|_| one_text).unwrap_or(0);
         if let Some(known) = view.known_arrivals_of_text(book, text_hash, &postings) {
-            return Ok(BookArrivals::Known(known));
+            return Ok(BookArrivals::of(known, postings, text_hash));
         }
         // Each value once, at the first line that holds it.
         live.sort_unstable();
@@ -1293,10 +1518,17 @@ impl LiveResolver<'_> {
         view.recorded(book, &mut records);
         let mut recorded: Vec<u64> = records.iter().map(|(key, _)| key.column_value()).collect();
         recorded.sort_unstable();
-        let values = live
+        let values: Arc<[(u64, u32)]> = live
             .into_iter()
             .filter(|(value, _)| recorded.binary_search(value).is_err())
             .collect();
+        // Remembered now, so that a plan cancelled before the set is asked keeps this walk.
+        let known = if values.is_empty() {
+            Known::Arrivals(Arc::from([]))
+        } else {
+            Known::Unlooked(Arc::clone(&values))
+        };
+        view.remember_arrivals(Arc::clone(book), postings.clone(), text_hash, known);
         Ok(BookArrivals::Read(Unread {
             postings,
             text_hash,
@@ -1305,12 +1537,31 @@ impl LiveResolver<'_> {
     }
 }
 
+/// By column value, the books a text arrived in, each with its first line of it.
+type PlanArrivals = HashMap<u64, Vec<(Arc<str>, u32)>>;
+
+/// By column value, the live slots of each arrival's vector, and its books.
+type Gathered = (HashMap<u64, Vec<SlotRef>>, PlanArrivals);
+
 /// A book's arrivals as [`LiveResolver::arrivals`] finds them.
 enum BookArrivals {
     /// Known to the view: the live slots of their vectors, and their lines.
     Known(Arc<[Arrival]>),
-    /// Read now, not yet looked up in the set.
+    /// Not yet looked up in the set.
     Read(Unread),
+}
+
+impl BookArrivals {
+    fn of(known: Known, postings: Postings, text_hash: u64) -> Self {
+        match known {
+            Known::Arrivals(arrivals) => Self::Known(arrivals),
+            Known::Unlooked(values) => Self::Read(Unread {
+                postings,
+                text_hash,
+                values,
+            }),
+        }
+    }
 }
 
 /// A book's arrivals as read from its lines, before the set is asked about them.
@@ -1319,7 +1570,7 @@ struct Unread {
     postings: Postings,
     text_hash: u64,
     /// Their column values, sorted, each with the first line of the book that holds it.
-    values: Vec<(u64, u32)>,
+    values: Arc<[(u64, u32)]>,
 }
 
 /// The live index as compaction asks it: the key each live line of a book holds now, from
@@ -1373,9 +1624,9 @@ fn admits(compiled: Option<&CompiledFilters<'_>>, name: &str, info: &BookInfo) -
 }
 
 impl CandidateResolver for LiveResolver<'_> {
-    /// The index's generation, with the top bit set for a planned search: a filtered search
-    /// that could not be planned answers without the vectors it would have weighed besides,
-    /// and the query cache must not hand that answer to one that was.
+    /// The index's generation, with the top bit set for a planned search: one that could not
+    /// be planned answers without its arrivals, and the query cache must not hand that answer
+    /// to one that was.
     fn generation(&self) -> u64 {
         let generation = self.generation_id() & !(1 << 63);
         if self.plan.is_some() {
@@ -1396,8 +1647,8 @@ impl CandidateResolver for LiveResolver<'_> {
             return Ok(None);
         };
         // A planned search scans the books its plan admitted.
-        if let Some(plan) = &self.plan {
-            return Ok(Some(plan.books.clone()));
+        if let Some(books) = self.plan.as_ref().and_then(|plan| plan.books.as_ref()) {
+            return Ok(Some(books.clone()));
         }
         let directory = self.directory()?;
         Ok(Some(
@@ -1582,10 +1833,11 @@ impl CandidateResolver for LiveResolver<'_> {
 
         // The text moved to another book, or left every book it was in: one pass over the
         // whole column for every such hit together, and only with a column to pass over. A
-        // planned search needs none: every admitted book a text is in now either records it
+        // filtered plan needs none: every admitted book a text is in now either records it
         // or has it among its arrivals. Where the pass found a value is kept for the
         // generation, found or not, so it is passed for at most once.
-        if self.column && self.plan.is_none() && !unresolved.is_empty() {
+        let filtered_plan = self.plan.as_ref().is_some_and(|plan| plan.books.is_some());
+        if self.column && !filtered_plan && !unresolved.is_empty() {
             let generation = self.generation_id();
             let mut found: HashMap<u64, Arc<[DocAddress]>> = HashMap::new();
             let wanted: HashSet<u64> = {
@@ -1621,9 +1873,8 @@ impl CandidateResolver for LiveResolver<'_> {
                 let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
                 let moved = cache.at(generation).moved();
                 for value in wanted {
-                    let mut places = passed.remove(&value).unwrap_or_default();
-                    places.truncate(MOVED_PLACES);
-                    let places: Arc<[DocAddress]> = places.into();
+                    let places: Arc<[DocAddress]> =
+                        passed.remove(&value).unwrap_or_default().into();
                     moved.put(value, Arc::clone(&places));
                     found.insert(value, places);
                 }
@@ -1633,9 +1884,8 @@ impl CandidateResolver for LiveResolver<'_> {
                 let Some(places) = found.get(&key.column_value()) else {
                     continue;
                 };
-                // As for records: the first line of each book that holds the key, in index
-                // order, and then the books' other lines, by book and line, while the cap
-                // lasts. Each is held to the whole key, being found by its column value.
+                // As for records: a line of each book, then the books' other lines, by book
+                // and line, while the cap lasts. Each is held to the whole key.
                 let mut emitted = 0usize;
                 let mut books: HashSet<Arc<str>> = HashSet::new();
                 let mut others: Vec<(Arc<BookLines>, usize)> = Vec::new();
@@ -1678,5 +1928,72 @@ impl CandidateResolver for LiveResolver<'_> {
             }
         }
         Ok(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::search_engine::{live_chunk_key_field, SearchEngine};
+    use otzaria_semantic_search::semantic::resolve::RecordRef;
+    use tantivy::{Index, ReloadPolicy};
+
+    /// F3: a text that left its book, now held 1,100 times by one book and once by one added
+    /// later. Found by the pass over the column, each book gets its line before any repeat.
+    #[test]
+    fn the_pass_over_the_column_leaves_every_book_its_line() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let passage = "שורה חוזרת ארוכה דיה לעמוד לבדה בלי הקשר";
+        let (many, once) = ("/books/many.txt", "/books/once.txt");
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        for (key, order, text) in [
+            (many, 0, vec![passage; 1_100].join("\n")),
+            (
+                once,
+                1,
+                format!("שורה פותחת בספר היחיד ארוכה דיה\n{passage}"),
+            ),
+        ] {
+            engine
+                .add_text_book("ספר".into(), "/א".into(), key.into(), order, 0, text, None)
+                .unwrap();
+            engine.commit().unwrap();
+        }
+
+        let index = Index::open_in_dir(dir.path()).unwrap();
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .unwrap();
+        let chunk_key = live_chunk_key_field(&index.schema(), dir.path());
+        assert!(chunk_key.is_some());
+        let cache = Mutex::default();
+        let resolver = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
+        let book = resolver.book(once).unwrap().unwrap();
+        let key = recompute_chunk_keys(resolver.searcher(), &book.docs, 1..2).unwrap()[0].unwrap();
+        // Recorded in a book the index no longer holds: no plan, so the pass finds it.
+        let hit = VectorHit {
+            score: 1.0,
+            key,
+            records: vec![RecordRef {
+                book: Arc::from("/books/gone.txt"),
+                hint: 1,
+            }],
+            seg: 0,
+            slot: 0,
+        };
+        let lines = resolver
+            .resolve(&[hit], None, &CancellationToken::new())
+            .unwrap();
+        let of = |book: &str| -> Vec<u64> {
+            lines
+                .iter()
+                .filter(|line| line.file_path == book)
+                .map(|line| line.segment)
+                .collect()
+        };
+        assert_eq!(of(once), [1]);
+        assert_eq!(of(many), (0..31).collect::<Vec<u64>>());
     }
 }
