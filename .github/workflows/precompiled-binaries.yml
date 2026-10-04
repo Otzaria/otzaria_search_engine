@@ -40,10 +40,22 @@ jobs:
             --repository "${{ github.repository }}" \
             --manifest-dir ../../rust
 
-  publish-apple-and-android:
-    name: Publish Apple + Android
+  # One target group per runner: a macOS runner has few cores, and building
+  # every target in sequence on one made it the long pole of the release.
+  publish-apple:
+    name: Publish Apple (${{ matrix.name }})
     needs: prepare-release
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            targets: x86_64-apple-darwin aarch64-apple-darwin
+          - name: iOS
+            targets: aarch64-apple-ios
+          - name: iOS simulator
+            targets: aarch64-apple-ios-sim x86_64-apple-ios
     env:
       # Unset, cc-rs compiles the C deps at the runner SDK's default while
       # rustc uses its own much lower one, so both minimums land in the same
@@ -60,16 +72,58 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-java@v4
+      - name: Install build tool dependencies
+        working-directory: cargokit/build_tool
+        run: dart pub get
+
+      - name: Publish Apple artifacts
+        working-directory: cargokit/build_tool
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          set -euo pipefail
+          target_args=()
+          for target in $TARGETS; do
+            target_args+=(--target "$target")
+          done
+          dart run bin/build_tool.dart precompile-binaries \
+            --repository "${{ github.repository }}" \
+            --manifest-dir ../../rust \
+            "${target_args[@]}"
+
+  # The NDK cross-compiles from Linux, on a cheaper and faster runner than
+  # macOS, one ABI per runner. The hosted image ships the SDK and an NDK, and
+  # precompiling never installs one, so no Java is needed.
+  publish-android:
+    name: Publish Android (${{ matrix.target }})
+    needs: prepare-release
+    # The NDK's Linux toolchain is linux-x86_64 only.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - armv7-linux-androideabi
+          - aarch64-linux-android
+          - i686-linux-android
+          - x86_64-linux-android
+    steps:
+      - uses: actions/checkout@v5
         with:
-          distribution: temurin
-          java-version: "17"
+          ref: ${{ github.sha }}
+
+      - uses: dart-lang/setup-dart@v1
+
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install build tool dependencies
         working-directory: cargokit/build_tool
         run: dart pub get
 
-      - name: Publish Apple and Android artifacts
+      - name: Publish Android artifacts
         working-directory: cargokit/build_tool
         shell: bash
         # Secrets are scoped to this step only so earlier steps (and any
@@ -107,15 +161,7 @@ jobs:
             --android-sdk-location "${ANDROID_SDK_ROOT}" \
             --android-ndk-version "${ANDROID_NDK_VERSION}" \
             --android-min-sdk-version 21 \
-            --target x86_64-apple-darwin \
-            --target aarch64-apple-darwin \
-            --target aarch64-apple-ios \
-            --target aarch64-apple-ios-sim \
-            --target x86_64-apple-ios \
-            --target armv7-linux-androideabi \
-            --target aarch64-linux-android \
-            --target i686-linux-android \
-            --target x86_64-linux-android
+            --target "${{ matrix.target }}"
 
   publish-linux:
     name: Publish Linux (${{ matrix.target }})
@@ -220,7 +266,8 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
     needs:
-      - publish-apple-and-android
+      - publish-apple
+      - publish-android
       - publish-linux
       - publish-windows
     steps:
