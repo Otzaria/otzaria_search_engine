@@ -56,6 +56,10 @@ mod semantic_resolver;
 // the vector set records elsewhere. At the crate root for the reason `semantic_resolver` is.
 #[cfg(feature = "semantic-integration")]
 mod semantic_moves;
+// The pages a semantic search has shown, which its next pages continue. At the crate root for
+// the reason `semantic_resolver` is.
+#[cfg(feature = "semantic-integration")]
+mod semantic_session;
 // What a semantic search's cancellation token holds, and where a search looks at it. At the
 // crate root for the same reason: Dart gets the token, in `crate::api`, and nothing here. In
 // every build, since the token is part of the API whether or not the sidecar is.

@@ -8203,6 +8203,8 @@ impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
         let mut var_duplicatePenalty = <f64>::sse_decode(deserializer);
         let mut var_metadataRankingEnabled = <bool>::sse_decode(deserializer);
         let mut var_candidateWindowMultiplier = <f64>::sse_decode(deserializer);
+        let mut var_foundationalBonus = <f64>::sse_decode(deserializer);
+        let mut var_foundationalCandidateShare = <f64>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticRankingOptions {
             fusion_strategy: var_fusionStrategy,
             rrf_k: var_rrfK,
@@ -8217,6 +8219,8 @@ impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
             duplicate_penalty: var_duplicatePenalty,
             metadata_ranking_enabled: var_metadataRankingEnabled,
             candidate_window_multiplier: var_candidateWindowMultiplier,
+            foundational_bonus: var_foundationalBonus,
+            foundational_candidate_share: var_foundationalCandidateShare,
         };
     }
 }
@@ -8291,6 +8295,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
         let mut var_latencyMs = <u64>::sse_decode(deserializer);
         let mut var_candidateWindowTruncated = <bool>::sse_decode(deserializer);
         let mut var_truncated = <bool>::sse_decode(deserializer);
+        let mut var_hasMore = <bool>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticSearchResponse {
             results: var_results,
             total_count: var_totalCount,
@@ -8305,6 +8310,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
             latency_ms: var_latencyMs,
             candidate_window_truncated: var_candidateWindowTruncated,
             truncated: var_truncated,
+            has_more: var_hasMore,
         };
     }
 }
@@ -9907,6 +9913,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticRankin
             self.candidate_window_multiplier
                 .into_into_dart()
                 .into_dart(),
+            self.foundational_bonus.into_into_dart().into_dart(),
+            self.foundational_candidate_share
+                .into_into_dart()
+                .into_dart(),
         ]
         .into_dart()
     }
@@ -10025,6 +10035,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticSearch
             self.latency_ms.into_into_dart().into_dart(),
             self.candidate_window_truncated.into_into_dart().into_dart(),
             self.truncated.into_into_dart().into_dart(),
+            self.has_more.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -11612,6 +11623,8 @@ impl SseEncode for crate::api::search_engine::SemanticRankingOptions {
         <f64>::sse_encode(self.duplicate_penalty, serializer);
         <bool>::sse_encode(self.metadata_ranking_enabled, serializer);
         <f64>::sse_encode(self.candidate_window_multiplier, serializer);
+        <f64>::sse_encode(self.foundational_bonus, serializer);
+        <f64>::sse_encode(self.foundational_candidate_share, serializer);
     }
 }
 
@@ -11693,6 +11706,7 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResponse {
         <u64>::sse_encode(self.latency_ms, serializer);
         <bool>::sse_encode(self.candidate_window_truncated, serializer);
         <bool>::sse_encode(self.truncated, serializer);
+        <bool>::sse_encode(self.has_more, serializer);
     }
 }
 

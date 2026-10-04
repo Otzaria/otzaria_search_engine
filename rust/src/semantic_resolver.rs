@@ -331,6 +331,9 @@ struct SegmentColumns {
 /// The sidecar's resolver over one searcher of the live index.
 pub(crate) struct LiveResolver<'a> {
     searcher: Searcher,
+    /// [`index_content`] rather than the searcher's generation: a reload that changed nothing
+    /// keeps the caches.
+    generation: u64,
     /// Whether the `chunkKey` column is one this build uses; otherwise keys are recomputed.
     column: bool,
     file_path: Field,
@@ -340,11 +343,32 @@ pub(crate) struct LiveResolver<'a> {
     records: Mutex<HashMap<(String, u64), ResolvedRecord>>,
     /// Lines whose column held a hit's key and whose text did not: dropped, and counted.
     rejected: Mutex<HashSet<DocAddress>>,
-    /// The plan of this search's filter, when one was made.
-    plan: Option<Arc<ScanPlan>>,
+    /// The plan of each filter this search planned, by [`plan_key`]: a search can query
+    /// the foundational books besides its own filter, and each query reads its own plan.
+    plans: Vec<(String, Arc<ScanPlan>)>,
     /// Why this search's filter could not be planned, when it could not: the semantic half
     /// of the search fails with it, as it would had the resolver failed to read the index.
     failed: Option<ResolveError>,
+}
+
+/// `searcher`'s segments and their deletes, in order: what a reload that changed neither leaves
+/// alike, with every address valid in both searchers.
+pub(crate) fn index_content(searcher: &Searcher) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for reader in searcher.segment_readers() {
+        (reader.segment_id(), reader.delete_opstamp()).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// What a plan is kept under for one search: the filter as the sidecar passes it, or `""`
+/// for one that filters nothing, which the library's plan serves.
+fn plan_key(filters: Option<&SearchFilters>) -> String {
+    match filters {
+        Some(filters) if !filters.is_empty() => format!("{filters:?}"),
+        _ => String::new(),
+    }
 }
 
 fn index_error(reason: impl std::fmt::Display) -> ResolveError {
@@ -382,6 +406,7 @@ impl<'a> LiveResolver<'a> {
             })
             .collect::<Result<_, ResolveError>>()?;
         Ok(Self {
+            generation: index_content(&searcher),
             searcher,
             column: chunk_key.is_some(),
             file_path,
@@ -389,16 +414,33 @@ impl<'a> LiveResolver<'a> {
             cache,
             records: Mutex::new(HashMap::new()),
             rejected: Mutex::new(HashSet::new()),
-            plan: None,
+            plans: Vec::new(),
             failed: None,
         })
     }
 
     fn generation_id(&self) -> u64 {
-        self.searcher.generation().generation_id()
+        self.generation
+    }
+
+    /// The plan made for `filters`, when one was.
+    fn plan_for(&self, filters: Option<&SearchFilters>) -> Option<&ScanPlan> {
+        let key = plan_key(filters);
+        self.plans
+            .iter()
+            .find(|(kept, _)| *kept == key)
+            .map(|(_, plan)| plan.as_ref())
+    }
+
+    fn keep_plan(&mut self, key: String, plan: Option<Arc<ScanPlan>>) {
+        self.plans.retain(|(kept, _)| *kept != key);
+        if let Some(plan) = plan {
+            self.plans.push((key, plan));
+        }
     }
 
     /// The searcher every address this resolver hands out belongs to.
+    #[cfg(test)]
     pub(crate) fn searcher(&self) -> &Searcher {
         &self.searcher
     }
@@ -1154,8 +1196,9 @@ impl LiveResolver<'_> {
             .plans()
             .get(&key)
         {
-            self.plan = Some(Arc::clone(plan));
-            return Ok(self.plan.clone());
+            let plan = Arc::clone(plan);
+            self.keep_plan(plan_key(Some(filters)), Some(Arc::clone(&plan)));
+            return Ok(Some(plan));
         }
 
         let directory = self.directory()?;
@@ -1211,7 +1254,7 @@ impl LiveResolver<'_> {
             .at(generation)
             .plans()
             .put(key, Arc::clone(&plan));
-        self.plan = Some(Arc::clone(&plan));
+        self.keep_plan(plan_key(Some(filters)), Some(Arc::clone(&plan)));
         Ok(Some(plan))
     }
 
@@ -1251,7 +1294,7 @@ impl LiveResolver<'_> {
                 plan
             }
         };
-        self.plan.clone_from(&plan);
+        self.keep_plan(plan_key(None), plan.clone());
         Ok(plan)
     }
 
@@ -1623,7 +1666,7 @@ impl CandidateResolver for LiveResolver<'_> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (self.generation_id(), library).hash(&mut hasher);
         let generation = hasher.finish() & !(1 << 63);
-        if self.plan.is_some() {
+        if !self.plans.is_empty() {
             generation | 1 << 63
         } else {
             generation
@@ -1641,7 +1684,7 @@ impl CandidateResolver for LiveResolver<'_> {
             return Ok(None);
         };
         // A planned search scans the books its plan admitted.
-        if let Some(books) = self.plan.as_ref().and_then(|plan| plan.books.as_ref()) {
+        if let Some(books) = self.plan_for(filters).and_then(|plan| plan.books.as_ref()) {
             return Ok(Some(books.clone()));
         }
         let directory = self.directory()?;
@@ -1662,11 +1705,11 @@ impl CandidateResolver for LiveResolver<'_> {
     /// books it arrived in alone.
     fn unreached(
         &self,
-        _filters: Option<&SearchFilters>,
+        filters: Option<&SearchFilters>,
         set_generation: u64,
         _cancel: &CancellationToken,
     ) -> Result<Vec<SlotRef>, ResolveError> {
-        Ok(match &self.plan {
+        Ok(match self.plan_for(filters) {
             Some(plan) if plan.set_generation == set_generation => plan.unreached.clone(),
             _ => Vec::new(),
         })
@@ -1760,8 +1803,7 @@ impl CandidateResolver for LiveResolver<'_> {
             // which the set does not record it in: the first line of each that holds it,
             // looked for first where the plan found it.
             if let Some(arrived) = self
-                .plan
-                .as_ref()
+                .plan_for(filters)
                 .and_then(|plan| plan.arrivals.get(&hit.key.column_value()))
             {
                 for (name, ordinal) in arrived {
@@ -1830,7 +1872,9 @@ impl CandidateResolver for LiveResolver<'_> {
         // filtered plan needs none: every admitted book a text is in now either records it
         // or has it among its arrivals. Where the pass found a value is kept for the
         // generation, found or not, so it is passed for at most once.
-        let filtered_plan = self.plan.as_ref().is_some_and(|plan| plan.books.is_some());
+        let filtered_plan = self
+            .plan_for(filters)
+            .is_some_and(|plan| plan.books.is_some());
         if self.column && !filtered_plan && !unresolved.is_empty() {
             let generation = self.generation_id();
             let mut found: HashMap<u64, Arc<[DocAddress]>> = HashMap::new();
