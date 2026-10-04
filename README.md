@@ -198,7 +198,7 @@ On the application's path:
 | kind | reported by | means, and what to do |
 | --- | --- | --- |
 | `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing installed at `vectorsDir`: download and install the vectors |
-| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: install the release again, which repairs the set, downloading it again if it is gone. On Windows, close the session first: a mapped segment cannot be replaced |
+| `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: install the release again, which repairs the set, downloading it again if it is gone. On a FAT or exFAT drive on Windows, close the session first: a mapped segment cannot be replaced there |
 | `artifactNotPublished` | `installSemanticVectors` | not the release whose manifest digest was published: download the official one |
 | `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application. With `field` `segment_id`, installing: a version the set has installed, published again with other bytes; the set is sound and keeps serving it. Do not download it again: keep the set, or install the release into a new, empty `vectorsDir` |
 | `insufficientDiskSpace` | installing, compacting | not enough free space: free some, and try again |

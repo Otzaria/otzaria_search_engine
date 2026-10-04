@@ -265,8 +265,9 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at 76900fd, its `onnx-backend` with the `store-v2` branch, its two rounds of
-  audit fixes, `scan-with`, `open-without-recovery` and `fusion-tie-order`
+  at 5d71ae5, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  audit fixes, `scan-with`, `open-without-recovery`, `fusion-tie-order`,
+  `fix/g5-empty-sample`, `fix/install-lock-race` and `fix/windows-rename-retry`
   merged, which keys a
   vector by the text it was embedded from, so a set's
   identity is a line recipe and a model family, with nothing positional in it:
@@ -554,7 +555,7 @@ are now documented as development and testing scaffolding, not for the library.
   a result; grouped by section they head their sections' groups, and grouped
   by text they are one group. Pagination is unchanged by it. A hit's lines
   score alike, and an ungrouped page shows them in that order, every book's
-  line before any book's second: the sidecar (76900fd) breaks a tie in score
+  line before any book's second: the sidecar (since 76900fd) breaks a tie in score
   by the order the resolver returned the lines in, where it broke it by id.
   By id, the repeats of the book first in the catalogue, numbered in a row,
   came ahead of every other book's line. In the acceptance run on the
@@ -667,8 +668,9 @@ are now documented as development and testing scaffolding, not for the library.
   the same way. A scrub that read bytes an install has since replaced now
   reports it and condemns nothing, and `verifySemanticVectors` throws
   `vectorsBusy` for it, to verify again, rather than `artifactCorrupt`.
-  Installing a release again now repairs a damaged or condemned set; on
-  Windows close the session first, since a mapped segment cannot be replaced.
+  Installing a release again now repairs a damaged or condemned set; on a FAT
+  or exFAT drive on Windows close the session first, since a mapped segment
+  cannot be replaced there.
   A cancelled verification records nothing, and a download in `incoming/` is
   moved into the set only when the install succeeds (on Windows a read-only
   one is copied).
