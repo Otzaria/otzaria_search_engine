@@ -2201,6 +2201,16 @@ struct SemanticLexicalPhase {
     text_status: HashMap<u64, TextStatus>,
 }
 
+/// What a benchmark reads from one lexical phase.
+#[cfg(all(test, feature = "semantic-integration"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BenchLexicalPhase {
+    pub candidates: usize,
+    pub total_count: u32,
+    pub truncated: bool,
+    pub highlighted: bool,
+}
+
 /// A lexical query kept alive past its own execution so snippets can be built
 /// after fusion and pagination rather than for the whole candidate window.
 #[cfg(feature = "semantic-integration")]
@@ -4011,6 +4021,58 @@ pub struct SearchEngine {
     semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
 }
 
+/// The analyzers every field and query of the index is tokenized with.
+fn register_hebrew_tokenizers(index: &Index) {
+    // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
+    // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
+    // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
+    // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
+    // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
+    // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
+    index.tokenizers().register(
+        "hebrew",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: false,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+    index.tokenizers().register(
+        "hebrew_vocalized",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: true,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+    // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
+    // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
+    index.tokenizers().register(
+        "hebrew_query",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: false,
+            keep_marks: false,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+    index.tokenizers().register(
+        "hebrew_vocalized_query",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: false,
+            keep_marks: true,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+}
+
 /// Installs a stderr logger (once per process) so the engine's `info!`
 /// timing logs are visible in the app console without any Dart-side setup.
 /// `RUST_LOG` still overrides the default filter; if a logger is already
@@ -4042,54 +4104,7 @@ impl SearchEngine {
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
         let schema = index.schema();
-        // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
-        // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
-        // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
-        // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
-        // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
-        // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
-        index.tokenizers().register(
-            "hebrew",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: true,
-                keep_marks: false,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
-        index.tokenizers().register(
-            "hebrew_vocalized",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: true,
-                keep_marks: true,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
-        // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
-        // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
-        index.tokenizers().register(
-            "hebrew_query",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: false,
-                keep_marks: false,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
-        index.tokenizers().register(
-            "hebrew_vocalized_query",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: false,
-                keep_marks: true,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
+        register_hebrew_tokenizers(&index);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -4144,6 +4159,66 @@ impl SearchEngine {
             #[cfg(feature = "semantic-integration")]
             semantic_set_view: Mutex::default(),
         }
+    }
+
+    /// An engine over an index opened by the caller, with no writer and no metadata written:
+    /// benchmarks on an index another process owns.
+    #[cfg(test)]
+    pub(crate) fn from_read_only_index(index: Index, path: &Path) -> Result<Self> {
+        let schema = index.schema();
+        register_hebrew_tokenizers(&index);
+        let index_reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+        let chunk_key_field = live_chunk_key_field(&schema, path);
+        Ok(SearchEngine {
+            schema,
+            chunk_key_field,
+            index_path: path.to_path_buf(),
+            index,
+            index_writer: None,
+            writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
+            index_reader,
+            magic_dict: None,
+            translation_dict: None,
+            acronym_dict: None,
+            term_cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
+            )),
+            bulk_indexing: false,
+            #[cfg(feature = "semantic-integration")]
+            semantic_runtime: RwLock::new(None),
+            #[cfg(not(feature = "semantic-integration"))]
+            semantic_runtime: (),
+            #[cfg(feature = "semantic-integration")]
+            semantic_resolver: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_set_view: Mutex::default(),
+        })
+    }
+
+    /// The lexical phase of [`Self::search_semantic`] alone, for benchmarks:
+    /// `None` is Exact, `Some(d)` is Fuzzy at distance `d`.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn bench_semantic_lexical_phase(
+        &self,
+        query: &str,
+        facets: &[String],
+        window: u32,
+        fuzzy_distance: Option<u8>,
+    ) -> Result<BenchLexicalPhase> {
+        let phase = match fuzzy_distance {
+            None => self.semantic_exact_lexical_candidates(query, facets, window, false, false)?,
+            Some(distance) => self
+                .semantic_fuzzy_lexical_candidates(query, facets, window, distance, false, false)?,
+        };
+        Ok(BenchLexicalPhase {
+            candidates: phase.candidates.len(),
+            total_count: phase.total_count,
+            truncated: phase.truncated,
+            highlighted: phase.highlight.is_some(),
+        })
     }
 
     /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
