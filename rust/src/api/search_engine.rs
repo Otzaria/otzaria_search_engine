@@ -1145,6 +1145,8 @@ pub struct SemanticPassageHighlight {
 struct PassageQuery {
     vector: Option<Vec<f32>>,
     words: Option<HashSet<String>>,
+    /// The query's own tokens, without the dictionary's forms.
+    tokens: Option<HashSet<String>>,
 }
 
 /// How the application abandons a [`SearchEngine::search_semantic`] that nobody is waiting
@@ -6385,7 +6387,8 @@ impl SearchEngine {
         cancel: &SearchCancellation,
     ) -> Result<Option<crate::semantic_highlight::Highlight>, SemanticError> {
         use crate::semantic_highlight::{self as passage, Highlight};
-        let clauses = passage::clauses(text);
+        let (clauses, parts): (Vec<_>, Vec<_>) =
+            passage::clauses_in_parts(text).into_iter().unzip();
         if clauses.is_empty() {
             return Ok(Some(Highlight::none()));
         }
@@ -6431,7 +6434,19 @@ impl SearchEngine {
         let Some((best, score)) = passage::nearest(query_vector, &vectors) else {
             return Ok(Some(Highlight::none()));
         };
-        let span = clauses[chosen[best]].clone();
+        if query_side.tokens.is_none() {
+            query_side.tokens = Some(self.index_token_texts(query)?.into_iter().collect());
+        }
+        let tokens = query_side.tokens.as_ref().expect("set above");
+        let span = passage::widen_to_query_words(
+            text,
+            clauses[chosen[best]].clone(),
+            parts[chosen[best]].clone(),
+            |word| {
+                self.index_token_texts(word)
+                    .is_ok_and(|found| found.iter().any(|token| tokens.contains(token)))
+            },
+        );
         Ok(Some(match passage::marked_snippet(text, span, budget) {
             Some(snippet_html) => Highlight {
                 snippet_html,

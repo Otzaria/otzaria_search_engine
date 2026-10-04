@@ -15,6 +15,8 @@ const MIN_CLAUSE_WORDS: usize = 4;
 const MAX_CLAUSE_WORDS: usize = 20;
 const WINDOW_WORDS: usize = 14;
 const WINDOW_STEP: usize = 10;
+/// How far past a clause's edge a word of the query still joins its mark.
+const EDGE_WORDS: usize = 3;
 /// Clauses embedded per line, and per call: each is one inference.
 pub(crate) const MAX_CLAUSES_PER_LINE: usize = 6;
 pub(crate) const MAX_CLAUSES_PER_CALL: usize = 48;
@@ -89,7 +91,17 @@ fn raw_parts(text: &str) -> Vec<Range<usize>> {
 
 /// Byte ranges, first word to last, of `text`'s clauses; empty for a line of at most twelve
 /// words or of a single clause, where there is nothing to point at.
+#[cfg(test)]
 pub(crate) fn clauses(text: &str) -> Vec<Range<usize>> {
+    clauses_in_parts(text)
+        .into_iter()
+        .map(|(clause, _)| clause)
+        .collect()
+}
+
+/// [`clauses`], each with the part it was cut from: a window of a long part is cut by count,
+/// not at punctuation.
+pub(crate) fn clauses_in_parts(text: &str) -> Vec<(Range<usize>, Range<usize>)> {
     if words(text, 0..text.len()).len() <= SHORT_LINE_WORDS {
         return Vec::new();
     }
@@ -115,14 +127,15 @@ pub(crate) fn clauses(text: &str) -> Vec<Range<usize>> {
         if part_words.is_empty() {
             continue;
         }
+        let whole = part_words[0].start..part_words[part_words.len() - 1].end;
         if part_words.len() <= MAX_CLAUSE_WORDS {
-            out.push(part_words[0].start..part_words[part_words.len() - 1].end);
+            out.push((whole.clone(), whole));
             continue;
         }
         let mut first = 0;
         loop {
             let last = (first + WINDOW_WORDS).min(part_words.len()) - 1;
-            out.push(part_words[first].start..part_words[last].end);
+            out.push((part_words[first].start..part_words[last].end, whole.clone()));
             if last + 1 >= part_words.len() {
                 break;
             }
@@ -133,6 +146,30 @@ pub(crate) fn clauses(text: &str) -> Vec<Range<usize>> {
         return Vec::new();
     }
     out
+}
+
+/// `span` widened, inside `part`, through the nearest [`EDGE_WORDS`] words on each side up to
+/// the farthest that `is_query_word` accepts: a window cut by count may end just before one.
+pub(crate) fn widen_to_query_words(
+    text: &str,
+    span: Range<usize>,
+    part: Range<usize>,
+    is_query_word: impl Fn(&str) -> bool,
+) -> Range<usize> {
+    let after = words(text, span.end..part.end.max(span.end));
+    let end = after
+        .iter()
+        .take(EDGE_WORDS)
+        .rposition(|word| is_query_word(&text[word.clone()]))
+        .map_or(span.end, |index| after[index].end);
+    let before = words(text, part.start.min(span.start)..span.start);
+    let start = before
+        .iter()
+        .rev()
+        .take(EDGE_WORDS)
+        .rposition(|word| is_query_word(&text[word.clone()]))
+        .map_or(span.start, |index| before[before.len() - 1 - index].start);
+    start..end
 }
 
 /// The indices of at most `cap` clauses worth embedding, in order: the first clause always, and
@@ -336,6 +373,42 @@ mod tests {
                 words[10..24].join(" "),
                 words[20..27].join(" "),
             ]
+        );
+    }
+
+    #[test]
+    fn a_window_takes_in_a_word_of_the_query_just_past_its_edge() {
+        let words: Vec<String> = (1..=27).map(|n| format!("מילה{n}")).collect();
+        let text = words.join(" ");
+        let found = clauses_in_parts(&text);
+        let (first, part) = found[0].clone();
+        assert_eq!(part, 0..text.len());
+        let query = |wanted: &'static [&'static str]| move |word: &str| wanted.contains(&word);
+        let widened = |wanted| {
+            texts(
+                &text,
+                &[widen_to_query_words(
+                    &text,
+                    first.clone(),
+                    part.clone(),
+                    query(wanted),
+                )],
+            )[0]
+            .to_string()
+        };
+        assert_eq!(widened(&["מילה16"]), words[0..16].join(" "));
+        assert_eq!(widened(&["מילה15", "מילה17"]), words[0..17].join(" "));
+        assert_eq!(widened(&["מילה18"]), words[0..14].join(" "), "too far");
+        let (second, _) = found[1].clone();
+        let back = widen_to_query_words(&text, second, part, query(&["מילה9"]));
+        assert_eq!(&text[back], words[8..24].join(" "));
+
+        let line = "אמר רבי יוחנן הלכה כרבי מאיר בכל מקום, ואמר רבי אלעזר כן הוא ומה טעם בדבר זה.";
+        let (clause, part) = clauses_in_parts(line)[0].clone();
+        assert_eq!(
+            widen_to_query_words(line, clause.clone(), part, query(&["ואמר"])),
+            clause,
+            "punctuation ends a clause"
         );
     }
 
