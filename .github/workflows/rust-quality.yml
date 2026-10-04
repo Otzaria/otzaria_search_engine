@@ -137,7 +137,7 @@ jobs:
       # Windows refuses to replace a file another handle holds open; the index retries.
       - name: Test replacing index files under an open handle on Windows
         if: matrix.os == 'windows-2022'
-        run: cargo test --manifest-path rust/Cargo.toml --locked --lib -- index_directory::tests replace_meta_json_
+        run: cargo test --manifest-path rust/Cargo.toml --locked --lib -- index_directory::tests replace_meta_json_ index_metadata_survives_a_write_that_fails_before_its_rename
 
   # rust/tests/semantic_onnx_model.rs on the Meivin INT8 graph, the model the
   # application uses: lines indexed and queried through the public API, text
