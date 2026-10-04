@@ -1673,6 +1673,34 @@ fn vector_set_busy(vectors_dir: &Path, doing: &str) -> SemanticError {
     .with_field("vectors_dir")
 }
 
+/// How long an install or a compaction waits for the sidecar's lock on its set.
+#[cfg(feature = "semantic-integration")]
+const SET_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `attempt` again while the set's lock is held, for up to [`SET_LOCK_WAIT`]: an open's
+/// cleanup holds it a moment, and so does a process spawned meanwhile, until it execs.
+#[cfg(feature = "semantic-integration")]
+fn waiting_for_set_lock<T>(
+    cancel: &SearchCancellation,
+    mut attempt: impl FnMut() -> Result<T, SemanticSearchError>,
+) -> Result<T, SemanticSearchError> {
+    use otzaria_semantic_search::errors::ArtifactError;
+    let deadline = Instant::now() + SET_LOCK_WAIT;
+    loop {
+        match attempt() {
+            Err(SemanticSearchError::Artifact(ArtifactError::Io { source, .. }))
+                if source.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                if cancel.is_cancelled() {
+                    return Err(SemanticSearchError::Cancelled);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// What an expansion is named in the set's `incoming/` folder: this prefix and a name of its
 /// own, with `.oxv` for the segment and [`EXPANSION_LOCK`] for its lock file.
 #[cfg(feature = "semantic-integration")]
@@ -4512,20 +4540,19 @@ impl SearchEngine {
             } else {
                 None
             };
-            let installed = segment_set::install_package(
-                &vectors_dir,
-                &InstallSource {
-                    segment: expanded
-                        .as_ref()
-                        .map_or(downloaded.as_path(), |expansion| &expansion.segment),
-                    manifest_json: &input.manifest_json,
-                },
-                &InstallExpectation {
-                    identity: installation_identity(model),
-                    published_manifest_sha256: input.published_manifest_sha256,
-                },
-                cancel,
-            );
+            let source = InstallSource {
+                segment: expanded
+                    .as_ref()
+                    .map_or(downloaded.as_path(), |expansion| &expansion.segment),
+                manifest_json: &input.manifest_json,
+            };
+            let expectation = InstallExpectation {
+                identity: installation_identity(model),
+                published_manifest_sha256: input.published_manifest_sha256,
+            };
+            let installed = waiting_for_set_lock(cancel, || {
+                segment_set::install_package(&vectors_dir, &source, &expectation, cancel)
+            });
             drop(expanded);
             let report = installed.map_err(|err| {
                 vector_set_error(&err, &vectors_dir, refused(&err), "installing the vectors")
@@ -4606,12 +4633,14 @@ impl SearchEngine {
             )
             .map_err(|err| failed(&err.into()))?;
             let live = live_library_version.and_then(|version| LiveKeys::new(&resolver, version));
-            let report = segment_set::compact(
-                &vectors_dir,
-                &policy,
-                live.as_ref().map(|live| live as &dyn LiveKeySource),
-                &cancellation.flag,
-            )
+            let report = waiting_for_set_lock(&cancellation.flag, || {
+                segment_set::compact(
+                    &vectors_dir,
+                    &policy,
+                    live.as_ref().map(|live| live as &dyn LiveKeySource),
+                    &cancellation.flag,
+                )
+            })
             .map_err(|err| failed(&err))?;
             if report.compacted {
                 self.reload_open_vectors(&vectors_dir)?;

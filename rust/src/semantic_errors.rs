@@ -492,8 +492,8 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
         // the application can do something about that no other kind names.
         ArtifactError::InsufficientSpace { .. } => (K::InsufficientDiskSpace, None),
         // The set's lock is held: another install or compaction of it runs, in another
-        // process — one in this process is refused before the sidecar is asked. The lock is
-        // never waited for, and the sidecar says so by the error's kind, not its words.
+        // process — one in this process is refused before the sidecar is asked. The sidecar
+        // never waits for the lock, and says so by the error's kind, not its words.
         ArtifactError::Io { source, .. } if source.kind() == std::io::ErrorKind::WouldBlock => {
             (K::VectorsBusy, Some("vectors_dir".to_string()))
         }

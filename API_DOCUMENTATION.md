@@ -277,7 +277,9 @@ was; an open session on the same set is moved onto the new generation before
 the call returns. One install or compaction of a set runs at a time: while
 another runs, in this process or another, the call is refused as
 `vectorsBusy` with `field` `vectors_dir`, the set is as it was and an open
-session keeps serving; try again once the other has finished.
+session keeps serving; try again once the other has finished. The set's lock
+held only a moment, by an open of the set or a process being spawned, is waited
+for, up to a second.
 
 | field | meaning |
 | --- | --- |
