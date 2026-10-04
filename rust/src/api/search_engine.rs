@@ -60,7 +60,6 @@ use otzaria_semantic_search::errors::SemanticSearchError;
 use otzaria_semantic_search::hybrid::coordinator::{HybridCoordinator, HybridSearchParams};
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::hebrew_normalizer::HebrewNormalizer;
-#[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::hybrid::ranking::quoted_phrases;
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::embedding::EmbeddingDeployment;
@@ -1116,6 +1115,10 @@ pub struct SemanticSearchResponse {
     /// cannot tell, since they describe a candidate window rather than the results to come.
     #[frb(default = false)]
     pub has_more: bool,
+    /// The requested continuation no longer had a kept session. These results are the
+    /// first page of a fresh search: replace the displayed list instead of appending.
+    #[frb(default = false)]
+    pub session_restarted: bool,
 }
 
 /// A semantic hit whose passage [`SearchEngine::semantic_passage_highlights`] should mark: the
@@ -2290,6 +2293,7 @@ impl SemanticRequest<'_> {
         searcher: &Searcher,
         vectors_generation: Option<u64>,
         epoch: u64,
+        page_size: u32,
     ) -> SessionKey {
         let mut facets = self.facets.to_vec();
         facets.sort();
@@ -2301,14 +2305,15 @@ impl SemanticRequest<'_> {
             query: self.query.to_string(),
             facets,
             options: format!(
-                "{:?} {} {:?} {:?} {} {} {:?}",
+                "{:?} {} {:?} {:?} {} {} {:?} page_size={}",
                 self.lexical_mode,
                 self.fuzzy_max_distance,
                 self.retrieval_mode,
                 self.grouping,
                 self.match_nikud,
                 self.match_taamim,
-                self.ranking
+                self.ranking,
+                page_size
             ),
             index_content: crate::semantic_resolver::index_content(searcher),
             library_generation: crate::line_source::query_cache_generation(),
@@ -2561,7 +2566,7 @@ impl SemanticSnippetPainter {
                     Some(self.hl.max_chars as usize),
                 )
             })
-            .or_else(|| lexically_confirmed.then(term_html)),
+            .or_else(|| (lexically_confirmed && phrase.allow_term_fallback).then(term_html)),
             // No phrase constraint: every occurrence of every query word is a
             // real match of that word, whichever retrieval path found the line,
             // so term painting states nothing untrue.
@@ -2761,6 +2766,9 @@ struct PhraseHighlight {
     /// Complete alternate phrases (e.g. an acronym's canonical expansion).
     /// Each carries its own word count and gaps; no cross-alternative mixing.
     alternatives: Vec<PhraseHighlight>,
+    /// Legacy phrase paths may show individual terms when a complete occurrence
+    /// cannot fit the snippet. Smart-search quotations never permit that fallback.
+    allow_term_fallback: bool,
 }
 
 impl PhraseHighlight {
@@ -5896,11 +5904,14 @@ impl SearchEngine {
     ///
     /// Pages continue one another: a search's results are kept in the order shown, so each
     /// line and group appears once and a page asked again is the same page; a commit, a
-    /// library or semantic change, or ten idle minutes start afresh. `has_more` says whether a
-    /// page follows; the counts keep describing the last candidate window.
+    /// library or semantic change, ten idle minutes or eviction start afresh. A continuation
+    /// whose session was lost returns the first page with `session_restarted`, so the caller
+    /// replaces its displayed results. A changed page size also starts a new session.
+    /// `has_more` says whether a page follows; the counts describe the last candidate window.
     ///
-    /// A query with a quoted phrase is looked up verbatim: its lexical phase is `Exact`,
-    /// whatever `lexical_mode` asks. An acronym's gershayim (רמב"ם) quotes nothing.
+    /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
+    /// A single quotation covering the whole query uses `Exact`; words outside a quotation
+    /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
     ///
     /// A semantic path that cannot serve is not an error here: the response falls
     /// back to lexical results and says why, in `fallback_reason` and, as a value
@@ -5950,13 +5961,13 @@ impl SearchEngine {
             // range is a mistake in the call, and a fallback would hide it.
             let ranking =
                 ranking_profile(&ranking.unwrap_or_else(SemanticRankingOptions::defaults))?;
-            // A quoted phrase is a verbatim lookup, which the semantic half skips as well.
-            let lexical_mode =
-                if quoted_phrases(&HebrewNormalizer::new().normalize(&query)).is_empty() {
-                    lexical_mode
-                } else {
-                    SemanticLexicalMode::Exact
-                };
+            // Only a quotation covering the whole query is one verbatim lookup. Partial
+            // quotations constrain their own words without joining the outside words to them.
+            let lexical_mode = if self.whole_query_quoted(&query)? {
+                SemanticLexicalMode::Exact
+            } else {
+                lexical_mode
+            };
             let Some(open) = self.semantic_engine() else {
                 return self.semantic_lexical_fallback_response(
                     &query,
@@ -5996,8 +6007,12 @@ impl SearchEngine {
                     .vector_set_info()
                     .map(|info| info.generation),
                 self.semantic_sessions.epoch(),
+                limit,
             );
-            let shared = self.semantic_sessions.get(&key).unwrap_or_else(|| {
+            let kept = self.semantic_sessions.get(&key);
+            let session_restarted = offset > 0 && kept.is_none();
+            let offset = if session_restarted { 0 } else { offset };
+            let shared = kept.unwrap_or_else(|| {
                 Arc::new(Mutex::new(SemanticSearchSession::new(
                     searcher.clone(),
                     SessionState {
@@ -6257,6 +6272,7 @@ impl SearchEngine {
                 candidate_window_truncated: state.capped_request.is_some(),
                 truncated: state.truncated,
                 has_more,
+                session_restarted,
             })
         }
 
@@ -6736,9 +6752,9 @@ impl SearchEngine {
                         request.match_nikud,
                         request.match_taamim,
                     )?,
-                    SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
-                        request.query.to_string(),
-                        request.facets.to_vec(),
+                    SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
+                        request.query,
+                        request.facets,
                         request.fuzzy_max_distance,
                         request.match_nikud,
                         request.match_taamim,
@@ -6931,9 +6947,9 @@ impl SearchEngine {
                     match_nikud,
                     match_taamim,
                 )?,
-                SemanticLexicalMode::Fuzzy => self.count_fuzzy_with_status(
-                    query.to_string(),
-                    facets.to_vec(),
+                SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
+                    query,
+                    facets,
                     fuzzy_max_distance,
                     match_nikud,
                     match_taamim,
@@ -6955,6 +6971,7 @@ impl SearchEngine {
                 candidate_window_truncated: false,
                 truncated: count.truncated,
                 has_more: false,
+                session_restarted: false,
             });
         }
 
@@ -6973,13 +6990,12 @@ impl SearchEngine {
                 match_taamim,
                 grouping,
             )?,
-            SemanticLexicalMode::Fuzzy => self.search_and_count_fuzzy(
-                query.to_string(),
-                facets.to_vec(),
+            SemanticLexicalMode::Fuzzy => self.search_and_count_smart_fuzzy(
+                query,
+                facets,
                 limit,
                 offset,
                 fuzzy_max_distance,
-                ResultsOrder::Relevance,
                 match_nikud,
                 match_taamim,
                 grouping,
@@ -7050,6 +7066,7 @@ impl SearchEngine {
             candidate_window_truncated: false,
             truncated: page.truncated,
             has_more,
+            session_restarted: false,
         })
     }
 
@@ -8537,16 +8554,8 @@ impl SearchEngine {
         with_highlight: bool,
     ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let token_texts = self.index_token_texts(query)?;
-        let phrases = self.quoted_phrase_token_groups(query)?;
-        let (search_query, truncated) = if voc.any() {
-            self.build_fuzzy_query_vocalized(query, facets, max_distance, &voc)?
-        } else {
-            (
-                self.build_fuzzy_search_query(&token_texts, &phrases, facets, max_distance, true)?,
-                false,
-            )
-        };
+        let (search_query, truncated) =
+            self.build_smart_fuzzy_query(query, facets, max_distance, &voc, true)?;
 
         if !with_highlight {
             return self.semantic_candidates_from_query(
@@ -8565,7 +8574,12 @@ impl SearchEngine {
             query: plan_query,
             phrase,
         } = Self::resolve_highlight(searcher, |s| {
-            self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance)
+            self.smart_fuzzy_highlight_plan(
+                s,
+                query,
+                max_distance,
+                &VocalizedFlags::new(false, false),
+            )
         });
         let highlight = plan_query.map(|query| SemanticHighlight { query, phrase });
         self.semantic_candidates_from_query(searcher, search_query, limit, truncated, highlight)
@@ -11460,6 +11474,97 @@ impl SearchEngine {
         Some(phrase)
     }
 
+    /// Whether one quotation contains every searchable word of the query. Independent
+    /// quotations remain independent phrases, even when no words stand outside them.
+    #[cfg(feature = "semantic-integration")]
+    fn whole_query_quoted(&self, query: &str) -> Result<bool> {
+        let phrases = quoted_phrases(query);
+        if phrases.len() != 1 {
+            return Ok(false);
+        }
+        let words = self.index_token_texts(query)?;
+        Ok(!words.is_empty() && words == self.index_token_texts(&phrases[0])?)
+    }
+
+    /// Smart search alone treats quoted words as literal. The regular approximate API's
+    /// morphology-aware quoted phrases retain their existing matching rules.
+    fn build_smart_fuzzy_query(
+        &self,
+        query: &str,
+        facets: &[String],
+        max_distance: u8,
+        voc: &VocalizedFlags,
+        rank: bool,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let (fuzzy, mut truncated) = if voc.any() {
+            self.build_fuzzy_query_vocalized(query, facets, max_distance, voc)?
+        } else {
+            let words = self.index_token_texts(query)?;
+            (
+                self.build_fuzzy_search_query(&words, &[], facets, max_distance, rank)?,
+                false,
+            )
+        };
+        let phrases = quoted_phrases(query);
+        if phrases.is_empty() {
+            return Ok((fuzzy, truncated));
+        }
+        let mut clauses = vec![(Occur::Must, fuzzy)];
+        for phrase in phrases {
+            // A quote's own words must occur literally and consecutively. This includes
+            // single-word quotes and works without lexical.db. Preserve typed vocalization.
+            let (literal, literal_truncated) =
+                self.build_exact_query_with(&phrase, &[], voc, false)?;
+            truncated |= literal_truncated;
+            clauses.push((Occur::Must, literal));
+        }
+        Ok((Box::new(BooleanQuery::new(clauses)), truncated))
+    }
+
+    fn count_smart_fuzzy(
+        &self,
+        query: &str,
+        facets: &[String],
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<CountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (query, truncated) =
+            self.build_smart_fuzzy_query(query, facets, max_distance, &voc, false)?;
+        Ok(CountResult {
+            count: self.run_count(query)?,
+            truncated,
+        })
+    }
+
+    fn search_and_count_smart_fuzzy(
+        &self,
+        query: &str,
+        facets: &[String],
+        limit: u32,
+        offset: u32,
+        max_distance: u8,
+        match_nikud: bool,
+        match_taamim: bool,
+        grouping: Option<ResultGrouping>,
+    ) -> Result<SearchPageResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (search_query, truncated) =
+            self.build_smart_fuzzy_query(query, facets, max_distance, &voc, true)?;
+        self.run_search_and_count(
+            search_query,
+            |searcher| self.smart_fuzzy_highlight_plan(searcher, query, max_distance, &voc),
+            self.search_text_field(&voc)?,
+            limit,
+            offset,
+            &ResultsOrder::Relevance,
+            &HighlightConfig::default(),
+            truncated,
+            grouping.as_ref(),
+        )
+    }
+
     /// Token groups of the query's quoted phrases of two or more words. A `"`
     /// between two Hebrew letters is gershayim (`רמב"ם`); any other delimits.
     fn quoted_phrase_token_groups(&self, query: &str) -> Result<Vec<Vec<String>>> {
@@ -12114,6 +12219,14 @@ impl SearchEngine {
                 results,
                 truncated: truncated || page.truncated,
                 group_count: Some(page.group_count),
+            });
+        }
+        if limit == 0 {
+            return Ok(SearchPageResult {
+                total_count: searcher.search(&*query, &Count)? as u32,
+                results: Vec::new(),
+                truncated,
+                group_count: None,
             });
         }
         // Tuple collector: single index pass for both count and top-docs.
@@ -12919,6 +13032,7 @@ impl SearchEngine {
                 analyzer,
                 cross_line: !voc.any(),
                 alternatives: Vec::new(),
+                allow_term_fallback: true,
             });
         }
         let query = self.terms_query_from_word_sets(&all_word_sets, field)?;
@@ -12930,6 +13044,7 @@ impl SearchEngine {
             analyzer,
             cross_line: !voc.any(),
             alternatives,
+            allow_term_fallback: true,
         });
         Ok(HighlightPlan { query, phrase })
     }
@@ -12971,6 +13086,7 @@ impl SearchEngine {
                     analyzer: "hebrew_vocalized",
                     cross_line: false,
                     alternatives: Vec::new(),
+                    allow_term_fallback: true,
                 }),
             });
         }
@@ -12989,8 +13105,135 @@ impl SearchEngine {
                 analyzer: "hebrew",
                 cross_line: true,
                 alternatives: Vec::new(),
+                allow_term_fallback: true,
             }),
         })
+    }
+
+    /// Quotations paint complete literal occurrences; only outside words can
+    /// contribute edit-distance or dictionary forms. Single-word alternatives
+    /// keep those outside words independent of the quotations' positions.
+    fn smart_fuzzy_highlight_plan(
+        &self,
+        searcher: &Searcher,
+        query: &str,
+        max_distance: u8,
+        voc: &VocalizedFlags,
+    ) -> Result<HighlightPlan> {
+        let phrases = quoted_phrases(query);
+        if phrases.is_empty() {
+            return if voc.any() {
+                Ok(HighlightPlan::none())
+            } else {
+                self.fuzzy_highlight_plan(
+                    searcher,
+                    &self.index_token_texts(query)?,
+                    &[],
+                    max_distance,
+                )
+            };
+        }
+        let (query_analyzer, analyzer) = if voc.any() {
+            ("hebrew_vocalized_query", "hebrew_vocalized")
+        } else {
+            ("hebrew_query", "hebrew")
+        };
+        let field = self.search_text_field(voc)?;
+        let mut outside = self.index_token_texts_with(query_analyzer, query)?;
+        let mut variants = Vec::new();
+        let mut all_word_sets = Vec::new();
+        for phrase in phrases {
+            let tokens = self.index_token_texts_with(query_analyzer, &phrase)?;
+            // Remove occurrences, not distinct words: the same word may also
+            // appear outside a quotation and legitimately allow expansion there.
+            for token in &tokens {
+                if let Some(i) = outside.iter().position(|word| word == token) {
+                    outside.remove(i);
+                }
+            }
+            let per_word_terms = if voc.any() {
+                let patterns = tokens
+                    .iter()
+                    .map(|token| hebrew_query::vocalized_token_pattern(token, voc))
+                    .collect::<Vec<_>>();
+                self.phrase_per_word_terms(searcher, &patterns, field)?
+            } else {
+                tokens
+                    .into_iter()
+                    .map(|token| HashSet::from([token]))
+                    .collect()
+            };
+            if per_word_terms.is_empty() {
+                continue;
+            }
+            all_word_sets.extend(per_word_terms.iter().cloned());
+            variants.push(PhraseHighlight {
+                gaps: vec![0; per_word_terms.len().saturating_sub(1)],
+                per_word_terms,
+                analyzer,
+                cross_line: false,
+                alternatives: Vec::new(),
+                allow_term_fallback: false,
+            });
+        }
+        let outside_sets = if voc.any() {
+            let mut patterns = Vec::new();
+            for token in &outside {
+                let base = hebrew_query::strip_attached_marks(token);
+                let mut branches = vec![hebrew_query::vocalized_token_pattern(token, voc)];
+                let mut seen = HashSet::from([base.clone()]);
+                if let Some(clean) = Self::quoteless_variant(&base) {
+                    if seen.insert(clean.clone()) {
+                        branches.push(hebrew_query::vocalized_free_pattern(&clean));
+                    }
+                }
+                if max_distance > 0 {
+                    if let Some(dict) = self.magic_dict.as_ref() {
+                        for form in dict.highlight_forms(&base, MAX_LEXICAL_FORMS) {
+                            if seen.insert(form.clone()) {
+                                branches.push(hebrew_query::vocalized_free_pattern(&form));
+                            }
+                        }
+                    }
+                    branches.extend(self.vocalized_variant_branches(
+                        searcher,
+                        std::slice::from_ref(&base),
+                        max_distance,
+                        &mut seen,
+                    )?);
+                }
+                patterns.push(
+                    branches
+                        .into_iter()
+                        .map(|branch| format!("({branch})"))
+                        .collect::<Vec<_>>()
+                        .join("|"),
+                );
+            }
+            self.phrase_per_word_terms(searcher, &patterns, field)?
+        } else {
+            self.lexical_phrase_per_word_terms(searcher, &outside, max_distance)?
+        };
+        for terms in outside_sets {
+            all_word_sets.push(terms.clone());
+            variants.push(PhraseHighlight {
+                per_word_terms: vec![terms],
+                gaps: Vec::new(),
+                analyzer,
+                cross_line: false,
+                alternatives: Vec::new(),
+                allow_term_fallback: false,
+            });
+        }
+        let query = self.terms_query_from_word_sets(&all_word_sets, field)?;
+        let phrase = if variants.is_empty() {
+            None
+        } else {
+            let mut first = variants.remove(0);
+            first.alternatives = variants;
+            Some(first)
+        };
+        Ok(HighlightPlan { query, phrase })
     }
 
     /// Highlight plan for the approximate (`fuzzy`) search. Always builds the
@@ -13019,6 +13262,7 @@ impl SearchEngine {
                 analyzer: "hebrew",
                 cross_line: false,
                 alternatives: Vec::new(),
+                allow_term_fallback: true,
             })
         } else {
             None
@@ -13710,7 +13954,13 @@ impl SearchEngine {
                         Some(hl.max_chars as usize),
                     )
                 })
-                .unwrap_or_else(term_html),
+                .unwrap_or_else(|| {
+                    if pf.allow_term_fallback {
+                        term_html()
+                    } else {
+                        bounded_plain_snippet(text, hl.max_chars)
+                    }
+                }),
             None => term_html(),
         };
         (!snippet_html.is_empty()).then_some(snippet_html)
@@ -14711,6 +14961,7 @@ mod tests {
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
+            allow_term_fallback: true,
         };
         let text = format!("משה {} ואהרן", "שלום ".repeat(100));
         assert!(SearchEngine::phrase_filtered_snippet_html(
@@ -14735,6 +14986,7 @@ mod tests {
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
+            allow_term_fallback: true,
         };
         // The final word produces an indexing-only quote-free twin at the same
         // position. That is one word, not a strict two-word phrase.
@@ -14806,6 +15058,7 @@ mod tests {
                         analyzer: "hebrew",
                         cross_line: false,
                         alternatives: Vec::new(),
+                        allow_term_fallback: true,
                     };
                     let mut expected = Vec::new();
                     let mut after = 0;
@@ -14837,6 +15090,7 @@ mod tests {
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
+            allow_term_fallback: true,
         };
         let text = "רמב\"ם רמב\"ם רמב\"ם";
         let ranges = SearchEngine::phrase_occurrences(&searcher, text, &phrase).unwrap();
@@ -14908,6 +15162,7 @@ mod tests {
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
+            allow_term_fallback: true,
         };
         let field = engine.schema.get_field("text").unwrap();
         let query = engine
@@ -14994,6 +15249,7 @@ mod tests {
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
+            allow_term_fallback: true,
         };
         let field = engine.schema.get_field("text").unwrap();
         let query = engine
@@ -24258,6 +24514,52 @@ mod tests {
 
         /// Forty lines with שבת in two books, every one of them embedded. Each holds the word
         /// a number of times no other line does, so no two lexical scores tie.
+        #[test]
+        fn an_evicted_continuation_returns_a_flagged_first_page() {
+            let _serial = serialized();
+            let make = |book: &str, first: usize| -> Vec<String> {
+                (0..100)
+                    .map(|n| format!("{}{book}", "שבת ".repeat(first + 2 * n)))
+                    .collect()
+            };
+            let (engine, _index, _semantic) = engine_over(
+                &[
+                    (BASE, "/base/תורה", make("ראשון", 1)),
+                    (OTHER, "/other", make("שני", 2)),
+                ],
+                &[BASE, OTHER],
+            );
+            let limit = 30;
+            let first = page(&engine, limit, 0);
+            let continued = page(&engine, limit, limit);
+            for query in ["תפילין", "תשובה", "רמבם", "מלך", "הלך"] {
+                page_of(
+                    &engine,
+                    query,
+                    10,
+                    0,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap();
+            }
+            let restarted = page(&engine, limit, limit);
+            assert!(!first.session_restarted);
+            assert!(!continued.session_restarted);
+            assert!(
+                restarted.session_restarted,
+                "a caller must replace the old list"
+            );
+            assert_eq!(
+                bits(&restarted),
+                bits(&first),
+                "restart uses the first page's window"
+            );
+            let next = page(&engine, limit, limit);
+            assert!(!next.session_restarted);
+            assert_eq!(bits(&next), bits(&continued));
+        }
+
         fn sabbath() -> (SearchEngine, TempDir, TempDir) {
             let lines = |book: &str, first: usize| -> Vec<String> {
                 (0..20)
@@ -24271,6 +24573,129 @@ mod tests {
                 ],
                 &[BASE, OTHER],
             )
+        }
+
+        #[test]
+        fn an_expired_or_invalidated_continuation_restarts_explicitly() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let first = page(&engine, 5, 0);
+            engine.semantic_sessions.expire_for_test();
+            let expired = page(&engine, 5, 5);
+            assert!(expired.session_restarted);
+            assert_eq!(bits(&expired), bits(&first));
+            assert!(!page(&engine, 5, 5).session_restarted);
+            engine.semantic_sessions.invalidate();
+            let invalidated = page(&engine, 5, 10);
+            assert!(invalidated.session_restarted);
+            assert_eq!(bits(&invalidated), bits(&first));
+        }
+
+        #[test]
+        fn different_page_sizes_do_not_share_frozen_prefixes() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let small = page(&engine, 5, 0);
+            page(&engine, 10, 0);
+            assert_eq!(expansions(&engine), 2);
+            let continued = page(&engine, 5, 5);
+            assert!(!continued.session_restarted);
+            let shown: HashSet<_> = lines(&small).into_iter().collect();
+            assert!(lines(&continued).iter().all(|line| !shown.contains(line)));
+            let changed = page(&engine, 7, 10);
+            assert!(changed.session_restarted);
+        }
+
+        #[test]
+        fn grouping_and_page_sizes_keep_distinct_sessions_through_eviction() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = sabbath();
+            let grouped = |limit, offset, grouping| {
+                engine
+                    .search_semantic(
+                        "שבת".to_string(),
+                        Vec::new(),
+                        limit,
+                        offset,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::Hybrid,
+                        grouping,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            for mode in [
+                Some(SemanticGroupingMode::SameSection),
+                Some(SemanticGroupingMode::IdenticalText),
+            ] {
+                let first = grouped(4, 0, mode);
+                assert!(!first.session_restarted);
+                grouped(9, 0, mode);
+                grouped(4, 0, None);
+                let second = grouped(4, 4, mode);
+                assert!(!second.session_restarted);
+                let shown: HashSet<_> = lines(&first).into_iter().collect();
+                assert!(lines(&second).iter().all(|line| !shown.contains(line)));
+                assert_eq!(bits(&grouped(4, 0, mode)), bits(&first));
+                for query in ["אב", "תורה", "גמרא", "רמבם", "תפלה"] {
+                    page_of(
+                        &engine,
+                        query,
+                        4,
+                        0,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap();
+                }
+                let restart = grouped(4, 8, mode);
+                assert!(restart.session_restarted);
+                assert_eq!(bits(&restart), bits(&first));
+                assert!(!grouped(4, 4, mode).session_restarted);
+            }
+        }
+
+        #[test]
+        fn committed_index_restarts_continuation_with_new_page_zero() {
+            let _serial = serialized();
+            let (mut engine, _index, _semantic) = sabbath();
+            let old = page(&engine, 6, 0);
+            page(&engine, 6, 6);
+            add(&mut engine, 1000, "שבת שבת שבת חדשה", "/books/qa-new.txt");
+            engine.commit().unwrap();
+            let restart = page(&engine, 6, 12);
+            assert!(restart.session_restarted);
+            assert_eq!(bits(&restart), bits(&page(&engine, 6, 0)));
+            let next = page(&engine, 6, 6);
+            assert!(!next.session_restarted);
+            let shown: HashSet<_> = lines(&restart).into_iter().collect();
+            assert!(lines(&next).iter().all(|line| !shown.contains(line)));
+            assert_eq!(old.results.len(), 6);
+        }
+
+        #[test]
+        fn cancelled_expired_restart_does_not_publish_a_partial_session() {
+            let _serial = serialized();
+            for at in [At::Sidecar, At::Hydration, At::Painting] {
+                let (engine, _index, _semantic) = sabbath();
+                let first = page(&engine, 6, 0);
+                engine.semantic_sessions.expire_for_test();
+                let token = SemanticCancellationToken::new();
+                let (cancelled, _) =
+                    cancelling_at(Some(at), || page_of(&engine, "שבת", 6, 12, None, &token));
+                assert_eq!(cancelled.err(), Some(SemanticError::cancelled()));
+                let restarted = page(&engine, 6, 12);
+                assert!(
+                    restarted.session_restarted,
+                    "cancelled restart persisted at {at:?}"
+                );
+                assert_eq!(bits(&restarted), bits(&first));
+                assert!(!page(&engine, 6, 6).session_restarted);
+            }
         }
 
         fn page_of(

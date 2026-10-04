@@ -196,8 +196,9 @@ Future<void> main() async {
       expect(const SemanticRankingOptions(), SemanticRankingOptions.defaults());
       expect(
         SemanticRankingOptions.defaults().fusionStrategy,
-        SemanticFusionStrategy.weighted,
+        SemanticFusionStrategy.rrf,
       );
+      expect(SemanticRankingOptions.defaults().rrfK, 60);
     });
 
     test('grouping and fuzzy options survive the round trip', () async {
@@ -375,6 +376,75 @@ Future<void> main() async {
       expect(hit.isHighlighted, isTrue);
       expect(hit.snippetHtml, contains('<font color=red>'));
     });
+
+    test(
+      'a restarted session flag crosses native FFI after cache eviction',
+      () async {
+        // More than one page makes both a resumed page and the replacement first
+        // page observable. The configured sidecar stays open for every request.
+        for (var n = 1; n <= 12; n++) {
+          await engine.addDocument(
+            id: lineId + BigInt.from(n),
+            title: 'בראשית',
+            reference: 'בראשית א:${n + 1}',
+            topics: '/תורה',
+            text: '$text עוד שורה $n',
+            segment: BigInt.from(n + 2),
+            isPdf: false,
+            filePath: bookKey,
+            sectionId: sectionId,
+          );
+        }
+        await engine.commit();
+
+        Future<SemanticSearchResponse> page(
+          int offset, {
+          String query = 'בראשית ברא',
+        }) => engine.searchSemantic(
+          query: query,
+          facets: const [],
+          limit: 2,
+          offset: offset,
+          lexicalMode: SemanticLexicalMode.exact,
+          fuzzyMaxDistance: 0,
+          retrievalMode: SemanticRetrievalMode.hybrid,
+          matchNikud: false,
+          matchTaamim: false,
+          cancellation: SemanticCancellationToken(),
+        );
+        Object contents(SemanticSearchResponse response) => [
+          for (final hit in response.results)
+            (hit.filePath, hit.id, hit.fusedScore, hit.snippetHtml),
+        ];
+
+        final first = await page(0);
+        final second = await page(2);
+        expect(first.executedMode, SemanticExecutedMode.hybrid);
+        expect(first.semanticAvailable, isTrue);
+        expect(first.results, hasLength(2));
+        expect(second.results, hasLength(2));
+        expect(first.sessionRestarted, isFalse);
+        expect(second.sessionRestarted, isFalse);
+        expect(first.hasMore, isTrue);
+        expect(
+          second.results.map((hit) => hit.id),
+          everyElement(isNot(isIn(first.results.map((hit) => hit.id)))),
+        );
+
+        // The LRU holds four sessions; five distinct queries necessarily evict
+        // the original. Query, generation, grouping and page size stay unchanged.
+        for (final query in ['תפילין', 'שבת', 'תשובה', 'מלך', 'גמרא']) {
+          final other = await page(0, query: query);
+          expect(other.semanticAvailable, isTrue);
+        }
+        final restarted = await page(2);
+        expect(restarted.sessionRestarted, isTrue);
+        expect(contents(restarted), contents(first));
+        final resumed = await page(2);
+        expect(resumed.sessionRestarted, isFalse);
+        expect(contents(resumed), contents(second));
+      },
+    );
 
     test('a semantic-only search returns a hydrated hit', () async {
       final response = await engine.searchSemantic(

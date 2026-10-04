@@ -8428,6 +8428,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
         let mut var_candidateWindowTruncated = <bool>::sse_decode(deserializer);
         let mut var_truncated = <bool>::sse_decode(deserializer);
         let mut var_hasMore = <bool>::sse_decode(deserializer);
+        let mut var_sessionRestarted = <bool>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticSearchResponse {
             results: var_results,
             total_count: var_totalCount,
@@ -8443,6 +8444,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
             candidate_window_truncated: var_candidateWindowTruncated,
             truncated: var_truncated,
             has_more: var_hasMore,
+            session_restarted: var_sessionRestarted,
         };
     }
 }
@@ -10214,6 +10216,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticSearch
             self.candidate_window_truncated.into_into_dart().into_dart(),
             self.truncated.into_into_dart().into_dart(),
             self.has_more.into_into_dart().into_dart(),
+            self.session_restarted.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -11924,6 +11927,7 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResponse {
         <bool>::sse_encode(self.candidate_window_truncated, serializer);
         <bool>::sse_encode(self.truncated, serializer);
         <bool>::sse_encode(self.has_more, serializer);
+        <bool>::sse_encode(self.session_restarted, serializer);
     }
 }
 

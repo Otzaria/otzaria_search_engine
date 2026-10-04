@@ -7,14 +7,11 @@ import 'api/benchmark.dart';
 import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
 import 'api/search_engine.dart';
-
 import 'dart:async';
 import 'dart:convert';
-
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -8959,8 +8956,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticSearchResponse dco_decode_semantic_search_response(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return SemanticSearchResponse(
       results: dco_decode_list_semantic_search_result(arr[0]),
       totalCount: dco_decode_u_32(arr[1]),
@@ -8976,6 +8973,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       candidateWindowTruncated: dco_decode_bool(arr[11]),
       truncated: dco_decode_bool(arr[12]),
       hasMore: dco_decode_bool(arr[13]),
+      sessionRestarted: dco_decode_bool(arr[14]),
     );
   }
 
@@ -11054,6 +11052,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_candidateWindowTruncated = sse_decode_bool(deserializer);
     var var_truncated = sse_decode_bool(deserializer);
     var var_hasMore = sse_decode_bool(deserializer);
+    var var_sessionRestarted = sse_decode_bool(deserializer);
     return SemanticSearchResponse(
       results: var_results,
       totalCount: var_totalCount,
@@ -11069,6 +11068,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       candidateWindowTruncated: var_candidateWindowTruncated,
       truncated: var_truncated,
       hasMore: var_hasMore,
+      sessionRestarted: var_sessionRestarted,
     );
   }
 
@@ -13049,6 +13049,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.candidateWindowTruncated, serializer);
     sse_encode_bool(self.truncated, serializer);
     sse_encode_bool(self.hasMore, serializer);
+    sse_encode_bool(self.sessionRestarted, serializer);
   }
 
   @protected
@@ -14954,11 +14955,14 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// Pages continue one another: a search's results are kept in the order shown, so each
   /// line and group appears once and a page asked again is the same page; a commit, a
-  /// library or semantic change, or ten idle minutes start afresh. `has_more` says whether a
-  /// page follows; the counts keep describing the last candidate window.
+  /// library or semantic change, ten idle minutes or eviction start afresh. A continuation
+  /// whose session was lost returns the first page with `session_restarted`, so the caller
+  /// replaces its displayed results. A changed page size also starts a new session.
+  /// `has_more` says whether a page follows; the counts describe the last candidate window.
   ///
-  /// A query with a quoted phrase is looked up verbatim: its lexical phase is `Exact`,
-  /// whatever `lexical_mode` asks. An acronym's gershayim (רמב"ם) quotes nothing.
+  /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
+  /// A single quotation covering the whole query uses `Exact`; words outside a quotation
+  /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
   ///
   /// A semantic path that cannot serve is not an error here: the response falls
   /// back to lexical results and says why, in `fallback_reason` and, as a value
