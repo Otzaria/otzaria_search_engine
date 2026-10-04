@@ -2248,14 +2248,14 @@ mod tests {
             slot: 0,
         };
         let lines = resolver
-            .resolve(&[hit.clone()], None, &CancellationToken::new())
+            .resolve(std::slice::from_ref(&hit), None, &CancellationToken::new())
             .unwrap();
         // Keys recomputed by an earlier search and shared through the cache resolve alike.
         let mut sharing = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
         sharing.share_keys((0, None, false));
         for _ in 0..2 {
             let again = sharing
-                .resolve(&[hit.clone()], None, &CancellationToken::new())
+                .resolve(std::slice::from_ref(&hit), None, &CancellationToken::new())
                 .unwrap();
             assert_eq!(again, lines);
         }
