@@ -64,6 +64,9 @@ const SCORE_FACTOR: Score = 0.5;
 /// When one part of a gapped split has at most this many matches, the other
 /// part is checked only on their neighbour lines, found by id.
 const LOOKUP_LIMIT: usize = 4_096;
+/// A positional scan does not split a segment into ranges smaller than this.
+/// Tests split every few docs, so their small indexes cross range edges too.
+const SCAN_CHUNK_MIN_DOCS: u32 = if cfg!(test) { 2 } else { 32_768 };
 /// Doc-frequency terms read per segment to score a pattern word.
 const SCORE_TERMS_PER_SEGMENT: usize = 256;
 
@@ -472,10 +475,10 @@ impl CrossLineQuery {
             }
             return Ok(out);
         }
-        // The part with more words is the more selective one; its matches
-        // either drive id lookups of their neighbours or meet a second scan.
+        // The part whose rarest word is rarer goes first; its matches either
+        // drive id lookups of their neighbours or meet a second scan.
         let (first, second, neighbour): (&Part, &Part, i64) =
-            if left.words.len() > right.words.len() {
+            if self.driver_freq(segments, left)? < self.driver_freq(segments, right)? {
                 (left, right, 1)
             } else {
                 (right, left, -1)
@@ -504,6 +507,7 @@ impl CrossLineQuery {
                     second,
                     allowance,
                     Candidates::Docs(docs),
+                    0..DocId::MAX,
                     scratch,
                 )?);
             }
@@ -532,7 +536,9 @@ impl CrossLineQuery {
         Ok(out)
     }
 
-    /// [`Self::match_part`] over every segment, in parallel.
+    /// [`Self::match_part`] over every segment, in parallel. A positional scan
+    /// also splits each segment into doc ranges, so one large segment does not
+    /// run on a single core.
     fn scan(
         &self,
         segments: &[Segment],
@@ -541,29 +547,59 @@ impl CrossLineQuery {
         candidates: Candidates,
     ) -> tantivy::Result<Vec<PartMatch>> {
         use rayon::prelude::*;
-        let per_segment: Vec<Vec<PartMatch>> = segments
-            .par_iter()
-            .map(|segment| {
+        let chunks = if matches!(candidates, Candidates::Driver) {
+            rayon::current_num_threads().max(1) * 2
+        } else {
+            1
+        };
+        let tasks: Vec<(&Segment, std::ops::Range<DocId>)> = segments
+            .iter()
+            .flat_map(|segment| {
+                let max_doc = segment.reader.max_doc();
+                let step = max_doc.div_ceil(chunks as u32).max(SCAN_CHUNK_MIN_DOCS);
+                (0..max_doc)
+                    .step_by(step as usize)
+                    .map(move |start| (segment, start..(start + step).min(max_doc)))
+            })
+            .collect();
+        let per_task: Vec<Vec<PartMatch>> = tasks
+            .into_par_iter()
+            .map(|(segment, range)| {
                 self.match_part(
                     segment,
                     part,
                     allowance,
                     candidates.clone(),
+                    range,
                     &mut Scratch::default(),
                 )
             })
             .collect::<tantivy::Result<_>>()?;
-        Ok(per_segment.into_iter().flatten().collect())
+        Ok(per_task.into_iter().flatten().collect())
     }
 
-    /// The lines of one segment where `part` sits at its line edge, at most
-    /// `allowance` words away from it.
+    /// Documents holding the part's rarest word, over all segments.
+    fn driver_freq(&self, segments: &[Segment], part: &Part) -> tantivy::Result<u64> {
+        let mut rarest = u64::MAX;
+        for word in part.words {
+            let mut freq = 0u64;
+            for segment in segments {
+                freq += word.text.doc_freq(&segment.text)?;
+            }
+            rarest = rarest.min(freq);
+        }
+        Ok(rarest)
+    }
+
+    /// The lines of one segment, within `range`, where `part` sits at its line
+    /// edge, at most `allowance` words away from it.
     fn match_part(
         &self,
         segment: &Segment,
         part: &Part,
         allowance: u32,
         candidates: Candidates,
+        range: std::ops::Range<DocId>,
         scratch: &mut Scratch,
     ) -> tantivy::Result<Vec<PartMatch>> {
         let mut out = Vec::new();
@@ -602,13 +638,20 @@ impl CrossLineQuery {
                     }
                 }
                 let (_, word) = rarest.expect("a part has at least one word");
-                let postings = word
+                let mut postings = word
                     .text
                     .postings(&segment.text, IndexRecordOption::Basic)?;
+                for posting in &mut postings {
+                    if posting.doc() < range.start {
+                        posting.seek(range.start);
+                    }
+                }
                 Box::new(DocUnion::new(postings))
             }
             Candidates::Docs(docs) => Box::new(docs.into_iter()),
         };
+        let end = range.end;
+        let docs = docs.take_while(move |&doc| doc < end);
         let mut words: Vec<WordPositions> = Vec::new();
         if needs_positions {
             for word in part.words {
