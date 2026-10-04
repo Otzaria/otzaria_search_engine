@@ -365,6 +365,7 @@ jobs:
         run: |
           flutter_rust_bridge_codegen generate
           sed -i 's/[ \t]*$//' rust/src/frb_generated.rs
+          dart format lib/src/rust
           git diff --exit-code -- \
             rust/src/frb_generated.rs \
             lib/src/rust/frb_generated.dart \

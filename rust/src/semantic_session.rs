@@ -329,6 +329,13 @@ impl<T> SemanticSessions<T> {
             .unwrap_or_else(PoisonError::into_inner)
             .len()
     }
+
+    #[cfg(all(test, feature = "semantic-mock", not(feature = "semantic-onnx")))]
+    pub(crate) fn expire_for_test(&self) {
+        for (_, (used, _)) in self.sessions.lock().unwrap().iter_mut() {
+            *used = Instant::now() - SESSION_TTL - Duration::from_secs(1);
+        }
+    }
 }
 
 /// Invalidates `sessions` when dropped: at the end of a call that changes the semantic

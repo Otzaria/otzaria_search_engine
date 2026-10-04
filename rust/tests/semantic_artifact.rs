@@ -1314,12 +1314,9 @@ fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
     }
     for without_column in [false, true] {
         let library = build_library_of(&books, without_column);
-        let page = |offset: u32, limit: u32| -> Vec<(String, u64)> {
-            // A session of its own each time, so that no page is answered from a cache.
-            let engine = library.engine();
-            engine.open_semantic_artifact(library.input()).unwrap();
+        let page = |engine: &SearchEngine, offset: u32, limit: u32| {
             let response = search_page(
-                &engine,
+                engine,
                 passage,
                 limit,
                 offset,
@@ -1331,17 +1328,25 @@ fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
                 "{:?}",
                 response.fallback_reason
             );
-            response
+            let restarted = response.session_restarted;
+            let lines: Vec<(String, u64)> = response
                 .results
                 .into_iter()
                 .map(|hit| {
                     assert_eq!(hit.snippet_html, passage);
                     (hit.file_path, hit.segment)
                 })
-                .collect()
+                .collect();
+            (lines, restarted)
+        };
+        let fresh_page = |offset: u32, limit: u32| {
+            let engine = library.engine();
+            engine.open_semantic_artifact(library.input()).unwrap();
+            page(&engine, offset, limit)
         };
         let context = format!("without column: {without_column}");
-        let first = page(0, 20);
+        let (first, restarted) = fresh_page(0, 20);
+        assert!(!restarted, "first page is a new search: {context}");
         assert_eq!(first.len(), 20, "{context}");
         let first_repeat = first
             .iter()
@@ -1362,10 +1367,26 @@ fn a_text_one_book_repeats_shows_every_books_line_before_any_repeat() {
             );
         }
         for _ in 0..2 {
-            assert_eq!(page(0, 20), first, "the same page again: {context}");
+            let (again, restarted) = fresh_page(0, 20);
+            assert!(!restarted, "fresh first page: {context}");
+            assert_eq!(again, first, "the same page again: {context}");
         }
-        let paged: Vec<(String, u64)> = (0..4).flat_map(|n| page(5 * n, 5)).collect();
+        // A continuation belongs to the engine that kept its first page. A fresh
+        // engine cannot continue it and explicitly restarts at the first page.
+        let engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        let paged: Vec<(String, u64)> = (0..4)
+            .flat_map(|n| {
+                let (lines, restarted) = page(&engine, 5 * n, 5);
+                assert!(!restarted, "kept continuation at {}: {context}", 5 * n);
+                lines
+            })
+            .collect();
         assert_eq!(paged, first, "pages of five: {context}");
+        drop(engine);
+        let (restarted_page, restarted) = fresh_page(5, 5);
+        assert!(restarted, "a fresh engine has no continuation: {context}");
+        assert_eq!(restarted_page, first[..5], "flagged first page: {context}");
     }
 }
 
