@@ -6,7 +6,8 @@
 //!
 //! Adding a mode: a [`Mode`] variant, its `label`/`paged`/`available`, an arm in [`run_once`]
 //! and an entry in [`MODES`]; rows, summary and CSV follow. [`semantic_pages`] times whole
-//! `search_semantic` pages on a real vector set (`OTZ_VECTORS`, `OTZ_MODEL`, ...).
+//! `search_semantic` pages on a real vector set (`OTZ_VECTORS`, `OTZ_MODEL`, ...), and
+//! [`passage_highlights`] the passage highlights of their semantic hits.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -670,6 +671,32 @@ fn dictionary_forms() -> Result<()> {
     Ok(())
 }
 
+/// Open the vector set `inputs` names on `engine`; how long it took, in ms.
+#[cfg(feature = "semantic-integration")]
+fn open_vectors(engine: &SearchEngine, inputs: &SemanticInputs) -> Result<f64> {
+    use crate::api::search_engine::SemanticArtifactInput;
+    let (opened, open_ms) = time(|| {
+        engine
+            .open_semantic_artifact(SemanticArtifactInput {
+                vectors_dir: inputs.vectors.to_string_lossy().into_owned(),
+                model_path: inputs.model.to_string_lossy().into_owned(),
+                model_identity_json: fs::read_to_string(&inputs.model_identity)?,
+                onnx_runtime_path: inputs
+                    .onnx_runtime
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                scan_threads: None,
+            })
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
+    });
+    let status = opened?;
+    println!(
+        "vector set opened in {open_ms:.0} ms: {} vectors, state {:?}",
+        status.vector_count, status.state
+    );
+    Ok(open_ms)
+}
+
 /// Each step of [`semantic_pages`]: a fresh session's first page, the same page again, the
 /// second page (inside the first window), and the pages past it, which widen the window.
 #[cfg(feature = "semantic-integration")]
@@ -693,8 +720,8 @@ const PAGE_STEPS: &[(&str, u32)] = &[
 #[ignore = "needs OTZ_INDEX and a real vector set"]
 fn semantic_pages() -> Result<()> {
     use crate::api::search_engine::{
-        SemanticArtifactInput, SemanticCancellationToken, SemanticLexicalMode,
-        SemanticRankingOptions, SemanticRetrievalMode, SemanticTimings, LAST_SEMANTIC_TIMINGS,
+        SemanticCancellationToken, SemanticLexicalMode, SemanticRankingOptions,
+        SemanticRetrievalMode, SemanticTimings, LAST_SEMANTIC_TIMINGS,
     };
     let groups: Option<Vec<String>> = std::env::var("OTZ_GROUPS").ok().map(|groups| {
         groups
@@ -718,25 +745,7 @@ fn semantic_pages() -> Result<()> {
         return Ok(());
     };
     let engine = open_engine(&config)?;
-    let (opened, open_ms) = time(|| {
-        engine
-            .open_semantic_artifact(SemanticArtifactInput {
-                vectors_dir: inputs.vectors.to_string_lossy().into_owned(),
-                model_path: inputs.model.to_string_lossy().into_owned(),
-                model_identity_json: fs::read_to_string(&inputs.model_identity)?,
-                onnx_runtime_path: inputs
-                    .onnx_runtime
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned()),
-                scan_threads: None,
-            })
-            .map_err(|error| anyhow::anyhow!("{error:?}"))
-    });
-    let status = opened?;
-    println!(
-        "vector set opened in {open_ms:.0} ms: {} vectors, state {:?}",
-        status.vector_count, status.state
-    );
+    let open_ms = open_vectors(&engine, &inputs)?;
     let search = |query: &str, page: u32, lexical_mode: SemanticLexicalMode| {
         let response = engine.search_semantic(
             query.to_string(),
@@ -928,6 +937,219 @@ fn semantic_pages() -> Result<()> {
     println!(
         "\n{table}\ncsv: {}\nsummary: {}",
         csv.display(),
+        summary.display()
+    );
+    Ok(())
+}
+
+/// Highlights asked per call, as the application batches them.
+#[cfg(feature = "semantic-integration")]
+const HIGHLIGHT_BATCH: usize = 6;
+
+/// Highlight batches of each conceptual query's semantic-only hits, and one inference alone and
+/// beside running highlights: what a new search's query waits for. Snippets go to `OTZ_HTML`.
+#[cfg(feature = "semantic-integration")]
+#[test]
+#[ignore = "needs OTZ_INDEX and a real vector set"]
+fn passage_highlights() -> Result<()> {
+    use crate::api::search_engine::{
+        SemanticCancellationToken, SemanticHighlightTarget, SemanticLexicalMode,
+        SemanticResultSource, SemanticRetrievalMode,
+    };
+    use crate::semantic_highlight::EMBEDDED_CLAUSES;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let Some(config) = Config::from_env() else {
+        println!("OTZ_INDEX is not set; nothing to measure");
+        return Ok(());
+    };
+    let Some(inputs) = SemanticInputs::from_env() else {
+        println!("OTZ_VECTORS, OTZ_MODEL and OTZ_MODEL_IDENTITY are not set; nothing to measure");
+        return Ok(());
+    };
+    let engine = open_engine(&config)?;
+    open_vectors(&engine, &inputs)?;
+    let queries = QUERIES
+        .iter()
+        .find(|(group, _)| *group == "concept")
+        .map(|(_, queries)| &queries[..10])
+        .expect("the concept group");
+
+    let mut cold = Vec::new();
+    let mut warm = Vec::new();
+    let mut per_clause = Vec::new();
+    let mut marked = 0usize;
+    let mut asked = 0usize;
+    let mut last_targets = Vec::new();
+    let mut html = String::from(
+        "<!doctype html><html lang=\"he\" dir=\"rtl\"><head><meta charset=\"utf-8\">\
+         <title>Passage highlights</title><style>body{font-family:'David','Times New Roman',serif;\
+         max-width:60rem;margin:1rem auto;padding:0 1rem;line-height:1.6}h2{margin-top:2rem}\
+         .item{border-top:1px solid #ccc;padding:.5rem 0}.meta{color:#666;font-size:.85em}\
+         .before{color:#555}mark{background:rgba(255,200,0,.25)}</style></head><body>\n",
+    );
+    for &query in queries {
+        engine.invalidate_semantic_sessions_for_bench();
+        let response = engine
+            .search_semantic(
+                query.to_string(),
+                Vec::new(),
+                config.limit,
+                0,
+                SemanticLexicalMode::Fuzzy,
+                0,
+                SemanticRetrievalMode::Hybrid,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            )
+            .map_err(|error| anyhow::anyhow!("{query}: {error:?}"))?;
+        let semantic: Vec<_> = response
+            .results
+            .iter()
+            .filter(|hit| matches!(hit.source, SemanticResultSource::Semantic))
+            .collect();
+        println!(
+            "{query}: {} results, {} semantic-only",
+            response.results.len(),
+            semantic.len()
+        );
+        let _ = writeln!(
+            html,
+            "<h2>{}</h2><p class=\"meta\">{} results, {} semantic-only</p>",
+            htmlescape::encode_minimal(query),
+            response.results.len(),
+            semantic.len()
+        );
+        for batch in semantic.chunks(HIGHLIGHT_BATCH) {
+            let targets: Vec<SemanticHighlightTarget> = batch
+                .iter()
+                .map(|hit| SemanticHighlightTarget {
+                    file_path: hit.file_path.clone(),
+                    id: hit.id,
+                })
+                .collect();
+            let before = EMBEDDED_CLAUSES.get();
+            let (got, ms) = time(|| {
+                engine.semantic_passage_highlights(
+                    query.to_string(),
+                    targets.clone(),
+                    &SemanticCancellationToken::new(),
+                )
+            });
+            let got = got.map_err(|error| anyhow::anyhow!("{query}: {error:?}"))?;
+            let clauses = EMBEDDED_CLAUSES.get() - before;
+            let (_, again_ms) = time(|| {
+                engine.semantic_passage_highlights(
+                    query.to_string(),
+                    targets.clone(),
+                    &SemanticCancellationToken::new(),
+                )
+            });
+            println!(
+                "  batch of {}: {ms:>7.1} ms, {clauses:>2} clauses, cached {again_ms:.2} ms",
+                targets.len()
+            );
+            cold.push(ms);
+            warm.push(again_ms);
+            if clauses > 0 {
+                per_clause.push(ms / clauses as f64);
+            }
+            asked += got.len();
+            for (hit, highlight) in batch.iter().zip(&got) {
+                marked += usize::from(highlight.is_highlighted);
+                let _ = writeln!(
+                    html,
+                    "<div class=\"item\"><div class=\"meta\">{} — {} · semantic {:.3} · span {}</div>\
+                     <div class=\"before\">{}</div><div>{}</div></div>",
+                    htmlescape::encode_minimal(&hit.title),
+                    htmlescape::encode_minimal(&hit.reference),
+                    hit.semantic_score.unwrap_or(f32::NAN),
+                    highlight
+                        .span_score
+                        .map_or("—".to_string(), |score| format!("{score:.3}")),
+                    hit.snippet_html,
+                    if highlight.is_highlighted {
+                        highlight.snippet_html.clone()
+                    } else {
+                        "<i>(not highlighted)</i>".to_string()
+                    },
+                );
+            }
+            last_targets = targets;
+        }
+    }
+    html.push_str("</body></html>\n");
+
+    // A query's embedding alone, then while highlights run without a pause on another thread.
+    let probe = "מה היא מעלת השלום בין אדם לחברו";
+    let alone: Vec<f64> = (0..30)
+        .filter_map(|_| engine.bench_embed_once(probe))
+        .collect();
+    let stop = AtomicBool::new(false);
+    let loaded: Vec<f64> = std::thread::scope(|scope| {
+        let background = scope.spawn(|| {
+            let mut batches = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                // A new epoch, so every batch embeds afresh.
+                engine.invalidate_semantic_sessions_for_bench();
+                let _ = engine.semantic_passage_highlights(
+                    queries[0].to_string(),
+                    last_targets.clone(),
+                    &SemanticCancellationToken::new(),
+                );
+                batches += 1;
+            }
+            batches
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let samples = (0..30)
+            .filter_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(7));
+                engine.bench_embed_once(probe)
+            })
+            .collect();
+        stop.store(true, Ordering::Relaxed);
+        let batches = background.join().expect("background highlights");
+        println!("background ran {batches} highlight batches");
+        samples
+    });
+
+    let line = |name: &str, samples: &[f64]| {
+        let samples = sorted(samples.to_vec());
+        format!(
+            "{name:<22} n={:>3} p50 {:>8.2} ms  p95 {:>8.2} ms  max {:>8.2} ms\n",
+            samples.len(),
+            percentile(&samples, 50.0),
+            percentile(&samples, 95.0),
+            samples.last().copied().unwrap_or(f64::NAN),
+        )
+    };
+    let mut table = String::new();
+    table.push_str(&line("batch (cold)", &cold));
+    table.push_str(&line("batch (cached)", &warm));
+    table.push_str(&line("per clause", &per_clause));
+    table.push_str(&line("embed alone", &alone));
+    table.push_str(&line("embed under highlights", &loaded));
+    let _ = writeln!(table, "highlighted {marked} of {asked} semantic-only hits");
+
+    if let Some(parent) = config.out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let html_path = std::env::var_os("OTZ_HTML")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.sibling("passage_highlights.html"));
+    if let Some(parent) = html_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&html_path, html)?;
+    let summary = config.sibling("passage_highlights_summary.txt");
+    fs::write(&summary, &table)?;
+    println!(
+        "\n{table}\nhtml: {}\nsummary: {}",
+        html_path.display(),
         summary.display()
     );
     Ok(())

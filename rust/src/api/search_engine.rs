@@ -1118,6 +1118,35 @@ pub struct SemanticSearchResponse {
     pub has_more: bool,
 }
 
+/// A semantic hit whose passage [`SearchEngine::semantic_passage_highlights`] should mark: the
+/// line, by its book and its id, as a [`SemanticSearchResult`] names it.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticHighlightTarget {
+    pub file_path: String,
+    pub id: u64,
+}
+
+/// A target's line centred on its clause nearest the query, escaped, the clause in `<mark>`; empty
+/// when nothing is marked. Separate from the result, whose own snippet stays as it was.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticPassageHighlight {
+    pub file_path: String,
+    pub id: u64,
+    pub snippet_html: String,
+    pub is_highlighted: bool,
+    /// The cosine of the marked clause and the query, from the one model that embedded both.
+    pub span_score: Option<f32>,
+}
+
+/// What a passage highlight call computes of its query, once, for the first line that needs it.
+#[cfg(feature = "semantic-integration")]
+#[derive(Default)]
+struct PassageQuery {
+    vector: Option<Vec<f32>>,
+    words: Option<HashSet<String>>,
+}
+
 /// How the application abandons a [`SearchEngine::search_semantic`] that nobody is waiting
 /// for any more: one token per search, created where the search starts and cancelled when a
 /// newer query supersedes it.
@@ -2593,7 +2622,7 @@ fn glued_punctuation<'a>(text: &'a str, range: std::ops::Range<usize>) -> (&'a s
 /// `ranges[..word_count]`, since each occurrence contributes one range per
 /// word, in order — keeping whole context words and complete occurrences.
 /// Returns `None` if the first occurrence itself cannot fit the budget.
-fn crop_around_first_occurrence<'a>(
+pub(crate) fn crop_around_first_occurrence<'a>(
     text: &'a str,
     ranges: &[(usize, usize)],
     word_count: usize,
@@ -4282,6 +4311,9 @@ pub struct SearchEngine {
     /// The results recent semantic searches showed, which their next pages continue.
     #[cfg(feature = "semantic-integration")]
     semantic_sessions: SemanticSessionCache,
+    /// Passage highlights already computed: see [`Self::semantic_passage_highlights`].
+    #[cfg(feature = "semantic-integration")]
+    semantic_highlights: crate::semantic_highlight::HighlightCache,
 }
 
 /// The analyzers every field and query of the index is tokenized with.
@@ -4423,6 +4455,8 @@ impl SearchEngine {
             semantic_set_view: Mutex::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_sessions: SemanticSessionCache::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_highlights: Default::default(),
         }
     }
 
@@ -4462,6 +4496,8 @@ impl SearchEngine {
             semantic_set_view: Mutex::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_sessions: SemanticSessionCache::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_highlights: Default::default(),
         })
     }
 
@@ -4512,6 +4548,17 @@ impl SearchEngine {
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
         }
         Ok(started.elapsed().as_secs_f64() * 1000.0)
+    }
+
+    /// One inference of `text` as a passage, through the session pool a query embeds with, in
+    /// milliseconds: what a search's query embedding costs and waits for. `None` with no session.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn bench_embed_once(&self, text: &str) -> Option<f64> {
+        let open = self.semantic_engine()?;
+        let cancel = SearchCancellation::default();
+        let started = Instant::now();
+        open.coordinator.embed_passages(&[text], &cancel).ok()?;
+        Some(started.elapsed().as_secs_f64() * 1000.0)
     }
 
     /// The lexical phase of [`Self::search_semantic`] alone, for benchmarks:
@@ -6214,6 +6261,196 @@ impl SearchEngine {
                 cancel,
             )
         }
+    }
+
+    /// Marks the clause of each target's line nearest `query`, one per target in order; a line
+    /// that cannot be marked is not an error. Cancelled, it ends with a `Cancelled` error.
+    pub fn semantic_passage_highlights(
+        &self,
+        query: String,
+        targets: Vec<SemanticHighlightTarget>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<Vec<SemanticPassageHighlight>, SemanticError> {
+        let cancel = &cancellation.flag;
+        search_cancellation::look(cancel, SearchCheckpoint::Start)?;
+        #[cfg(feature = "semantic-integration")]
+        {
+            if let Some(open) = self.semantic_engine() {
+                return self.passage_highlights_with(&open, &query, targets, cancel);
+            }
+        }
+        let _ = query;
+        Ok(targets
+            .into_iter()
+            .map(|target| SemanticPassageHighlight {
+                file_path: target.file_path,
+                id: target.id,
+                snippet_html: String::new(),
+                is_highlighted: false,
+                span_score: None,
+            })
+            .collect())
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    fn passage_highlights_with(
+        &self,
+        open: &OpenSession,
+        query: &str,
+        targets: Vec<SemanticHighlightTarget>,
+        cancel: &SearchCancellation,
+    ) -> Result<Vec<SemanticPassageHighlight>, SemanticError> {
+        use crate::semantic_highlight::{Highlight, HighlightKey, MAX_CLAUSES_PER_CALL};
+        let searcher = self.index_reader.searcher();
+        let mut addresses = Vec::with_capacity(targets.len());
+        let mut slots = Vec::with_capacity(targets.len());
+        for target in &targets {
+            let address = self.address_in_book(&searcher, &target.file_path, target.id)?;
+            slots.push(address.map(|address| {
+                addresses.push(address);
+                addresses.len() - 1
+            }));
+        }
+        let texts = self.texts_at(&searcher, &addresses)?;
+        let epoch = self.semantic_sessions.epoch();
+        let normalized = HebrewNormalizer::new().normalize(query);
+        let budget = HighlightConfig::default().max_chars as usize;
+        let mut query_side = PassageQuery::default();
+        let mut clauses_left = MAX_CLAUSES_PER_CALL;
+
+        let mut out = Vec::with_capacity(targets.len());
+        for (target, slot) in targets.into_iter().zip(slots) {
+            let text = slot.and_then(|slot| match &texts[slot] {
+                (text, TextStatus::Ok) => Some(text.as_str()),
+                _ => None,
+            });
+            let highlight = match text {
+                None => Highlight::none(),
+                Some(text) => {
+                    let key = HighlightKey {
+                        epoch,
+                        query: normalized.clone(),
+                        file_path: target.file_path.clone(),
+                        id: target.id,
+                        text_crc: crc32fast::hash(text.as_bytes()),
+                    };
+                    match self.semantic_highlights.get(&key) {
+                        Some(known) => known,
+                        None => match self.passage_highlight(
+                            open,
+                            query,
+                            text,
+                            budget,
+                            &mut query_side,
+                            &mut clauses_left,
+                            cancel,
+                        )? {
+                            Some(computed) => {
+                                self.semantic_highlights.put(key, computed.clone());
+                                computed
+                            }
+                            None => Highlight::none(),
+                        },
+                    }
+                }
+            };
+            out.push(SemanticPassageHighlight {
+                file_path: target.file_path,
+                id: target.id,
+                is_highlighted: !highlight.snippet_html.is_empty(),
+                snippet_html: highlight.snippet_html,
+                span_score: highlight.span_score,
+            });
+        }
+        Ok(out)
+    }
+
+    /// One line's highlight; `None` when the call's clauses ran out before it, which is not
+    /// remembered.
+    #[cfg(feature = "semantic-integration")]
+    #[allow(clippy::too_many_arguments)]
+    fn passage_highlight(
+        &self,
+        open: &OpenSession,
+        query: &str,
+        text: &str,
+        budget: usize,
+        query_side: &mut PassageQuery,
+        clauses_left: &mut usize,
+        cancel: &SearchCancellation,
+    ) -> Result<Option<crate::semantic_highlight::Highlight>, SemanticError> {
+        use crate::semantic_highlight::{self as passage, Highlight};
+        let clauses = passage::clauses(text);
+        if clauses.is_empty() {
+            return Ok(Some(Highlight::none()));
+        }
+        let cap = passage::MAX_CLAUSES_PER_LINE.min(*clauses_left);
+        if cap < 2 {
+            return Ok(None);
+        }
+        search_cancellation::look(cancel, SearchCheckpoint::Highlight)?;
+        let failed = |err: SemanticSearchError| semantic_errors::search_error(&err, open.call());
+        if query_side.vector.is_none() {
+            let vector = open
+                .coordinator
+                .embed_query_cached(query, cancel)
+                .map_err(failed)?;
+            query_side.vector = Some(vector);
+        }
+        // A cold dictionary lookup costs up to a second: only a line with more clauses than
+        // it embeds needs the words to choose by.
+        let chosen = if clauses.len() <= cap {
+            (0..clauses.len()).collect()
+        } else {
+            if query_side.words.is_none() {
+                query_side.words = Some(self.passage_query_words(query)?);
+            }
+            let tokens = clauses
+                .iter()
+                .map(|clause| self.index_token_texts(&text[clause.clone()]))
+                .collect::<Result<Vec<_>>>()?;
+            passage::preselect(&tokens, query_side.words.as_ref().expect("set above"), cap)
+        };
+        let inputs: Vec<&str> = chosen
+            .iter()
+            .map(|&index| &text[clauses[index].clone()])
+            .collect();
+        let vectors = open
+            .coordinator
+            .embed_passages(&inputs, cancel)
+            .map_err(failed)?;
+        *clauses_left -= inputs.len();
+        #[cfg(test)]
+        passage::EMBEDDED_CLAUSES.with(|count| count.set(count.get() + inputs.len()));
+        let query_vector = query_side.vector.as_deref().expect("set above");
+        let Some((best, score)) = passage::nearest(query_vector, &vectors) else {
+            return Ok(Some(Highlight::none()));
+        };
+        let span = clauses[chosen[best]].clone();
+        Ok(Some(match passage::marked_snippet(text, span, budget) {
+            Some(snippet_html) => Highlight {
+                snippet_html,
+                span_score: Some(score),
+            },
+            None => Highlight::none(),
+        }))
+    }
+
+    /// The query's words as the index spells them, quote-free, and their dictionary forms: what
+    /// a clause sharing words with the query is told by.
+    #[cfg(feature = "semantic-integration")]
+    fn passage_query_words(&self, query: &str) -> Result<HashSet<String>> {
+        let mut words = HashSet::new();
+        for token in self.index_token_texts(query)? {
+            if let Some(clean) = Self::quoteless_variant(&token) {
+                words.insert(clean);
+            }
+            if let Some(dict) = self.magic_dict.as_ref() {
+                words.extend(dict.highlight_forms(&token, MAX_LEXICAL_FORMS));
+            }
+            words.insert(token);
+        }
+        Ok(words)
     }
 
     /// Fuse `session`'s search over a `window`, its two halves side by side, and take every
@@ -23668,6 +23905,227 @@ mod tests {
                     "{mode:?}: the cancelled searches changed what the session serves"
                 );
             }
+        }
+    }
+
+    /// Passage highlights for semantic hits, on the stand-in: which clause is marked, which
+    /// lines are left alone, and what a call remembers and abandons.
+    #[cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
+    mod semantic_passage_highlights {
+        use super::*;
+        use crate::search_cancellation::{cancelling_at, SearchCheckpoint as At};
+        use crate::semantic_highlight::{EMBEDDED_CLAUSES, MAX_CLAUSES_PER_LINE};
+        use otzaria_semantic_search::semantic::embedding::mock::write_stub_onnx_package;
+
+        const BOOK: &str = "/books/genesis.txt";
+        const LONG: (u64, &str) = (
+            1,
+            "בראשית ברא אלהים את השמים ואת הארץ, והארץ היתה תהו ובהו וחשך על פני תהום, \
+             ורוח אלהים מרחפת על פני המים, ויאמר אלהים יהי אור ויהי אור.",
+        );
+        const SHORT: (u64, &str) = (2, "וירא אלהים את האור כי טוב");
+        /// Eight clauses, of which the seventh holds the query's words.
+        const MANY: (u64, &str) = (
+            3,
+            "אחד שנים שלשה ארבעה, חמשה ששה שבעה שמונה, תשעה עשרה אחד עשר, שנים עשר שלשה עשר, \
+             ארבעה עשר חמשה עשר, ששה עשר שבעה עשר, ורוח אלהים מרחפת על פני המים, שמונה עשר תשעה עשר.",
+        );
+        const QUERY: &str = "ורוח אלהים מרחפת על פני המים";
+        const MARKED: &str = "<mark>ורוח אלהים מרחפת על פני המים,</mark>";
+
+        fn serialized() -> std::sync::MutexGuard<'static, ()> {
+            crate::line_source::TEST_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        }
+
+        fn unconfigured() -> (SearchEngine, TempDir) {
+            let (mut engine, index) = make_engine();
+            for (id, text) in [LONG, SHORT, MANY] {
+                add(&mut engine, id, text, BOOK);
+            }
+            engine.commit().unwrap();
+            (engine, index)
+        }
+
+        fn configured() -> (SearchEngine, TempDir, TempDir) {
+            let (mut engine, index) = unconfigured();
+            let semantic = TempDir::new().unwrap();
+            let model = write_stub_onnx_package(&semantic.path().join("model"));
+            engine
+                .configure_semantic(SemanticConfigInput {
+                    root_dir: semantic
+                        .path()
+                        .join("semantic")
+                        .to_string_lossy()
+                        .into_owned(),
+                    model_path: model.to_string_lossy().into_owned(),
+                    model_id: "test-mock".to_string(),
+                    embedding_dim: 64,
+                    pooling: "in-graph".to_string(),
+                    max_tokens: 512,
+                    model_quantization: "int8".to_string(),
+                    embedding_text_version: 1,
+                    onnx_runtime_path: None,
+                })
+                .unwrap();
+            engine
+                .semantic_index_books(vec![SemanticBookInput {
+                    source_book_key: BOOK.to_string(),
+                    title: "title".to_string(),
+                    content_fingerprint: 1,
+                    is_pdf: false,
+                    topics: "/root".to_string(),
+                    extra_facets: Vec::new(),
+                    lines: [LONG, SHORT]
+                        .iter()
+                        .map(|&(id, text)| SemanticBookLineInput {
+                            line_id: id,
+                            section_id: id,
+                            text: text.to_string(),
+                            line_hash: id,
+                            reference: "ref".to_string(),
+                            segment: 0,
+                        })
+                        .collect(),
+                }])
+                .unwrap();
+            (engine, index, semantic)
+        }
+
+        fn target(file_path: &str, id: u64) -> SemanticHighlightTarget {
+            SemanticHighlightTarget {
+                file_path: file_path.to_string(),
+                id,
+            }
+        }
+
+        fn highlights(
+            engine: &SearchEngine,
+            query: &str,
+            targets: &[SemanticHighlightTarget],
+        ) -> Result<Vec<SemanticPassageHighlight>, SemanticError> {
+            engine.semantic_passage_highlights(
+                query.to_string(),
+                targets.to_vec(),
+                &SemanticCancellationToken::new(),
+            )
+        }
+
+        fn embedded() -> usize {
+            EMBEDDED_CLAUSES.get()
+        }
+
+        fn unmarked(target: &SemanticHighlightTarget) -> SemanticPassageHighlight {
+            SemanticPassageHighlight {
+                file_path: target.file_path.clone(),
+                id: target.id,
+                snippet_html: String::new(),
+                is_highlighted: false,
+                span_score: None,
+            }
+        }
+
+        #[test]
+        fn the_nearest_clause_is_marked_and_other_targets_are_answered_in_order() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = configured();
+            let targets = [
+                target(BOOK, SHORT.0),
+                target(BOOK, 99),
+                target("/books/other.txt", LONG.0),
+                target(BOOK, LONG.0),
+            ];
+            let before = embedded();
+            let got = highlights(&engine, QUERY, &targets).unwrap();
+            assert_eq!(got.len(), targets.len());
+            for (shown, target) in got.iter().zip(&targets).take(3) {
+                assert_eq!(shown, &unmarked(target), "{target:?}");
+            }
+            let long = &got[3];
+            assert_eq!((long.file_path.as_str(), long.id), (BOOK, LONG.0));
+            assert!(long.is_highlighted);
+            assert_eq!(
+                long.snippet_html,
+                format!(
+                    "בראשית ברא אלהים את השמים ואת הארץ, והארץ היתה תהו ובהו וחשך על פני תהום, \
+                     {MARKED} ויאמר אלהים יהי אור ויהי אור."
+                )
+            );
+            let score = long.span_score.unwrap();
+            assert!(score > 0.5 && score <= 1.0 + 1e-6, "{score}");
+            // Four clauses, each embedded once; the short line embeds nothing.
+            assert_eq!(embedded() - before, 4);
+        }
+
+        #[test]
+        fn a_line_of_many_clauses_embeds_six_chosen_by_the_words_they_share() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = configured();
+            let before = embedded();
+            let got = highlights(&engine, QUERY, &[target(BOOK, MANY.0)]).unwrap();
+            assert_eq!(embedded() - before, MAX_CLAUSES_PER_LINE);
+            assert!(got[0].snippet_html.contains(MARKED), "{got:?}");
+        }
+
+        #[test]
+        fn a_line_already_highlighted_for_the_query_is_not_embedded_again() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = configured();
+            let targets = [target(BOOK, LONG.0)];
+            let first = highlights(&engine, QUERY, &targets).unwrap();
+            let before = embedded();
+            let again = highlights(&engine, QUERY, &targets).unwrap();
+            assert_eq!(embedded(), before, "answered from the cache");
+            assert_eq!(again, first);
+
+            // Another query is another highlight.
+            let other = highlights(&engine, "והארץ היתה תהו ובהו", &targets).unwrap();
+            assert!(embedded() > before);
+            assert!(
+                other[0].snippet_html.contains("<mark>והארץ היתה"),
+                "{other:?}"
+            );
+        }
+
+        #[test]
+        fn without_a_semantic_session_nothing_is_marked() {
+            let (engine, _index) = unconfigured();
+            let targets = [target(BOOK, LONG.0), target(BOOK, 99)];
+            let got = highlights(&engine, QUERY, &targets).unwrap();
+            assert_eq!(got, targets.iter().map(unmarked).collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn a_cancelled_call_ends_cancelled_and_remembers_nothing() {
+            let _serial = serialized();
+            let (engine, _index, _semantic) = configured();
+            let targets = vec![target(BOOK, LONG.0)];
+
+            let token = SemanticCancellationToken::new();
+            token.cancel();
+            let result =
+                engine.semantic_passage_highlights(QUERY.to_string(), targets.clone(), &token);
+            assert_eq!(result, Err(SemanticError::cancelled()));
+
+            let before = embedded();
+            let (result, reached) = cancelling_at(Some(At::Highlight), || {
+                engine.semantic_passage_highlights(
+                    QUERY.to_string(),
+                    targets.clone(),
+                    &SemanticCancellationToken::new(),
+                )
+            });
+            assert_eq!(result, Err(SemanticError::cancelled()));
+            assert_eq!(reached, [At::Start, At::Highlight]);
+            assert_eq!(embedded(), before);
+
+            highlights(&engine, QUERY, &targets).unwrap();
+            assert_eq!(
+                embedded() - before,
+                4,
+                "nothing was remembered from the cancelled calls"
+            );
         }
     }
 
