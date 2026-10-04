@@ -97,7 +97,7 @@ impl Directory for IndexDirectory {
         self.inner.sync_directory()
     }
 
-    // tantivy's lets go only by closing the file, which a spawned process's copy outlives.
+    // Not MmapDirectory's: its lock is released only on close, which a spawned child delays.
     fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
         let file = lock_file(&self.root.join(&lock.filepath), lock.is_blocking)?;
         Ok(DirectoryLock::from(Box::new(file)))
@@ -403,19 +403,23 @@ mod tests {
         drop(inherited);
     }
 
-    #[test]
-    fn a_held_writer_refuses_a_second_until_it_is_dropped() {
+    fn test_index(dir: &tempfile::TempDir) -> tantivy::Index {
         use tantivy::schema::{Schema, TEXT};
-        use tantivy::{Index, IndexWriter, TantivyError};
-        let dir = tempfile::TempDir::new().unwrap();
         let mut schema = Schema::builder();
         schema.add_text_field("text", TEXT);
-        let index = Index::create(
+        tantivy::Index::create(
             IndexDirectory::open(dir.path()).unwrap(),
             schema.build(),
             Default::default(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn a_held_writer_refuses_a_second_until_it_is_dropped() {
+        use tantivy::{IndexWriter, TantivyError};
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = test_index(&dir);
         let writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
         assert!(matches!(
             index.writer_with_num_threads::<tantivy::TantivyDocument>(1, 15_000_000),
@@ -423,6 +427,37 @@ mod tests {
         ));
         drop(writer);
         let _writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
+    }
+
+    /// A child forked while the writer is held keeps its descriptors until it execs; the
+    /// writer dropped meanwhile is free for the next one all the same.
+    #[cfg(unix)]
+    #[test]
+    fn a_writer_dropped_while_a_child_is_spawned_frees_the_next() {
+        use std::io::{Read, Write};
+        use std::os::unix::process::CommandExt;
+        use tantivy::IndexWriter;
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = test_index(&dir);
+        let writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
+        let (mut forked, signal) = io::pipe().unwrap();
+        let child = thread::spawn(move || {
+            let mut command = std::process::Command::new("true");
+            // SAFETY: a pipe write and a sleep, both async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    (&signal).write_all(b"x")?;
+                    thread::sleep(Duration::from_secs(1));
+                    Ok(())
+                });
+            }
+            command.status().unwrap()
+        });
+        forked.read_exact(&mut [0u8]).unwrap();
+        drop(writer);
+        let next = index.writer_with_num_threads::<tantivy::TantivyDocument>(1, 15_000_000);
+        assert!(next.is_ok(), "{:?}", next.err());
+        assert!(child.join().unwrap().success());
     }
 
     #[test]
