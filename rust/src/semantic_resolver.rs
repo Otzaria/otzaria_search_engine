@@ -726,31 +726,33 @@ impl<'a> LiveResolver<'a> {
         {
             return Ok(books);
         }
-        let mut books: HashMap<Arc<str>, BookInfo> = HashMap::new();
+        // Each book's first live document, by its postings rather than a pass over every line.
+        let mut first: HashMap<Arc<str>, DocAddress> = HashMap::new();
         for (segment_ord, reader) in self.searcher.segment_readers().iter().enumerate() {
-            let paths = reader
-                .fast_fields()
-                .str("filePath")
-                .map_err(index_error)?
-                .ok_or_else(|| index_error("the index has no filePath column"))?;
-            let mut seen = vec![false; paths.num_terms()];
-            let mut name = String::new();
-            for doc in reader.doc_ids_alive() {
-                let Some(ord) = paths.term_ords(doc).next() else {
-                    continue;
-                };
-                if std::mem::replace(&mut seen[ord as usize], true) {
+            let inverted = reader.inverted_index(self.file_path).map_err(index_error)?;
+            let mut terms = inverted.terms().stream().map_err(index_error)?;
+            while terms.advance() {
+                let name = std::str::from_utf8(terms.key()).map_err(index_error)?;
+                if first.contains_key(name) {
                     continue;
                 }
-                name.clear();
-                paths.ord_to_str(ord, &mut name).map_err(index_error)?;
-                if books.contains_key(name.as_str()) {
-                    continue;
+                let mut postings = inverted
+                    .read_postings_from_terminfo(terms.value(), IndexRecordOption::Basic)
+                    .map_err(index_error)?;
+                let mut doc = postings.doc();
+                while doc != TERMINATED && reader.is_deleted(doc) {
+                    doc = postings.advance();
                 }
-                let info = self.book_info(DocAddress::new(segment_ord as u32, doc))?;
-                books.insert(Arc::from(name.as_str()), info);
+                if doc != TERMINATED {
+                    first.insert(Arc::from(name), DocAddress::new(segment_ord as u32, doc));
+                }
             }
         }
+        // A stored document read per book, its block decompressed: most of the cost.
+        let books = first
+            .into_par_iter()
+            .map(|(name, address)| Ok((name, self.book_info(address)?)))
+            .collect::<Result<HashMap<_, _>, ResolveError>>()?;
         let directory = Arc::new(BookDirectory { books });
         self.cache
             .lock()
