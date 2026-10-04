@@ -1180,6 +1180,39 @@ fn library_lines_are_keyed_like_stored_ones() {
     assert_eq!(kept.unwrap(), Some(before));
 }
 
+/// Every line of both fixture indexes recomputed together is keyed as it is alone, and with
+/// the source suspended, a line that cannot be keyed alone is left unknown together.
+#[cfg(feature = "semantic-integration")]
+#[test]
+fn library_keys_recomputed_together_are_those_recomputed_alone() {
+    use crate::semantic_keys::{recompute_chunk_key, recompute_chunk_keys_at};
+    let _guard = guard();
+    let f = fixture();
+    for engine in [&f.stored, &f.external] {
+        let searcher = engine.corpus_searcher();
+        let books: Vec<Vec<tantivy::DocAddress>> = chunk_key_columns(engine)
+            .into_values()
+            .map(|lines| lines.into_iter().map(|line| line.0).collect())
+            .collect();
+        let lines: Vec<(&[tantivy::DocAddress], usize)> = books
+            .iter()
+            .flat_map(|book| (0..book.len()).rev().map(move |at| (book.as_slice(), at)))
+            .collect();
+        let alone = || -> Vec<_> {
+            lines
+                .iter()
+                .map(|&(book, at)| recompute_chunk_key(&searcher, book, at).ok())
+                .collect()
+        };
+        assert_eq!(recompute_chunk_keys_at(&searcher, &lines).unwrap(), alone());
+
+        suspend_line_source().unwrap();
+        let (together, alone) = (recompute_chunk_keys_at(&searcher, &lines), alone());
+        resume_line_source().unwrap();
+        assert_eq!(together.unwrap(), alone);
+    }
+}
+
 /// The image rows of the fixture: (bookId, lineIndex, a word of the line). Book 1's row 8
 /// holds only a short `data:abc`, which cleaning keeps, so it still reads from the database.
 const IMAGE_ROWS: [(i64, i64, &str); 2] = [(1, 7, "תמונה"), (2, 1, "מילים")];

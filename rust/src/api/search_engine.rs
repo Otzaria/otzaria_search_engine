@@ -2316,6 +2316,8 @@ struct SessionState {
     unverified: u32,
     /// The window a page asked for beyond [`MAX_SEMANTIC_CANDIDATE_WINDOW`], once one did.
     capped_request: Option<u64>,
+    /// The library database's state the session is keyed by.
+    library_generation: crate::semantic_resolver::LibraryGeneration,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -2334,6 +2336,7 @@ impl Default for SessionState {
             stale_primaries_dropped: 0,
             unverified: 0,
             capped_request: None,
+            library_generation: (0, None, false),
         }
     }
 }
@@ -4462,6 +4465,15 @@ impl SearchEngine {
         self.semantic_sessions.invalidate();
     }
 
+    /// Forget the keys earlier searches recomputed, as a session that shares none would.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn forget_semantic_keys_for_bench(&self) {
+        self.semantic_resolver
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_keys();
+    }
+
     /// Plan unfiltered searches and the foundational books' query as the first search would;
     /// how long it took, in ms.
     #[cfg(all(test, feature = "semantic-integration"))]
@@ -5918,7 +5930,10 @@ impl SearchEngine {
             let shared = self.semantic_sessions.get(&key).unwrap_or_else(|| {
                 Arc::new(Mutex::new(SemanticSearchSession::new(
                     searcher.clone(),
-                    SessionState::default(),
+                    SessionState {
+                        library_generation: key.library_generation,
+                        ..SessionState::default()
+                    },
                 )))
             });
             let mut guard = shared.lock().unwrap_or_else(PoisonError::into_inner);
@@ -6231,6 +6246,7 @@ impl SearchEngine {
             &self.semantic_resolver,
         )
         .map_err(unreadable)?;
+        resolver.share_keys(session.state.library_generation);
         let filters = SidecarSearchFilters {
             book_paths: None,
             facets: (!request.facets.is_empty()).then(|| request.facets.to_vec()),

@@ -242,6 +242,124 @@ pub(crate) fn line_texts(searcher: &Searcher, addresses: &[DocAddress]) -> Resul
     key_texts(searcher, &documents)
 }
 
+/// [`recompute_chunk_key`] for each `(book, position)` of `lines`, every document read once
+/// and every library row in one transaction per pass. `None` where that call would fail.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn recompute_chunk_keys_at(
+    searcher: &Searcher,
+    lines: &[(&[DocAddress], usize)],
+) -> Result<Vec<Option<Option<ChunkKey>>>> {
+    struct Read {
+        pdf: bool,
+        /// `None` when the library database cannot be read now.
+        text: Option<String>,
+        section: Option<u64>,
+    }
+    let is_pdf_field = searcher.schema().get_field("isPdf")?;
+    let mut section_columns: Vec<Option<Column<u64>>> =
+        vec![None; searcher.segment_readers().len()];
+    let mut read: HashMap<DocAddress, Read> = HashMap::new();
+    let mut read_all = |mut addresses: Vec<DocAddress>, read: &mut HashMap<DocAddress, Read>| {
+        addresses.sort_unstable();
+        addresses.dedup();
+        addresses.retain(|address| !read.contains_key(address));
+        // Each read decompresses a block of the store; neighbours share one, so they stay
+        // on one thread.
+        let documents = addresses
+            .into_par_iter()
+            .with_min_len(8)
+            .map(|address| {
+                let document: TantivyDocument = searcher
+                    .doc(address)
+                    .with_context(|| format!("reading the document at {address:?}"))?;
+                Ok((address, document))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let texts = indexed_texts(searcher, &documents)?;
+        for ((address, document), line) in documents.iter().zip(texts) {
+            let column = match &mut section_columns[address.segment_ord as usize] {
+                Some(column) => column,
+                unopened => unopened.insert(
+                    searcher
+                        .segment_reader(address.segment_ord)
+                        .fast_fields()
+                        .u64("sectionId")?,
+                ),
+            };
+            read.insert(
+                *address,
+                Read {
+                    pdf: document
+                        .get_first(is_pdf_field)
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    text: match line.status {
+                        TextStatus::Ok | TextStatus::Stale => Some(line.text),
+                        TextStatus::Unavailable => None,
+                    },
+                    section: column.first(address.doc_id),
+                },
+            );
+        }
+        anyhow::Ok(())
+    };
+
+    read_all(
+        lines.iter().map(|&(book, at)| book[at]).collect(),
+        &mut read,
+    )?;
+    let reach = production_chunking().context_window_lines;
+    let window_of = |book: &[DocAddress], at: usize| {
+        at.saturating_sub(reach)..=at.saturating_add(reach).min(book.len() - 1)
+    };
+    let short = |read: &HashMap<DocAddress, Read>, address: &DocAddress| {
+        read[address].text.as_ref().is_some_and(|text| {
+            text.trim().chars().count() < production_chunking().min_meaningful_chars
+        })
+    };
+    let neighbours: Vec<DocAddress> = lines
+        .iter()
+        .filter(|&&(book, at)| !read[&book[at]].pdf && short(&read, &book[at]))
+        .flat_map(|&(book, at)| window_of(book, at).map(move |near| book[near]))
+        .collect();
+    read_all(neighbours, &mut read)?;
+
+    Ok(lines
+        .iter()
+        .map(|&(book, at)| {
+            let own = &read[&book[at]];
+            if own.pdf {
+                return Some(None);
+            }
+            let text = own.text.as_ref()?;
+            if !short(&read, &book[at]) {
+                let alone = [LineRef { text, section: 0 }];
+                return Some(
+                    PRODUCTION_CHUNKER
+                        .embedded_text(&alone, 0)
+                        .map(|text| ChunkKey::of(&text)),
+                );
+            }
+            let range = window_of(book, at);
+            let start = *range.start();
+            let window = range
+                .map(|near| {
+                    let near = &read[&book[near]];
+                    Some(LineRef {
+                        text: near.text.as_ref()?,
+                        section: near.section?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(
+                PRODUCTION_CHUNKER
+                    .embedded_text(&window, at - start)
+                    .map(|text| ChunkKey::of(&text)),
+            )
+        })
+        .collect())
+}
+
 /// The positions the key of a short line at `position` of a book of `len` lines is computed
 /// over: the line, and up to the recipe's `context_window_lines` on each side for as long as
 /// its section runs unbroken — the sidecar's chunker for a line under `min_meaningful_chars`.
@@ -607,6 +725,29 @@ mod tests {
         assert!(recompute_chunk_key(&searcher, &book, book.len()).is_err());
     }
 
+    /// Lines recomputed together, in any order, repeated, and from a stretch of the book as
+    /// well as from all of it, are keyed as each is alone.
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn keys_recomputed_together_are_those_recomputed_alone() {
+        let dir = TempDir::new().unwrap();
+        let searcher = indexed(&dir, book());
+        let book: Vec<DocAddress> = rows(&searcher).iter().map(|row| row.1).collect();
+        let stretch = &book[1..=5];
+        let mut lines: Vec<(&[DocAddress], usize)> = (0..book.len())
+            .rev()
+            .map(|at| (book.as_slice(), at))
+            .collect();
+        lines.extend((0..stretch.len()).map(|at| (stretch, at)));
+        lines.push((book.as_slice(), 3));
+
+        let together = recompute_chunk_keys_at(&searcher, &lines).unwrap();
+        for (&(docs, at), key) in lines.iter().zip(together) {
+            let alone = recompute_chunk_key(&searcher, docs, at).unwrap();
+            assert_eq!(key, Some(alone), "line {at} of {}", docs.len());
+        }
+    }
+
     /// A PDF's lines are not the library's text: their column holds 0, and nothing
     /// recomputes a key for them.
     #[test]
@@ -649,6 +790,11 @@ mod tests {
                 None
             );
         }
+        #[cfg(feature = "semantic-integration")]
+        assert_eq!(
+            recompute_chunk_keys_at(&searcher, &[(&book, 0), (&book, 1)]).unwrap(),
+            [Some(None), Some(None)]
+        );
     }
 
     /// The parallel computation answers what the sidecar's own `chunk_keys` answers, on

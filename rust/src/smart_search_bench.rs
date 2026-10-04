@@ -675,6 +675,7 @@ const PAGE_STEPS: &[(&str, u32)] = &[
 /// `OTZ_GROUPS` (comma-separated) narrows the queries, `OTZ_SHARE` sets the foundational share.
 /// Before the runs, the cold path: opening the set, planning, the first search;
 /// `OTZ_COLD_ONLY` stops after it. `OTZ_DUMP` names a file for every result of the first run.
+/// `OTZ_FORGET_KEYS` starts every session without the keys earlier ones recomputed.
 #[cfg(feature = "semantic-integration")]
 #[test]
 #[ignore = "needs OTZ_INDEX and a real vector set"]
@@ -768,6 +769,7 @@ fn semantic_pages() -> Result<()> {
         return Ok(());
     }
     let mut dump = std::env::var_os("OTZ_DUMP").map(|_| String::new());
+    let forget_keys = std::env::var_os("OTZ_FORGET_KEYS").is_some();
 
     let mut out = String::from(
         "group,query,lexical,step,run,total_ms,expansions,lexical_ms,semantic_ms,embed_ms,scan_ms,resolve_ms,fuse_ms,hydrate_ms,page_ms,results,has_more,executed,total_count,lexical_total\n",
@@ -787,6 +789,9 @@ fn semantic_pages() -> Result<()> {
             ] {
                 for run in 0..config.runs {
                     engine.invalidate_semantic_sessions_for_bench();
+                    if forget_keys {
+                        engine.forget_semantic_keys_for_bench();
+                    }
                     for &(step, page) in PAGE_STEPS {
                         let (response, timings) = search(query, page, lexical_mode);
                         let response = match response {

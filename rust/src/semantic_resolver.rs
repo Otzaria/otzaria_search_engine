@@ -57,13 +57,15 @@
 //!
 //! Per generation of the index (a commit is a new one): the books with the facets a filter
 //! needs, built on the first filtered search; each book's lines, ordinal to document, for
-//! the [`BOOK_CACHE`] books asked about last; where the passes over the whole column found
+//! the books asked about last, up to [`BOOK_LINES`] lines; the [`KEY_CACHE`] keys recomputed
+//! last, while the library database reads alike; where the passes over the whole column found
 //! the [`MOVED_CACHE`] values they looked for last, found or not; the plans of the
 //! [`PLAN_CACHE`] filters searched with last, and the unfiltered one. A book's arrivals are
 //! kept with the set's view, under the book's postings and its text hash, across generations.
 
 use crate::semantic_keys::{
-    context_window, line_texts, production_chunking, recompute_chunk_keys, KeySpan,
+    context_window, line_texts, production_chunking, recompute_chunk_keys, recompute_chunk_keys_at,
+    KeySpan,
 };
 use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
@@ -83,8 +85,18 @@ use tantivy::columnar::Column;
 use tantivy::schema::{Facet, Field, IndexRecordOption, Value};
 use tantivy::{DocAddress, DocSet, Searcher, TantivyDocument, Term, TERMINATED};
 
-/// How many books' line maps are kept between searches.
-const BOOK_CACHE: usize = 64;
+/// How many books' line maps are kept between searches, and how many lines they hold at
+/// most: some 12 bytes a line. A page's hits are spread over hundreds of books.
+const BOOK_CACHE: usize = 4096;
+const BOOK_LINES: usize = 2_000_000;
+
+/// How many lines' recomputed keys are kept between searches: a session's next window, and
+/// the foundational books' query, resolve many of the lines the last one did.
+const KEY_CACHE: usize = 65_536;
+
+/// The library database's state as a session is keyed by it
+/// (`line_source::query_cache_generation`): the keys recomputed under one serve only it.
+pub(crate) type LibraryGeneration = (u64, Option<i64>, bool);
 
 /// How many filters' scan plans are kept between searches, for one generation of the index.
 const PLAN_CACHE: usize = 16;
@@ -138,6 +150,10 @@ pub(crate) struct ResolverCache {
     generation: u64,
     books: Option<Arc<BookDirectory>>,
     lines: Option<LruCache<Arc<str>, Arc<BookLines>>>,
+    /// How many lines the books of `lines` hold.
+    book_lines: usize,
+    /// Each line's key recomputed from its text, under one state of the library database.
+    keys: Option<(LibraryGeneration, LruCache<DocAddress, Option<ChunkKey>>)>,
     /// Where a pass over the whole column found each value it looked for, every book's first
     /// line before any book's second: not yet held to any key; none for a value found nowhere.
     moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
@@ -204,10 +220,38 @@ impl ResolverCache {
         })
     }
 
+    /// Keep `lines`, letting go of the books asked about least recently past [`BOOK_LINES`].
+    fn keep_book(&mut self, name: Arc<str>, lines: Arc<BookLines>) {
+        self.book_lines += lines.docs.len();
+        if let Some((_, evicted)) = self.lines().push(name, lines) {
+            self.book_lines -= evicted.docs.len();
+        }
+        while self.book_lines > BOOK_LINES && self.lines().len() > 1 {
+            let Some((_, evicted)) = self.lines().pop_lru() else {
+                break;
+            };
+            self.book_lines -= evicted.docs.len();
+        }
+    }
+
+    fn keys(&mut self, library: LibraryGeneration) -> &mut LruCache<DocAddress, Option<ChunkKey>> {
+        if self.keys.as_ref().is_none_or(|(kept, _)| *kept != library) {
+            let capacity = NonZeroUsize::new(KEY_CACHE).expect("the cache holds keys");
+            self.keys = Some((library, LruCache::new(capacity)));
+        }
+        &mut self.keys.as_mut().expect("just set").1
+    }
+
     fn plans(&mut self) -> &mut LruCache<PlanKey, Arc<ScanPlan>> {
         self.plans.get_or_insert_with(|| {
             LruCache::new(NonZeroUsize::new(PLAN_CACHE).expect("the cache holds plans"))
         })
+    }
+
+    /// Let go of every recomputed key, so a benchmark's next search recomputes its own.
+    #[cfg(test)]
+    pub(crate) fn forget_keys(&mut self) {
+        self.keys = None;
     }
 
     /// Let go of every plan, when the view they were made with is let go.
@@ -343,6 +387,10 @@ pub(crate) struct LiveResolver<'a> {
     records: Mutex<HashMap<(String, u64), ResolvedRecord>>,
     /// Lines whose column held a hit's key and whose text did not: dropped, and counted.
     rejected: Mutex<HashSet<DocAddress>>,
+    /// Each line's key this search recomputed, or found in the cache's.
+    keys: Mutex<HashMap<DocAddress, Option<ChunkKey>>>,
+    /// The library database's state the cache's keys may serve, once the caller names it.
+    library: Option<LibraryGeneration>,
     /// The plan of each filter this search planned, by [`plan_key`]: a search can query
     /// the foundational books besides its own filter, and each query reads its own plan.
     plans: Vec<(String, Arc<ScanPlan>)>,
@@ -414,6 +462,8 @@ impl<'a> LiveResolver<'a> {
             cache,
             records: Mutex::new(HashMap::new()),
             rejected: Mutex::new(HashSet::new()),
+            keys: Mutex::new(HashMap::new()),
+            library: None,
             plans: Vec::new(),
             failed: None,
         })
@@ -421,6 +471,12 @@ impl<'a> LiveResolver<'a> {
 
     fn generation_id(&self) -> u64 {
         self.generation
+    }
+
+    /// Share recomputed keys with the other searches made while the library database is in
+    /// `library`, the state the caller's session was keyed by.
+    pub(crate) fn share_keys(&mut self, library: LibraryGeneration) {
+        self.library = Some(library);
     }
 
     /// The plan made for `filters`, when one was.
@@ -466,11 +522,162 @@ impl<'a> LiveResolver<'a> {
         position: usize,
         key: ChunkKey,
     ) -> Result<bool, ResolveError> {
-        let found = recompute_chunk_keys(&self.searcher, &book.docs, position..position + 1)
+        Ok(self.key_at(book, position)? == Some(key))
+    }
+
+    /// The key of the line at `position` of `book`, recomputed once per line while the
+    /// index and the library database read alike.
+    fn key_at(&self, book: &BookLines, position: usize) -> Result<Option<ChunkKey>, ResolveError> {
+        let address = book.docs[position];
+        if let Some(&key) = self.lock_keys().get(&address) {
+            return Ok(key);
+        }
+        if let Some(library) = self.library {
+            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(&key) = cache.at(self.generation).keys(library).get(&address) {
+                drop(cache);
+                self.lock_keys().insert(address, key);
+                return Ok(key);
+            }
+        }
+        let key = recompute_chunk_keys(&self.searcher, &book.docs, position..position + 1)
             .map_err(index_error)?
             .pop()
             .flatten();
-        Ok(found == Some(key))
+        self.remember_keys([(address, key)]);
+        Ok(key)
+    }
+
+    fn lock_keys(&self) -> std::sync::MutexGuard<'_, HashMap<DocAddress, Option<ChunkKey>>> {
+        self.keys.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn remember_keys(&self, keys: impl IntoIterator<Item = (DocAddress, Option<ChunkKey>)>) {
+        let mut cache = self
+            .library
+            .map(|_| self.cache.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut own = self.lock_keys();
+        for (address, key) in keys {
+            own.insert(address, key);
+            if let (Some(cache), Some(library)) = (cache.as_mut(), self.library) {
+                cache.at(self.generation).keys(library).put(address, key);
+            }
+        }
+    }
+
+    /// Read the books [`Self::resolve`] will, in parallel, and recompute together the keys it
+    /// is likely to check; whatever fails here is read again, and fails, where it is met.
+    fn prefetch(
+        &self,
+        hits: &[VectorHit],
+        admitted: impl Fn(&str) -> bool,
+        cancel: &CancellationToken,
+    ) {
+        let mut names: Vec<&str> = hits
+            .iter()
+            .flat_map(|hit| hit.records.iter().map(|record| record.book.as_ref()))
+            .filter(|&name| admitted(name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        let books: HashMap<&str, Arc<BookLines>> = names
+            .into_par_iter()
+            .filter_map(|name| {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+                Some((name, self.book(name).ok()??))
+            })
+            .collect();
+
+        let mut wanted: Vec<(Arc<BookLines>, usize)> = Vec::new();
+        let mut repeating: Vec<(Arc<BookLines>, usize, usize)> = Vec::new();
+        for hit in hits {
+            let mut held: Vec<(Arc<BookLines>, usize)> = Vec::new();
+            for record in &hit.records {
+                let Some(book) = books.get(record.book.as_ref()) else {
+                    continue;
+                };
+                let Some(position) = book.position(record.hint) else {
+                    continue;
+                };
+                if !self.column {
+                    wanted.push((Arc::clone(book), position));
+                } else if self.column_value(book.docs[position]) == Some(hit.key.column_value()) {
+                    wanted.push((Arc::clone(book), position));
+                    held.push((Arc::clone(book), position));
+                }
+            }
+            let room = MAX_LINES_PER_HIT.saturating_sub(held.len());
+            repeating.extend(
+                held.into_iter()
+                    .map(|(book, position)| (book, position, room)),
+            );
+        }
+        let mut unique: HashSet<&str> = HashSet::new();
+        let repeat_books: Vec<&Arc<BookLines>> = repeating
+            .iter()
+            .filter(|(book, _, _)| unique.insert(&book.name))
+            .map(|(book, _, _)| book)
+            .collect();
+        repeat_books.par_iter().for_each(|book| {
+            self.repeats(book);
+        });
+        for (book, position, room) in &repeating {
+            let Some(value) = self.repeat_value(book.docs[*position]) else {
+                continue;
+            };
+            let Some(positions) = self.repeats(book).get(&value) else {
+                continue;
+            };
+            wanted.extend(
+                positions
+                    .iter()
+                    .map(|&other| other as usize)
+                    .filter(|other| other != position)
+                    .take(*room)
+                    .map(|other| (Arc::clone(book), other)),
+            );
+        }
+
+        let known = self.lock_keys();
+        let mut seen: HashSet<DocAddress> = HashSet::new();
+        wanted.retain(|(book, position)| {
+            let address = book.docs[*position];
+            !known.contains_key(&address) && seen.insert(address)
+        });
+        drop(known);
+        if let Some(library) = self.library {
+            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let shared = cache.at(self.generation).keys(library);
+            let mut own = self.lock_keys();
+            wanted.retain(|(book, position)| {
+                let address = book.docs[*position];
+                match shared.get(&address) {
+                    Some(&key) => {
+                        own.insert(address, key);
+                        false
+                    }
+                    None => true,
+                }
+            });
+        }
+        if wanted.is_empty() || cancel.is_cancelled() {
+            return;
+        }
+        let lines: Vec<(&[DocAddress], usize)> = wanted
+            .iter()
+            .map(|(book, position)| (book.docs.as_slice(), *position))
+            .collect();
+        match recompute_chunk_keys_at(&self.searcher, &lines) {
+            Ok(keys) => self.remember_keys(
+                lines
+                    .iter()
+                    .zip(keys)
+                    .filter_map(|(&(docs, position), key)| Some((docs[position], key?))),
+            ),
+            Err(error) => log::debug!("semantic hits are checked one by one: {error:#}"),
+        }
     }
 
     /// Whether the line at `position` of `book`, whose column holds `key`'s value, holds
@@ -639,8 +846,7 @@ impl<'a> LiveResolver<'a> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .at(generation)
-            .lines()
-            .put(name, Arc::clone(&lines));
+            .keep_book(name, Arc::clone(&lines));
         Ok(Some(lines))
     }
 
@@ -1734,6 +1940,14 @@ impl CandidateResolver for LiveResolver<'_> {
             Some(_) => Some(self.directory()?),
             None => None,
         };
+        let admitted = |name: &str| match (&compiled, &directory) {
+            (Some(compiled), Some(directory)) => directory
+                .books
+                .get(name)
+                .is_some_and(|info| compiled.matches_book(name, &info.facets, info.is_pdf)),
+            _ => true,
+        };
+        self.prefetch(hits, admitted, cancel);
         for (hit_index, hit) in hits.iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(ResolveError::Cancelled);
@@ -2032,8 +2246,17 @@ mod tests {
             slot: 0,
         };
         let lines = resolver
-            .resolve(&[hit], None, &CancellationToken::new())
+            .resolve(&[hit.clone()], None, &CancellationToken::new())
             .unwrap();
+        // Keys recomputed by an earlier search and shared through the cache resolve alike.
+        let mut sharing = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
+        sharing.share_keys((0, None, false));
+        for _ in 0..2 {
+            let again = sharing
+                .resolve(&[hit.clone()], None, &CancellationToken::new())
+                .unwrap();
+            assert_eq!(again, lines);
+        }
         let of = |book: &str| -> Vec<u64> {
             lines
                 .iter()
