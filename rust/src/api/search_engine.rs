@@ -2201,6 +2201,16 @@ struct SemanticLexicalPhase {
     text_status: HashMap<u64, TextStatus>,
 }
 
+/// What a benchmark reads from one lexical phase.
+#[cfg(all(test, feature = "semantic-integration"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BenchLexicalPhase {
+    pub candidates: usize,
+    pub total_count: u32,
+    pub truncated: bool,
+    pub highlighted: bool,
+}
+
 /// A lexical query kept alive past its own execution so snippets can be built
 /// after fusion and pagination rather than for the whole candidate window.
 #[cfg(feature = "semantic-integration")]
@@ -2719,6 +2729,12 @@ const FUZZY_BOOST_EXACT: Score = 1000.0;
 const FUZZY_BOOST_EXACT_REL: Score = 1.0;
 const FUZZY_BOOST_LEXICAL: Score = 30.0;
 const FUZZY_BOOST_FUZZY: Score = 1.0;
+// Multi-word fuzzy requires every word anywhere; adjacency only ranks. Above
+// two exact-word floors so an exact phrase outranks the same words scattered.
+const FUZZY_BOOST_PHRASE: Score = 2000.0;
+// Adjacency of expanded forms (`RegexPhraseQuery`) costs 0.5-0.9 s on the real
+// library, so it stays off; only the exact-token phrase boosts.
+const LEXICAL_FUZZY_EXPANDED_PHRASE_BOOST: bool = false;
 
 /// The schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics,
@@ -4011,6 +4027,58 @@ pub struct SearchEngine {
     semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
 }
 
+/// The analyzers every field and query of the index is tokenized with.
+fn register_hebrew_tokenizers(index: &Index) {
+    // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
+    // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
+    // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
+    // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
+    // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
+    // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
+    index.tokenizers().register(
+        "hebrew",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: false,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+    index.tokenizers().register(
+        "hebrew_vocalized",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: true,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+    // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
+    // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
+    index.tokenizers().register(
+        "hebrew_query",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: false,
+            keep_marks: false,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+    index.tokenizers().register(
+        "hebrew_vocalized_query",
+        TextAnalyzer::builder(HebrewTokenizer {
+            emit_quote_free: false,
+            keep_marks: true,
+        })
+        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+        .filter(LowerCaser)
+        .build(),
+    );
+}
+
 /// Installs a stderr logger (once per process) so the engine's `info!`
 /// timing logs are visible in the app console without any Dart-side setup.
 /// `RUST_LOG` still overrides the default filter; if a logger is already
@@ -4042,54 +4110,7 @@ impl SearchEngine {
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
         let schema = index.schema();
-        // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
-        // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
-        // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
-        // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
-        // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
-        // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
-        index.tokenizers().register(
-            "hebrew",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: true,
-                keep_marks: false,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
-        index.tokenizers().register(
-            "hebrew_vocalized",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: true,
-                keep_marks: true,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
-        // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
-        // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
-        index.tokenizers().register(
-            "hebrew_query",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: false,
-                keep_marks: false,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
-        index.tokenizers().register(
-            "hebrew_vocalized_query",
-            TextAnalyzer::builder(HebrewTokenizer {
-                emit_quote_free: false,
-                keep_marks: true,
-            })
-            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-            .filter(LowerCaser)
-            .build(),
-        );
+        register_hebrew_tokenizers(&index);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -4144,6 +4165,66 @@ impl SearchEngine {
             #[cfg(feature = "semantic-integration")]
             semantic_set_view: Mutex::default(),
         }
+    }
+
+    /// An engine over an index opened by the caller, with no writer and no metadata written:
+    /// benchmarks on an index another process owns.
+    #[cfg(test)]
+    pub(crate) fn from_read_only_index(index: Index, path: &Path) -> Result<Self> {
+        let schema = index.schema();
+        register_hebrew_tokenizers(&index);
+        let index_reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+        let chunk_key_field = live_chunk_key_field(&schema, path);
+        Ok(SearchEngine {
+            schema,
+            chunk_key_field,
+            index_path: path.to_path_buf(),
+            index,
+            index_writer: None,
+            writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
+            index_reader,
+            magic_dict: None,
+            translation_dict: None,
+            acronym_dict: None,
+            term_cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
+            )),
+            bulk_indexing: false,
+            #[cfg(feature = "semantic-integration")]
+            semantic_runtime: RwLock::new(None),
+            #[cfg(not(feature = "semantic-integration"))]
+            semantic_runtime: (),
+            #[cfg(feature = "semantic-integration")]
+            semantic_resolver: Mutex::default(),
+            #[cfg(feature = "semantic-integration")]
+            semantic_set_view: Mutex::default(),
+        })
+    }
+
+    /// The lexical phase of [`Self::search_semantic`] alone, for benchmarks:
+    /// `None` is Exact, `Some(d)` is Fuzzy at distance `d`.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn bench_semantic_lexical_phase(
+        &self,
+        query: &str,
+        facets: &[String],
+        window: u32,
+        fuzzy_distance: Option<u8>,
+    ) -> Result<BenchLexicalPhase> {
+        let phase = match fuzzy_distance {
+            None => self.semantic_exact_lexical_candidates(query, facets, window, false, false)?,
+            Some(distance) => self
+                .semantic_fuzzy_lexical_candidates(query, facets, window, distance, false, false)?,
+        };
+        Ok(BenchLexicalPhase {
+            candidates: phase.candidates.len(),
+            total_count: phase.total_count,
+            truncated: phase.truncated,
+            highlighted: phase.highlight.is_some(),
+        })
     }
 
     /// Loads a `lexical.db` morphology lexicon for the approximate (`fuzzy`)
@@ -7430,11 +7511,11 @@ impl SearchEngine {
         highlight: Option<HighlightConfig>,
     ) -> Result<Vec<SearchResult>> {
         let rank = matches!(order, ResultsOrder::Relevance);
-        let query = self.build_fuzzy_search_query(&terms, &facets, max_distance, rank)?;
+        let query = self.build_fuzzy_search_query(&terms, &[], &facets, max_distance, rank)?;
         let hl = highlight.unwrap_or_else(HighlightConfig::default);
         self.run_search(
             query,
-            |s| self.fuzzy_highlight_plan(s, &terms, max_distance),
+            |s| self.fuzzy_highlight_plan(s, &terms, &[], max_distance),
             self.schema.get_field("text")?,
             limit,
             offset,
@@ -7599,11 +7680,12 @@ impl SearchEngine {
     ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let token_texts = self.index_token_texts(query)?;
+        let phrases = self.quoted_phrase_token_groups(query)?;
         let (search_query, truncated) = if voc.any() {
             self.build_fuzzy_query_vocalized(query, facets, max_distance, &voc)?
         } else {
             (
-                self.build_fuzzy_search_query(&token_texts, facets, max_distance, true)?,
+                self.build_fuzzy_search_query(&token_texts, &phrases, facets, max_distance, true)?,
                 false,
             )
         };
@@ -7617,7 +7699,7 @@ impl SearchEngine {
             query: plan_query,
             phrase,
         } = Self::resolve_highlight(&searcher, |s| {
-            self.fuzzy_highlight_plan(s, &token_texts, max_distance)
+            self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance)
         });
         let highlight = plan_query.map(|query| SemanticHighlight { query, phrase });
         self.semantic_candidates_from_query(search_query, limit, truncated, highlight)
@@ -8561,11 +8643,13 @@ impl SearchEngine {
             );
         }
         let token_texts = self.index_token_texts(&query)?;
+        let phrases = self.quoted_phrase_token_groups(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
-        let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+        let q =
+            self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
         self.run_search(
             q,
-            |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+            |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
             self.schema.get_field("text")?,
             limit,
             offset,
@@ -8605,11 +8689,13 @@ impl SearchEngine {
             );
         }
         let token_texts = self.index_token_texts(&query)?;
+        let phrases = self.quoted_phrase_token_groups(&query)?;
         let rank = matches!(order, ResultsOrder::Relevance);
-        let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+        let q =
+            self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
         self.run_search_and_count(
             q,
-            |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+            |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
             self.schema.get_field("text")?,
             limit,
             offset,
@@ -8654,11 +8740,13 @@ impl SearchEngine {
                 );
             }
             let token_texts = self.index_token_texts(&query)?;
+            let phrases = self.quoted_phrase_token_groups(&query)?;
             let rank = matches!(order, ResultsOrder::Relevance);
-            let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+            let q =
+                self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
             self.run_search_stream(
                 q,
-                |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+                |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
                 self.schema.get_field("text")?,
                 limit,
                 offset,
@@ -8711,11 +8799,13 @@ impl SearchEngine {
                 );
             }
             let token_texts = self.index_token_texts(&query)?;
+            let phrases = self.quoted_phrase_token_groups(&query)?;
             let rank = matches!(order, ResultsOrder::Relevance);
-            let q = self.build_fuzzy_search_query(&token_texts, &facets, max_distance, rank)?;
+            let q =
+                self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
             self.run_search_stream_with_counts(
                 q,
-                |s| self.fuzzy_highlight_plan(s, &token_texts, max_distance),
+                |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
                 self.schema.get_field("text")?,
                 limit,
                 offset,
@@ -10443,10 +10533,73 @@ impl SearchEngine {
                 (Occur::Must, token_query)
             })
             .collect();
+        if rank {
+            clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
+        }
         if !facets.is_empty() {
             clauses.push((Occur::Must, self.facet_filter_query(facets)?));
         }
         Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
+    /// The ranking-only `Should` that lifts hits where the typed words stand
+    /// adjacent (within [`LEXICAL_FUZZY_PHRASE_SLOP`]) above scattered ones.
+    fn exact_phrase_boost(text_f: Field, term_texts: &[String]) -> Option<(Occur, Box<dyn Query>)> {
+        let phrase = Self::exact_phrase(text_f, term_texts)?;
+        Some((
+            Occur::Should,
+            Box::new(ConstScoreQuery::new(Box::new(phrase), FUZZY_BOOST_PHRASE)),
+        ))
+    }
+
+    /// The typed words, exact, within [`LEXICAL_FUZZY_PHRASE_SLOP`]; `None`
+    /// for a single word.
+    fn exact_phrase(text_f: Field, words: &[String]) -> Option<PhraseQuery> {
+        if words.len() < 2 {
+            return None;
+        }
+        let terms = words
+            .iter()
+            .map(|t| Term::from_field_text(text_f, t))
+            .collect();
+        let mut phrase = PhraseQuery::new(terms);
+        phrase.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
+        Some(phrase)
+    }
+
+    /// Token groups of the query's quoted phrases of two or more words. A `"`
+    /// between two Hebrew letters is gershayim (`רמב"ם`); any other delimits.
+    fn quoted_phrase_token_groups(&self, query: &str) -> Result<Vec<Vec<String>>> {
+        let chars: Vec<char> = query
+            .chars()
+            .map(|c| match c {
+                '\u{05F4}' | '\u{201C}' | '\u{201D}' | '\u{201E}' => '"',
+                c => c,
+            })
+            .collect();
+        let is_letter = |i: usize| {
+            chars
+                .get(i)
+                .is_some_and(|c| ('\u{05D0}'..='\u{05EA}').contains(c))
+        };
+        let mut groups = Vec::new();
+        let mut open: Option<usize> = None;
+        for (i, &c) in chars.iter().enumerate() {
+            if c != '"' || (i > 0 && is_letter(i - 1) && is_letter(i + 1)) {
+                continue;
+            }
+            match open.take() {
+                None => open = Some(i + 1),
+                Some(start) => {
+                    let segment: String = chars[start..i].iter().collect();
+                    let tokens = self.index_token_texts(&segment)?;
+                    if tokens.len() >= 2 {
+                        groups.push(tokens);
+                    }
+                }
+            }
+        }
+        Ok(groups)
     }
 
     /// Fuzzy mode from a raw query string (tokenized like the index). Used only
@@ -10458,7 +10611,8 @@ impl SearchEngine {
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
         let token_texts = self.index_token_texts(query)?;
-        self.build_fuzzy_search_query(&token_texts, facets, max_distance, false)
+        let phrases = self.quoted_phrase_token_groups(query)?;
+        self.build_fuzzy_search_query(&token_texts, &phrases, facets, max_distance, false)
     }
 
     /// Approximate (`fuzzy`) recall query. Routes through the lexical builder
@@ -10468,15 +10622,19 @@ impl SearchEngine {
     /// the relevance-scoring layer: `true` only for `ResultsOrder::Relevance`
     /// searches, `false` for counts and catalogue ordering (which ignore score)
     /// so they build the bare recall query and pay nothing for unused ranking.
+    ///
+    /// `phrases` are the query's quoted word groups ([`Self::quoted_phrase_token_groups`]);
+    /// only the lexical builder requires their adjacency.
     fn build_fuzzy_search_query(
         &self,
         term_texts: &[String],
+        phrases: &[Vec<String>],
         facets: &[String],
         max_distance: u8,
         rank: bool,
     ) -> Result<Box<dyn Query>> {
-        if self.magic_dict.is_some() && max_distance > 0 {
-            self.build_lexical_fuzzy_query(term_texts, facets, max_distance, rank)
+        if self.magic_dict.is_some() {
+            self.build_lexical_fuzzy_query(term_texts, phrases, facets, max_distance, rank)
         } else {
             self.build_fuzzy_query_from_terms(term_texts, facets, max_distance, rank)
         }
@@ -10484,12 +10642,15 @@ impl SearchEngine {
 
     /// Lexical fuzzy mode: per token, `(FuzzyTermQuery OR TermSetQuery[lexical
     /// forms])` is required (`MUST`); the inner `SHOULD` group keeps both
-    /// edit-distance matches and morphological relatives. Falls back to the
-    /// bare fuzzy clause for tokens the dictionary doesn't know. Facets filter
-    /// as usual. Independent of exact/advanced — only the fuzzy path calls it.
+    /// edit-distance matches and morphological relatives. Distance 0 drops the
+    /// edit-distance automaton: the exact token, its quote-free spelling and
+    /// its dictionary forms. Every word is required anywhere in the line;
+    /// adjacency is required only for `phrases` (quoted groups) and otherwise
+    /// only ranks. Facets filter as usual. Only the fuzzy path calls it.
     fn build_lexical_fuzzy_query(
         &self,
         term_texts: &[String],
+        phrases: &[Vec<String>],
         facets: &[String],
         max_distance: u8,
         rank: bool,
@@ -10507,49 +10668,58 @@ impl SearchEngine {
             .context("lexical fuzzy query requires a loaded magic dictionary")?;
         let text_f = self.schema.get_field("text")?;
 
-        if term_texts.len() > 1 {
-            let patterns = self.lexical_fuzzy_phrase_patterns(dict, term_texts, max_distance)?;
-            let mut phrase_query = RegexPhraseQuery::new(text_f, patterns);
-            phrase_query.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
-            phrase_query
-                .set_max_expansions((MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN * term_texts.len()) as u32);
-            let main_query: Box<dyn Query> = Box::new(phrase_query);
-            return if facets.is_empty() {
-                Ok(main_query)
-            } else {
-                Ok(Box::new(BooleanQuery::new(vec![
-                    (Occur::Must, main_query),
-                    (Occur::Must, self.facet_filter_query(facets)?),
-                ])))
-            };
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(term_texts.len() + 3);
+        for phrase in phrases.iter().filter(|p| p.len() >= 2) {
+            clauses.push((
+                Occur::Must,
+                self.lexical_fuzzy_phrase_query(dict, phrase, max_distance)?,
+            ));
+            if rank {
+                clauses.extend(
+                    Self::exact_phrase(text_f, phrase)
+                        .map(|q| (Occur::Should, Box::new(q) as Box<dyn Query>)),
+                );
+            }
         }
-
-        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(term_texts.len() + 1);
         for token in term_texts {
+            // A quoted word's recall and rank are its phrase's: per-word tiers
+            // would score every phrase candidate again (~20% of the query).
+            if phrases.iter().any(|p| p.len() >= 2 && p.contains(token)) {
+                continue;
+            }
             let exact_term = Term::from_field_text(text_f, token);
             // Wrap the fuzzy automaton in the fuzzy-tier boost only when ranking;
             // an unranked recall query (count/catalogue) carries no boost so it
             // stays the bare `FuzzyTermQuery` it always was.
-            let fuzzy_q = FuzzyTermQuery::new(exact_term, max_distance, true);
-            let fuzzy: Box<dyn Query> = if rank {
-                Box::new(BoostQuery::new(Box::new(fuzzy_q), FUZZY_BOOST_FUZZY))
-            } else {
-                Box::new(fuzzy_q)
-            };
+            let fuzzy: Option<Box<dyn Query>> = (max_distance > 0).then(|| {
+                let fuzzy_q = FuzzyTermQuery::new(exact_term.clone(), max_distance, true);
+                if rank {
+                    Box::new(BoostQuery::new(Box::new(fuzzy_q), FUZZY_BOOST_FUZZY))
+                        as Box<dyn Query>
+                } else {
+                    Box::new(fuzzy_q)
+                }
+            });
             let clean = Self::quoteless_variant(token);
             let mut forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
             forms.retain(|f| f != token && Some(f.as_str()) != clean.as_deref());
 
             // Unranked: the original recall shape — `fuzzy OR termset`, or just
-            // `fuzzy` when the dictionary has no extra forms. Ranked: prepend the
-            // exact tier (the exact term is a subset of the fuzzy match, so this
-            // never changes recall) and boost the lexical tier. `BooleanQuery`
-            // sums `Should` scores, so exact-floor + BM25 > lexical > fuzzy.
+            // `fuzzy` when the dictionary has no extra forms (the exact term
+            // stands in for `fuzzy` at distance 0). Ranked: prepend the exact
+            // tier (a subset of the fuzzy match, so recall is unchanged) and
+            // boost the lexical tier. `BooleanQuery` sums `Should` scores, so
+            // exact-floor + BM25 > lexical > fuzzy.
             // A quote-bearing token also carries its quote-free spelling in
             // the exact tier — clean-typography editions match at distance 0
             // and rank as exact, not as edit-distance tail.
             let mut should: Vec<(Occur, Box<dyn Query>)> = if rank {
                 Self::exact_rank_clauses(text_f, token)
+            } else if fuzzy.is_none() {
+                vec![(
+                    Occur::Should,
+                    Box::new(TermQuery::new(exact_term, IndexRecordOption::Basic)),
+                )]
             } else {
                 Vec::with_capacity(3)
             };
@@ -10566,7 +10736,7 @@ impl SearchEngine {
                     ));
                 }
             }
-            should.push((Occur::Should, fuzzy));
+            should.extend(fuzzy.map(|fuzzy| (Occur::Should, fuzzy)));
             if !forms.is_empty() {
                 let set_terms: Vec<Term> = forms
                     .iter()
@@ -10592,18 +10762,56 @@ impl SearchEngine {
             };
             clauses.push((Occur::Must, token_query));
         }
+        if rank {
+            clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
+            if LEXICAL_FUZZY_EXPANDED_PHRASE_BOOST && term_texts.len() >= 2 {
+                let expanded = self.lexical_fuzzy_phrase_query(dict, term_texts, max_distance)?;
+                clauses.push((
+                    Occur::Should,
+                    Box::new(ConstScoreQuery::new(expanded, FUZZY_BOOST_LEXICAL)),
+                ));
+            }
+        }
         if !facets.is_empty() {
             clauses.push((Occur::Must, self.facet_filter_query(facets)?));
         }
         Ok(Box::new(BooleanQuery::new(clauses)))
     }
 
-    fn lexical_fuzzy_phrase_patterns(
+    /// Adjacency (within [`LEXICAL_FUZZY_PHRASE_SLOP`]) of each word's exact,
+    /// dictionary and edit-distance forms, in order. Positions are verified
+    /// lazily per candidate; an eager regex phrase union cost 0.5-1 s.
+    fn lexical_fuzzy_phrase_query(
         &self,
         dict: &MagicDictionary,
         term_texts: &[String],
         max_distance: u8,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Box<dyn Query>> {
+        let text_f = self.schema.get_field("text")?;
+        let position_terms = self
+            .lexical_fuzzy_phrase_terms(dict, term_texts, max_distance)?
+            .into_iter()
+            .map(|terms| {
+                terms
+                    .iter()
+                    .map(|t| Term::from_field_text(text_f, t))
+                    .collect()
+            })
+            .collect();
+        let gaps = vec![LEXICAL_FUZZY_PHRASE_SLOP; term_texts.len().saturating_sub(1)];
+        Ok(Box::new(TermListPhraseQuery::new(
+            text_f,
+            position_terms,
+            gaps,
+        )))
+    }
+
+    fn lexical_fuzzy_phrase_terms(
+        &self,
+        dict: &MagicDictionary,
+        term_texts: &[String],
+        max_distance: u8,
+    ) -> Result<Vec<Vec<String>>> {
         // Query-time enumeration (not highlight) — no search-scoped searcher
         // exists yet, so take a fresh one like the other query builders do.
         let searcher = self.index_reader.searcher();
@@ -10639,7 +10847,7 @@ impl SearchEngine {
                 }
 
                 let remaining = MAX_LEXICAL_PHRASE_TERMS_PER_TOKEN.saturating_sub(terms.len());
-                if remaining > 0 {
+                if remaining > 0 && max_distance > 0 {
                     let automaton = self.fuzzy_automaton(token, max_distance)?;
                     for fuzzy_term in self.automaton_terms(&searcher, &automaton, remaining)? {
                         Self::push_limited_unique(
@@ -10651,7 +10859,7 @@ impl SearchEngine {
                     }
                 }
 
-                Ok(Self::terms_regex_union(&terms))
+                Ok(terms)
             })
             .collect()
     }
@@ -10665,31 +10873,6 @@ impl SearchEngine {
         if out.len() < cap && seen.insert(value.clone()) {
             out.push(value);
         }
-    }
-
-    fn terms_regex_union(terms: &[String]) -> String {
-        if terms.len() == 1 {
-            return Self::escape_regex_term(&terms[0]);
-        }
-        let escaped = terms
-            .iter()
-            .map(|term| Self::escape_regex_term(term))
-            .collect::<Vec<_>>();
-        format!("(?:{})", escaped.join("|"))
-    }
-
-    fn escape_regex_term(term: &str) -> String {
-        let mut out = String::with_capacity(term.len());
-        for ch in term.chars() {
-            if matches!(
-                ch,
-                '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-            ) {
-                out.push('\\');
-            }
-            out.push(ch);
-        }
-        out
     }
 
     /// Advanced mode: ports the Dart morphological query builder to produce regex
@@ -11685,11 +11868,10 @@ impl SearchEngine {
                     )?
                 };
                 matched.insert(token.clone());
-                if max_distance > 0 {
-                    if let Some(dict) = self.magic_dict.as_ref() {
-                        for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
-                            matched.insert(form);
-                        }
+                matched.extend(Self::quoteless_variant(token));
+                if let Some(dict) = self.magic_dict.as_ref() {
+                    for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
+                        matched.insert(form);
                     }
                 }
                 collected.push(matched.into_iter().collect());
@@ -11920,20 +12102,21 @@ impl SearchEngine {
 
     /// Highlight plan for the approximate (`fuzzy`) search. Always builds the
     /// flat highlight query (fuzzy/lexical automatons expose no static terms).
-    /// Adds a phrase filter only for the lexical multi-word path — the sole
-    /// fuzzy path that builds a `RegexPhraseQuery`. Plain fuzzy multi-word is a
-    /// per-token AND, where every occurrence of every word is a real hit and
-    /// must stay highlighted, so it carries no filter.
+    /// Multi-word fuzzy is a per-word AND, where every occurrence of every word
+    /// is a real hit and must stay highlighted, so it carries no phrase filter
+    /// — unless the whole query is one quoted phrase the lexical path requires.
     fn fuzzy_highlight_plan(
         &self,
         searcher: &Searcher,
         term_texts: &[String],
+        phrases: &[Vec<String>],
         max_distance: u8,
     ) -> Result<HighlightPlan> {
         let query = self
             .build_fuzzy_highlight(searcher, term_texts, max_distance)
             .ok();
-        let phrase = if term_texts.len() >= 2 && self.magic_dict.is_some() && max_distance > 0 {
+        let whole_query_quoted = term_texts.len() >= 2 && phrases.iter().any(|p| p == term_texts);
+        let phrase = if whole_query_quoted && self.magic_dict.is_some() {
             let per_word_terms =
                 self.lexical_phrase_per_word_terms(searcher, term_texts, max_distance)?;
             let gaps = vec![LEXICAL_FUZZY_PHRASE_SLOP; per_word_terms.len().saturating_sub(1)];
@@ -11964,10 +12147,14 @@ impl SearchEngine {
         tokens
             .iter()
             .map(|token| {
-                let mut matched = self.automaton_highlight_terms(
-                    searcher,
-                    &[self.fuzzy_automaton(token, max_distance)?],
-                )?;
+                let mut matched = if max_distance == 0 {
+                    HashSet::new()
+                } else {
+                    self.automaton_highlight_terms(
+                        searcher,
+                        &[self.fuzzy_automaton(token, max_distance)?],
+                    )?
+                };
                 matched.insert(token.clone());
                 if let Some(clean) = Self::quoteless_variant(token) {
                     matched.insert(clean);
@@ -12015,7 +12202,7 @@ impl SearchEngine {
         term_texts: &[String],
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
-        if self.magic_dict.is_some() && max_distance > 0 {
+        if self.magic_dict.is_some() {
             self.build_lexical_fuzzy_highlight_query(searcher, term_texts, max_distance)
         } else {
             self.build_fuzzy_highlight_query(searcher, term_texts, max_distance)
@@ -12043,17 +12230,22 @@ impl SearchEngine {
         let text_f = self.schema.get_field("text")?;
 
         // Start from the edit-distance terms (same automatons as search)...
-        let automatons = term_texts
-            .iter()
-            .map(|t| self.fuzzy_automaton(t, max_distance))
-            .collect::<Result<Vec<_>>>()?;
-        let mut matched = self.automaton_highlight_terms(searcher, &automatons)?;
+        let mut matched = if max_distance == 0 {
+            HashSet::new()
+        } else {
+            let automatons = term_texts
+                .iter()
+                .map(|t| self.fuzzy_automaton(t, max_distance))
+                .collect::<Result<Vec<_>>>()?;
+            self.automaton_highlight_terms(searcher, &automatons)?
+        };
 
         // ...then add the literal tokens and the (blacklist-filtered) lexical
         // forms per token. The exact token can otherwise be omitted when a broad
         // fuzzy automaton exhausts its highlight-term budget first.
         for token in term_texts {
             matched.insert(token.clone());
+            matched.extend(Self::quoteless_variant(token));
             for form in dict.highlight_forms(token, MAX_LEXICAL_FORMS) {
                 matched.insert(form);
             }
@@ -18379,13 +18571,35 @@ mod tests {
     }
 
     #[test]
-    fn test_lexical_fuzzy_distance_zero_stays_exact() {
+    fn test_lexical_fuzzy_distance_zero_uses_dictionary_without_edit_distance() {
         let (mut engine, dir) = make_engine();
-        add(&mut engine, 1, "הלכתי", "/books/a.txt");
+        add(&mut engine, 1, "הלכה", "/books/a.txt"); // edit distance 1, not a dictionary form
+        add(&mut engine, 2, "הלכתי", "/books/b.txt"); // dictionary form
+        add(&mut engine, 3, "הלך", "/books/c.txt"); // exact
         engine.commit().unwrap();
         assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
 
-        let fuzzy_zero = engine
+        let by_relevance = fuzzy_ids(&mut engine, "הלך", 0, ResultsOrder::Relevance);
+        assert_eq!(
+            by_relevance,
+            vec![3, 2],
+            "distance 0 = exact word, then its dictionary forms; no edit-distance neighbour"
+        );
+        let by_catalogue = fuzzy_ids(&mut engine, "הלך", 0, ResultsOrder::Catalogue);
+        assert_eq!(by_catalogue, vec![2, 3]);
+
+        let count = engine
+            .count_fuzzy(
+                "הלך".to_string(),
+                vec!["/root".to_string()],
+                0,
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        let hit = engine
             .search_fuzzy(
                 "הלך".to_string(),
                 vec!["/root".to_string()],
@@ -18397,22 +18611,45 @@ mod tests {
                 false,
                 None,
             )
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == 2)
             .unwrap();
         assert!(
-            fuzzy_zero.is_empty(),
-            "max_distance=0 must not inject lexical expansions"
+            hit.text.contains("<font color=red>הלכתי</font>"),
+            "the dictionary form must be highlighted at distance 0, got: {}",
+            hit.text
         );
+    }
 
-        let count = engine
-            .count_fuzzy(
-                "הלך".to_string(),
+    #[test]
+    fn test_lexical_fuzzy_distance_zero_keeps_quote_free_spelling() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "דברי רמבם", "/books/a.txt");
+        add(&mut engine, 2, "דברי רמב\"ם", "/books/b.txt");
+        add(&mut engine, 3, "דברי רמבן", "/books/c.txt");
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        assert_eq!(
+            engine.quoted_phrase_token_groups("רמב\"ם").unwrap(),
+            Vec::<Vec<String>>::new(),
+            "gershayim inside an acronym is not a phrase delimiter"
+        );
+        let got = ids(engine
+            .search_fuzzy(
+                "רמב\"ם".to_string(),
                 vec!["/root".to_string()],
+                10,
                 0,
+                0,
+                ResultsOrder::Relevance,
                 false,
                 false,
+                None,
             )
-            .unwrap();
-        assert_eq!(count, 0);
+            .unwrap());
+        assert_eq!(got, vec![1, 2]);
     }
 
     fn fuzzy_ids(
@@ -18479,9 +18716,8 @@ mod tests {
 
     #[test]
     fn test_lexical_fuzzy_multi_word_relevance_differs_from_catalogue() {
-        // The multi-word path is a `RegexPhraseQuery`, which (unlike the flat
-        // single-token automaton) already scores by phrase frequency — so
-        // relevance ordering is meaningful there without extra boosting.
+        // Both hold the exact adjacent phrase (same tiers), so the exact-tier
+        // BM25 add-on decides: the higher-frequency document first.
         let (mut engine, dir) = make_engine();
         add(&mut engine, 1, "הלך מזרח", "/books/a.txt"); // phrase once
         add(&mut engine, 2, "הלך מזרח הלך מזרח", "/books/b.txt"); // phrase twice
@@ -18556,51 +18792,221 @@ mod tests {
         assert_eq!(zero, vec![2], "distance 0 must match only the exact token");
     }
 
-    #[test]
-    fn test_lexical_fuzzy_multi_word_requires_phrase() {
-        let (mut engine, dir) = make_engine();
-        add(&mut engine, 1, "הלכתי לישון", "/books/a.txt");
+    fn add_multi_word_corpus(engine: &mut SearchEngine) {
+        add(engine, 1, "הלכתי לישון", "/books/a.txt");
         add(
-            &mut engine,
+            engine,
             2,
             "הלכתי ואז דיברתי הרבה לפני לישון",
             "/books/b.txt",
         );
-        add(&mut engine, 3, "לישון הלכתי", "/books/c.txt");
-        add(&mut engine, 4, "הלכתי", "/books/d.txt");
-        add(&mut engine, 5, "לכו ונכהו בלשון", "/books/e.txt");
+        add(engine, 3, "לישון הלכתי", "/books/c.txt");
+        add(engine, 4, "הלכתי", "/books/d.txt");
+        add(engine, 5, "לכו ונכהו בלשון", "/books/e.txt");
+        engine.commit().unwrap();
+    }
+
+    fn fuzzy_count(engine: &SearchEngine, query: &str, max_distance: u8) -> u32 {
+        engine
+            .count_fuzzy(
+                query.to_string(),
+                vec!["/root".to_string()],
+                max_distance,
+                false,
+                false,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_requires_every_word_anywhere() {
+        let (mut engine, dir) = make_engine();
+        add_multi_word_corpus(&mut engine);
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        for distance in [0, 2] {
+            let got = fuzzy_ids(
+                &mut engine,
+                "הלכתי לישון",
+                distance,
+                ResultsOrder::Catalogue,
+            );
+            assert_eq!(
+                got,
+                vec![1, 2, 3, 5],
+                "distance {distance}: each word (or its forms) anywhere in the line; adjacency not required"
+            );
+            assert_eq!(fuzzy_count(&engine, "הלכתי לישון", distance), 4);
+        }
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_quoted_phrase_keeps_adjacency() {
+        let (mut engine, dir) = make_engine();
+        add_multi_word_corpus(&mut engine);
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        assert_eq!(
+            engine
+                .quoted_phrase_token_groups("“הלכתי לישון” רמב\"ם")
+                .unwrap(),
+            vec![vec!["הלכתי".to_string(), "לישון".to_string()]]
+        );
+        for distance in [0, 2] {
+            let got = fuzzy_ids(
+                &mut engine,
+                "\"הלכתי לישון\"",
+                distance,
+                ResultsOrder::Catalogue,
+            );
+            assert_eq!(
+                got,
+                vec![1, 5],
+                "distance {distance}: a quoted phrase keeps order, one intervening token allowed"
+            );
+            assert_eq!(fuzzy_count(&engine, "\"הלכתי לישון\"", distance), 2);
+            assert_eq!(
+                fuzzy_ids(
+                    &mut engine,
+                    "\"הלכתי לישון\"",
+                    distance,
+                    ResultsOrder::Relevance
+                ),
+                vec![1, 5],
+                "distance {distance}: the exact phrase ranks above its dictionary forms"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_quoted_phrase_ranks_exact_hits_by_bm25() {
+        let (mut engine, dir) = make_engine();
+        add(
+            &mut engine,
+            1,
+            "הלכתי לישון אחרי יום ארוך של עבודה קשה",
+            "/books/a.txt",
+        );
+        add(&mut engine, 2, "הלכתי לישון", "/books/b.txt");
         engine.commit().unwrap();
         assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
 
-        let got = ids(engine
-            .search_fuzzy(
-                "הלכתי לישון".to_string(),
-                vec!["/root".to_string()],
-                100,
-                0,
-                2,
-                ResultsOrder::Catalogue,
-                false,
-                false,
-                None,
-            )
-            .unwrap());
         assert_eq!(
-            got,
-            vec![1, 5],
-            "multi-token lexical fuzzy search should preserve order while allowing one intervening token"
+            fuzzy_ids(&mut engine, "\"הלכתי לישון\"", 1, ResultsOrder::Relevance),
+            vec![2, 1],
+            "both hold the exact phrase; the shorter line scores higher"
         );
+    }
 
-        let count = engine
-            .count_fuzzy(
-                "הלכתי לישון".to_string(),
-                vec!["/root".to_string()],
+    #[test]
+    fn test_lexical_fuzzy_multi_word_ranks_exact_phrase_then_scattered_then_forms() {
+        let (mut engine, dir) = make_engine();
+        add(&mut engine, 1, "הלכתי ואז דיברתי לישון", "/books/a.txt"); // exact, scattered
+        add(&mut engine, 2, "לכו לישון", "/books/b.txt"); // form + exact, adjacent
+        add(&mut engine, 3, "הלכתי לישון", "/books/c.txt"); // exact phrase
+        engine.commit().unwrap();
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        for distance in [0, 1] {
+            assert_eq!(
+                fuzzy_ids(
+                    &mut engine,
+                    "הלכתי לישון",
+                    distance,
+                    ResultsOrder::Relevance
+                ),
+                vec![3, 1, 2],
+                "distance {distance}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_count_matches_hits() {
+        let (mut engine, dir) = make_engine();
+        add_multi_word_corpus(&mut engine);
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        for query in ["הלכתי לישון", "\"הלכתי לישון\"", "לישון הלכתי"]
+        {
+            for distance in [0, 1, 2] {
+                let page = engine
+                    .search_and_count_fuzzy(
+                        query.to_string(),
+                        vec!["/root".to_string()],
+                        100,
+                        0,
+                        distance,
+                        ResultsOrder::Relevance,
+                        false,
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    page.total_count as usize,
+                    page.results.len(),
+                    "{query} at distance {distance}"
+                );
+                assert_eq!(
+                    fuzzy_count(&engine, query, distance),
+                    page.total_count,
+                    "{query} at distance {distance}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_lexical_fuzzy_multi_word_highlights_each_word_separately() {
+        let (mut engine, dir) = make_engine();
+        add_multi_word_corpus(&mut engine);
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+
+        for distance in [0, 1] {
+            let hit = engine
+                .search_fuzzy(
+                    "הלכתי לישון".to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    distance,
+                    ResultsOrder::Relevance,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap()
+                .into_iter()
+                .find(|r| r.id == 2)
+                .unwrap();
+            assert!(
+                hit.text.contains("<font color=red>הלכתי</font>")
+                    && hit.text.contains("<font color=red>לישון</font>"),
+                "distance {distance}: both scattered words must be painted, got: {}",
+                hit.text
+            );
+
+            let pattern = engine
+                .generate_index_fuzzy_highlight_pattern("הלכתי לישון".to_string(), distance)
+                .unwrap()
+                .expect("pattern");
+            let matcher = pattern.matcher.expect("matcher");
+            assert_eq!(
+                matcher
+                    .find_word_matches("הלכתי ואז דיברתי הרבה לפני לישון".to_string(), vec![])
+                    .len(),
                 2,
-                false,
-                false,
-            )
-            .unwrap();
-        assert_eq!(count, 2);
+                "distance {distance}: the in-book view paints each word on its own"
+            );
+            assert_eq!(
+                matcher
+                    .find_word_matches("לכו ונכהו בלשון".to_string(), vec![])
+                    .len(),
+                2,
+                "distance {distance}: dictionary forms are painted too"
+            );
+        }
     }
 
     #[test]
