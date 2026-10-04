@@ -1,21 +1,25 @@
 //! tantivy's `MmapDirectory`, with `atomic_write` (how `meta.json` and `.managed.json` are
-//! replaced) retried while Windows briefly refuses to replace a file another handle holds.
+//! replaced) done on Windows by [`atomic_replace`], whose rename open readers do not block.
 
-use std::io;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use log::{info, warn};
-use tantivy::directory::error::{DeleteError, LockError, OpenReadError, OpenWriteError};
+use tantivy::directory::error::{
+    DeleteError, LockError, OpenDirectoryError, OpenReadError, OpenWriteError,
+};
 use tantivy::directory::{
     Directory, DirectoryLock, FileHandle, FileSlice, Lock, MmapDirectory, WatchCallback,
     WatchHandle, WritePtr,
 };
 
-/// 1,888 ms in all: outlasts a scanner or the reader's meta-file watcher, and bounds a
-/// refusal that is not transient.
+/// 1,888 ms in all: outlasts a scanner holding the file, and bounds a refusal that is not
+/// transient.
 const REPLACE_RETRY_DELAYS: [Duration; 14] = [
     Duration::from_millis(1),
     Duration::from_millis(2),
@@ -36,11 +40,21 @@ const REPLACE_RETRY_DELAYS: [Duration; 14] = [
 #[derive(Clone, Debug)]
 pub(crate) struct IndexDirectory {
     inner: MmapDirectory,
+    #[cfg(windows)]
+    root: PathBuf,
 }
 
 impl IndexDirectory {
-    pub(crate) fn new(inner: MmapDirectory) -> Self {
-        Self { inner }
+    pub(crate) fn open(path: &Path) -> Result<Self, OpenDirectoryError> {
+        let inner = MmapDirectory::open(path)?;
+        Ok(Self {
+            inner,
+            // Canonical, as `MmapDirectory` resolves its paths.
+            #[cfg(windows)]
+            root: path
+                .canonicalize()
+                .map_err(|error| OpenDirectoryError::wrap_io_error(error, path.to_path_buf()))?,
+        })
     }
 }
 
@@ -71,28 +85,16 @@ impl Directory for IndexDirectory {
         self.inner.atomic_read(path)
     }
 
-    // Safe to repeat: each attempt writes its own temporary file, and the target is
-    // untouched until a rename succeeds.
+    // tantivy's own replaces through MoveFileExW, which any open handle on the target refuses.
     fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
-        let mut failed = 0usize;
-        let written = retry(
-            || {
-                let attempt = self.inner.atomic_write(path, data);
-                failed += usize::from(attempt.is_err());
-                attempt
-            },
-            is_transient_replace_error,
-            &REPLACE_RETRY_DELAYS,
-            thread::sleep,
-        );
-        match &written {
-            Ok(()) if failed > 0 => info!("replaced {path:?} after {failed} refused attempt(s)"),
-            Err(error) if failed > REPLACE_RETRY_DELAYS.len() => {
-                warn!("gave up replacing {path:?} after {failed} refused attempts: {error}")
-            }
-            _ => {}
+        #[cfg(windows)]
+        {
+            atomic_replace(&self.root.join(path), data)
         }
-        written
+        #[cfg(not(windows))]
+        {
+            self.inner.atomic_write(path, data)
+        }
     }
 
     fn sync_directory(&self) -> io::Result<()> {
@@ -108,8 +110,99 @@ impl Directory for IndexDirectory {
     }
 }
 
-/// `MoveFileExW`'s refusals while another handle holds the file it replaces (ACCESS_DENIED,
-/// whatever the share mode) or the one it moves (SHARING_VIOLATION). Permanent elsewhere.
+/// Replaces `path` with `data`: a new file beside it, synced, renamed over it. Readers see
+/// the old content or the new, never part of either.
+pub(crate) fn atomic_replace(path: &Path, data: &[u8]) -> io::Result<()> {
+    replace(path, data).map(|_| ())
+}
+
+/// [`atomic_replace`], returning how many times the rename was refused before it succeeded.
+fn replace(path: &Path, data: &[u8]) -> io::Result<usize> {
+    let (temporary, mut file) = create_beside(path)?;
+    let written = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    let mut refused = 0usize;
+    let renamed = written.and_then(|()| {
+        retry(
+            || {
+                let attempt = rename(&temporary, path);
+                refused += usize::from(attempt.is_err());
+                attempt
+            },
+            is_transient_replace_error,
+            &REPLACE_RETRY_DELAYS,
+            thread::sleep,
+        )
+    });
+    match renamed {
+        Ok(()) => {
+            if refused > 0 {
+                info!("replaced {path:?} after {refused} refused attempt(s)");
+            }
+            Ok(refused)
+        }
+        Err(error) => {
+            if refused > REPLACE_RETRY_DELAYS.len() {
+                warn!("gave up replacing {path:?} after {refused} refused attempts: {error}");
+            }
+            let _ = fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
+fn create_beside(path: &Path) -> io::Result<(PathBuf, fs::File)> {
+    static CREATED: AtomicUsize = AtomicUsize::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?
+        .to_string_lossy();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut collisions = 0;
+    loop {
+        let n = CREATED.fetch_add(1, Ordering::Relaxed);
+        let temporary =
+            path.with_file_name(format!(".{name}.{}-{stamp}-{n}.tmp", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && collisions < 8 => {
+                collisions += 1
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes this thread's next [`atomic_replace`] fail where a crash before the rename would.
+#[cfg(test)]
+pub(crate) fn fail_next_rename() {
+    FAIL_NEXT_RENAME.with(|fail| fail.set(true));
+}
+
+// std's rename falls back to POSIX semantics on ERROR_ACCESS_DENIED, so a handle that shares
+// delete access (tantivy's watcher and readers) no longer blocks it.
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if FAIL_NEXT_RENAME.with(|fail| fail.replace(false)) {
+        return Err(io::Error::other("rename failed by the test"));
+    }
+    fs::rename(from, to)
+}
+
+/// The refusals of a rename over a file another handle holds: ACCESS_DENIED, or
+/// SHARING_VIOLATION when it does not share delete access. Permanent elsewhere.
 fn is_transient_replace_error(error: &io::Error) -> bool {
     #[cfg(windows)]
     {
@@ -274,5 +367,90 @@ mod tests {
     fn the_backoff_totals_what_its_comment_says() {
         let total: Duration = REPLACE_RETRY_DELAYS.iter().sum();
         assert_eq!(total, Duration::from_millis(1_888));
+    }
+
+    fn names(dir: &tempfile::TempDir) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn atomic_replace_creates_and_replaces_leaving_no_temporary_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("meta.json");
+        atomic_replace(&target, b"old").unwrap();
+        atomic_replace(&target, b"new").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert_eq!(names(&dir), ["meta.json"]);
+    }
+
+    #[test]
+    fn a_replace_that_fails_before_the_rename_leaves_the_old_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("meta.json");
+        atomic_replace(&target, b"old").unwrap();
+        fail_next_rename();
+        assert!(atomic_replace(&target, b"new").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert_eq!(names(&dir), ["meta.json"]);
+    }
+
+    #[cfg(windows)]
+    fn hold_without_delete_sharing(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ | FILE_SHARE_WRITE.
+        OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(path)
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_reader_sharing_delete_access_does_not_block_the_replace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("meta.json");
+        atomic_replace(&target, b"old").unwrap();
+        let held = fs::File::open(&target).unwrap();
+        assert_eq!(replace(&target, b"new").unwrap(), 0);
+        drop(held);
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_holder_without_delete_sharing_is_waited_out() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("meta.json");
+        atomic_replace(&target, b"old").unwrap();
+        let held = hold_without_delete_sharing(&target);
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        let refused = replace(&target, b"new").unwrap();
+        release.join().unwrap();
+        assert!(refused > 0);
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert_eq!(names(&dir), ["meta.json"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_holder_without_delete_sharing_past_the_retries_fails_the_replace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("meta.json");
+        atomic_replace(&target, b"old").unwrap();
+        let held = hold_without_delete_sharing(&target);
+        let error = replace(&target, b"new").unwrap_err();
+        drop(held);
+        assert!(is_transient_replace_error(&error), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert_eq!(names(&dir), ["meta.json"]);
     }
 }
