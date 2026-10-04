@@ -78,6 +78,7 @@ const FORM_WORDS: &[&str] = &[
     "רמב\"ם",
     "רמב״ם",
     "רמבם",
+    "רמב\"ן",
     "מלך",
     "הלך",
 ];
@@ -544,7 +545,23 @@ fn lexical_baseline() -> Result<()> {
     let engine = open_engine(&config)?;
     let started = Instant::now();
     let mut rows = Vec::new();
-    for &(group, queries) in QUERIES {
+    // `OTZ_EXTRA` (`|`-separated): more queries, as the group "extra".
+    let extra: &'static [&'static str] = Box::leak(
+        std::env::var("OTZ_EXTRA")
+            .map(|v| {
+                v.split('|')
+                    .map(|q| &*Box::leak(q.to_string().into_boxed_str()))
+                    .collect::<Vec<&'static str>>()
+            })
+            .unwrap_or_default()
+            .into_boxed_slice(),
+    );
+    let groups: Vec<(&'static str, &'static [&'static str])> = QUERIES
+        .iter()
+        .copied()
+        .chain((!extra.is_empty()).then_some(("extra", extra)))
+        .collect();
+    for &(group, queries) in &groups {
         for &query in queries {
             if let Ok(only) = std::env::var("OTZ_ONLY") {
                 if !only.split('|').any(|q| q == query) {
@@ -1152,5 +1169,628 @@ fn passage_highlights() -> Result<()> {
         html_path.display(),
         summary.display()
     );
+    Ok(())
+}
+
+/// One `search_semantic` page, Hybrid, in the session the engine keeps for the query.
+#[cfg(feature = "semantic-integration")]
+fn semantic_page(
+    engine: &SearchEngine,
+    query: &str,
+    limit: u32,
+    page: u32,
+    lexical_mode: crate::api::search_engine::SemanticLexicalMode,
+    ranking: Option<crate::api::search_engine::SemanticRankingOptions>,
+) -> Result<crate::api::search_engine::SemanticSearchResponse> {
+    semantic_page_in(engine, query, &[], limit, page, lexical_mode, ranking)
+}
+
+/// [`semantic_page`] restricted to `facets`.
+#[cfg(feature = "semantic-integration")]
+fn semantic_page_in(
+    engine: &SearchEngine,
+    query: &str,
+    facets: &[String],
+    limit: u32,
+    page: u32,
+    lexical_mode: crate::api::search_engine::SemanticLexicalMode,
+    ranking: Option<crate::api::search_engine::SemanticRankingOptions>,
+) -> Result<crate::api::search_engine::SemanticSearchResponse> {
+    use crate::api::search_engine::{SemanticCancellationToken, SemanticRetrievalMode};
+    engine
+        .search_semantic(
+            query.to_string(),
+            facets.to_vec(),
+            limit,
+            (page - 1) * limit,
+            lexical_mode,
+            0,
+            SemanticRetrievalMode::Hybrid,
+            None,
+            false,
+            false,
+            ranking,
+            &SemanticCancellationToken::new(),
+        )
+        .map_err(|error| anyhow::anyhow!("{query} p{page}: {error:?}"))
+}
+
+#[cfg(feature = "semantic-integration")]
+const SEMANTIC_LEXICAL_MODES: &[(&str, crate::api::search_engine::SemanticLexicalMode)] = &[
+    (
+        "exact",
+        crate::api::search_engine::SemanticLexicalMode::Exact,
+    ),
+    (
+        "fuzzy0",
+        crate::api::search_engine::SemanticLexicalMode::Fuzzy,
+    ),
+];
+
+/// A result as paging compares it: book, line, fused score.
+#[cfg(feature = "semantic-integration")]
+type Shown = (String, u64, f32);
+
+#[cfg(feature = "semantic-integration")]
+fn shown(response: &crate::api::search_engine::SemanticSearchResponse) -> Vec<Shown> {
+    response
+        .results
+        .iter()
+        .map(|r| (r.file_path.clone(), r.id, r.fused_score))
+        .collect()
+}
+
+#[cfg(feature = "semantic-integration")]
+fn shown_ids(v: &[Shown]) -> Vec<(String, u64)> {
+    v.iter().map(|(f, i, _)| (f.clone(), *i)).collect()
+}
+
+/// Paging stability in one session: `OTZ_WALK` (5) pages of each query, Exact and Fuzzy 0. After
+/// each page every earlier page is asked again and must be unchanged; no line appears twice;
+/// page 1 asked last is page 1 as first shown; `has_more` is true on every page but the last.
+/// `OTZ_END_QUERIES` (`|`-separated) are walked up to `OTZ_END_MAX` (60) pages to find the end.
+#[cfg(feature = "semantic-integration")]
+#[test]
+#[ignore = "needs OTZ_INDEX and a real vector set"]
+fn paging_stability() -> Result<()> {
+    use std::collections::HashSet;
+    let Some(config) = Config::from_env() else {
+        println!("OTZ_INDEX is not set; nothing to measure");
+        return Ok(());
+    };
+    let Some(inputs) = SemanticInputs::from_env() else {
+        println!("semantic inputs are not set; nothing to measure");
+        return Ok(());
+    };
+    let walk = std::env::var("OTZ_WALK")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(5)
+        .max(2);
+    let engine = open_engine(&config)?;
+    open_vectors(&engine, &inputs)?;
+    let mut queries: Vec<&str> = QUERIES
+        .iter()
+        .find(|(group, _)| *group == "concept")
+        .map(|(_, q)| q.to_vec())
+        .unwrap_or_default();
+    queries.extend(["שבת", "תפילין", "תשובה", "רמב\"ם", "בראשית א א"]);
+    if std::env::var_os("OTZ_SKIP_WALK").is_some() {
+        queries.clear();
+    }
+    let mut out = String::new();
+    let mut failures = 0usize;
+    for &query in &queries {
+        for &(label, mode) in SEMANTIC_LEXICAL_MODES {
+            engine.invalidate_semantic_sessions_for_bench();
+            let mut pages: Vec<Vec<Shown>> = Vec::new();
+            let mut more: Vec<bool> = Vec::new();
+            let mut problems: Vec<String> = Vec::new();
+            let mut score_drift = 0usize;
+            for page in 1..=walk {
+                let response = semantic_page(&engine, query, config.limit, page, mode, None)?;
+                pages.push(shown(&response));
+                more.push(response.has_more);
+                for earlier in 1..page {
+                    let again = shown(&semantic_page(
+                        &engine,
+                        query,
+                        config.limit,
+                        earlier,
+                        mode,
+                        None,
+                    )?);
+                    let before = &pages[earlier as usize - 1];
+                    let (a, b) = (shown_ids(&again), shown_ids(before));
+                    if a != b {
+                        let first_diff = a
+                            .iter()
+                            .zip(&b)
+                            .position(|(x, y)| x != y)
+                            .unwrap_or(a.len().min(b.len()));
+                        problems.push(format!(
+                            "page {earlier} changed after page {page} (len {}->{}, first diff at rank {first_diff})",
+                            b.len(),
+                            a.len()
+                        ));
+                    } else if again
+                        .iter()
+                        .zip(before)
+                        .any(|(x, y)| (x.2 - y.2).abs() > 1e-6)
+                    {
+                        score_drift += 1;
+                    }
+                }
+                if !response.has_more {
+                    break;
+                }
+            }
+            let again1 = shown(&semantic_page(&engine, query, config.limit, 1, mode, None)?);
+            if shown_ids(&pages[0]) != shown_ids(&again1) {
+                problems.push("page 1 asked again differs".into());
+            }
+            let mut seen = HashSet::new();
+            let dups: Vec<String> = pages
+                .iter()
+                .flatten()
+                .filter(|(f, i, _)| !seen.insert((f.clone(), *i)))
+                .map(|(f, i, _)| format!("{f}#{i}"))
+                .collect();
+            if !dups.is_empty() {
+                problems.push(format!("{} duplicates: {}", dups.len(), dups.join(" ")));
+            }
+            // Fused order: inversions inside a page, and rises across a page boundary.
+            let mut inside = 0usize;
+            let mut across = Vec::new();
+            let mut inversions = Vec::new();
+            for (p, page) in pages.iter().enumerate() {
+                for (r, w) in page.windows(2).enumerate() {
+                    if w[1].2 > w[0].2 + 1e-7 {
+                        inside += 1;
+                        inversions.push(format!(
+                            "p{} #{}->#{} {:.6}<{:.6} ({}#{} then {}#{})",
+                            p + 1,
+                            r + 1,
+                            r + 2,
+                            w[0].2,
+                            w[1].2,
+                            w[0].0,
+                            w[0].1,
+                            w[1].0,
+                            w[1].1
+                        ));
+                    }
+                }
+                if let (Some(last), Some(next)) =
+                    (page.last(), pages.get(p + 1).and_then(|n| n.first()))
+                {
+                    if next.2 > last.2 + 1e-7 {
+                        across.push(format!(
+                            "p{}->p{} {:.6}<{:.6}",
+                            p + 1,
+                            p + 2,
+                            last.2,
+                            next.2
+                        ));
+                    }
+                }
+            }
+            if inside > 0 {
+                problems.push(format!(
+                    "{inside} fused inversions inside pages: {}",
+                    inversions.join(", ")
+                ));
+            }
+            let fetched = pages.len();
+            let more_ok = more[..fetched - 1].iter().all(|m| *m)
+                && pages[..fetched - 1]
+                    .iter()
+                    .all(|p| p.len() == config.limit as usize);
+            if !more_ok {
+                problems.push(format!(
+                    "has_more/fullness wrong: {more:?} lens {:?}",
+                    pages.iter().map(Vec::len).collect::<Vec<_>>()
+                ));
+            }
+            let verdict = if problems.is_empty() { "OK" } else { "FAIL" };
+            failures += usize::from(!problems.is_empty());
+            let line = format!(
+                "{verdict:<4} {label:<6} pages {fetched} lens {:?} more {:?} score_drift {score_drift} cross_page_rises {} [{}] {}  {query}",
+                pages.iter().map(Vec::len).collect::<Vec<_>>(),
+                more,
+                across.len(),
+                across.join("; "),
+                problems.join("; "),
+            );
+            println!("{line}");
+            let _ = writeln!(out, "{line}");
+        }
+    }
+
+    let end_queries: Vec<String> = std::env::var("OTZ_END_QUERIES")
+        .map(|v| v.split('|').map(str::to_string).collect())
+        .unwrap_or_else(|_| vec!["ענווה של משה רבינו".into(), "קשקש בלבל זמזם".into()]);
+    let end_facets: Vec<String> = std::env::var("OTZ_END_FACETS")
+        .map(|v| v.split('|').map(str::to_string).collect())
+        .unwrap_or_default();
+    let end_max = std::env::var("OTZ_END_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(60);
+    for query in &end_queries {
+        for &(label, mode) in SEMANTIC_LEXICAL_MODES {
+            engine.invalidate_semantic_sessions_for_bench();
+            let mut lens = Vec::new();
+            let mut mores = Vec::new();
+            let mut seen = HashSet::new();
+            let mut dups = 0usize;
+            let mut last = None;
+            for page in 1..=end_max {
+                let response =
+                    semantic_page_in(&engine, query, &end_facets, config.limit, page, mode, None)?;
+                for r in &response.results {
+                    dups += usize::from(!seen.insert((r.file_path.clone(), r.id)));
+                }
+                lens.push(response.results.len());
+                mores.push(response.has_more);
+                if !response.has_more {
+                    let after = semantic_page_in(
+                        &engine,
+                        query,
+                        &end_facets,
+                        config.limit,
+                        page + 1,
+                        mode,
+                        None,
+                    )?;
+                    last = Some((
+                        page,
+                        response.total_count,
+                        response.candidate_window_truncated,
+                        after.results.len(),
+                        after.has_more,
+                    ));
+                    break;
+                }
+            }
+            let early_false = mores[..mores.len().saturating_sub(1)]
+                .iter()
+                .filter(|m| !**m)
+                .count();
+            let line = match last {
+                Some((page, total, capped, after_len, after_more)) => format!(
+                    "END  {label:<6} ended at page {page} (total_count {total}, window_capped {capped}); next page: {after_len} results, more={after_more}; early more=false {early_false}; dups {dups}; lens {lens:?}  {query} {end_facets:?}"
+                ),
+                None => format!(
+                    "OPEN {label:<6} still has_more after {end_max} pages; dups {dups}; last lens {:?}  {query} {end_facets:?}",
+                    &lens[lens.len().saturating_sub(3)..]
+                ),
+            };
+            println!("{line}");
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    let _ = writeln!(out, "\nfailures: {failures}");
+    if let Some(parent) = config.out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let path = config.sibling("paging.txt");
+    fs::write(&path, &out)?;
+    println!("\nfailures: {failures}\nreport: {}", path.display());
+    Ok(())
+}
+
+/// Whether the line `id` of `file_path` sits in a foundational book (`/base` or under it).
+#[cfg(feature = "semantic-integration")]
+struct FoundationalProbe {
+    searcher: tantivy::Searcher,
+    file_path: tantivy::schema::Field,
+    id: tantivy::schema::Field,
+    topics: tantivy::schema::Field,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl FoundationalProbe {
+    fn open(path: &Path) -> Result<Self> {
+        let index = Index::open(ReadOnlyDirectory::open(path)?)?;
+        let schema = index.schema();
+        let reader: tantivy::IndexReader = index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()?;
+        Ok(Self {
+            searcher: reader.searcher(),
+            file_path: schema.get_field("filePath")?,
+            id: schema.get_field("id")?,
+            topics: schema.get_field("topics")?,
+        })
+    }
+
+    fn is_base(&self, file_path: &str, id: u64) -> Result<bool> {
+        use tantivy::collector::Count;
+        use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
+        use tantivy::schema::{Facet, IndexRecordOption};
+        use tantivy::Term;
+        let term =
+            |t: Term| -> Box<dyn Query> { Box::new(TermQuery::new(t, IndexRecordOption::Basic)) };
+        let query = BooleanQuery::new(vec![
+            (
+                Occur::Must,
+                term(Term::from_field_text(self.file_path, file_path)),
+            ),
+            (Occur::Must, term(Term::from_field_u64(self.id, id))),
+            (
+                Occur::Must,
+                term(Term::from_facet(self.topics, &Facet::from_text("/base")?)),
+            ),
+        ]);
+        Ok(self.searcher.search(&query, &Count)? > 0)
+    }
+}
+
+/// A ranked result as [`foundational_share`] reports it.
+#[cfg(feature = "semantic-integration")]
+struct Ranked {
+    title: String,
+    reference: String,
+    key: (String, u64),
+    base: bool,
+    fused: f32,
+    source: String,
+}
+
+/// The foundational books' share of each conceptual query's first page: candidate share 0
+/// against 0.5 (both at bonus 0.002), and no preference at all; what moved, with its scores.
+#[cfg(feature = "semantic-integration")]
+#[test]
+#[ignore = "needs OTZ_INDEX and a real vector set"]
+fn foundational_share() -> Result<()> {
+    use crate::api::search_engine::SemanticRankingOptions;
+    let Some(config) = Config::from_env() else {
+        println!("OTZ_INDEX is not set; nothing to measure");
+        return Ok(());
+    };
+    let Some(inputs) = SemanticInputs::from_env() else {
+        println!("semantic inputs are not set; nothing to measure");
+        return Ok(());
+    };
+    let engine = open_engine(&config)?;
+    open_vectors(&engine, &inputs)?;
+    let probe = FoundationalProbe::open(&config.index)?;
+    let options = |share: f64, bonus: f64| SemanticRankingOptions {
+        foundational_candidate_share: share,
+        foundational_bonus: bonus,
+        ..SemanticRankingOptions::defaults()
+    };
+    let configs = [
+        ("none", options(0.0, 0.0)),
+        ("share0", options(0.0, 0.002)),
+        ("share0.5", options(0.5, 0.002)),
+    ];
+    let queries = QUERIES
+        .iter()
+        .find(|(group, _)| *group == "concept")
+        .map(|(_, q)| *q)
+        .unwrap_or_default();
+    let limit = config.limit as usize;
+    let mut out = String::new();
+    let mut totals: BTreeMap<(String, String), (usize, usize)> = BTreeMap::new();
+    for &query in queries {
+        for &(label, mode) in SEMANTIC_LEXICAL_MODES {
+            let mut lists: Vec<Vec<Ranked>> = Vec::new();
+            for (_, ranking) in &configs {
+                engine.invalidate_semantic_sessions_for_bench();
+                let mut items = Vec::new();
+                for page in 1..=3 {
+                    let response = semantic_page(
+                        &engine,
+                        query,
+                        config.limit,
+                        page,
+                        mode,
+                        Some(ranking.clone()),
+                    )?;
+                    for r in &response.results {
+                        items.push(Ranked {
+                            title: r.title.clone(),
+                            reference: r.reference.clone(),
+                            key: (r.file_path.clone(), r.id),
+                            base: probe.is_base(&r.file_path, r.id)?,
+                            fused: r.fused_score,
+                            source: format!("{:?}", r.source),
+                        });
+                    }
+                    if !response.has_more {
+                        break;
+                    }
+                }
+                lists.push(items);
+            }
+            let mut line = format!("{label:<6} {query}:");
+            for ((name, _), items) in configs.iter().zip(&lists) {
+                let n = items.len().min(limit);
+                let b = items.iter().take(limit).filter(|i| i.base).count();
+                let e = totals
+                    .entry((label.to_string(), name.to_string()))
+                    .or_default();
+                e.0 += b;
+                e.1 += n;
+                let _ = write!(line, "  {name} {b}/{n}");
+            }
+            println!("{line}");
+            let _ = writeln!(out, "\n{line}");
+            let (a, b) = (&lists[1], &lists[2]);
+            let rank_in =
+                |list: &[Ranked], k: &(String, u64)| list.iter().position(|i| i.key == *k);
+            let in_top =
+                |list: &[Ranked], k: &(String, u64)| list.iter().take(limit).any(|i| i.key == *k);
+            for (r, i) in b.iter().enumerate().take(limit) {
+                if in_top(a, &i.key) {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "  IN   base={} #{} fused {:.5} {} | share0: {}  {} — {}",
+                    i.base,
+                    r + 1,
+                    i.fused,
+                    i.source,
+                    rank_in(a, &i.key).map_or("beyond 90".into(), |x| format!(
+                        "#{} fused {:.5}",
+                        x + 1,
+                        a[x].fused
+                    )),
+                    i.title,
+                    i.reference,
+                );
+            }
+            for (r, i) in a.iter().enumerate().take(limit) {
+                if in_top(b, &i.key) {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "  OUT  base={} #{} fused {:.5} {} | share0.5: {}  {} — {}",
+                    i.base,
+                    r + 1,
+                    i.fused,
+                    i.source,
+                    rank_in(b, &i.key).map_or("beyond 90".into(), |x| format!(
+                        "#{} fused {:.5}",
+                        x + 1,
+                        b[x].fused
+                    )),
+                    i.title,
+                    i.reference,
+                );
+            }
+            // The 30th score of each list: the bar a line had to clear.
+            let bar = |l: &[Ranked]| l.get(limit - 1).map_or(f32::NAN, |i| i.fused);
+            let _ = writeln!(
+                out,
+                "  bar(30th fused): share0 {:.5}  share0.5 {:.5}",
+                bar(a),
+                bar(b)
+            );
+        }
+    }
+    let _ = writeln!(out, "\nTOTAL /base in top {limit}:");
+    for ((label, name), (b, n)) in &totals {
+        let _ = writeln!(
+            out,
+            "  {label:<6} {name:<8} {b}/{n} = {:.1}%",
+            100.0 * *b as f64 / *n as f64
+        );
+    }
+    if let Some(parent) = config.out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let path = config.sibling("foundational.txt");
+    fs::write(&path, &out)?;
+    println!("{out}\nreport: {}", path.display());
+    Ok(())
+}
+
+/// Acronyms, pointed forms and quoted phrases through `search_semantic`: how the query is read
+/// (quoted phrases, query type), the mode that ran, and whether the lexical half found the word.
+#[cfg(feature = "semantic-integration")]
+#[test]
+#[ignore = "needs OTZ_INDEX and a real vector set"]
+fn acronym_modes() -> Result<()> {
+    use crate::api::search_engine::SemanticResultSource;
+    use otzaria_semantic_search::hybrid::hebrew_normalizer::HebrewNormalizer;
+    use otzaria_semantic_search::hybrid::ranking::analyze_query;
+    let Some(config) = Config::from_env() else {
+        println!("OTZ_INDEX is not set; nothing to measure");
+        return Ok(());
+    };
+    let Some(inputs) = SemanticInputs::from_env() else {
+        println!("semantic inputs are not set; nothing to measure");
+        return Ok(());
+    };
+    let engine = open_engine(&config)?;
+    open_vectors(&engine, &inputs)?;
+    let queries = [
+        "רמב\"ם",
+        "רמב״ם",
+        "רש\"י",
+        "שו\"ע",
+        "חז\"ל",
+        "ז\"ל",
+        "רַמְבַּ\"ם",
+        "רַמְבַּ״ם",
+        "רַשִׁ\"י",
+        "חֲזַ\"ל",
+        "שׁוּ\"ע",
+        "דברי חז\"ל על השלום",
+        "\"שמע ישראל\"",
+        "״שמע ישראל״",
+        "\"שְׁמַע יִשְׂרָאֵל\"",
+        "שמע ישראל",
+    ];
+    let mut out = String::new();
+    for query in queries {
+        let normalized = HebrewNormalizer::new().normalize(query);
+        let features = analyze_query(&normalized);
+        let exact_count = engine.count_exact(query.to_string(), Vec::new(), false, false)?;
+        for &(label, mode) in SEMANTIC_LEXICAL_MODES {
+            engine.invalidate_semantic_sessions_for_bench();
+            let r = semantic_page(&engine, query, config.limit, 1, mode, None)?;
+            let count =
+                |s: SemanticResultSource| r.results.iter().filter(|x| x.source == s).count();
+            let lexical_snippet = r
+                .results
+                .iter()
+                .find(|x| x.source != SemanticResultSource::Semantic && x.is_highlighted)
+                .map(|x| {
+                    let s: String = x.snippet_html.chars().take(110).collect();
+                    s.replace('\n', " ")
+                })
+                .unwrap_or_default();
+            let line = format!(
+                "{query}\t{label}\tnormalized={normalized}\tquoted={:?}\ttype={:?}\texec={:?}\tfallback={:?}/{:?}\tlex_total={}\tcount_exact={exact_count}\tL/S/B={}/{}/{}\thl={}\t{lexical_snippet}",
+                features.quoted_phrases,
+                features.estimated_type,
+                r.executed_mode,
+                r.fallback_kind,
+                r.fallback_reason,
+                r.lexical_total_count,
+                count(SemanticResultSource::Lexical),
+                count(SemanticResultSource::Semantic),
+                count(SemanticResultSource::Both),
+                r.results.iter().filter(|x| x.is_highlighted).count(),
+            );
+            println!("{line}");
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    if let Some(parent) = config.out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let path = config.sibling("acronyms.tsv");
+    fs::write(&path, format!("\u{feff}{out}"))?;
+    println!("report: {}", path.display());
+    Ok(())
+}
+
+/// Exact facet counts of `OTZ_FACET_QUERY` under `OTZ_FACET_PREFIX`, smallest first: where to
+/// find a filter narrow enough for a search to run out of results.
+#[test]
+#[ignore = "needs OTZ_INDEX"]
+fn facet_probe() -> Result<()> {
+    let Some(config) = Config::from_env() else {
+        println!("OTZ_INDEX is not set; nothing to measure");
+        return Ok(());
+    };
+    let engine = open_engine(&config)?;
+    let query = std::env::var("OTZ_FACET_QUERY").unwrap_or_else(|_| "שבת".into());
+    let prefix = std::env::var("OTZ_FACET_PREFIX").unwrap_or_else(|_| "/".into());
+    let mut counts =
+        engine.get_facet_counts_exact(query.clone(), Vec::new(), prefix, false, false)?;
+    counts.sort_by_key(|c| c.count);
+    for c in counts.iter().take(40) {
+        println!("{:>8}  {}", c.count, c.path);
+    }
+    println!("{} facets", counts.len());
     Ok(())
 }
