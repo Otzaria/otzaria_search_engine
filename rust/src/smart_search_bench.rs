@@ -997,6 +997,8 @@ fn passage_highlights() -> Result<()> {
     let mut per_clause = Vec::new();
     let mut marked = 0usize;
     let mut asked = 0usize;
+    // Why a target was not highlighted, by reason.
+    let mut unmarked: BTreeMap<&str, usize> = BTreeMap::new();
     let mut last_targets = Vec::new();
     let mut html = String::from(
         "<!doctype html><html lang=\"he\" dir=\"rtl\"><head><meta charset=\"utf-8\">\
@@ -1077,6 +1079,10 @@ fn passage_highlights() -> Result<()> {
             asked += got.len();
             for (hit, highlight) in batch.iter().zip(&got) {
                 marked += usize::from(highlight.is_highlighted);
+                if !highlight.is_highlighted {
+                    let reason = unmarked_reason(&engine, &hit.file_path, hit.id)?;
+                    *unmarked.entry(reason).or_default() += 1;
+                }
                 let _ = writeln!(
                     html,
                     "<div class=\"item\"><div class=\"meta\">{} — {} · semantic {:.3} · span {}</div>\
@@ -1151,6 +1157,7 @@ fn passage_highlights() -> Result<()> {
     table.push_str(&line("embed alone", &alone));
     table.push_str(&line("embed under highlights", &loaded));
     let _ = writeln!(table, "highlighted {marked} of {asked} semantic-only hits");
+    let _ = writeln!(table, "not highlighted, by reason: {unmarked:?}");
 
     if let Some(parent) = config.out.parent() {
         fs::create_dir_all(parent)?;
@@ -1170,6 +1177,32 @@ fn passage_highlights() -> Result<()> {
         summary.display()
     );
     Ok(())
+}
+
+/// Why the highlight of line `id` of `file_path` marked nothing: its line is missing, stale or
+/// unreadable, short, or one clause; "other" for a line whose clauses were embedded.
+#[cfg(feature = "semantic-integration")]
+fn unmarked_reason(engine: &SearchEngine, file_path: &str, id: u64) -> Result<&'static str> {
+    use crate::api::search_engine::TextStatus;
+    use crate::semantic_highlight::{clauses, SHORT_LINE_WORDS};
+    Ok(match engine.passage_text_for_bench(file_path, id)? {
+        None => "missing",
+        Some((_, TextStatus::Stale)) => "stale",
+        Some((_, TextStatus::Unavailable)) => "unavailable",
+        Some((text, TextStatus::Ok)) => {
+            let words = text
+                .split_whitespace()
+                .filter(|word| word.chars().any(char::is_alphanumeric))
+                .count();
+            if words <= SHORT_LINE_WORDS {
+                "short"
+            } else if clauses(&text).is_empty() {
+                "one clause"
+            } else {
+                "other"
+            }
+        }
+    })
 }
 
 /// One `search_semantic` page, Hybrid, in the session the engine keeps for the query.

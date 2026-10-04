@@ -4518,6 +4518,21 @@ impl SearchEngine {
             .forget_keys();
     }
 
+    /// A passage highlight target's line text as the highlight reads it; `None` when no line
+    /// of the book has that id.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn passage_text_for_bench(
+        &self,
+        file_path: &str,
+        id: u64,
+    ) -> Result<Option<(String, TextStatus)>> {
+        let searcher = self.index_reader.searcher();
+        let Some(address) = self.address_in_book(&searcher, file_path, id)? else {
+            return Ok(None);
+        };
+        Ok(self.texts_at(&searcher, &[address])?.pop())
+    }
+
     /// Plan unfiltered searches and the foundational books' query as the first search would;
     /// how long it took, in ms.
     #[cfg(all(test, feature = "semantic-integration"))]
