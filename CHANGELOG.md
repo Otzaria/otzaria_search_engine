@@ -1,16 +1,12 @@
 # Changelog
 
-## Unreleased
-
-- Pin the semantic sidecar to `82a8d9e`: assembly and G6 reject a warehouse
-  whose passage package disagrees with the model family, the export plan, or
-  the installed segments' provenance. Checks run in the publishing pipeline.
+## 1.0.0 – 2026-10-04
 
 > Breaking for Dart code that constructs `SemanticConfigInput` or
 > `SemanticStatus`, that calls `searchSemantic`, or that catches the semantic
 > calls' `AnyhowException`, and for an application that configures a GGUF model,
-> so this must not ship as a 0.8.x patch: `^0.8.7` would take it on its own
-> (see 0.8.0). An existing lexical index is not one of them: it opens, and
+> so it ships as 1.0.0, not as a 0.9.x patch that `^0.9.0` would take on its
+> own (see 0.8.0). An existing lexical index is not one of them: it opens, and
 > searches, as it did.
 
 **The application never builds the library's vectors.** The build machine
@@ -269,7 +265,7 @@ are now documented as development and testing scaffolding, not for the library.
   were built with, such as the sidecar's
   `config/models/meivin-round2-onnx/model.json`) and, optionally, the ONNX
   Runtime and the number of threads a search scans with. The sidecar is pinned
-  at 2663873, its `onnx-backend` with the `store-v2` branch, its two rounds of
+  at 82a8d9e, its `onnx-backend` with the `store-v2` branch, its two rounds of
   audit fixes, `scan-with`, `open-without-recovery`, `fusion-tie-order`,
   `fix/g5-empty-sample`, `fix/install-lock-race`, `fix/windows-rename-retry`
   and `fix/warehouse-integrity` merged, which keys a
@@ -755,7 +751,9 @@ are now documented as development and testing scaffolding, not for the library.
   exact reference since 2663873 (Otzaria/otzaria-semantic-search#22), pinned
   here, so G6 refuses it with exit 2, naming what failed.
   `export_semantic_plan --warehouse` takes a text whose index entry is corrupt
-  as not held, and plans it to be embedded.
+  as not held, and plans it to be embedded. Since 82a8d9e, pinned here,
+  assembly and G6 also reject a warehouse whose passage package disagrees with
+  the model family, the export plan, or the installed segments' provenance.
 - **A commit on Windows no longer fails with "Access is denied" while something
   holds `meta.json` open.** tantivy replaces `meta.json` on every commit and
   merge, and `.managed.json` for every new segment file, by renaming a
