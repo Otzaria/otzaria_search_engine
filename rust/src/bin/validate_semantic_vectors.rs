@@ -684,7 +684,9 @@ mod gates {
         let warehouse = Warehouse::open(request.warehouse)
             .map_err(|error| anyhow::anyhow!("could not open the warehouse: {error}"))?;
         let reference = ExactReference::new(set, &warehouse).map_err(|error| {
-            anyhow::anyhow!("the warehouse is not the one the set was assembled from: {error}")
+            anyhow::anyhow!(
+                "the warehouse fails its check, or is not the one the set was assembled from: {error}"
+            )
         })?;
         let cancel = CancellationToken::new();
         let (mut sum_10, mut sum_50) = (0.0, 0.0);
