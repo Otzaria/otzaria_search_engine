@@ -2263,6 +2263,9 @@ impl SemanticRequest<'_> {
         let mut facets = self.facets.to_vec();
         facets.sort();
         facets.dedup();
+        // Opened before it is sampled, or the first search's read opening it would change the
+        // sample and start a second session.
+        let _ = crate::line_source::with_store(|_| Ok(()));
         SessionKey {
             query: self.query.to_string(),
             facets,
@@ -2373,12 +2376,65 @@ struct Expanded {
     unverified: u32,
     exhausted: bool,
     capped_request: Option<u64>,
+    timings: SemanticTimings,
+}
+
+/// Where a semantic search's time went, in milliseconds: logged at debug level, and read by
+/// the benchmark.
+#[cfg(feature = "semantic-integration")]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SemanticTimings {
+    pub expansions: u32,
+    /// The lexical phase, on its own thread beside planning and the semantic half.
+    pub lexical_ms: f64,
+    /// Planning, embedding, scanning and resolving.
+    pub semantic_ms: f64,
+    /// Of `semantic_ms`, as the sidecar measured them.
+    pub embed_ms: f64,
+    pub scan_ms: f64,
+    pub resolve_ms: f64,
+    pub fuse_ms: f64,
+    pub hydrate_ms: f64,
+    /// Cutting the page, reading its texts and painting it.
+    pub page_ms: f64,
+    pub total_ms: f64,
+}
+
+#[cfg(feature = "semantic-integration")]
+impl SemanticTimings {
+    fn plus(self, later: SemanticTimings) -> SemanticTimings {
+        SemanticTimings {
+            expansions: self.expansions + later.expansions,
+            lexical_ms: self.lexical_ms + later.lexical_ms,
+            semantic_ms: self.semantic_ms + later.semantic_ms,
+            embed_ms: self.embed_ms + later.embed_ms,
+            scan_ms: self.scan_ms + later.scan_ms,
+            resolve_ms: self.resolve_ms + later.resolve_ms,
+            fuse_ms: self.fuse_ms + later.fuse_ms,
+            hydrate_ms: self.hydrate_ms + later.hydrate_ms,
+            page_ms: self.page_ms + later.page_ms,
+            total_ms: self.total_ms + later.total_ms,
+        }
+    }
+}
+
+#[cfg(all(test, feature = "semantic-integration"))]
+thread_local! {
+    /// The timings of the last semantic search this thread ran.
+    pub(crate) static LAST_SEMANTIC_TIMINGS: std::cell::Cell<SemanticTimings> =
+        std::cell::Cell::new(SemanticTimings::default());
+}
+
+#[cfg(feature = "semantic-integration")]
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 #[cfg(feature = "semantic-integration")]
 impl Expanded {
     fn followed_by(self, later: Expanded) -> Expanded {
         Expanded {
+            timings: self.timings.plus(later.timings),
             lexical: later.lexical.or(self.lexical),
             highlight: self.highlight.or(later.highlight),
             stale_primaries_dropped: self
@@ -4400,6 +4456,12 @@ impl SearchEngine {
         })
     }
 
+    /// Forget every semantic session, so the next search computes its first page afresh.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn invalidate_semantic_sessions_for_bench(&self) {
+        self.semantic_sessions.invalidate();
+    }
+
     /// The lexical phase of [`Self::search_semantic`] alone, for benchmarks:
     /// `None` is Exact, `Some(d)` is Fuzzy at distance `d`.
     #[cfg(all(test, feature = "semantic-integration"))]
@@ -5870,6 +5932,10 @@ impl SearchEngine {
                 }
             }
             search_cancellation::look(cancel, SearchCheckpoint::Painting)?;
+            let page_started = Instant::now();
+            let mut timings = expanded
+                .as_ref()
+                .map_or_else(SemanticTimings::default, |expanded| expanded.timings);
 
             session.commit(additions);
             session.window = window;
@@ -6045,6 +6111,11 @@ impl SearchEngine {
                      (requested {requested})"
                 ));
             }
+            timings.page_ms = elapsed_ms(page_started);
+            timings.total_ms = elapsed_ms(started);
+            debug!("semantic page at {offset} of {limit}: {timings:?}");
+            #[cfg(test)]
+            LAST_SEMANTIC_TIMINGS.set(timings);
             Ok(SemanticSearchResponse {
                 results,
                 // The last expansion's candidate-set counts: stable across the pages it
@@ -6153,9 +6224,13 @@ impl SearchEngine {
 
         // The lexical phase on its own thread, the semantic half on this one, where a test's
         // probes see it.
-        let (lexical, prepared) = std::thread::scope(|scope| {
-            let lexical =
-                scope.spawn(|| self.semantic_lexical_phase(request, searcher, window, first));
+        let semantic_started = Instant::now();
+        let ((lexical, lexical_ms), (prepared, semantic_ms)) = std::thread::scope(|scope| {
+            let lexical = scope.spawn(|| {
+                let started = Instant::now();
+                let phase = self.semantic_lexical_phase(request, searcher, window, first);
+                (phase, elapsed_ms(started))
+            });
             let prepared = self.plan_semantic_scan(open, request, &filters, &mut resolver, cancel);
             let prepared = prepared.and_then(|()| {
                 // The sidecar's first act is to look at the token, so this crate does not look
@@ -6165,10 +6240,11 @@ impl SearchEngine {
                     .prepare_semantic(request.query, &params, &resolver, cancel)
                     .map_err(|err| semantic_errors::search_error(&err, open.call()))
             });
+            let semantic_ms = elapsed_ms(semantic_started);
             let lexical = lexical
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            (lexical, prepared)
+            (lexical, (prepared, semantic_ms))
         });
         let prepared = match prepared {
             Err(error) if error.kind == SemanticErrorKind::Cancelled => return Err(error),
@@ -6190,12 +6266,20 @@ impl SearchEngine {
         let lexical_done = matches!(request.retrieval_mode, SemanticRetrievalMode::SemanticOnly)
             || lexical_candidates.len() < window as usize;
         let semantic_done = !prepared.healthy() || prepared.semantic_hits() < prepared.top_k();
+        let fuse_started = Instant::now();
         let result = open
             .coordinator
             .fuse_prepared(lexical_candidates, prepared, &params, cancel)
             .map_err(|err| semantic_errors::search_error(&err, open.call()))?;
+        let fuse_ms = elapsed_ms(fuse_started);
+        let telemetry = result.telemetry.clone();
+        let sidecar_ms =
+            |field: fn(&otzaria_semantic_search::telemetry::SearchTelemetry) -> Option<u64>| {
+                telemetry.as_ref().and_then(field).unwrap_or(0) as f64
+            };
         // Hydration is a lookup per result, and nobody may be waiting for them.
         search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;
+        let hydrate_started = Instant::now();
         let fused = result.group_count.unwrap_or(result.total_count);
         let exhausted = (lexical_done && semantic_done && fused <= window)
             || window >= MAX_SEMANTIC_CANDIDATE_WINDOW;
@@ -6289,6 +6373,17 @@ impl SearchEngine {
             unverified,
             exhausted,
             capped_request: None,
+            timings: SemanticTimings {
+                expansions: 1,
+                lexical_ms,
+                semantic_ms,
+                embed_ms: sidecar_ms(|telemetry| telemetry.embedding_latency_ms),
+                scan_ms: sidecar_ms(|telemetry| telemetry.scan_ms),
+                resolve_ms: sidecar_ms(|telemetry| telemetry.resolve_ms),
+                fuse_ms,
+                hydrate_ms: elapsed_ms(hydrate_started),
+                ..SemanticTimings::default()
+            },
         })
     }
 
