@@ -1901,8 +1901,8 @@ fn review_e_widening_crowds_out_the_admitted_books() {
 }
 
 /// A text copied into a book of another category, and still in its own, is found under
-/// either filter, each in its own book. An unfiltered search finds it where the set records
-/// it until the vectors are updated.
+/// either filter, each in its own book. Unfiltered, the book the set records it in comes
+/// first.
 #[test]
 fn a_text_copied_into_another_category_is_found_under_each_filter() {
     let library = build_library();
@@ -1954,6 +1954,52 @@ fn a_text_copied_within_its_category_is_found_in_both_books() {
         .collect();
     found.sort();
     assert_eq!(found, [(BERACHOT.to_string(), 0), (copy.to_string(), 0)]);
+}
+
+/// F2 of the second audit: a passage copied into a new book after opening. Unfiltered finds
+/// every line its filter does; on version 4, which has no arrivals, neither finds the copy.
+#[test]
+fn a_text_copied_into_a_new_book_is_found_unfiltered_where_its_filter_finds_it() {
+    for version_4 in [false, true] {
+        let library = build_library_of(&default_books(), version_4);
+        let mut engine = library.engine();
+        engine.open_semantic_artifact(library.input()).unwrap();
+        let copy = "/books/copy.txt";
+        add_books(
+            &mut engine,
+            &[(
+                "עותק",
+                "/עותקים",
+                copy,
+                2,
+                format!("שורה פותחת בספר העותק ארוכה דיה לעמוד\n{BERACHOT_TEXT}"),
+            )],
+        );
+        let lines = |facets: &[&str]| -> BTreeSet<(String, u64)> {
+            semantic_lines(&engine, BERACHOT_TEXT, facets)
+                .into_iter()
+                .filter(|(_, text, _)| text == BERACHOT_TEXT)
+                .map(|(book, _, line)| (book, line))
+                .collect()
+        };
+        let context = format!("version 4: {version_4}");
+        let filtered = lines(&["/עותקים"]);
+        let unfiltered = lines(&[]);
+        assert!(
+            filtered.is_subset(&unfiltered),
+            "every line the filter finds is a line unfiltered: {filtered:?}, {unfiltered:?}, \
+             {context}"
+        );
+        let original = (BERACHOT.to_string(), 0);
+        let copied = (copy.to_string(), 1);
+        if version_4 {
+            assert_eq!(filtered, BTreeSet::new(), "{context}");
+            assert_eq!(unfiltered, BTreeSet::from([original]), "{context}");
+        } else {
+            assert_eq!(filtered, BTreeSet::from([copied.clone()]), "{context}");
+            assert_eq!(unfiltered, BTreeSet::from([original, copied]), "{context}");
+        }
+    }
 }
 
 /// A text two admitted books hold, each many times over, and the set records in neither: more
