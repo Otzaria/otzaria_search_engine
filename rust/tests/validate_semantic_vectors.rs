@@ -689,6 +689,21 @@ fn a_warehouse_the_set_was_not_assembled_from_fails_retrieval() {
     assert_eq!(gate(&report, "G4").0, "passed");
 }
 
+/// A warehouse whose vectors no longer match their digests is refused before G6 measures
+/// anything: exit 2, naming the failed check.
+#[test]
+fn a_damaged_warehouse_exits_2() {
+    let release = release(&books());
+    let vectors = release.warehouse.join(VECTORS_FILE);
+    let mut bytes = std::fs::read(&vectors).unwrap();
+    bytes[5] ^= 0x40;
+    std::fs::write(&vectors, bytes).unwrap();
+    let out = release.path("report.json");
+    let (code, printed) = validate(&as_args(&all_gates(&release, &release.warehouse, &out)));
+    assert_eq!(code, 2, "{printed}");
+    assert!(printed.contains("fails its check"), "{printed}");
+}
+
 /// A number of queries to draw that no index could give, or none at all, is a wrong
 /// argument: exit 2, as for any, not a crash.
 #[test]
