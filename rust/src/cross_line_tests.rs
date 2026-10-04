@@ -878,3 +878,121 @@ fn acronym_snippets_paint_complete_alternatives_without_stray_expansion_words() 
         );
     }
 }
+
+fn add_filtered_book(e: &mut SearchEngine, order: u32, topics: &str, text: &str, extra: &[&str]) {
+    e.add_text_book(
+        format!("ספר {order}"),
+        topics.into(),
+        format!("/filter/{order}.txt"),
+        order,
+        5,
+        text.into(),
+        Some(extra.iter().map(|s| s.to_string()).collect()),
+        TextStorage::InIndex,
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
+fn seam_builders_preserve_facet_dimensions_and_exact_filtering() {
+    use tantivy::collector::Count;
+    let (mut e, _dir) = engine();
+    add_filtered_book(
+        &mut e,
+        0,
+        "/category/a",
+        "אחת\nשתים",
+        &["/author/a", "/era/early"],
+    );
+    add_filtered_book(
+        &mut e,
+        1,
+        "/category/b",
+        "אחת\nמילה שתים",
+        &["/author/b", "/era/early"],
+    );
+    add_filtered_book(
+        &mut e,
+        2,
+        "/category/c",
+        "אחת\nשתים",
+        &["/author/c", "/era/late"],
+    );
+    e.commit().unwrap();
+    for (facets, exact, gapped) in [
+        (vec!["/category/a"], 1, 1),
+        (vec!["/category/a", "/category/b"], 1, 2),
+        (vec!["/author/a", "/author/b", "/era/early"], 1, 2),
+        (vec!["/category/a", "/era/late"], 0, 0),
+        (vec!["/absent"], 0, 0),
+    ] {
+        let facets: Vec<String> = facets.into_iter().map(str::to_string).collect();
+        for (distance, expected) in [(None, exact), (Some(2), gapped)] {
+            let query = e.filtered_phrase_query_for_tests("אחת שתים", distance, true, &facets);
+            assert_eq!(
+                e.searcher_for_tests()
+                    .search(query.as_ref(), &Count)
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+}
+
+/// Run with --release --ignored --nocapture. Uses the real query builders,
+/// so the selected facets reach the seam evaluator as well as the final AND.
+#[test]
+#[ignore]
+fn selected_book_cross_line_cost() {
+    use std::time::Instant;
+    use tantivy::collector::Count;
+    let (mut e, _dir) = engine();
+    add_filtered_book(&mut e, 0, "/selected", "אחת שתים", &[]);
+    add_filtered_book(
+        &mut e,
+        1,
+        "/bulk",
+        &vec!["אחת שתים"; 100_000].join("\n"),
+        &[],
+    );
+    e.commit().unwrap();
+    let facets = vec!["/selected".to_string()];
+    for cross_line in [false, true] {
+        let query = e.filtered_phrase_query_for_tests("אחת שתים", Some(2), cross_line, &facets);
+        let searcher = e.searcher_for_tests();
+        let mut best = f64::MAX;
+        for _ in 0..10 {
+            let start = Instant::now();
+            assert_eq!(searcher.search(query.as_ref(), &Count).unwrap(), 1);
+            best = best.min(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        println!("cross_line={cross_line} filtered query best={best:.3}ms");
+    }
+}
+
+#[test]
+#[ignore]
+fn broad_selection_rare_continuation_cost() {
+    use std::time::Instant;
+    use tantivy::collector::Count;
+    let (mut e, _dir) = engine();
+    let mut text = vec!["אחת מילה"; 100_000].join("\n");
+    text.push_str("\nשתים");
+    add_filtered_book(&mut e, 0, "/broad/book", &text, &[]);
+    e.commit().unwrap();
+    for facets in [vec![], vec!["/broad".to_string()]] {
+        let query = e.filtered_phrase_query_for_tests("אחת שתים", Some(2), true, &facets);
+        let searcher = e.searcher_for_tests();
+        let mut best = f64::MAX;
+        for _ in 0..10 {
+            let start = Instant::now();
+            assert_eq!(searcher.search(query.as_ref(), &Count).unwrap(), 1);
+            best = best.min(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        println!(
+            "broad_selection={} rare right best={best:.3}ms",
+            !facets.is_empty()
+        );
+    }
+}

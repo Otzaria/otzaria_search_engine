@@ -8889,10 +8889,21 @@ impl SearchEngine {
         distance: Option<u32>,
         cross_line: bool,
     ) -> Box<dyn Query> {
+        self.filtered_phrase_query_for_tests(query, distance, cross_line, &[])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn filtered_phrase_query_for_tests(
+        &self,
+        query: &str,
+        distance: Option<u32>,
+        cross_line: bool,
+        facets: &[String],
+    ) -> Box<dyn Query> {
         let plain = VocalizedFlags::new(false, false);
         match distance {
             None => {
-                self.build_exact_query_with(query, &[], &plain, cross_line)
+                self.build_exact_query_with(query, facets, &plain, cross_line)
                     .unwrap()
                     .0
             }
@@ -8903,7 +8914,7 @@ impl SearchEngine {
                     &HashMap::new(),
                     &HashMap::new(),
                     &HashMap::new(),
-                    Vec::new(),
+                    facets.to_vec(),
                     &plain,
                     &SearchScope::WordDistance,
                     &WordMatch::All,
@@ -9185,6 +9196,7 @@ impl SearchEngine {
                         text_field,
                         max_expansions,
                         cross_line,
+                        facets_query.as_deref(),
                     )?
                 }
             },
@@ -9231,6 +9243,7 @@ impl SearchEngine {
         text_field: Field,
         max_expansions: u32,
         cross_line: bool,
+        facets_query: Option<&dyn Query>,
     ) -> Result<(Box<dyn Query>, bool)> {
         let joined: Vec<String> = regex_terms
             .iter()
@@ -9266,7 +9279,7 @@ impl SearchEngine {
                 .map(|p| cross_line::CrossLineWord::Pattern(p.joined()))
                 .collect();
             return Ok((
-                self.with_cross_line(inline, text_field, &words, gaps)?,
+                self.with_cross_line(inline, text_field, &words, gaps, facets_query)?,
                 false,
             ));
         }
@@ -9344,7 +9357,7 @@ impl SearchEngine {
             return Ok((inline, truncated));
         }
         Ok((
-            self.with_cross_line(inline, text_field, &words, gaps)?,
+            self.with_cross_line(inline, text_field, &words, gaps, facets_query)?,
             truncated,
         ))
     }
@@ -10091,6 +10104,9 @@ impl SearchEngine {
         if voc.any() {
             return self.build_exact_query_vocalized(query_str, facets, voc);
         }
+        let facets_query = (!facets.is_empty())
+            .then(|| self.facet_filter_query(facets))
+            .transpose()?;
         let text_f = self.schema.get_field("text")?;
         let token_texts = self.index_token_texts(query_str)?;
         let mut terms: Vec<Term> = token_texts
@@ -10109,20 +10125,26 @@ impl SearchEngine {
                     .map(|t| cross_line::CrossLineWord::Terms(vec![t.clone()]))
                     .collect();
                 let gaps = vec![0; words.len() - 1];
-                self.with_cross_line(Box::new(PhraseQuery::new(terms)), text_f, &words, &gaps)?
+                self.with_cross_line(
+                    Box::new(PhraseQuery::new(terms)),
+                    text_f,
+                    &words,
+                    &gaps,
+                    facets_query.as_deref(),
+                )?
             }
             _ => Box::new(PhraseQuery::new(terms)),
         };
-        if facets.is_empty() {
-            Ok((main_query, false))
-        } else {
+        if let Some(facets_query) = facets_query {
             Ok((
                 Box::new(BooleanQuery::new(vec![
                     (Occur::Must, main_query),
-                    (Occur::Must, self.facet_filter_query(facets)?),
+                    (Occur::Must, facets_query),
                 ])),
                 false,
             ))
+        } else {
+            Ok((main_query, false))
         }
     }
 
@@ -10134,6 +10156,7 @@ impl SearchEngine {
         text_field: Field,
         words: &[cross_line::CrossLineWord],
         gaps: &[u32],
+        facets_query: Option<&dyn Query>,
     ) -> Result<Box<dyn Query>> {
         if text_field != self.schema.get_field("text")? {
             return Ok(inline);
@@ -10142,7 +10165,10 @@ impl SearchEngine {
             match cross_line::CrossLineQuery::new(&self.schema, text_field, words, gaps)? {
                 Some(cross) => Box::new(BooleanQuery::new(vec![
                     (Occur::Should, inline),
-                    (Occur::Should, Box::new(cross)),
+                    (
+                        Occur::Should,
+                        Box::new(cross.with_filter(facets_query.map(|query| query.box_clone()))),
+                    ),
                 ])),
                 None => inline,
             },
@@ -10187,6 +10213,7 @@ impl SearchEngine {
                     voc_field,
                     VOC_PHRASE_MAX_EXPANSIONS,
                     false,
+                    None,
                 )?
             }
         };

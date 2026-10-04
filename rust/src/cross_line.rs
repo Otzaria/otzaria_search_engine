@@ -25,7 +25,7 @@
 //! composition see an ordinary doc set. A phrase crosses at most one line break.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -346,6 +346,30 @@ impl WordSource {
         }
         Ok(total)
     }
+
+    /// Upper-bounded frequency for deciding whether a global scan is small.
+    /// Unlike the scoring estimate, a broad regex cannot stop after the first
+    /// 256 terms and incorrectly look rare when its remaining terms are common.
+    fn bounded_doc_freq(&self, inverted: &InvertedIndexReader, limit: u64) -> tantivy::Result<u64> {
+        let mut total = 0u64;
+        match self {
+            WordSource::Terms(terms) => {
+                for term in terms {
+                    total += inverted.doc_freq(term)? as u64;
+                    if total > limit {
+                        break;
+                    }
+                }
+            }
+            WordSource::Regex(regex) => {
+                let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
+                while total <= limit && stream.advance() {
+                    total += stream.value().doc_freq as u64;
+                }
+            }
+        }
+        Ok(total.min(limit.saturating_add(1)))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -404,6 +428,8 @@ pub(crate) struct CrossLineQuery {
     /// `gaps[i]` = allowed intermediate words between words `i` and `i + 1`;
     /// across the line break the words of both lines count.
     gaps: Vec<u32>,
+    /// Applied to the attributed (first) line before positional matching.
+    filter: Option<Arc<dyn Query>>,
 }
 
 impl CrossLineQuery {
@@ -432,7 +458,15 @@ impl CrossLineQuery {
             id,
             words: compiled,
             gaps: gaps.to_vec(),
+            filter: None,
         }))
+    }
+
+    /// Reuses the caller's facet semantics, including OR within dimensions
+    /// and AND between them. The continuation itself need not pass the filter.
+    pub(crate) fn with_filter(mut self, filter: Option<Box<dyn Query>>) -> Self {
+        self.filter = filter.map(Arc::from);
+        self
     }
 
     /// The matching lines of every segment, keyed by segment.
@@ -446,6 +480,11 @@ impl CrossLineQuery {
             .enumerate()
             .map(|(ordinal, reader)| Segment::open(ordinal, reader, self))
             .collect::<tantivy::Result<_>>()?;
+        let filter = self
+            .filter
+            .as_ref()
+            .map(|query| query.weight(EnableScoring::disabled_from_searcher(searcher)))
+            .transpose()?;
         let mut hits: Vec<Vec<DocId>> = vec![Vec::new(); segments.len()];
         let mut scratch = Scratch::default();
         for split in 1..self.words.len() {
@@ -460,9 +499,14 @@ impl CrossLineQuery {
                 gaps: &self.gaps[split..],
                 side: Side::StartsLine,
             };
-            for (segment, doc) in
-                self.join_split(&segments, &left, &right, allowance, &mut scratch)?
-            {
+            for (segment, doc) in self.join_split(
+                &segments,
+                &left,
+                &right,
+                allowance,
+                filter.as_deref(),
+                &mut scratch,
+            )? {
                 hits[segment].push(doc);
             }
         }
@@ -485,16 +529,17 @@ impl CrossLineQuery {
         left: &Part,
         right: &Part,
         allowance: u32,
+        filter: Option<&dyn Weight>,
         scratch: &mut Scratch,
     ) -> tantivy::Result<Vec<(usize, DocId)>> {
         let mut out = Vec::new();
-        if allowance == 0 {
-            let starts = self.scan(segments, right, 0, Candidates::Edge)?;
+        if allowance == 0 && filter.is_none() {
+            let starts = self.scan(segments, right, 0, Candidates::Edge, Restriction::default())?;
             if starts.is_empty() {
                 return Ok(out);
             }
             let starts: HashMap<u64, u32> = starts.iter().map(|m| (m.id, m.slack)).collect();
-            for m in self.scan(segments, left, 0, Candidates::Edge)? {
+            for m in self.scan(segments, left, 0, Candidates::Edge, Restriction::default())? {
                 if starts.contains_key(&(m.id + 1)) {
                     out.push((m.segment, m.doc));
                 }
@@ -503,13 +548,40 @@ impl CrossLineQuery {
         }
         // The part whose rarest word is rarer goes first; its matches either
         // drive id lookups of their neighbours or meet a second scan.
-        let (first, second, neighbour): (&Part, &Part, i64) =
-            if self.driver_freq(segments, left)? < self.driver_freq(segments, right)? {
-                (left, right, 1)
-            } else {
+        let (first, second, neighbour): (&Part, &Part, i64) = if filter.is_some() {
+            // Preserve sparse right-first lookups for broad selections, while
+            // preventing a common right part from scanning excluded books.
+            let right_freq = self.bounded_driver_freq(segments, right, LOOKUP_LIMIT as u64)?;
+            if allowance > 0
+                && right_freq <= LOOKUP_LIMIT as u64
+                && right_freq < self.driver_freq(segments, left)?
+            {
                 (right, left, -1)
-            };
-        let first_matches = self.scan(segments, first, allowance, Candidates::Driver)?;
+            } else {
+                (left, right, 1)
+            }
+        } else if self.driver_freq(segments, left)? < self.driver_freq(segments, right)? {
+            (left, right, 1)
+        } else {
+            (right, left, -1)
+        };
+        // A filter constrains L only. Intersect its postings whenever L is
+        // evaluated, before reading positions; a rare right side can go first.
+        let candidates = if allowance == 0 {
+            Candidates::Edge
+        } else {
+            Candidates::Driver
+        };
+        let first_matches = self.scan(
+            segments,
+            first,
+            allowance,
+            candidates.clone(),
+            Restriction {
+                filter: if neighbour == 1 { filter } else { None },
+                neighbour_ids: None,
+            },
+        )?;
         if first_matches.is_empty() {
             return Ok(out);
         }
@@ -534,12 +606,31 @@ impl CrossLineQuery {
                     allowance,
                     Candidates::Docs(docs),
                     0..DocId::MAX,
+                    Restriction {
+                        filter: if neighbour == -1 { filter } else { None },
+                        neighbour_ids: None,
+                    },
                     scratch,
                 )?);
             }
             matches
         } else {
-            self.scan(segments, second, allowance, Candidates::Driver)?
+            let neighbour_ids: Option<HashSet<u64>> = filter.map(|_| {
+                first_matches
+                    .iter()
+                    .map(|m| m.id.wrapping_add_signed(neighbour))
+                    .collect()
+            });
+            self.scan(
+                segments,
+                second,
+                allowance,
+                candidates,
+                Restriction {
+                    filter: if neighbour == -1 { filter } else { None },
+                    neighbour_ids: neighbour_ids.as_ref(),
+                },
+            )?
         };
         let (ends, starts) = if neighbour == 1 {
             (first_matches, second_matches)
@@ -571,6 +662,7 @@ impl CrossLineQuery {
         part: &Part,
         allowance: u32,
         candidates: Candidates,
+        restriction: Restriction<'_>,
     ) -> tantivy::Result<Vec<PartMatch>> {
         use rayon::prelude::*;
         let chunks = if matches!(candidates, Candidates::Driver) {
@@ -597,6 +689,7 @@ impl CrossLineQuery {
                     allowance,
                     candidates.clone(),
                     range,
+                    restriction,
                     &mut Scratch::default(),
                 )
             })
@@ -617,6 +710,26 @@ impl CrossLineQuery {
         Ok(rarest)
     }
 
+    fn bounded_driver_freq(
+        &self,
+        segments: &[Segment],
+        part: &Part,
+        limit: u64,
+    ) -> tantivy::Result<u64> {
+        let mut rarest = limit.saturating_add(1);
+        for word in part.words {
+            let mut freq = 0u64;
+            for segment in segments {
+                freq += word.text.bounded_doc_freq(&segment.text, limit - freq)?;
+                if freq > limit {
+                    break;
+                }
+            }
+            rarest = rarest.min(freq);
+        }
+        Ok(rarest)
+    }
+
     /// The lines of one segment, within `range`, where `part` sits at its line
     /// edge, at most `allowance` words away from it.
     fn match_part(
@@ -626,9 +739,23 @@ impl CrossLineQuery {
         allowance: u32,
         candidates: Candidates,
         range: std::ops::Range<DocId>,
+        restriction: Restriction<'_>,
         scratch: &mut Scratch,
     ) -> tantivy::Result<Vec<PartMatch>> {
         let mut out = Vec::new();
+        // A segment/range outside the selected facets needs no term expansion.
+        let mut selected = restriction
+            .filter
+            .map(|filter| filter.scorer(segment.reader, 1.0))
+            .transpose()?;
+        if let Some(selected) = &mut selected {
+            if selected.doc() < range.start {
+                selected.seek(range.start);
+            }
+            if selected.doc() >= range.end {
+                return Ok(out);
+            }
+        }
         let boundary = match part.side {
             Side::EndsLine => part.words.last(),
             Side::StartsLine => part.words.first(),
@@ -643,17 +770,23 @@ impl CrossLineQuery {
                     Side::EndsLine => &boundary.ends,
                     Side::StartsLine => &boundary.starts,
                 };
-                let mut docs = Vec::new();
-                for mut postings in source.postings(&segment.edge, IndexRecordOption::Basic)? {
-                    let mut doc = postings.doc();
-                    while doc != TERMINATED {
-                        docs.push(doc);
-                        doc = postings.advance();
+                let postings = source.postings(&segment.edge, IndexRecordOption::Basic)?;
+                if selected.is_some() {
+                    self.candidate_docs(postings, range.start, selected)?
+                } else {
+                    // Preserve the existing unfiltered bulk edge scan.
+                    let mut docs = Vec::new();
+                    for mut postings in postings {
+                        let mut doc = postings.doc();
+                        while doc != TERMINATED {
+                            docs.push(doc);
+                            doc = postings.advance();
+                        }
                     }
+                    docs.sort_unstable();
+                    docs.dedup();
+                    Box::new(docs.into_iter())
                 }
-                docs.sort_unstable();
-                docs.dedup();
-                Box::new(docs.into_iter())
             }
             Candidates::Driver => {
                 let mut rarest: Option<(u64, &CompiledWord)> = None;
@@ -672,9 +805,19 @@ impl CrossLineQuery {
                         posting.seek(range.start);
                     }
                 }
-                Box::new(DocUnion::new(postings))
+                self.candidate_docs(postings, range.start, selected)?
             }
-            Candidates::Docs(docs) => Box::new(docs.into_iter()),
+            Candidates::Docs(docs) => {
+                let docs = docs.into_iter().filter(move |&doc| {
+                    selected.as_mut().is_none_or(|scorer| {
+                        if scorer.doc() < doc {
+                            scorer.seek(doc);
+                        }
+                        scorer.doc() == doc
+                    })
+                });
+                Box::new(docs)
+            }
         };
         let end = range.end;
         let docs = docs.take_while(move |&doc| doc < end);
@@ -693,6 +836,12 @@ impl CrossLineQuery {
         scratch.positions.resize_with(part.words.len(), Vec::new);
         for doc in docs {
             if !segment.is_alive(doc) {
+                continue;
+            }
+            if restriction
+                .neighbour_ids
+                .is_some_and(|ids| segment.id.first(doc).is_none_or(|id| !ids.contains(&id)))
+            {
                 continue;
             }
             let anchor = match part.side {
@@ -748,6 +897,22 @@ impl CrossLineQuery {
             });
         }
         Ok(out)
+    }
+
+    /// A streaming intersection, bounded by the selected facets' postings.
+    /// No selected-doc vector/bitset is allocated for the whole library.
+    fn candidate_docs(
+        &self,
+        postings: Vec<SegmentPostings>,
+        start: DocId,
+        selected: Option<Box<dyn Scorer>>,
+    ) -> tantivy::Result<Box<dyn Iterator<Item = DocId>>> {
+        let mut union = DocUnion::new(postings);
+        union.seek(start);
+        match selected {
+            Some(selected) => Ok(Box::new(SelectedDocs { selected, union })),
+            None => Ok(Box::new(union)),
+        }
     }
 
     /// The live document with `id`, as segment ordinal and doc.
@@ -866,6 +1031,12 @@ enum Candidates {
     Docs(Vec<DocId>),
 }
 
+#[derive(Clone, Copy, Default)]
+struct Restriction<'a> {
+    filter: Option<&'a dyn Weight>,
+    neighbour_ids: Option<&'a HashSet<u64>>,
+}
+
 struct PartMatch {
     segment: usize,
     doc: DocId,
@@ -961,6 +1132,49 @@ impl DocUnion {
     }
 }
 
+impl DocUnion {
+    fn seek(&mut self, target: DocId) -> DocId {
+        while let Some(&Reverse((doc, i))) = self.heap.peek() {
+            if doc >= target {
+                break;
+            }
+            self.heap.pop();
+            let next = self.postings[i].seek(target);
+            if next != TERMINATED {
+                self.heap.push(Reverse((next, i)));
+            }
+        }
+        self.heap.peek().map_or(TERMINATED, |entry| entry.0 .0)
+    }
+}
+
+struct SelectedDocs {
+    selected: Box<dyn Scorer>,
+    union: DocUnion,
+}
+
+impl Iterator for SelectedDocs {
+    type Item = DocId;
+
+    fn next(&mut self) -> Option<DocId> {
+        loop {
+            let selected = self.selected.doc();
+            if selected == TERMINATED {
+                return None;
+            }
+            let candidate = self.union.seek(selected);
+            if candidate == TERMINATED {
+                return None;
+            }
+            if candidate == selected {
+                self.selected.advance();
+                return self.union.next();
+            }
+            self.selected.seek(candidate);
+        }
+    }
+}
+
 impl Iterator for DocUnion {
     type Item = DocId;
 
@@ -983,6 +1197,132 @@ impl Iterator for DocUnion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broad_regex_cannot_look_sparse_after_the_scoring_term_cap() {
+        use tantivy::schema::STRING;
+        use tantivy::Index;
+        let mut schema = Schema::builder();
+        let text = schema.add_text_field("text", STRING);
+        let index = Index::create_in_ram(schema.build());
+        let mut writer = index.writer_with_num_threads(1, 50_000_000).unwrap();
+        for n in 0..300 {
+            let mut doc = TantivyDocument::default();
+            doc.add_text(text, format!("x{n:03}"));
+            writer.add_document(doc).unwrap();
+        }
+        for _ in 0..5_000 {
+            let mut doc = TantivyDocument::default();
+            doc.add_text(text, "x999");
+            writer.add_document(doc).unwrap();
+        }
+        writer.commit().unwrap();
+        let reader = index.reader().unwrap();
+        let searcher = reader.searcher();
+        let inverted = searcher.segment_reader(0).inverted_index(text).unwrap();
+        let word = WordSource::Regex(Arc::new(tantivy_fst::Regex::new("x[0-9]+").unwrap()));
+        assert_eq!(
+            word.doc_freq(&inverted).unwrap(),
+            SCORE_TERMS_PER_SEGMENT as u64
+        );
+        assert_eq!(
+            word.bounded_doc_freq(&inverted, LOOKUP_LIMIT as u64)
+                .unwrap(),
+            LOOKUP_LIMIT as u64 + 1
+        );
+    }
+
+    /// Synthetic line topics may differ across a seam. A result is filtered
+    /// by its first line even when its continuation is outside the selection.
+    #[test]
+    fn selected_lines_drive_sparse_and_parallel_seam_joins() {
+        use tantivy::collector::Count;
+        use tantivy::query::TermQuery;
+        use tantivy::schema::{FAST, INDEXED, STRING, TEXT};
+        use tantivy::Index;
+
+        for left_count in [5, LOOKUP_LIMIT + 4] {
+            let mut schema = Schema::builder();
+            let text = schema.add_text_field("text", TEXT);
+            let edge = schema.add_text_field(LINE_EDGE_FIELD, STRING);
+            let id = schema.add_u64_field("id", INDEXED | FAST);
+            let first = schema.add_u64_field(LINE_FIRST_FIELD, FAST);
+            let last = schema.add_u64_field(LINE_LAST_FIELD, FAST);
+            let selected = schema.add_text_field("selection", STRING);
+            let schema = schema.build();
+            let index = Index::create_in_ram(schema.clone());
+            let mut writer = index.writer_with_num_threads(1, 50_000_000).unwrap();
+            // The right part is much rarer: filtered evaluation must still
+            // apply the selection to the left, including across segments.
+            for n in 0..left_count {
+                let mut left = TantivyDocument::default();
+                left.add_u64(id, (n * 2) as u64);
+                left.add_text(text, "אחת אחת");
+                left.add_text(edge, ">אחת");
+                left.add_u64(last, 2);
+                left.add_text(selected, if n + 1 == left_count { "no" } else { "yes" });
+                writer.add_document(left).unwrap();
+            }
+            writer.commit().unwrap();
+            for n in 0..left_count {
+                let mut right = TantivyDocument::default();
+                right.add_u64(id, (n * 2 + 1) as u64);
+                right.add_text(
+                    text,
+                    if n == 0 {
+                        "שתים"
+                    } else {
+                        "אחת שתים"
+                    },
+                );
+                right.add_text(edge, if n == 0 { "<שתים" } else { "<אחת" });
+                right.add_u64(first, 1);
+                writer.add_document(right).unwrap();
+            }
+            writer.commit().unwrap();
+            // Delete one attributed line and one continuation. Deleted docs
+            // must not survive either the lookup or range-parallel path.
+            writer.delete_term(Term::from_field_u64(id, 0));
+            writer.delete_term(Term::from_field_u64(id, 3));
+            writer.commit().unwrap();
+            let reader = index.reader().unwrap();
+            let searcher = reader.searcher();
+            let filter = || {
+                Box::new(TermQuery::new(
+                    Term::from_field_text(selected, "yes"),
+                    IndexRecordOption::Basic,
+                )) as Box<dyn Query>
+            };
+            let words = [
+                CrossLineWord::Terms(vec!["אחת".into()]),
+                CrossLineWord::Terms(vec!["שתים".into()]),
+            ];
+            for allowance in [0, 1] {
+                let query = CrossLineQuery::new(&schema, text, &words, &[allowance])
+                    .unwrap()
+                    .unwrap()
+                    .with_filter(Some(filter()));
+                let expected = if allowance == 0 { 0 } else { left_count - 3 };
+                assert_eq!(searcher.search(&query, &Count).unwrap(), expected);
+                let hits = query.evaluate(&searcher).unwrap();
+                // No second-line docs, despite their matching word positions.
+                for segment in searcher.segment_readers() {
+                    let ids = segment.fast_fields().u64("id").unwrap();
+                    assert!(hits[&segment.segment_id()]
+                        .iter()
+                        .all(|&doc| ids.first(doc).unwrap() % 2 == 0));
+                }
+            }
+            let query = CrossLineQuery::new(&schema, text, &words, &[1])
+                .unwrap()
+                .unwrap()
+                .with_filter(Some(Box::new(TermQuery::new(
+                    Term::from_field_text(selected, "absent"),
+                    IndexRecordOption::Basic,
+                ))));
+            assert_eq!(searcher.search(&query, &Count).unwrap(), 0);
+        }
+    }
 
     #[test]
     fn content_range_drops_enumerators_only() {
