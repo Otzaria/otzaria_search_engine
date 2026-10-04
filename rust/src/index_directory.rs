@@ -49,11 +49,9 @@ impl IndexDirectory {
         let inner = MmapDirectory::open(path)?;
         Ok(Self {
             inner,
-            // Canonical, as `MmapDirectory` resolves its paths.
+            // Not canonicalize: it fails on virtual drives, which `MmapDirectory` accepts.
             #[cfg(windows)]
-            root: path
-                .canonicalize()
-                .map_err(|error| OpenDirectoryError::wrap_io_error(error, path.to_path_buf()))?,
+            root: std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
         })
     }
 }
@@ -367,6 +365,19 @@ mod tests {
     fn the_backoff_totals_what_its_comment_says() {
         let total: Duration = REPLACE_RETRY_DELAYS.iter().sum();
         assert_eq!(total, Duration::from_millis(1_888));
+    }
+
+    #[test]
+    fn a_relative_path_opens_and_is_written_into() {
+        let dir = tempfile::Builder::new().tempdir_in(".").unwrap();
+        let relative = Path::new(".").join(dir.path().file_name().unwrap());
+        let directory = IndexDirectory::open(&relative).unwrap();
+        #[cfg(windows)]
+        assert!(directory.root.is_absolute(), "{:?}", directory.root);
+        directory
+            .atomic_write(Path::new("meta.json"), b"x")
+            .unwrap();
+        assert_eq!(fs::read(dir.path().join("meta.json")).unwrap(), b"x");
     }
 
     fn names(dir: &tempfile::TempDir) -> Vec<String> {
