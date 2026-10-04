@@ -13503,71 +13503,77 @@ impl SearchEngine {
             _ => Vec::new(),
         };
 
-        let mut results = Vec::with_capacity(documents.len());
-        for (slot, ((_, retrieved_doc), hit_text)) in documents.iter().zip(texts).enumerate() {
-            let title = retrieved_doc
-                .get_first(title_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let reference = retrieved_doc
-                .get_first(reference_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let id = retrieved_doc
-                .get_first(id_field)
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default();
-            let segment = retrieved_doc
-                .get_first(segment_field)
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default();
-            let is_pdf = retrieved_doc
-                .get_first(is_pdf_field)
-                .and_then(|v| v.as_bool())
-                .unwrap_or_default();
-            let file_path = retrieved_doc
-                .get_first(file_path_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
+        // A snippet costs as much as its line is long, and one line can hold a whole book.
+        use rayon::prelude::*;
+        let results = documents
+            .par_iter()
+            .zip(texts.into_par_iter())
+            .enumerate()
+            .map(|(slot, ((_, retrieved_doc), hit_text))| {
+                let title = retrieved_doc
+                    .get_first(title_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let reference = retrieved_doc
+                    .get_first(reference_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let id = retrieved_doc
+                    .get_first(id_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default();
+                let segment = retrieved_doc
+                    .get_first(segment_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default();
+                let is_pdf = retrieved_doc
+                    .get_first(is_pdf_field)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_default();
+                let file_path = retrieved_doc
+                    .get_first(file_path_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
 
-            let text_status = hit_text.status;
-            let text = hit_text.display(vocalized_field);
-            let cross_line_html = match (next_lines.get(slot), phrase) {
-                (Some(Some(next)), Some(pf)) => {
-                    Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
-                }
-                _ => None,
-            };
-            let continues_to_next_line = cross_line_html.is_some();
-            let result_text = match (text_status, cross_line_html) {
-                (TextStatus::Ok, Some(html)) => html,
-                (TextStatus::Ok, None) => {
-                    Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
-                        .unwrap_or(text)
-                }
-                // The line no longer matches what was indexed: painting the query's
-                // terms into it would claim a match the index never saw.
-                (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
-                (TextStatus::Unavailable, _) => String::new(),
-            };
+                let text_status = hit_text.status;
+                let text = hit_text.display(vocalized_field);
+                let cross_line_html = match (next_lines.get(slot), phrase) {
+                    (Some(Some(next)), Some(pf)) => {
+                        Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
+                    }
+                    _ => None,
+                };
+                let continues_to_next_line = cross_line_html.is_some();
+                let result_text = match (text_status, cross_line_html) {
+                    (TextStatus::Ok, Some(html)) => html,
+                    (TextStatus::Ok, None) => {
+                        Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
+                            .unwrap_or(text)
+                    }
+                    // The line no longer matches what was indexed: painting the query's
+                    // terms into it would claim a match the index never saw.
+                    (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
+                    (TextStatus::Unavailable, _) => String::new(),
+                };
 
-            results.push(SearchResult {
-                title,
-                reference,
-                text: result_text,
-                id,
-                segment,
-                is_pdf,
-                file_path,
-                merged_count: 1,
-                merged: Vec::new(),
-                text_status,
-                continues_to_next_line,
-            });
-        }
+                SearchResult {
+                    title,
+                    reference,
+                    text: result_text,
+                    id,
+                    segment,
+                    is_pdf,
+                    file_path,
+                    merged_count: 1,
+                    merged: Vec::new(),
+                    text_status,
+                    continues_to_next_line,
+                }
+            })
+            .collect();
         Ok(results)
     }
 
