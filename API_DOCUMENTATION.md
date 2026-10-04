@@ -855,7 +855,9 @@ grouping agree with the results. A phrase crosses at most one line break.
 - **What a line's edge is.** Leading and trailing enumerators — `(ג)`, `[יא]`, `{פ}`,
   up to five letters, digits or quote marks in brackets — are not words of the text:
   the phrase continues from the last word before a trailing enumerator to the first
-  word after a leading one. The words of both lines count toward `distance`.
+  word after a leading one. Paired readings such as `(הוצא) [היצא]` remain one
+  content position at either edge, and either reading can match. The words of both
+  lines count toward `distance`.
 - **What stops a phrase.** A heading line (`<h…>`), a line without words, the end of a
   book, and in a PDF a line dropped as extraction garbage. A PDF phrase may continue
   onto the next page.
