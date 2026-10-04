@@ -8535,8 +8535,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SearchResult dco_decode_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return SearchResult(
       title: dco_decode_String(arr[0]),
       reference: dco_decode_String(arr[1]),
@@ -8548,6 +8548,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       mergedCount: dco_decode_u_32(arr[7]),
       merged: dco_decode_list_merged_sibling(arr[8]),
       textStatus: dco_decode_text_status(arr[9]),
+      continuesToNextLine: dco_decode_bool(arr[10]),
     );
   }
 
@@ -10453,6 +10454,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_mergedCount = sse_decode_u_32(deserializer);
     var var_merged = sse_decode_list_merged_sibling(deserializer);
     var var_textStatus = sse_decode_text_status(deserializer);
+    var var_continuesToNextLine = sse_decode_bool(deserializer);
     return SearchResult(
       title: var_title,
       reference: var_reference,
@@ -10464,6 +10466,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       mergedCount: var_mergedCount,
       merged: var_merged,
       textStatus: var_textStatus,
+      continuesToNextLine: var_continuesToNextLine,
     );
   }
 
@@ -12516,6 +12519,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.mergedCount, serializer);
     sse_encode_list_merged_sibling(self.merged, serializer);
     sse_encode_text_status(self.textStatus, serializer);
+    sse_encode_bool(self.continuesToNextLine, serializer);
   }
 
   @protected

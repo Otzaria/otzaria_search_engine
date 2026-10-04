@@ -402,7 +402,7 @@ fn snap(r: &SearchResult) -> String {
         .map(|m| format!("{}:{}:{}:{}", m.id, m.segment, m.file_path, m.reference))
         .collect();
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{:?}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
         r.title,
         r.reference,
         r.text,
@@ -411,7 +411,8 @@ fn snap(r: &SearchResult) -> String {
         r.is_pdf,
         r.file_path,
         r.merged_count,
-        merged
+        merged,
+        r.continues_to_next_line
     )
 }
 
@@ -527,6 +528,9 @@ fn probes() -> Vec<(String, Probe)> {
         "זזזזז",
         "data",
         "abc",
+        // Across the break between two rows of the first book.
+        "ואת הארץ והארץ היתה",
+        "הארץ והארץ",
     ];
     let groupings: [(&str, Option<ResultGrouping>); 3] = [
         ("flat", None),
@@ -751,6 +755,14 @@ fn probes() -> Vec<(String, Probe)> {
             "בראשית",
             "אלהים",
             0,
+            || SearchScope::WordDistance,
+            HashMap::new(),
+            false,
+        ),
+        (
+            "השמים היתה",
+            "",
+            3,
             || SearchScope::WordDistance,
             HashMap::new(),
             false,
@@ -1876,6 +1888,64 @@ fn repeated_and_missing_line_indexes_read_the_indexed_rows() {
         }
         assert_eq!(line_source::mapped_books_for_tests(), [1]);
     }
+}
+
+#[test]
+fn a_phrase_across_rows_with_line_index_gaps_reads_the_next_row() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let rows = [
+        (10, 0, "<h1>ספר</h1>"),
+        (11, 2, "ויבדל בין המים אשר מתחת לרקיע ובין המים"),
+        (12, 5, "(ג) ויאמר אלהים יקוו המים"),
+        (13, 9, "ויהי כן"),
+    ];
+    let (db, book) = library_with_rows(dir.path(), &rows);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (stored, _) = index_one(&dir.path().join("s"), &book, TextStorage::InIndex);
+    let (external, _) = index_one(&dir.path().join("x"), &book, TextStorage::LibraryDb);
+    for query in ["ובין המים ויאמר אלהים", "יקוו המים ויהי"] {
+        let (a, b) = (exact(&stored, query), exact(&external, query));
+        assert_eq!(b.len(), 1, "{query}");
+        assert!(b[0].continues_to_next_line, "{query}");
+        assert_all_ok(&b, query);
+        assert_same(query, &a, &b);
+    }
+}
+
+#[test]
+fn a_cross_line_hit_counts_while_the_source_is_suspended() {
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let (db, book) = one_book_library(dir.path(), &["<h1>ספר</h1>", LONG1, LONG2]);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let (external, _) = index_one(dir.path(), &book, TextStorage::LibraryDb);
+    let query = "בראשית ברא אלהים שורה ארוכה";
+    let check = |status: TextStatus, continues: bool| {
+        let results = exact(&external, query);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].segment, 1);
+        assert_eq!(results[0].text_status, status);
+        assert_eq!(results[0].continues_to_next_line, continues);
+        assert_eq!(
+            external
+                .count_exact(query.into(), vec![], false, false)
+                .unwrap(),
+            1
+        );
+    };
+    check(TextStatus::Ok, true);
+    suspend_line_source().unwrap();
+    check(TextStatus::Unavailable, false);
+    resume_line_source().unwrap();
+    check(TextStatus::Ok, true);
+    // The next row changed: its text is not the indexed line, so no joined snippet.
+    edit_suspended(
+        &db,
+        "UPDATE line_content SET content = 'שורה אחרת לגמרי' WHERE id = \
+         (SELECT id FROM line WHERE bookId = 1 AND lineIndex = 2)",
+    );
+    check(TextStatus::Ok, false);
 }
 
 #[test]
