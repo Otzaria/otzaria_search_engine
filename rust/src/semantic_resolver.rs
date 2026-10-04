@@ -146,6 +146,9 @@ pub(crate) struct ResolverCache {
     /// How many books' postings plans walked in this generation.
     #[cfg(test)]
     pub(crate) walks: u64,
+    /// How many times plans looked texts up in the set in this generation.
+    #[cfg(test)]
+    pub(crate) lookups: u64,
     /// How many passes over the whole column searches made in this generation.
     #[cfg(test)]
     pub(crate) passes: u64,
@@ -1379,8 +1382,15 @@ impl LiveResolver<'_> {
         }
         if !unknown.is_empty() {
             #[cfg(test)]
-            if CANCEL_LOOKUPS.with(std::cell::Cell::get) {
-                return Err(ResolveError::Cancelled);
+            {
+                if CANCEL_LOOKUPS.with(std::cell::Cell::get) {
+                    return Err(ResolveError::Cancelled);
+                }
+                self.cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .at(self.generation_id())
+                    .lookups += 1;
             }
             // A text the set holds no live vector of is nothing to look for.
             let wanted: HashSet<u64> = unknown
@@ -1397,14 +1407,6 @@ impl LiveResolver<'_> {
                     .iter()
                     .take_while(move |slot| slot.key.column_value() == value)
             };
-            count += unknown
-                .iter()
-                .flat_map(|(_, unread)| unread.values.iter())
-                .map(|&(value, _)| slots_of(value).count())
-                .sum::<usize>();
-            if count > cap {
-                return Ok(None);
-            }
             for (name, unread) in unknown {
                 let mut found: Vec<Arrival> = unread
                     .values
@@ -1424,8 +1426,13 @@ impl LiveResolver<'_> {
                     unread.text_hash,
                     Known::Arrivals(Arc::clone(&found)),
                 );
+                count += found.len();
                 known.push((name, found));
             }
+        }
+        // Remembered past the cap too, so the next generation stops at the count above.
+        if count > cap {
+            return Ok(None);
         }
         let mut slots: HashMap<u64, Vec<SlotRef>> = HashMap::new();
         let mut arrivals: PlanArrivals = HashMap::new();
