@@ -102,7 +102,25 @@ pub(crate) fn is_gershayim(c: char) -> bool {
 /// הכלליים שנשמרים בטקסט (תעתיק ערבית-יהודית: `כלת̇ום`).
 #[inline]
 pub(crate) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || is_word_mark(c)
+    // מסלול מהיר לאותיות עבריות ול-ASCII: חיפוש טבלאות Unicode הוא רוב זמן הטוקניזציה.
+    if is_hebrew_letter(c) || c.is_ascii_alphanumeric() {
+        return true;
+    }
+    !c.is_ascii() && (c.is_alphanumeric() || is_word_mark(c))
+}
+
+/// תו שפותח טוקן: אות/ספרה של ממש, לא סימן צמוד (ראו [`next_token_boundaries`]).
+#[inline]
+fn starts_token(c: char) -> bool {
+    if is_hebrew_letter(c) || c.is_ascii_alphanumeric() {
+        return true;
+    }
+    !c.is_ascii() && c.is_alphanumeric() && !is_word_mark(c)
+}
+
+#[inline]
+fn is_hebrew_letter(c: char) -> bool {
+    matches!(c, '\u{05D0}'..='\u{05EA}')
 }
 
 /// האם `c` יכול להופיע *בתוך* טוקן בלי לשבור אותו: תו-מילה, תו שקוף
@@ -155,7 +173,7 @@ pub(crate) fn next_token_boundaries(text: &str, start_byte: usize) -> Option<(us
     // טוקן שמתרוקן אחרי הסרת הסימנים.
     let tok_start_rel = slice
         .char_indices()
-        .find(|(_, c)| c.is_alphanumeric() && !is_word_mark(*c))
+        .find(|(_, c)| starts_token(*c))
         .map(|(i, _)| i)?;
 
     let tok_start = start_byte + tok_start_rel;
@@ -990,6 +1008,22 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fast_paths_agree_with_unicode_predicates_for_every_char() {
+        for c in (0..=0x10FFFFu32).filter_map(char::from_u32) {
+            assert_eq!(
+                is_word_char(c),
+                c.is_alphanumeric() || is_word_mark(c),
+                "is_word_char({c:?})"
+            );
+            assert_eq!(
+                starts_token(c),
+                c.is_alphanumeric() && !is_word_mark(c),
+                "starts_token({c:?})"
+            );
         }
     }
 
