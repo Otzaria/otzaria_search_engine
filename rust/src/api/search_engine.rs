@@ -4462,6 +4462,40 @@ impl SearchEngine {
         self.semantic_sessions.invalidate();
     }
 
+    /// Plan unfiltered searches and the foundational books' query as the first search would;
+    /// how long it took, in ms.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn plan_semantic_for_bench(&self) -> Result<f64> {
+        let started = Instant::now();
+        let open = self
+            .semantic_engine()
+            .context("no semantic session is open")?;
+        let vectors_dir = open.vectors_dir.clone().context("not a vector set")?;
+        let view = open
+            .coordinator
+            .vector_set_info()
+            .and_then(|info| self.semantic_set_view(&vectors_dir, info.generation))
+            .context("the vector set has no view")?;
+        let mut resolver = crate::semantic_resolver::LiveResolver::new(
+            self.index_reader.searcher(),
+            self.chunk_key_field,
+            &self.semantic_resolver,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let cancel = SearchCancellation::default();
+        let mut filters = SidecarSearchFilters::default();
+        resolver
+            .plan(&filters, &view, &cancel)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        if PLAN_FOUNDATIONAL_QUERY {
+            filters.facets = Some(vec![FOUNDATIONAL_FACET.to_string()]);
+            resolver
+                .plan(&filters, &view, &cancel)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        Ok(started.elapsed().as_secs_f64() * 1000.0)
+    }
+
     /// The lexical phase of [`Self::search_semantic`] alone, for benchmarks:
     /// `None` is Exact, `Some(d)` is Fuzzy at distance `d`.
     #[cfg(all(test, feature = "semantic-integration"))]

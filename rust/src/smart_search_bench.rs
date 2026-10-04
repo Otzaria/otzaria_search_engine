@@ -673,6 +673,8 @@ const PAGE_STEPS: &[(&str, u32)] = &[
 /// Whole `search_semantic` pages through the session cache, Hybrid with the default ranking,
 /// Exact and Fuzzy 0, with where each page's time went. `OTZ_RUNS` fresh sessions per query;
 /// `OTZ_GROUPS` (comma-separated) narrows the queries, `OTZ_SHARE` sets the foundational share.
+/// Before the runs, the cold path: opening the set, planning, the first search;
+/// `OTZ_COLD_ONLY` stops after it. `OTZ_DUMP` names a file for every result of the first run.
 #[cfg(feature = "semantic-integration")]
 #[test]
 #[ignore = "needs OTZ_INDEX and a real vector set"]
@@ -722,6 +724,50 @@ fn semantic_pages() -> Result<()> {
         "vector set opened in {open_ms:.0} ms: {} vectors, state {:?}",
         status.vector_count, status.state
     );
+    let search = |query: &str, page: u32, lexical_mode: SemanticLexicalMode| {
+        let response = engine.search_semantic(
+            query.to_string(),
+            Vec::new(),
+            config.limit,
+            (page - 1) * config.limit,
+            lexical_mode,
+            0,
+            SemanticRetrievalMode::Hybrid,
+            None,
+            false,
+            false,
+            ranking.clone(),
+            &SemanticCancellationToken::new(),
+        );
+        (response, LAST_SEMANTIC_TIMINGS.get())
+    };
+
+    let plan_ms = engine.plan_semantic_for_bench()?;
+    let cold_query = QUERIES[0].1[0];
+    let (cold, timings) = search(cold_query, 1, SemanticLexicalMode::Exact);
+    let cold = cold.map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    engine.invalidate_semantic_sessions_for_bench();
+    let (_, warm) = search(cold_query, 1, SemanticLexicalMode::Exact);
+    let cold_line = format!(
+        "cold: open {open_ms:.0} ms, plan {plan_ms:.0} ms, first search {:.0} ms (lex {:.0} \
+         emb {:.0} scan {:.0} res {:.0}; same search warm {:.0} ms, scan {:.0} res {:.0}), \
+         n={} {:?}  {cold_query}",
+        timings.total_ms,
+        timings.lexical_ms,
+        timings.embed_ms,
+        timings.scan_ms,
+        timings.resolve_ms,
+        warm.total_ms,
+        warm.scan_ms,
+        warm.resolve_ms,
+        cold.results.len(),
+        cold.executed_mode
+    );
+    println!("{cold_line}");
+    if std::env::var_os("OTZ_COLD_ONLY").is_some() {
+        return Ok(());
+    }
+    let mut dump = std::env::var_os("OTZ_DUMP").map(|_| String::new());
 
     let mut out = String::from(
         "group,query,lexical,step,run,total_ms,expansions,lexical_ms,semantic_ms,embed_ms,scan_ms,resolve_ms,fuse_ms,hydrate_ms,page_ms,results,has_more,executed,total_count,lexical_total\n",
@@ -742,21 +788,7 @@ fn semantic_pages() -> Result<()> {
                 for run in 0..config.runs {
                     engine.invalidate_semantic_sessions_for_bench();
                     for &(step, page) in PAGE_STEPS {
-                        let response = engine.search_semantic(
-                            query.to_string(),
-                            Vec::new(),
-                            config.limit,
-                            (page - 1) * config.limit,
-                            lexical_mode,
-                            0,
-                            SemanticRetrievalMode::Hybrid,
-                            None,
-                            false,
-                            false,
-                            ranking.clone(),
-                            &SemanticCancellationToken::new(),
-                        );
-                        let timings = LAST_SEMANTIC_TIMINGS.get();
+                        let (response, timings) = search(query, page, lexical_mode);
                         let response = match response {
                             Ok(response) => response,
                             Err(error) => {
@@ -784,6 +816,22 @@ fn semantic_pages() -> Result<()> {
                             response.total_count,
                             response.lexical_total_count,
                         );
+                        if let (Some(dump), 0) = (dump.as_mut(), run) {
+                            for (rank, result) in response.results.iter().enumerate() {
+                                let _ = writeln!(
+                                    dump,
+                                    "{query}\t{lexical_label}\t{step}\t{rank}\t{}\t{}\t{}\t{:?}\t{:?}\t{:?}\t{}\t{}",
+                                    result.file_path,
+                                    result.id,
+                                    result.segment,
+                                    result.source,
+                                    result.semantic_score,
+                                    result.lexical_score,
+                                    result.fused_score,
+                                    result.merged_count,
+                                );
+                            }
+                        }
                         if run == 0 {
                             println!(
                                 "{group:<8} {lexical_label:<6} {step:<6} {:>8.1} ms  x{} lex {:>7.1} sem {:>7.1} (emb {:>4.0} scan {:>5.0} res {:>5.0}) fuse {:>6.1} hyd {:>6.1} page {:>6.1}  n={} more={} {:?}  {query}",
@@ -815,8 +863,11 @@ fn semantic_pages() -> Result<()> {
         }
     }
 
+    if let (Some(dump), Some(path)) = (dump, std::env::var_os("OTZ_DUMP")) {
+        fs::write(&path, dump)?;
+    }
     let mut table = format!(
-        "{:<6} {:<7} {:>5} {:>9} {:>9} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}\n",
+        "{cold_line}\n{:<6} {:<7} {:>5} {:>9} {:>9} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}\n",
         "step",
         "lexical",
         "n",
