@@ -3762,8 +3762,8 @@ pub struct SearchEngine {
     /// the next, for one generation of it: see [`crate::semantic_resolver`].
     #[cfg(feature = "semantic-integration")]
     semantic_resolver: Mutex<crate::semantic_resolver::ResolverCache>,
-    /// The open vector set's generation as a filtered search plans its scan against it: see
-    /// [`crate::semantic_moves`]. Opened on the first filtered search of a generation, and
+    /// The open vector set's generation as a search plans its scan against it: see
+    /// [`crate::semantic_moves`]. Opened on the first planned search of a generation, and
     /// let go when the session moves to another or closes.
     #[cfg(feature = "semantic-integration")]
     semantic_set_view: Mutex<Option<Arc<crate::semantic_moves::SetView>>>,
@@ -4878,7 +4878,7 @@ impl SearchEngine {
             })
     }
 
-    /// The view a filtered search plans its scan by, of the set at `vectors_dir` as its
+    /// The view a search plans its scan by, of the set at `vectors_dir` as its
     /// generation `generation` is: the one kept, or one opened now. `None` when the set has
     /// moved on from that generation — the session follows it, and a later search plans
     /// against it — or its segments do not open, which the session's own open would have
@@ -5317,15 +5317,16 @@ impl SearchEngine {
                 facets: (!facets.is_empty()).then_some(facets),
                 include_pdf: None,
             };
-            // A filtered search of an opened vector set is planned against the generation the
-            // session serves: texts that moved into an admitted book since the set was built
-            // are looked for there, and the vectors of those no admitted book's records reach
+            // A search of an opened vector set is planned against the generation the session
+            // serves: texts that moved into a book since the set was built are looked for
+            // there, and under a filter the vectors of those no admitted book's records reach
             // are weighed besides the scan of the admitted books, which is not widened.
             if let (Some(vectors_dir), false) = (
                 &session.vectors_dir,
                 matches!(retrieval_mode, SemanticRetrievalMode::LexicalOnly),
             ) {
-                if filters.compile().is_some() {
+                // Only the column has arrivals to plan by.
+                if resolver.has_column() {
                     if let Some(view) = session
                         .coordinator
                         .vector_set_info()
@@ -5341,7 +5342,7 @@ impl SearchEngine {
                                 return Err(SemanticError::cancelled());
                             }
                             Err(error) => {
-                                warn!("a filtered semantic search could not be planned: {error}");
+                                warn!("a semantic search could not be planned: {error}");
                                 resolver.fail(error);
                             }
                         }
@@ -22140,6 +22141,66 @@ mod tests {
                 0,
                 "a plan of the new generation reads none of the book it admits"
             );
+        }
+
+        /// An unfiltered search plans the whole library once a generation, and after a commit
+        /// reads only the book it added.
+        #[test]
+        fn an_unfiltered_plan_reads_each_book_once_and_then_only_what_a_commit_added() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let unfiltered = |engine: &SearchEngine, query: &str| {
+                engine
+                    .search_semantic(
+                        query.to_string(),
+                        Vec::new(),
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let walks = |engine: &SearchEngine| {
+                engine
+                    .semantic_resolver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .walks
+            };
+            assert_eq!(unfiltered(&engine, PROBE).results[0].snippet_html, PROBE);
+            assert_eq!(walks(&engine), 1);
+            unfiltered(&engine, "בראשית ברא אלהים");
+            assert_eq!(walks(&engine), 1, "the plan is kept for the generation");
+            engine
+                .add_text_book(
+                    "ספר אחר".to_string(),
+                    "/other".to_string(),
+                    "/books/other.txt".to_string(),
+                    1,
+                    0,
+                    format!("שורה בספר אחר ארוכה דיה לעמוד לבדה\n{PROBE}"),
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            let lines: Vec<(String, u64)> = unfiltered(&engine, PROBE)
+                .results
+                .into_iter()
+                .filter(|result| result.snippet_html == PROBE)
+                .map(|result| (result.file_path, result.segment))
+                .collect();
+            assert_eq!(
+                lines,
+                [(BOOK.to_string(), 1), ("/books/other.txt".to_string(), 1)]
+            );
+            assert_eq!(walks(&engine), 1, "only the book the commit added");
         }
 
         /// A vector whose line's column is stale resolves nowhere: its record's line and every

@@ -22,7 +22,8 @@
 //! vectors of the others are **unreached**: the sidecar weighs them besides the scan, each
 //! at its own score and none in place of one of the admitted books' hits
 //! (`CandidateResolver::unreached`), and the resolver looks for each in the admitted books
-//! it arrived in, held to its whole key, and in no other book.
+//! it arrived in, held to its whole key, and in no other book. An unfiltered search plans
+//! every book this way, with nothing unreached: the scan reads every vector.
 //!
 //! Liveness is the set's own. A record counts only when a scan of its book reaches a live
 //! slot through it — the sidecar's `book_records`, which reads the generation's deletions
@@ -39,6 +40,7 @@ use otzaria_semantic_search::distribution::gates::book_records;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
 use otzaria_semantic_search::semantic::resolve::SlotRef;
 use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -193,21 +195,41 @@ impl SetView {
         values: &HashSet<u64>,
         cancel: &CancellationToken,
     ) -> Option<HashMap<u64, Vec<SlotRef>>> {
-        let mut found: HashMap<u64, Vec<SlotRef>> = HashMap::new();
-        for (seg, segment) in self.set.segments().iter().enumerate() {
-            let seg = seg as u16;
-            for slot in 0..segment.slot_count() {
-                if slot % SLOTS_PER_CHECK == 0 && cancel.is_cancelled() {
+        let segments = self.set.segments();
+        // In stretches of slots read in parallel, and gathered in order.
+        let stretches: Vec<(u16, u32)> = segments
+            .iter()
+            .enumerate()
+            .flat_map(|(seg, segment)| {
+                (0..segment.slot_count())
+                    .step_by(SLOTS_PER_CHECK as usize)
+                    .map(move |start| (seg as u16, start))
+            })
+            .collect();
+        let held: Vec<Vec<SlotRef>> = stretches
+            .into_par_iter()
+            .map(|(seg, start)| {
+                if cancel.is_cancelled() {
                     return None;
                 }
-                let key = segment.key(slot);
-                if values.contains(&key.column_value()) && self.set.is_live(seg, slot) {
-                    found
-                        .entry(key.column_value())
-                        .or_default()
-                        .push(SlotRef { seg, slot, key });
-                }
-            }
+                let segment = &segments[seg as usize];
+                let end = start
+                    .saturating_add(SLOTS_PER_CHECK)
+                    .min(segment.slot_count());
+                Some(
+                    (start..end)
+                        .filter_map(|slot| {
+                            let key = segment.key(slot);
+                            (values.contains(&key.column_value()) && self.set.is_live(seg, slot))
+                                .then_some(SlotRef { seg, slot, key })
+                        })
+                        .collect(),
+                )
+            })
+            .collect::<Option<_>>()?;
+        let mut found: HashMap<u64, Vec<SlotRef>> = HashMap::new();
+        for slot in held.into_iter().flatten() {
+            found.entry(slot.key.column_value()).or_default().push(slot);
         }
         Some(found)
     }
