@@ -518,33 +518,34 @@ are now documented as development and testing scaffolding, not for the library.
 
 ### Fixed
 
-- **An unfiltered search finds a text copied or moved into a book, as a
-  filter admitting that book does.** A filtered search resolves each hit in the
-  admitted books its text arrived in since the set was built; an unfiltered one
-  looked beyond a hit's records only when none of them resolved, so a passage
-  copied into a new book was found under the new book's category and not
-  without a filter. On an index with the `chunkKey` column an unfiltered search
-  of an opened set is now planned too, for every book, and returns every line
-  of a hit a filtered search returns, within the 32-line cap and one line of
-  each book first. The plan is made once per index generation, on the first
-  unfiltered search, and a book's arrivals are kept with the set's view, so
-  after a commit only the books it changed are read; books are read in
-  parallel, as is the pass over the set's slots a new text needs. On a
-  synthetic library of the real one's size (6,910,850 lines in 7,765 books,
-  as many vectors; Apple M4), the first unfiltered search's plan takes 0.2 s,
-  0.5 s from a cold disk cache, and that search 0.54 to 0.88 s against 0.58
-  to 0.65 s before, since it reads much of what the search would; after a
-  commit adding a book the plan takes 11 ms, and after one copying 7,000
-  lines 21 to 33 ms. Later searches are unchanged:
-  unfiltered p50 35.2 ms (35.1 to 35.5 before), under a category 14.8 to
-  16.2 ms (15.2 to 16.2). A plan that cannot be made, because the index
-  could not be read for it, leaves unfiltered searches unplanned for that
-  index generation, as they were before, and does not fail them; a filtered
-  search still fails its semantic half. A plan of more than 200,000 arrivals
-  (about 20 MB), a set that far behind its library, is not held either, and
-  unfiltered searches go unplanned. A cancelled plan keeps the books it read. On a version 4 index there are no arrivals,
-  filtered or not, so neither finds the copy; the lexical half of a hybrid
-  search does, filtered or not.
+- **An unfiltered search finds a text copied or moved into a book, as a filter
+  admitting that book does.** A filtered search resolves each hit in the
+  admitted books its text arrived in since the set was built; an unfiltered
+  one looked beyond a hit's records only when none of them resolved, so a
+  passage copied into a new book was found under the new book's category and
+  not without a filter. On an index with the `chunkKey` column an unfiltered
+  search of an opened set is now planned too, for every book, and returns
+  every line of a hit a filtered search returns, within the 32-line cap and
+  one line of each book first. The plan is made once per index generation, on
+  the first unfiltered search, and a book's arrivals are kept with the set's
+  view, so after a commit only the books it changed are read; books are read
+  in parallel, as is the pass over the set's slots a new text needs. On a
+  synthetic library of the real one's size (6,910,850 lines in 7,765 books, as
+  many vectors; Apple M4), the first unfiltered search's plan takes 0.2 s,
+  0.5 s from a cold disk cache, and that search 0.54 to 0.88 s against 0.58 to
+  0.65 s before, since it reads much of what the search would; after a commit
+  adding a book the plan takes 11 ms, and after one copying 7,000 lines 21 to
+  33 ms. Later searches are unchanged: unfiltered p50 35.2 ms (35.1 to 35.5
+  before), under a category 14.8 to 16.2 ms (15.2 to 16.2). A plan that cannot
+  be made, because the index could not be read for it, leaves unfiltered
+  searches unplanned for that index generation, as they were before, and does
+  not fail them; a filtered search still fails its semantic half. A plan of
+  more than 200,000 arrivals (about 20 MB), a set that far behind its library,
+  is not held either, and unfiltered searches go unplanned; the arrivals found
+  are kept, so a later index generation gives up without asking the set again.
+  A cancelled plan keeps the books it read. On a version 4 index there are no
+  arrivals, filtered or not, so neither finds the copy; the lexical half of a
+  hybrid search does, filtered or not.
 - **A vector set installed again at its directory is planned afresh.** A set
   removed and installed again there starts its generations over, and a
   filtered search in the same index generation reused the plan made with the

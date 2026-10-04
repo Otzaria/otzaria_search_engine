@@ -22274,6 +22274,76 @@ mod tests {
             assert_eq!(probe_lines(&engine).len(), 4);
         }
 
+        fn lookups(engine: &SearchEngine) -> u64 {
+            engine
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .lookups
+        }
+
+        /// Past the cap, the arrivals found are kept: the next generation gives up without
+        /// asking the set again.
+        #[test]
+        fn an_unfiltered_plan_past_its_cap_asks_the_set_once() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            add_copy(&mut engine, "/books/third.txt", 2);
+            add_copy(&mut engine, "/books/fourth.txt", 3);
+            let cap = crate::semantic_resolver::LIBRARY_CAP.with(|cap| cap.replace(1));
+            let first = probe_lines(&engine);
+            let first_lookups = lookups(&engine);
+            engine
+                .delete_documents_by_file_path("/books/fourth.txt")
+                .unwrap();
+            engine.commit().unwrap();
+            let second = probe_lines(&engine);
+            let second_lookups = lookups(&engine);
+            crate::semantic_resolver::LIBRARY_CAP.with(|limit| limit.set(cap));
+            assert_eq!(first, [(BOOK.to_string(), 1)]);
+            assert_eq!(second, [(BOOK.to_string(), 1)]);
+            assert_eq!((first_lookups, second_lookups), (1, 0));
+        }
+
+        /// A plan its token cancelled is not one that failed: the next search plans.
+        #[test]
+        fn a_cancelled_plan_is_not_a_failed_one() {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::resolve::ResolveError;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            add_copy(&mut engine, OTHER, 1);
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            assert_eq!(
+                resolver.plan(&filters, &view, &cancel).err(),
+                Some(ResolveError::Cancelled)
+            );
+            drop(resolver);
+            assert_eq!(
+                probe_lines(&engine),
+                [(BOOK.to_string(), 1), (OTHER.to_string(), 1)]
+            );
+        }
+
         /// A plan cancelled before it asks the set keeps the books it read.
         #[test]
         fn a_cancelled_plan_keeps_the_books_it_read() {
