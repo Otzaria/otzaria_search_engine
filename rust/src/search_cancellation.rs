@@ -64,6 +64,9 @@ pub(crate) enum SearchCheckpoint {
     Painting,
     /// A lexical fallback's page is ready: before it is returned.
     Fallback,
+    /// A passage highlight is about to embed the clauses of one more line.
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    Highlight,
 }
 
 /// End the search at `checkpoint` if its token has been cancelled.

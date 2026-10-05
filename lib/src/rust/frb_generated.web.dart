@@ -10,9 +10,12 @@ import 'api/benchmark.dart';
 import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
 import 'api/search_engine.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -348,6 +351,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticHighlightTarget> dco_decode_list_semantic_highlight_target(
+    dynamic raw,
+  );
+
+  @protected
+  List<SemanticPassageHighlight> dco_decode_list_semantic_passage_highlight(
+    dynamic raw,
+  );
+
+  @protected
   List<SemanticSearchResult> dco_decode_list_semantic_search_result(
     dynamic raw,
   );
@@ -515,6 +528,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticGroupingMode dco_decode_semantic_grouping_mode(dynamic raw);
 
   @protected
+  SemanticHighlightTarget dco_decode_semantic_highlight_target(dynamic raw);
+
+  @protected
   SemanticIndexDiff dco_decode_semantic_index_diff(dynamic raw);
 
   @protected
@@ -522,6 +538,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticLexicalMode dco_decode_semantic_lexical_mode(dynamic raw);
+
+  @protected
+  SemanticPassageHighlight dco_decode_semantic_passage_highlight(dynamic raw);
 
   @protected
   SemanticQueryTypeAlphas dco_decode_semantic_query_type_alphas(dynamic raw);
@@ -977,6 +996,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticHighlightTarget> sse_decode_list_semantic_highlight_target(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticPassageHighlight> sse_decode_list_semantic_passage_highlight(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<SemanticSearchResult> sse_decode_list_semantic_search_result(
     SseDeserializer deserializer,
   );
@@ -1192,6 +1221,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticHighlightTarget sse_decode_semantic_highlight_target(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticIndexDiff sse_decode_semantic_index_diff(
     SseDeserializer deserializer,
   );
@@ -1203,6 +1237,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticLexicalMode sse_decode_semantic_lexical_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticPassageHighlight sse_decode_semantic_passage_highlight(
     SseDeserializer deserializer,
   );
 
@@ -1774,6 +1813,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_semantic_highlight_target(
+    List<SemanticHighlightTarget> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_semantic_passage_highlight(
+    List<SemanticPassageHighlight> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_semantic_search_result(
     List<SemanticSearchResult> self,
     SseSerializer serializer,
@@ -2036,6 +2087,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_highlight_target(
+    SemanticHighlightTarget self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_index_diff(
     SemanticIndexDiff self,
     SseSerializer serializer,
@@ -2050,6 +2107,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_lexical_mode(
     SemanticLexicalMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_passage_highlight(
+    SemanticPassageHighlight self,
     SseSerializer serializer,
   );
 

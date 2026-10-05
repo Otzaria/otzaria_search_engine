@@ -1535,7 +1535,7 @@ dependencies = [
 [[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
-source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=82a8d9e1147643fed02c91320b6192268b14a9bd#82a8d9e1147643fed02c91320b6192268b14a9bd"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=977d267366b75de9da04764211b78fe80673d79a#977d267366b75de9da04764211b78fe80673d79a"
 dependencies = [
  "crc32fast",
  "libloading",
