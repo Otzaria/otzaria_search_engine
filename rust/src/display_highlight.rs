@@ -507,7 +507,7 @@ fn assemble_display_highlight(
 /// [`build_word_display_pattern`]: the budget keeps `word` itself first, then
 /// the terms closest to it in length — cutting longest-first dropped the typed
 /// word whenever it had thousands of variants.
-fn build_terms_display_pattern(terms: &[String], word: &str) -> String {
+fn build_terms_display_pattern(terms: &[String], word: &str, budget: usize) -> String {
     let word_len = word.chars().count();
     // Count UTF-8 characters once per term, not for every sort comparison.
     let mut by_priority: Vec<(&str, usize)> = terms
@@ -522,7 +522,7 @@ fn build_terms_display_pattern(terms: &[String], word: &str) -> String {
     for (term, term_len) in by_priority {
         let branch = charwise_display_pattern(term);
         let len = branch.chars().count();
-        if !kept.is_empty() && total + len > MAX_DISPLAY_PATTERN_CHARS {
+        if !kept.is_empty() && total + len > budget {
             break;
         }
         total += len;
@@ -545,16 +545,16 @@ fn build_terms_display_pattern(terms: &[String], word: &str) -> String {
 ///
 /// Per word, the pattern source depends on the active options:
 ///
-/// - **Typo tolerance** (with or without other options): the matched index
-///   terms — Levenshtein variants the query-shape builder cannot reproduce —
-///   are painted as whole tokens. Token boundaries are kept unless a
-///   boundary-breaking expansion is also active, in which case they are waived
-///   so the variant still highlights inside an inflected form.
-/// - **Boundary-breaking expansion without typo** (prefix / suffix / partial):
-///   the compact query-shape pattern highlights only the typed substring/root
-///   with boundaries waived. Unlike the term list it is not budget-truncated,
-///   so every occurrence highlights — the term list can drop visible words when
-///   the option matches thousands of index tokens.
+/// - **Typo tolerance without expansion**: the matched index terms —
+///   Levenshtein variants the query-shape builder cannot reproduce — are
+///   painted as whole tokens, boundaries kept.
+/// - **Boundary-breaking expansion** (prefix / suffix / partial): the compact
+///   query-shape pattern highlights only the typed substring/root with
+///   boundaries waived. Unlike the term list it is not budget-truncated, so
+///   every occurrence highlights — the term list can drop visible words when
+///   the option matches thousands of index tokens. With typo tolerance, the
+///   matched terms the word's own branches do not accept are added as whole
+///   tokens, within the remaining budget.
 /// - **No expansion** (plain / spelling): the matched whole tokens, boundaries
 ///   kept.
 ///
@@ -590,8 +590,7 @@ pub fn build_display_highlight_from_terms(
         // הרחבה ששוברת גבול-מילה (קידומת/סיומת/חלק-ממילה): ה-query-shape
         // קומפקטי, מכסה כל התאמה ומדגיש רק את החלק שהוקלד — בניגוד למונחי-
         // האינדקס שחסומים בתקציב ומדגישים מילים שלמות. מונחי-האינדקס נשמרים
-        // לשגיאות-כתיב (וריאנטי Levenshtein שה-query-shape אינו יודע להפיק);
-        // כשגם הרחבה פעילה מוותרים על גבול-המילה כדי שהווריאנטים לא ייפסלו.
+        // לשגיאות-כתיב (וריאנטים שה-query-shape אינו יודע להפיק).
         let has_expansion = flags.prefix
             || flags.suffix
             || flags.gram_prefix
@@ -599,18 +598,34 @@ pub fn build_display_highlight_from_terms(
             || flags.partial
             || flags.aramaic_prefix;
         // מונחי-האינדקס הם טוקנים שלמים, כולל הקידומת/הסיומת — בלי חלון.
-        let (pattern, boundary_eligible, plan) =
-            if !matched.is_empty() && !(has_expansion && !flags.typo) {
-                let pattern = build_terms_display_pattern(matched, word);
-                let plan = vec![(String::new(), pattern.clone(), String::new())];
-                (pattern, !has_expansion, plan)
-            } else {
-                (
-                    build_word_display_pattern(word, &flags, alts)?,
-                    !has_expansion,
-                    matcher_branches(word, &flags, alts),
-                )
-            };
+        let (pattern, boundary_eligible, plan) = if !matched.is_empty() && !has_expansion {
+            let pattern = build_terms_display_pattern(matched, word, MAX_DISPLAY_PATTERN_CHARS);
+            let plan = vec![(String::new(), pattern.clone(), String::new())];
+            (pattern, true, plan)
+        } else {
+            let mut pattern = build_word_display_pattern(word, &flags, alts)?;
+            let mut plan = matcher_branches(word, &flags, alts);
+            if flags.typo && !pattern.is_empty() {
+                // מונח שענפי המילה כבר תופסים היה ממלא את התקציב ודוחק את וריאנטי-הטעות.
+                let branches: Vec<String> = plan
+                    .iter()
+                    .map(|(lead, root, trail)| format!("(?:{lead})(?:{root})(?:{trail})"))
+                    .collect();
+                let covered = regex::Regex::new(&format!("\\A(?:{})\\z", branches.join("|"))).ok();
+                let typo_terms: Vec<String> = matched
+                    .iter()
+                    .filter(|term| !covered.as_ref().is_some_and(|re| re.is_match(term)))
+                    .cloned()
+                    .collect();
+                let budget = MAX_DISPLAY_PATTERN_CHARS.saturating_sub(pattern.chars().count());
+                let typo_pattern = build_terms_display_pattern(&typo_terms, word, budget);
+                if budget > 0 && !typo_pattern.is_empty() {
+                    pattern = format!("(?:{pattern}|{typo_pattern})");
+                    plan.push((String::new(), typo_pattern, String::new()));
+                }
+            }
+            (pattern, !has_expansion, plan)
+        };
         if pattern.is_empty() {
             continue;
         }
@@ -1487,19 +1502,27 @@ mod tests {
     fn terms_pattern_sorts_longest_first() {
         // Leftmost-first alternation: ספר before הספרים would truncate the
         // longer word's highlight to its inner substring.
-        let p = build_terms_display_pattern(&["ספר".to_string(), "הספרים".to_string()], "ספר");
+        let p = build_terms_display_pattern(
+            &["ספר".to_string(), "הספרים".to_string()],
+            "ספר",
+            MAX_DISPLAY_PATTERN_CHARS,
+        );
         assert_eq!(p, format!("(?:{}|{})", charwise("הספרים"), charwise("ספר")));
     }
 
     #[test]
     fn terms_pattern_dedups_and_bounds_budget() {
-        let dup = build_terms_display_pattern(&["ספר".to_string(), "ספר".to_string()], "ספר");
+        let dup = build_terms_display_pattern(
+            &["ספר".to_string(), "ספר".to_string()],
+            "ספר",
+            MAX_DISPLAY_PATTERN_CHARS,
+        );
         assert_eq!(dup, charwise("ספר"));
 
         // Terms far beyond the char budget: the pattern stays bounded but
         // never empty.
         let many: Vec<String> = (0..2_000).map(|i| format!("מלה{i:04}")).collect();
-        let p = build_terms_display_pattern(&many, "ספר");
+        let p = build_terms_display_pattern(&many, "ספר", MAX_DISPLAY_PATTERN_CHARS);
         assert!(!p.is_empty());
         // The budget bounds the branch bodies; `|` separators and the `(?:)`
         // wrapper add at most one char per branch plus the group frame.
@@ -1514,7 +1537,7 @@ mod tests {
         let mut terms: Vec<String> = (0..2_000).map(|i| format!("מימים{i:04}")).collect();
         terms.push("מי".to_string());
         terms.push("מים".to_string());
-        let p = build_terms_display_pattern(&terms, "מי");
+        let p = build_terms_display_pattern(&terms, "מי", MAX_DISPLAY_PATTERN_CHARS);
         let re = regex::Regex::new(&format!("^(?:{p})$")).unwrap();
         assert!(re.is_match("מי"));
         assert!(re.is_match("מים"));
