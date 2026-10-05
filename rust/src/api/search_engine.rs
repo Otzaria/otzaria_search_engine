@@ -19042,6 +19042,98 @@ mod tests {
         assert_eq!(hl.combined_pattern, charwise("שלום"));
     }
 
+    /// Otzaria/otzaria#1926: affixes with typos must still paint the forms in
+    /// the text when the index holds thousands of affixed forms of the word.
+    #[test]
+    fn index_highlight_affix_typo_paints_found_variants_among_many_forms() {
+        let (mut engine, _dir) = make_engine();
+        let line_a = "ימים אחר הזמן שייעד להביא כלומר עתה ידעתי כי מזה אשר צוה";
+        let line_b = "אבל כשאין עשרה לא. וכל זמן שאין שלשה מצוה להם ליחלק";
+        let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+        let mut filler = Vec::new();
+        for a in &letters {
+            for b in &letters {
+                filler.push(format!("{a}{b}מצוה מצוה{a}{b} {a}{b}זמן"));
+            }
+        }
+        add(&mut engine, 1, line_a, "/books/a.txt");
+        add(&mut engine, 2, line_b, "/books/b.txt");
+        add(&mut engine, 3, &filler.join(" "), "/books/filler.txt");
+        engine.commit().unwrap();
+
+        let word_options: HashMap<String, bool> =
+            ["קידומות", "סיומות", "שגיאות כתיב", "כתיב מלא/חסר"]
+                .iter()
+                .map(|o| (o.to_string(), true))
+                .collect();
+        let options = HashMap::from([
+            ("זימון_0".to_string(), word_options.clone()),
+            ("מצוה_1".to_string(), word_options),
+        ]);
+        let matcher = engine
+            .generate_index_highlight_pattern(
+                "זימון מצוה".to_string(),
+                10,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+            )
+            .unwrap()
+            .expect("pattern")
+            .matcher
+            .expect("matcher");
+
+        let painted = |line: &str| -> Vec<String> {
+            let units: Vec<u16> = line.encode_utf16().collect();
+            matcher
+                .find_matches(line.to_string(), vec![])
+                .iter()
+                .flat_map(|m| {
+                    m.word_ranges.iter().map(|r| {
+                        String::from_utf16_lossy(
+                            &units[(m.start + r.start) as usize..(m.start + r.end) as usize],
+                        )
+                    })
+                })
+                .collect()
+        };
+        assert_eq!(painted(line_b), vec!["זמן", "מצוה"]);
+        // Word forms paint their root, as with affixes alone; typo terms paint whole.
+        assert_eq!(painted(line_a), vec!["זמן", "מזה"]);
+    }
+
+    /// A one-sided expansion must keep painting a typo variant its own
+    /// branches cannot cover (`ספרא` under prefixes only).
+    #[test]
+    fn index_highlight_one_sided_affix_typo_paints_variant() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ספרא תורה", "/books/a.txt");
+        engine.commit().unwrap();
+
+        let options = HashMap::from([(
+            "ספר_0".to_string(),
+            HashMap::from([
+                ("קידומות".to_string(), true),
+                ("שגיאות כתיב".to_string(), true),
+            ]),
+        )]);
+        let matcher = engine
+            .generate_index_highlight_pattern(
+                "ספר תורה".to_string(),
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                options,
+            )
+            .unwrap()
+            .expect("pattern")
+            .matcher
+            .expect("matcher");
+        let found = matcher.find_matches("ספרא תורה".to_string(), vec![]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].start, found[0].end), (0, 9));
+    }
+
     #[test]
     fn test_count_by_book_basic() {
         let (mut engine, _dir) = make_engine();
