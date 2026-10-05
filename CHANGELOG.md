@@ -1,5 +1,62 @@
 # Changelog
 
+## 3.1.0 – 2026-10-05
+
+> Nothing here breaks Dart code or an index built by 3.0.0: the new response
+> fields have defaults and the schema is unchanged. Two behaviours change on
+> their own, though: multi-word fuzzy with a dictionary no longer requires the
+> words to be adjacent, and smart search ranks by new defaults when it is passed
+> no `ranking`.
+
+### Added
+
+- **Smart-search paging sessions.** `searchSemantic` keeps a search's results in
+  the order shown, so each line and group appears once and a page asked again is
+  the same page; a commit, a library or semantic change, ten idle minutes or
+  eviction start afresh. `SemanticSearchResponse.hasMore` says whether a page
+  follows, and `sessionRestarted` says a continuation whose session was lost
+  came back as a fresh first page, to replace the displayed list. (#44)
+- **`semanticPassageHighlights`** marks, lazily and per batch of hits, the clause
+  of each line nearest the query (`SemanticHighlightTarget` →
+  `SemanticPassageHighlight`, one per target in order). The result's own snippet
+  is untouched, and a short, missing or stale line is simply not marked. (#44)
+- **Foundational books' preference**: `SemanticRankingOptions.foundationalBonus`
+  and `foundationalCandidateShare` lift lines of the books under `/base` and
+  fetch a share of the semantic candidates from them. (#44)
+
+### Changed
+
+- **Default smart-search ranking**: `SemanticRankingOptions` defaults, and a
+  search passed no `ranking`, now use RRF, a semantic threshold of 0.55, a
+  foundational bonus of 0.002 and a foundational candidate share of 0.5. (#44)
+- **Quoted words in smart search are literal**: adjacency inside each quoted
+  phrase, while words outside a quotation keep the requested lexical mode; a
+  single quotation covering the whole query runs `Exact`. An acronym's gershayim
+  (רמב"ם) quotes nothing.
+- **Multi-word fuzzy with a dictionary requires each word, not adjacency**:
+  every word, or one of its forms, anywhere in the line; adjacency only inside a
+  quoted phrase. The typed phrase still outranks the same words scattered. With
+  a dictionary, `maxDistance` 0 uses the dictionary forms without edit
+  distance. (#44)
+- **`lexical.db` lookups find spellings as stored** (final letters, gershayim),
+  select dictionary families by route so unrelated families no longer fill the
+  budget, drop forms shorter than two letters, and are memory-mapped best-effort:
+  uncached lookups went from tens of milliseconds to about 1-2 ms. (#44)
+- **Faster smart search**: the lexical and semantic halves run in parallel, a
+  page's hits are resolved together (a new session's first page p50 434 → 129 ms
+  on the real library), the book directory is built from postings (cold planning
+  1.9 → 0.5 s), and a page's results are built in parallel. (#44)
+- **The sidecar is pinned at `977d267`** for foundational ranking and
+  prepare/fuse. (#44)
+
+### Fixed
+
+- **A continuation whose smart-search session was lost** no longer appends a
+  first page to the shown results; it returns `sessionRestarted`.
+- **Unshown results of a session are ranked again with the wider window**, so a
+  later page no longer begins with a row scored below the rest of it. (#44)
+- **A passage highlight's mark takes a query word just past its window.** (#44)
+
 ## 3.0.0 – 2026-10-04
 
 > Breaking for every existing index: one built by 2.0.0 lacks the fields a
