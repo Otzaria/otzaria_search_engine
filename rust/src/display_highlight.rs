@@ -188,8 +188,10 @@ static WORD_SEPARATOR: Lazy<String> = Lazy::new(|| {
     )
 });
 
-/// Cumulative per-word pattern length budget. Display patterns are ~3× longer
-/// than index-term patterns (each letter carries a marks class), so this is
+/// Pattern-body budget for each source (query shape or matched terms).
+/// A hybrid affix+typo word has one bounded source of each kind, so spelling
+/// branches cannot consume the matched-term allowance. Display patterns are
+/// ~3× longer than index-term patterns (each letter carries a marks class), so this is
 /// looser than `hebrew_query::MAX_PATTERN_CHARS`; at least one branch is
 /// always kept. Raised with the search-side budgets (parity), but capped
 /// short of a strict 3× of the index budget — past ~12k chars the app-side
@@ -538,6 +540,21 @@ fn build_terms_display_pattern(terms: &[String], word: &str, budget: usize) -> S
     }
 }
 
+/// The display branches applied to normalized index terms. Mark classes and
+/// typographic quote forms cannot occur in those terms; keeping them in this
+/// temporary classifier multiplies compilation work without adding coverage.
+fn normalized_term_coverage_pattern(plan: &[(String, String, String)]) -> String {
+    let branches: Vec<String> = plan
+        .iter()
+        .map(|(lead, root, trail)| format!("(?:{lead})(?:{root})(?:{trail})"))
+        .collect();
+    format!("\\A(?:{})\\z", branches.join("|"))
+        .replace(ATTACHED_MARKS_CLASS, "")
+        .replace(OPTIONAL_QUOTES, "[\"']{0,2}")
+        .replace(GERSHAYIM_DISPLAY_CLASS, "(?:\"|'{2})")
+        .replace(GERESH_DISPLAY_CLASS, "'")
+}
+
 /// Builds display-highlight patterns from the *index terms the query actually
 /// matches* — one `Vec<String>` per query word, aligned with
 /// [`split_query_words`] over the engine-normalized query (the same order
@@ -554,7 +571,8 @@ fn build_terms_display_pattern(terms: &[String], word: &str, budget: usize) -> S
 ///   every occurrence highlights — the term list can drop visible words when
 ///   the option matches thousands of index tokens. With typo tolerance, the
 ///   matched terms the word's own branches do not accept are added as whole
-///   tokens, within the remaining budget.
+///   tokens, with their own matched-term budget. Each source is bounded;
+///   combining them can use up to twice the per-source allowance.
 /// - **No expansion** (plain / spelling): the matched whole tokens, boundaries
 ///   kept.
 ///
@@ -607,19 +625,24 @@ pub fn build_display_highlight_from_terms(
             let mut plan = matcher_branches(word, &flags, alts);
             if flags.typo && !pattern.is_empty() {
                 // מונח שענפי המילה כבר תופסים היה ממלא את התקציב ודוחק את וריאנטי-הטעות.
-                let branches: Vec<String> = plan
-                    .iter()
-                    .map(|(lead, root, trail)| format!("(?:{lead})(?:{root})(?:{trail})"))
-                    .collect();
-                let covered = regex::Regex::new(&format!("\\A(?:{})\\z", branches.join("|"))).ok();
+                let covered_pattern = normalized_term_coverage_pattern(&plan);
+                let covered = regex::RegexBuilder::new(&covered_pattern)
+                    .case_insensitive(true)
+                    .build()
+                    .ok();
                 let typo_terms: Vec<String> = matched
                     .iter()
                     .filter(|term| !covered.as_ref().is_some_and(|re| re.is_match(term)))
                     .cloned()
                     .collect();
-                let budget = MAX_DISPLAY_PATTERN_CHARS.saturating_sub(pattern.chars().count());
-                let typo_pattern = build_terms_display_pattern(&typo_terms, word, budget);
-                if budget > 0 && !typo_pattern.is_empty() {
+                // Keep the original matched-term allowance independently of
+                // the query shape. Full/defective spelling can fill the shape
+                // budget even when the index contains only two typo tokens.
+                // Covered forms need no term slots; every typo kept by the old
+                // terms-only builder can therefore still fit here.
+                let typo_pattern =
+                    build_terms_display_pattern(&typo_terms, word, MAX_DISPLAY_PATTERN_CHARS);
+                if !typo_pattern.is_empty() {
                     pattern = format!("(?:{pattern}|{typo_pattern})");
                     plan.push((String::new(), typo_pattern, String::new()));
                 }
@@ -1609,6 +1632,100 @@ mod tests {
         // הווריאנט השגוי נשמר בתבנית, והגבול מוותר (לא נדחה בתוך צורה מורחבת).
         assert!(hl.combined_pattern.contains(&charwise("םפר")));
         assert_eq!(hl.word_boundary_eligible, vec![false]);
+    }
+
+    #[test]
+    fn normalized_term_classifier_preserves_display_coverage() {
+        let words = ["ספר", "קונטרסים", "רמב\"ם", "תוס'", "Book"];
+        let options = [
+            "קידומות",
+            "סיומות",
+            "קידומות דקדוקיות",
+            "סיומות דקדוקיות",
+            "חלק ממילה",
+            "קידומות ארמיות",
+        ];
+        for word in words {
+            for option in options {
+                let flags = WordFlags::from_map(&HashMap::from([
+                    (option.to_string(), true),
+                    ("כתיב מלא/חסר".to_string(), true),
+                ]));
+                let plan = matcher_branches(word, &flags, &["חכם".into()]);
+                let display = plan
+                    .iter()
+                    .map(|(lead, root, trail)| format!("(?:{lead})(?:{root})(?:{trail})"))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                let display = regex::RegexBuilder::new(&format!("\\A(?:{display})\\z"))
+                    .case_insensitive(true)
+                    .build()
+                    .unwrap();
+                let normalized = regex::RegexBuilder::new(&normalized_term_coverage_pattern(&plan))
+                    .case_insensitive(true)
+                    .build()
+                    .unwrap();
+                for term in display_terms(word, &flags, &["חכם".into()]) {
+                    for prefix in ["", "ה", "ד", "אב", "אבגדה"] {
+                        for suffix in ["", "א", "ים", "אב", "אבגדהוז"] {
+                            let term = format!("{prefix}{term}{suffix}");
+                            let normalized_term = normalize_for_index(&term);
+                            assert_eq!(
+                                display.is_match(&normalized_term),
+                                normalized.is_match(&normalized_term),
+                                "word={word}, option={option}, term={normalized_term}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hybrid_keeps_the_old_typo_allowance_when_spelling_fills_its_budget() {
+        let word = "קונטרסים";
+        let options = HashMap::from([(
+            format!("{word}_0"),
+            ["קידומות", "סיומות", "שגיאות כתיב", "כתיב מלא/חסר"]
+                .iter()
+                .map(|o| (o.to_string(), true))
+                .collect(),
+        )]);
+        let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+        let mut terms = Vec::new();
+        for a in &letters {
+            for b in &letters {
+                terms.push(format!("כונטרסים{a}{b}"));
+            }
+        }
+        terms.extend(["כונטרסים".into(), "קונטרשים".into()]);
+        let old = build_terms_display_pattern(&terms, word, MAX_DISPLAY_PATTERN_CHARS);
+        let old = regex::Regex::new(&format!("\\A(?:{old})\\z")).unwrap();
+        let hl = build_display_highlight_from_terms(
+            word,
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options,
+            &[terms.clone()],
+        )
+        .unwrap();
+        // Two independent bounded sources, including alternation frames.
+        assert!(hl.word_patterns[0].chars().count() <= 2 * MAX_DISPLAY_PATTERN_CHARS + 128);
+        for term in terms.iter().filter(|t| old.is_match(t)) {
+            assert!(
+                !hl.matcher.find_matches(term, &[]).is_empty(),
+                "lost prior typo: {term}"
+            );
+        }
+        for text in ["הקונטרסים", "הקונטרסיםא", "כונטרסים", "קונטרשים"]
+        {
+            assert!(
+                !hl.matcher.find_matches(text, &[]).is_empty(),
+                "lost form: {text}"
+            );
+        }
     }
 
     #[test]
