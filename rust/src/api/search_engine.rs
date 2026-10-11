@@ -6098,9 +6098,30 @@ impl SearchEngine {
                 .iter()
                 .filter_map(|entry| entry.hydrated.as_ref().map(|(address, _)| *address))
                 .collect();
-            let mut page_texts = self
-                .texts_at(&session.searcher, &page_addresses)?
-                .into_iter();
+            let mut page_texts = self.texts_at(&session.searcher, &page_addresses)?;
+            let page_lines: Vec<(DocAddress, &str, u64, &str)> = page
+                .iter()
+                .filter_map(|entry| {
+                    let (address, document) = entry.hydrated.as_ref()?;
+                    Some((*address, document.file_path.as_str(), entry.item.id))
+                })
+                .zip(&page_texts)
+                .map(|((address, book, id), (text, status))| {
+                    let text = if *status == TextStatus::Ok {
+                        text.as_str()
+                    } else {
+                        ""
+                    };
+                    (address, book, id, text)
+                })
+                .collect();
+            let windows = self.embedded_window_texts(&session.searcher, &page_lines)?;
+            for ((text, _), window) in page_texts.iter_mut().zip(windows) {
+                if let Some(window) = window {
+                    *text = window;
+                }
+            }
+            let mut page_texts = page_texts.into_iter();
             // Same budget the lexical API's default highlight uses, so both
             // paths bound the display string identically.
             let snippet_budget = HighlightConfig::default().max_chars;
@@ -6349,7 +6370,27 @@ impl SearchEngine {
                 addresses.len() - 1
             }));
         }
-        let texts = self.texts_at(&searcher, &addresses)?;
+        let mut texts = self.texts_at(&searcher, &addresses)?;
+        let lines: Vec<(DocAddress, &str, u64, &str)> = targets
+            .iter()
+            .zip(&slots)
+            .filter_map(|(target, slot)| {
+                let slot = (*slot)?;
+                let (text, status) = &texts[slot];
+                let text = if *status == TextStatus::Ok {
+                    text.as_str()
+                } else {
+                    ""
+                };
+                Some((addresses[slot], target.file_path.as_str(), target.id, text))
+            })
+            .collect();
+        let windows = self.embedded_window_texts(&searcher, &lines)?;
+        for ((text, _), window) in texts.iter_mut().zip(windows) {
+            if let Some(window) = window {
+                *text = window;
+            }
+        }
         let epoch = self.semantic_sessions.epoch();
         let normalized = HebrewNormalizer::new().normalize(query);
         let budget = HighlightConfig::default().max_chars as usize;
@@ -8350,6 +8391,71 @@ impl SearchEngine {
                 .map(|hit| (hit.plain, hit.status))
                 .collect(),
         )
+    }
+
+    /// For each `(address, book, id, text)`, a line too short to stand alone: its window joined
+    /// and capped as the chunker embedded it, spaces collapsed for display; `None` otherwise.
+    #[cfg(feature = "semantic-integration")]
+    fn embedded_window_texts(
+        &self,
+        searcher: &Searcher,
+        lines: &[(DocAddress, &str, u64, &str)],
+    ) -> Result<Vec<Option<String>>> {
+        use otzaria_semantic_search::semantic::chunker::truncate_to_chars;
+        let chunking = semantic_keys::production_chunking();
+        let short: Vec<usize> = (0..lines.len())
+            .filter(|&at| {
+                let length = lines[at].3.trim().chars().count();
+                (chunking.min_embeddable_chars..chunking.min_meaningful_chars).contains(&length)
+            })
+            .collect();
+        let mut out = vec![None; lines.len()];
+        if short.is_empty() {
+            return Ok(out);
+        }
+        let resolver = crate::semantic_resolver::LiveResolver::new(
+            searcher.clone(),
+            self.chunk_key_field,
+            &self.semantic_resolver,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let asked: Vec<(&str, u64, DocAddress)> = short
+            .iter()
+            .map(|&at| (lines[at].1, lines[at].2, lines[at].0))
+            .collect();
+        let windows = resolver
+            .short_line_windows(&asked)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let mut known: HashMap<DocAddress, (String, TextStatus)> = short
+            .iter()
+            .map(|&at| (lines[at].0, (lines[at].3.to_string(), TextStatus::Ok)))
+            .collect();
+        let mut unread: Vec<DocAddress> = windows
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|address| !known.contains_key(address))
+            .copied()
+            .collect();
+        unread.sort_unstable();
+        unread.dedup();
+        let texts = self.texts_at(searcher, &unread)?;
+        known.extend(unread.into_iter().zip(texts));
+        for (&at, window) in short.iter().zip(windows) {
+            let Some(window) = window else { continue };
+            let texts: Option<Vec<&str>> = window
+                .iter()
+                .map(|address| match &known[address] {
+                    (text, TextStatus::Ok) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            out[at] = texts.map(|texts| {
+                let embedded = truncate_to_chars(texts.join(" ").trim(), chunking.max_chunk_chars);
+                hebrew_query::collapse_whitespace(&embedded)
+            });
+        }
+        Ok(out)
     }
 
     /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -25711,12 +25817,18 @@ mod tests {
             book_of(&FIRST, RECURS, neighbour, &[&FIRST])
         }
 
+        /// Whether `result` is a [`SHORT`] line of [`book_of`], third in every block. By
+        /// position: the snippet of a short line is the window it was embedded with.
+        fn is_short(result: &SemanticSearchResult) -> bool {
+            result.segment % 5 == 2
+        }
+
         /// The line of each result of `response` that is [`SHORT`], in the page's order.
         fn shorts(response: &SemanticSearchResponse) -> Vec<u64> {
             response
                 .results
                 .iter()
-                .filter(|result| result.snippet_html == SHORT)
+                .filter(|result| is_short(result))
                 .map(|result| result.segment)
                 .collect()
         }
@@ -25779,7 +25891,7 @@ mod tests {
             let shorts: Vec<u64> = response
                 .results
                 .iter()
-                .filter(|result| result.snippet_html == SHORT)
+                .filter(|result| is_short(result))
                 .map(|result| result.segment)
                 .collect();
             let repeat = 5 * (RECURS as u64 + 1) + 2;
@@ -25937,7 +26049,7 @@ mod tests {
                 let mut lines: Vec<(&str, u64)> = response
                     .results
                     .iter()
-                    .filter(|result| result.snippet_html == SHORT)
+                    .filter(|result| is_short(result))
                     .map(|result| (result.file_path.as_str(), result.segment))
                     .take(4)
                     .collect();
@@ -25948,6 +26060,98 @@ mod tests {
                     "without column: {without_column}"
                 );
             }
+        }
+
+        /// A heading too short to stand alone is embedded with the lines of its section: its
+        /// result shows, and its passage highlight marks, that text rather than the heading.
+        #[test]
+        fn a_short_headings_result_shows_and_marks_the_text_it_was_embedded_as() {
+            const HEADING: &str = "סימן כה";
+            const FIRST: &str = "ויאמר אלהים יהי אור ויהי אור, וירא אלהים את האור כי טוב,";
+            const SECOND: &str = "ויבדל אלהים בין האור ובין החשך, ויקרא אלהים לאור יום.";
+            let text = [
+                "<h1>בראשית</h1>",
+                "<h2>סימן כה</h2>",
+                FIRST,
+                SECOND,
+                "<h2>סימן כו</h2>",
+                "ויהי ערב ויהי בקר יום אחד, ויאמר אלהים יהי רקיע בתוך המים.",
+            ]
+            .join("\n");
+            let embedded = [HEADING, FIRST, SECOND].join(" ");
+            let dir = TempDir::new().unwrap();
+            let engine = open(&dir, built_of(&dir, false, text));
+
+            let response = semantic_page(&engine, &embedded, 10);
+            assert!(
+                response.fallback_reason.is_none(),
+                "{:?}",
+                response.fallback_reason
+            );
+            let heading = response
+                .results
+                .iter()
+                .find(|result| result.segment == 1)
+                .expect("the heading's vector is a result");
+            assert_eq!(heading.source, SemanticResultSource::Semantic);
+            assert_eq!(heading.snippet_html, embedded);
+
+            let marked = engine
+                .semantic_passage_highlights(
+                    "ויבדל אלהים בין האור ובין החשך".to_string(),
+                    vec![SemanticHighlightTarget {
+                        file_path: BOOK.to_string(),
+                        id: heading.id,
+                    }],
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap();
+            assert!(marked[0].is_highlighted, "{marked:?}");
+            assert!(
+                marked[0].snippet_html.contains("<mark>")
+                    && marked[0].snippet_html.contains(HEADING),
+                "{}",
+                marked[0].snippet_html
+            );
+        }
+
+        /// The shown window is the embedded one: capped at `max_chunk_chars`, a blank line's
+        /// spaces collapsed, and a short line mid-section with the two lines before it too.
+        #[test]
+        fn a_short_lines_window_is_shown_capped_and_with_its_section_on_both_sides() {
+            let long = "אברהם הוליד את יצחק ".repeat(30).trim_end().to_string();
+            let around = [
+                "שורה ראשונה ארוכה דיה לעמוד לבדה",
+                "שורה שנייה ארוכה דיה לעמוד לבדה",
+                "ויהי ערב",
+                "שורה שלישית ארוכה דיה לעמוד לבדה",
+                "שורה רביעית ארוכה דיה לעמוד לבדה",
+            ];
+            let mut lines = vec!["<h1>בראשית</h1>", "<h2>סימן כה</h2>", "", &long];
+            lines.push("<h2>סימן כו</h2>");
+            lines.extend(around);
+            lines.push("<h2>סימן כז</h2>");
+            let dir = TempDir::new().unwrap();
+            let engine = built_of(&dir, false, lines.join("\n")).engine;
+            let searcher = engine.index_reader.searcher();
+            // The text as the index stores it, a heading's without its tags.
+            let line = |ordinal: u64, text| {
+                let id = (1u64 << 32) + ordinal + 1;
+                let address = engine
+                    .address_in_book(&searcher, BOOK, id)
+                    .unwrap()
+                    .unwrap();
+                (address, BOOK, id, text)
+            };
+            let asked = [line(1, "סימן כה"), line(5, around[0]), line(7, around[2])];
+            let shown = engine.embedded_window_texts(&searcher, &asked).unwrap();
+
+            let max = production_chunking().max_chunk_chars;
+            let capped: String = format!("סימן כה  {long}").chars().take(max).collect();
+            let capped = capped.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(shown[0].as_deref(), Some(capped.as_str()));
+            assert_eq!(shown[1], None, "a line long enough stands alone");
+            assert_eq!(shown[2], Some(around.join(" ")));
         }
 
         /// A filtered search after a commit that left the book it admits alone plans again —

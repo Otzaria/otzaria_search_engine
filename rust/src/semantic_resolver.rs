@@ -1084,6 +1084,35 @@ impl<'a> LiveResolver<'a> {
         Ok(KeySpan::joined(&texts, own_hash))
     }
 
+    /// The [`context_window`] of each `(book, line id, address)` as a short line there is
+    /// keyed over; `None` for a PDF's line, one the book does not hold there, or a line alone.
+    pub(crate) fn short_line_windows(
+        &self,
+        lines: &[(&str, u64, DocAddress)],
+    ) -> Result<Vec<Option<Vec<DocAddress>>>, ResolveError> {
+        lines
+            .iter()
+            .map(|&(name, id, address)| {
+                let Some(book) = self.book(name)? else {
+                    return Ok(None);
+                };
+                let ordinal = (id & 0xFFFF_FFFF).saturating_sub(1) as u32;
+                let Some(position) = book.position(ordinal) else {
+                    return Ok(None);
+                };
+                if book.info.is_pdf || book.docs[position] != address {
+                    return Ok(None);
+                }
+                let window = context_window(book.docs.len(), position, |at| {
+                    self.section_of(book.docs[at])
+                });
+                Ok(window
+                    .filter(|window| window.start() != window.end())
+                    .map(|window| book.docs[window].to_vec()))
+            })
+            .collect()
+    }
+
     /// The `lineHash`es of the window the line at `position` of `book` is keyed over were it
     /// short, from the columns alone; `None` when they cannot say.
     fn window_hashes(&self, book: &BookLines, position: usize) -> Option<Vec<u64>> {
