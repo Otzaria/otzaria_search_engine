@@ -9,8 +9,10 @@
 //! hashes them all. Every file is the sidecar's writer's, so nothing here is a format.
 //!
 //! The text of a line is what the index stores, chunked under the recipe compiled into this
-//! build — the one its `chunkKey` column is written under — so a plan describes the index
-//! the application opens. An index whose column was written under another recipe has none
+//! build — with long-line windows, or without them as the `chunkKey` column is written,
+//! whichever the family names — so a plan describes the index the application opens. A line's
+//! first window is what the column holds; the others are records of their own. An index
+//! whose column was written under another recipe has none
 //! this build uses, and its keys are only ever computed from that text. A column this build
 //! uses is held to the same computation, line by line: the key's first eight bytes for a line the recipe embeds, `0` for one it does
 //! not. That is the plan manifest's parity gate, and a plan that fails it is refused by
@@ -25,7 +27,7 @@
 //! cannot be read, stops the plan.
 
 use crate::api::search_engine::{indexed_texts, TextStatus, LINE_TEXT_VERSION};
-use crate::semantic_keys::production_chunking;
+use crate::semantic_keys::{keyed_chunking, keyed_chunkings};
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::ledger::{split, Ledger};
 use otzaria_semantic_search::distribution::plan::{
@@ -33,9 +35,9 @@ use otzaria_semantic_search::distribution::plan::{
     PlanRecords, RecordsWriter, BOOKS_FILE, RECORDS_FILE, TOMBSTONES_FILE,
 };
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
-use otzaria_semantic_search::semantic::chunker::Chunker;
+use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
 use otzaria_semantic_search::semantic::official_index::readable_store_identity;
-use otzaria_semantic_search::semantic::recipe::EmbeddingRecipe;
+use otzaria_semantic_search::semantic::recipe::{ChunkingAlgorithm, EmbeddingRecipe};
 use otzaria_semantic_search::semantic::versioning::{
     IndexVersion, ModelIdentity, ModelPackage, TextIdentity,
 };
@@ -55,7 +57,8 @@ pub struct PlanExport<'a> {
     /// The library edition the index holds: its `db_version`.
     pub library_version: u32,
     pub library_release_tag: String,
-    /// The family the vectors are for. Its `chunking_identity` must be this build's.
+    /// The family the vectors are for. Its `chunking_identity` must be one this build keys
+    /// lines under: with long-line windows or without.
     pub model: ModelIdentity,
     /// The package the passages are embedded with: one of `model.query_packages`.
     pub passage_package: ModelPackage,
@@ -89,14 +92,8 @@ const BOOKS_PER_BATCH: usize = 64;
 pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     // The cheap refusals first: nothing below is worth reading six million lines for if
     // the manifest at the end could not be written.
-    let chunking = production_chunking();
+    let chunking = chunking_of(request.model.chunking_identity)?;
     EmbeddingRecipe::resolve(&chunking, &request.model)?;
-    anyhow::ensure!(
-        request.model.chunking_identity == chunking.identity(),
-        "the model's chunking_identity is {}, and this build keys lines under chunking {}",
-        request.model.chunking_identity,
-        chunking.identity()
-    );
     anyhow::ensure!(
         request
             .model
@@ -129,7 +126,12 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     book_list.write(&dir.join(BOOKS_FILE))?;
 
     let chunker = Chunker::new(chunking.clone())?;
-    let mut records = RecordsWriter::create(&dir.join(RECORDS_FILE))?;
+    let mut records = match chunker.recipe().0 {
+        ChunkingAlgorithm::AnchoredLine => RecordsWriter::create(&dir.join(RECORDS_FILE))?,
+        ChunkingAlgorithm::AnchoredLineWindows => {
+            RecordsWriter::create_windowed(&dir.join(RECORDS_FILE))?
+        }
+    };
     let mut embed = EmbedPlanWriter::create(dir, request.warehouse)?;
     let mut parity = Parity::default();
     let mut pdf_lines = 0u64;
@@ -156,15 +158,20 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
                     pdf_lines += 1;
                     continue;
                 }
-                let Some((sha256, text)) = line.text else {
+                let Some(first) = line.text else {
                     continue;
                 };
-                records.push(PlanRecord {
-                    book,
-                    ordinal: ordinal as u32,
-                    sha256,
-                })?;
-                embed.offer(&sha256, &text)?;
+                for (window, sha256, text) in
+                    std::iter::once((0, first.0, first.1)).chain(line.windows)
+                {
+                    records.push(PlanRecord {
+                        book,
+                        ordinal: ordinal as u32,
+                        window,
+                        sha256,
+                    })?;
+                    embed.offer(&sha256, &text)?;
+                }
             }
         }
         if (batch + 1) % 50 == 0 {
@@ -224,9 +231,15 @@ pub struct Validation {
     pub keyed_lines: u64,
     /// Those whose key the set records in their own book.
     pub covered_lines: u64,
+    /// The windows past the first that the set's recipe embeds of the live lines: none for a
+    /// set without windows.
+    pub keyed_windows: u64,
+    /// Those whose key the set records in their line's book.
+    pub covered_windows: u64,
     /// The set's records: in the index's books, and in books the index does not hold.
     pub records: u64,
-    /// Records whose hint is a line that holds their key: resolved at the first look.
+    /// Records whose hint is a line that holds their key, in any of its windows: resolved at
+    /// the first look.
     pub at_hint: u64,
     /// Records whose key their book holds at another line: re-anchored by the resolver.
     pub moved: u64,
@@ -245,8 +258,9 @@ pub struct Validation {
 }
 
 /// How the set's records land on the index at `index_path`, read-only: every book's lines
-/// keyed from their text, as [`export_plan`] keys them, against the records a scan of `set`
-/// reaches for that book; the records of books the index does not hold; and, with the
+/// keyed from their text, as [`export_plan`] keys them under the set's chunking, every window
+/// of a line included, against the records a scan of `set` reaches for that book; the
+/// records of books the index does not hold; and, with the
 /// `chunkKey` column, every line's column against its text's key. A set built from this
 /// index has every record at its hint, covers every keyed line and names no missing book,
 /// and an index built by this build has no column mismatch.
@@ -260,7 +274,7 @@ pub fn validate(
     let (searcher, chunk_key) = open_index(index_path)?;
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
-    let chunker = Chunker::new(production_chunking())?;
+    let chunker = Chunker::new(chunking_of(set.identity().model.chunking_identity)?)?;
     let names: Vec<&String> = books.keys().collect();
     let mut validation = Validation {
         column_checked: chunk_key.is_some(),
@@ -272,15 +286,11 @@ pub fn validate(
             .par_iter()
             .map(|name| {
                 let mut mismatches = 0u64;
+                let key =
+                    |sha256: &[u8; 32]| <[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32");
                 let keys = plan_book(&searcher, &columns, &chunker, &books[*name])?
                     .into_iter()
                     .map(|line| {
-                        let key = match &line.text {
-                            Some((sha256, _)) if !line.pdf => {
-                                Some(<[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32"))
-                            }
-                            _ => None,
-                        };
                         if let Some(column) = line.column {
                             let expected = line
                                 .text
@@ -288,9 +298,14 @@ pub fn validate(
                                 .map_or(0, |(sha256, _)| column_value(sha256));
                             mismatches += u64::from(column != expected);
                         }
-                        key
+                        match &line.text {
+                            Some((sha256, _)) if !line.pdf => std::iter::once(key(sha256))
+                                .chain(line.windows.iter().map(|(_, sha256, _)| key(sha256)))
+                                .collect(),
+                            _ => Vec::new(),
+                        }
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Vec<Vec<[u8; 16]>>>();
                 Ok((keys, mismatches))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -299,13 +314,24 @@ pub fn validate(
             book_records(set, name, &mut records);
             let held: HashSet<[u8; 16]> = records.iter().map(|(key, _)| key.0).collect();
             let present: HashSet<[u8; 16]> = keys.iter().flatten().copied().collect();
-            for key in keys.iter().flatten() {
-                validation.keyed_lines += 1;
-                validation.covered_lines += u64::from(held.contains(key));
+            for line in &keys {
+                for (window, key) in line.iter().enumerate() {
+                    let covered = u64::from(held.contains(key));
+                    if window == 0 {
+                        validation.keyed_lines += 1;
+                        validation.covered_lines += covered;
+                    } else {
+                        validation.keyed_windows += 1;
+                        validation.covered_windows += covered;
+                    }
+                }
             }
             for (key, hint) in &records {
                 validation.records += 1;
-                if keys.get(*hint as usize).copied().flatten() == Some(key.0) {
+                if keys
+                    .get(*hint as usize)
+                    .is_some_and(|line| line.contains(&key.0))
+                {
                     validation.at_hint += 1;
                 } else if present.contains(&key.0) {
                     validation.moved += 1;
@@ -433,8 +459,10 @@ fn open_index(index_path: &Path) -> Result<(Searcher, Option<tantivy::schema::Fi
 /// What one line of a book plans to.
 struct PlannedLine {
     /// The SHA-256 of the text the recipe embeds for it, and the text; `None` when it
-    /// embeds none.
+    /// embeds none. Its first window: what the `chunkKey` column holds.
     text: Option<([u8; 32], String)>,
+    /// Each window past the first the recipe embeds for it: its ordinal, SHA-256 and text.
+    windows: Vec<(u8, [u8; 32], String)>,
     pdf: bool,
     /// The `chunkKey` column's value, when the index has a column this build uses.
     column: Option<u64>,
@@ -559,15 +587,41 @@ fn plan_book(
         .map(|(text, &section)| LineRef { text, section })
         .collect();
     Ok((0..book.len())
-        .map(|index| PlannedLine {
-            text: (!pdf[index])
-                .then(|| chunker.embedded_text(&lines, index))
-                .flatten()
-                .map(|text| (Sha256::digest(text.as_bytes()).into(), text)),
-            pdf: pdf[index],
-            column: stored_keys[index],
+        .map(|index| {
+            let mut windows = if pdf[index] {
+                Vec::new()
+            } else {
+                chunker.embedded_windows(&lines, index)
+            }
+            .into_iter()
+            .map(|window| {
+                let sha256: [u8; 32] = Sha256::digest(window.text.as_bytes()).into();
+                (window.ordinal, sha256, window.text)
+            });
+            let text = windows.next().map(|(_, sha256, text)| (sha256, text));
+            PlannedLine {
+                text,
+                windows: windows.collect(),
+                pdf: pdf[index],
+                column: stored_keys[index],
+            }
         })
         .collect())
+}
+
+/// The one of this build's chunkings whose identity a family declares.
+fn chunking_of(identity: u64) -> Result<ChunkerConfig> {
+    keyed_chunking(identity).with_context(|| {
+        let keyed: Vec<String> = keyed_chunkings()
+            .iter()
+            .map(|chunking| chunking.identity().to_string())
+            .collect();
+        format!(
+            "the model's chunking_identity is {identity}, and this build keys lines under \
+             chunking {}",
+            keyed.join(" or ")
+        )
+    })
 }
 
 /// The text each document was indexed from, exactly: a plan keys the index as it was built,

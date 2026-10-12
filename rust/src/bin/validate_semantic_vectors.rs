@@ -14,11 +14,13 @@
 //!
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
 //!   recorded by the set in its own book, by all 128 bits of the key recomputed from the
-//!   stored text; and with `--plan`, every record of the plan the set was assembled from is
+//!   stored text, and so has every further window of a long line under a recipe with them;
+//!   and with `--plan`, every record of the plan the set was assembled from is
 //!   one a scan of the installed set reaches, by the sidecar's own count.
 //! * **G4, resolution**: every record of the set resolves on the release index —
-//!   its book is there, and holds its text, by all 128 bits of the key recomputed from the
-//!   stored text — and every line's `chunkKey` column, which a device resolves by, is its
+//!   its book is there, and holds its text, in one of a line's windows, by all 128 bits of
+//!   the key recomputed from the stored text — and every line's `chunkKey` column, which a
+//!   device resolves by, is its
 //!   text's. A record whose text is elsewhere in its book than its hint is stale: reported,
 //!   and fatal only past `--max-stale-hints`.
 //! * **G6, retrieval** (with `--warehouse`, `--model` and `--model-identity`): recall@10 and
@@ -29,7 +31,8 @@
 //!   3–10 words of the index's lines, drawn with a fixed seed: the same queries for the same
 //!   index. Recall is counted over keys — distinct texts — since that is what a scan returns:
 //!   a text repeated in many books is one hit however many lines it resolves to, so lines
-//!   that repeat a text cannot crowd the top 50 here as they do on a results page.
+//!   that repeat a text cannot crowd the top 50 here as they do on a results page. The scan
+//!   takes nothing off a long line's further windows: what is measured is the encoding.
 //!
 //! A release passes when every gate ran and passed. A gate with nothing to measure — an
 //! index with no keyed line, a plan or a set with no record, no live key to recall — fails.
@@ -463,6 +466,7 @@ mod gates {
     /// the plan is reachable in the set.
     fn g3(set: &SegmentSet, validation: &Validation, plan: Option<&Path>) -> Result<Gate> {
         let uncovered = validation.keyed_lines - validation.covered_lines;
+        let uncovered_windows = validation.keyed_windows - validation.covered_windows;
         let mut faults = Vec::new();
         if validation.keyed_lines == 0 {
             faults.push("the index has no keyed line, so there is no coverage to measure".into());
@@ -473,12 +477,26 @@ mod gates {
                  book"
             ));
         }
+        if uncovered_windows > 0 {
+            faults.push(format!(
+                "{uncovered_windows} further window(s) of long lines have no record in their \
+                 line's book"
+            ));
+        }
         let mut detail = format!(
             "{} of the index's {} keyed line(s) recorded in their book ({})",
             validation.covered_lines,
             validation.keyed_lines,
             percent(validation.covered_lines, validation.keyed_lines)
         );
+        if validation.keyed_windows > 0 {
+            detail.push_str(&format!(
+                ", and {} of {} further window(s) of long lines ({})",
+                validation.covered_windows,
+                validation.keyed_windows,
+                percent(validation.covered_windows, validation.keyed_windows)
+            ));
+        }
         let plan_metrics = match plan {
             Some(plan) => {
                 let plan = Plan::open(plan)
@@ -527,6 +545,9 @@ mod gates {
                 "keyedLines": validation.keyed_lines,
                 "coveredLines": validation.covered_lines,
                 "uncoveredLines": uncovered,
+                "keyedWindows": validation.keyed_windows,
+                "coveredWindows": validation.covered_windows,
+                "uncoveredWindows": uncovered_windows,
                 "plan": plan_metrics,
             }),
         })
@@ -709,6 +730,7 @@ mod gates {
                         top_k: 50,
                         books: None,
                         threads: request.threads,
+                        window_penalty: 0.0,
                     },
                     &cancel,
                 )

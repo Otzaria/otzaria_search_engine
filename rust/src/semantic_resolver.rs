@@ -65,7 +65,7 @@
 
 use crate::semantic_keys::{
     context_window, line_texts, production_chunking, recompute_chunk_keys, recompute_chunk_keys_at,
-    KeySpan,
+    recompute_window_keys_at, KeySpan, WindowKeys,
 };
 use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
@@ -142,6 +142,8 @@ pub(crate) const MAX_FAILED_REPEATS: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResolvedRecord {
     pub(crate) address: DocAddress,
+    /// Which window of the line holds the key: 0 for the text the line is keyed by.
+    pub(crate) window: u8,
 }
 
 /// What a resolver remembers from one search to the next, for one generation of the index.
@@ -154,6 +156,8 @@ pub(crate) struct ResolverCache {
     book_lines: usize,
     /// Each line's key recomputed from its text, under one state of the library database.
     keys: Option<(LibraryGeneration, LruCache<DocAddress, Option<ChunkKey>>)>,
+    /// Each long line's further windows, likewise.
+    window_keys: Option<(LibraryGeneration, LruCache<DocAddress, WindowKeys>)>,
     /// Where a pass over the whole column found each value it looked for, every book's first
     /// line before any book's second: not yet held to any key; none for a value found nowhere.
     moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
@@ -242,6 +246,18 @@ impl ResolverCache {
         &mut self.keys.as_mut().expect("just set").1
     }
 
+    fn window_keys(&mut self, library: LibraryGeneration) -> &mut LruCache<DocAddress, WindowKeys> {
+        if self
+            .window_keys
+            .as_ref()
+            .is_none_or(|(kept, _)| *kept != library)
+        {
+            let capacity = NonZeroUsize::new(KEY_CACHE).expect("the cache holds keys");
+            self.window_keys = Some((library, LruCache::new(capacity)));
+        }
+        &mut self.window_keys.as_mut().expect("just set").1
+    }
+
     fn plans(&mut self) -> &mut LruCache<PlanKey, Arc<ScanPlan>> {
         self.plans.get_or_insert_with(|| {
             LruCache::new(NonZeroUsize::new(PLAN_CACHE).expect("the cache holds plans"))
@@ -252,6 +268,7 @@ impl ResolverCache {
     #[cfg(test)]
     pub(crate) fn forget_keys(&mut self) {
         self.keys = None;
+        self.window_keys = None;
     }
 
     /// Let go of every plan, when the view they were made with is let go.
@@ -389,6 +406,8 @@ pub(crate) struct LiveResolver<'a> {
     rejected: Mutex<HashSet<DocAddress>>,
     /// Each line's key this search recomputed, or found in the cache's.
     keys: Mutex<HashMap<DocAddress, Option<ChunkKey>>>,
+    /// Each line's further windows this search recomputed, or found in the cache's.
+    window_keys: Mutex<HashMap<DocAddress, WindowKeys>>,
     /// The library database's state the cache's keys may serve, once the caller names it.
     library: Option<LibraryGeneration>,
     /// The plan of each filter this search planned, by [`plan_key`]: a search can query
@@ -463,6 +482,7 @@ impl<'a> LiveResolver<'a> {
             records: Mutex::new(HashMap::new()),
             rejected: Mutex::new(HashSet::new()),
             keys: Mutex::new(HashMap::new()),
+            window_keys: Mutex::new(HashMap::new()),
             library: None,
             plans: Vec::new(),
             failed: None,
@@ -565,6 +585,80 @@ impl<'a> LiveResolver<'a> {
         }
     }
 
+    /// Recompute together the further windows of the lines at `addresses` this search has not
+    /// yet; a line whose text cannot be read is left out, and fails where it is asked for.
+    fn read_windows(&self, addresses: &[DocAddress]) -> Result<(), ResolveError> {
+        let mut wanted: Vec<DocAddress> = {
+            let own = self.lock_windows();
+            addresses
+                .iter()
+                .filter(|address| !own.contains_key(address))
+                .copied()
+                .collect()
+        };
+        wanted.sort_unstable();
+        wanted.dedup();
+        if let Some(library) = self.library {
+            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let shared = cache.at(self.generation).window_keys(library);
+            let mut own = self.lock_windows();
+            wanted.retain(|address| match shared.get(address) {
+                Some(windows) => {
+                    own.insert(*address, Arc::clone(windows));
+                    false
+                }
+                None => true,
+            });
+        }
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let read = recompute_window_keys_at(&self.searcher, &wanted).map_err(index_error)?;
+        let mut cache = self
+            .library
+            .map(|_| self.cache.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut own = self.lock_windows();
+        for (address, windows) in wanted.into_iter().zip(read) {
+            let Some(windows) = windows else { continue };
+            if let (Some(cache), Some(library)) = (cache.as_mut(), self.library) {
+                cache
+                    .at(self.generation)
+                    .window_keys(library)
+                    .put(address, Arc::clone(&windows));
+            }
+            own.insert(address, windows);
+        }
+        Ok(())
+    }
+
+    fn lock_windows(&self) -> std::sync::MutexGuard<'_, HashMap<DocAddress, WindowKeys>> {
+        self.window_keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Which window past the first of the line at `position` of `book` holds `key` by all 128
+    /// bits, recomputed from its text; `None` when none does.
+    fn window_of(
+        &self,
+        book: &BookLines,
+        position: usize,
+        key: ChunkKey,
+    ) -> Result<Option<u8>, ResolveError> {
+        let address = book.docs[position];
+        self.read_windows(&[address])?;
+        let windows = self.lock_windows().get(&address).cloned().ok_or_else(|| {
+            index_error(format!(
+                "the text of the document at {address:?} is in the library database, which \
+                 cannot be read now"
+            ))
+        })?;
+        Ok(windows
+            .iter()
+            .find(|(_, held)| *held == key)
+            .map(|&(window, _)| window))
+    }
+
     /// Read the books [`Self::resolve`] will, in parallel, and recompute together the keys it
     /// is likely to check; whatever fails here is read again, and fails, where it is met.
     fn prefetch(
@@ -592,6 +686,7 @@ impl<'a> LiveResolver<'a> {
 
         let mut wanted: Vec<(Arc<BookLines>, usize)> = Vec::new();
         let mut repeating: Vec<(Arc<BookLines>, usize, usize)> = Vec::new();
+        let mut windowed: Vec<DocAddress> = Vec::new();
         for hit in hits {
             let mut held: Vec<(Arc<BookLines>, usize)> = Vec::new();
             for record in &hit.records {
@@ -601,7 +696,9 @@ impl<'a> LiveResolver<'a> {
                 let Some(position) = book.position(record.hint) else {
                     continue;
                 };
-                if !self.column {
+                if hit.window > 0 {
+                    windowed.push(book.docs[position]);
+                } else if !self.column {
                     wanted.push((Arc::clone(book), position));
                 } else if self.column_value(book.docs[position]) == Some(hit.key.column_value()) {
                     wanted.push((Arc::clone(book), position));
@@ -638,6 +735,12 @@ impl<'a> LiveResolver<'a> {
                     .take(*room)
                     .map(|other| (Arc::clone(book), other)),
             );
+        }
+
+        if !windowed.is_empty() && !cancel.is_cancelled() {
+            if let Err(error) = self.read_windows(&windowed) {
+                log::debug!("semantic windows are checked one by one: {error}");
+            }
         }
 
         let known = self.lock_keys();
@@ -865,6 +968,7 @@ impl<'a> LiveResolver<'a> {
         hit: usize,
         book: &BookLines,
         position: usize,
+        window: u8,
     ) -> Result<ResolvedLine, ResolveError> {
         let address = book.docs[position];
         let columns = &self.columns[address.segment_ord as usize];
@@ -875,7 +979,10 @@ impl<'a> LiveResolver<'a> {
         self.records
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert((book.name.to_string(), line_id), ResolvedRecord { address });
+            .insert(
+                (book.name.to_string(), line_id),
+                ResolvedRecord { address, window },
+            );
         Ok(ResolvedLine {
             hit: hit as u32,
             line_id,
@@ -936,11 +1043,13 @@ impl<'a> LiveResolver<'a> {
     /// (not necessarily the first), none `taken`; plus those put off for [`Self::put_off_repeats`].
     /// Without the column candidates share the line's `lineHash`, so a repeat whose own line is
     /// cut otherwise is missed; after a failure [`KeySpan`] skips or puts off the rest.
+    #[allow(clippy::too_many_arguments)]
     fn repeats_of(
         &self,
         book: &BookLines,
         position: usize,
         key: ChunkKey,
+        window: u8,
         limit: usize,
         taken: &HashSet<DocAddress>,
         budget: &mut usize,
@@ -951,6 +1060,11 @@ impl<'a> LiveResolver<'a> {
         let Some(positions) = self.repeats(book).get(&value) else {
             return Ok((Vec::new(), Vec::new()));
         };
+        if window > 0 {
+            let found =
+                self.window_repeats(book, position, positions, key, limit, taken, budget)?;
+            return Ok((found, Vec::new()));
+        }
         // The line's span, read once a candidate has failed.
         let mut span: Option<KeySpan> = None;
         let mut found = Vec::new();
@@ -988,6 +1102,44 @@ impl<'a> LiveResolver<'a> {
             }
         }
         Ok((found, later))
+    }
+
+    /// [`Self::repeats_of`] for a key past a line's first window: the candidates that share the
+    /// line's repeat value are held to its windows, each failure spending `budget`.
+    #[allow(clippy::too_many_arguments)]
+    fn window_repeats(
+        &self,
+        book: &BookLines,
+        position: usize,
+        candidates: &[u32],
+        key: ChunkKey,
+        limit: usize,
+        taken: &HashSet<DocAddress>,
+        budget: &mut usize,
+    ) -> Result<Vec<usize>, ResolveError> {
+        let others: Vec<usize> = candidates
+            .iter()
+            .map(|&other| other as usize)
+            .filter(|&other| other != position && !taken.contains(&book.docs[other]))
+            .collect();
+        let addresses: Vec<DocAddress> = others
+            .iter()
+            .take(limit.saturating_add(*budget))
+            .map(|&other| book.docs[other])
+            .collect();
+        self.read_windows(&addresses)?;
+        let mut found = Vec::new();
+        for other in others {
+            if found.len() == limit || *budget == 0 {
+                break;
+            }
+            if self.window_of(book, other, key)?.is_some() {
+                found.push(other);
+            } else {
+                *budget -= 1;
+            }
+        }
+        Ok(found)
     }
 
     /// The lines of `later`, candidates [`Self::repeats_of`] put off, that hold `key` and are
@@ -1123,40 +1275,45 @@ impl<'a> LiveResolver<'a> {
         .collect()
     }
 
-    /// The position of `book` the record at `hint` names, when that line holds `key` by
-    /// all 128 bits: the first look for every record, which a line that has not moved
-    /// passes at the cost of one key.
+    /// The position the record at `hint` names, and the window of it, when that line holds
+    /// `key` by all 128 bits; a key past the first window is held to the line's windows.
     fn at_hint(
         &self,
         book: &BookLines,
         key: ChunkKey,
+        window: u8,
         hint: u32,
-    ) -> Result<Option<usize>, ResolveError> {
+    ) -> Result<Option<(usize, u8)>, ResolveError> {
         let Some(position) = book.position(hint) else {
             return Ok(None);
         };
+        if window > 0 {
+            return Ok(self
+                .window_of(book, position, key)?
+                .map(|held| (position, held)));
+        }
         let holds = if self.column {
             self.column_value(book.docs[position]) == Some(key.column_value())
                 && self.verified(book, position, key)?
         } else {
             self.holds(book, position, key)?
         };
-        Ok(holds.then_some(position))
+        Ok(holds.then_some((position, 0)))
     }
 
-    /// The positions of `book` that hold `key` by all 128 bits and are not `taken`, the
-    /// nearest to `hint` first and at most `limit`: every line of the book whose column
-    /// holds it, or, recomputing, those within [`RECOMPUTE_REACH`] of the hint. What a
-    /// record whose line is not at its hint is looked for by.
+    /// Up to `limit` lines of `book` not `taken` that hold `key`, nearest `hint` first, with
+    /// their window: by column, or within [`RECOMPUTE_REACH`] when recomputing or windowed.
+    #[allow(clippy::too_many_arguments)]
     fn search_book(
         &self,
         book: &BookLines,
         key: ChunkKey,
+        window: u8,
         hint: u32,
         limit: usize,
         taken: &HashSet<DocAddress>,
         cancel: &CancellationToken,
-    ) -> Result<Vec<usize>, ResolveError> {
+    ) -> Result<Vec<(usize, u8)>, ResolveError> {
         if cancel.is_cancelled() {
             return Err(ResolveError::Cancelled);
         }
@@ -1165,6 +1322,25 @@ impl<'a> LiveResolver<'a> {
             .unwrap_or_else(|| book.ordinals.partition_point(|&ordinal| ordinal < hint))
             .min(book.docs.len() - 1);
         let mut found = Vec::new();
+        if window > 0 {
+            let near: Vec<usize> = book
+                .by_distance(centre)
+                .take(2 * RECOMPUTE_REACH + 1)
+                .filter(|&position| !taken.contains(&book.docs[position]))
+                .collect();
+            let addresses: Vec<DocAddress> =
+                near.iter().map(|&position| book.docs[position]).collect();
+            self.read_windows(&addresses)?;
+            for position in near {
+                if found.len() == limit {
+                    break;
+                }
+                if let Some(held) = self.window_of(book, position, key)? {
+                    found.push((position, held));
+                }
+            }
+            return Ok(found);
+        }
         if self.column {
             let wanted = key.column_value();
             for position in book.by_distance(centre) {
@@ -1176,7 +1352,7 @@ impl<'a> LiveResolver<'a> {
                     && self.column_value(address) == Some(wanted)
                     && self.verified(book, position, key)?
                 {
-                    found.push(position);
+                    found.push((position, 0));
                 }
             }
             return Ok(found);
@@ -1191,9 +1367,9 @@ impl<'a> LiveResolver<'a> {
                 .filter(|(offset, line)| {
                     **line == Some(key) && !taken.contains(&book.docs[start + offset])
                 })
-                .map(|(offset, _)| start + offset),
+                .map(|(offset, _)| (start + offset, 0)),
         );
-        found.sort_by_key(|&position| (position.abs_diff(centre), position));
+        found.sort_by_key(|&(position, _)| (position.abs_diff(centre), position));
         found.truncate(limit);
         Ok(found)
     }
@@ -1990,7 +2166,7 @@ impl CandidateResolver for LiveResolver<'_> {
             // the other lines of those books that hold it, which the set records once per
             // book, with what is left of the cap.
             let mut emitted = 0usize;
-            let mut found: Vec<(Arc<BookLines>, usize)> = Vec::new();
+            let mut found: Vec<(Arc<BookLines>, usize, u8)> = Vec::new();
             let mut missed: Vec<(Arc<BookLines>, u32)> = Vec::new();
             for record in &hit.records {
                 if emitted == MAX_LINES_PER_HIT {
@@ -2013,35 +2189,37 @@ impl CandidateResolver for LiveResolver<'_> {
                 if !admits(compiled.as_ref(), &book.name, &book.info) {
                     continue;
                 }
-                let Some(position) = self.at_hint(&book, hit.key, record.hint)? else {
+                let Some((position, window)) =
+                    self.at_hint(&book, hit.key, hit.window, record.hint)?
+                else {
                     missed.push((book, record.hint));
                     continue;
                 };
                 if !taken.insert(book.docs[position]) {
                     continue;
                 }
-                lines.push(self.describe(hit_index, &book, position)?);
+                lines.push(self.describe(hit_index, &book, position, window)?);
                 emitted += 1;
-                found.push((book, position));
+                found.push((book, position, window));
             }
             // A record whose line moved is looked for in its book — once per book with the
-            // column, which reads every line of it; around each such hint without.
+            // column, which reads every line of it; around each such hint without, or for a window.
             let mut searched: HashSet<&str> = HashSet::new();
             for (book, hint) in &missed {
                 if emitted == MAX_LINES_PER_HIT {
                     break;
                 }
-                if self.column && !searched.insert(&book.name) {
+                if self.column && hit.window == 0 && !searched.insert(&book.name) {
                     continue;
                 }
-                if let Some(&position) = self
-                    .search_book(book, hit.key, *hint, 1, &taken, cancel)?
+                if let Some(&(position, window)) = self
+                    .search_book(book, hit.key, hit.window, *hint, 1, &taken, cancel)?
                     .first()
                 {
                     taken.insert(book.docs[position]);
-                    lines.push(self.describe(hit_index, book, position)?);
+                    lines.push(self.describe(hit_index, book, position, window)?);
                     emitted += 1;
-                    found.push((Arc::clone(book), position));
+                    found.push((Arc::clone(book), position, window));
                 }
             }
             // Under a plan, the admitted books the text arrived in since the set was built,
@@ -2058,14 +2236,14 @@ impl CandidateResolver for LiveResolver<'_> {
                     let Some(book) = self.book(name)? else {
                         continue;
                     };
-                    if let Some(&position) = self
-                        .search_book(&book, hit.key, *ordinal, 1, &taken, cancel)?
+                    if let Some(&(position, window)) = self
+                        .search_book(&book, hit.key, hit.window, *ordinal, 1, &taken, cancel)?
                         .first()
                     {
                         taken.insert(book.docs[position]);
-                        lines.push(self.describe(hit_index, &book, position)?);
+                        lines.push(self.describe(hit_index, &book, position, window)?);
                         emitted += 1;
-                        found.push((book, position));
+                        found.push((book, position, window));
                     }
                 }
             }
@@ -2075,17 +2253,24 @@ impl CandidateResolver for LiveResolver<'_> {
             let mut budget = MAX_FAILED_REPEATS;
             let mut room = MAX_LINES_PER_HIT - emitted;
             let mut repeats: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
-            for (book, position) in &found {
+            for (book, position, _) in &found {
                 if room == 0 {
                     break;
                 }
-                let (held, later) =
-                    self.repeats_of(book, *position, hit.key, room, &taken, &mut budget)?;
+                let (held, later) = self.repeats_of(
+                    book,
+                    *position,
+                    hit.key,
+                    hit.window,
+                    room,
+                    &taken,
+                    &mut budget,
+                )?;
                 taken.extend(held.iter().map(|&other| book.docs[other]));
                 room -= held.len();
                 repeats.push((held, later));
             }
-            for ((book, _), (held, later)) in found.iter().zip(&mut repeats) {
+            for ((book, _, _), (held, later)) in found.iter().zip(&mut repeats) {
                 if room == 0 {
                     break;
                 }
@@ -2094,10 +2279,15 @@ impl CandidateResolver for LiveResolver<'_> {
                 room -= more.len();
                 held.extend(more);
             }
-            for ((book, _), (mut held, _)) in found.iter().zip(repeats) {
+            for ((book, _, window), (mut held, _)) in found.iter().zip(repeats) {
                 held.sort_unstable();
                 for other in held {
-                    lines.push(self.describe(hit_index, book, other)?);
+                    // A repeat holds the line's text, and with it the same windows.
+                    let window = match *window {
+                        0 => 0,
+                        _ => self.window_of(book, other, hit.key)?.unwrap_or(*window),
+                    };
+                    lines.push(self.describe(hit_index, book, other, window)?);
                     emitted += 1;
                 }
             }
@@ -2107,7 +2297,9 @@ impl CandidateResolver for LiveResolver<'_> {
                 let cache = cache.at(self.generation_id());
                 cache.worst_failures = cache.worst_failures.max(MAX_FAILED_REPEATS - budget);
             }
-            if emitted == 0 && !hit.records.is_empty() {
+            // No column holds a key past a line's first window, so a pass over them could not
+            // find one: such a hit stays unresolved.
+            if emitted == 0 && !hit.records.is_empty() && hit.window == 0 {
                 unresolved.push(hit_index);
             }
         }
@@ -2191,7 +2383,7 @@ impl CandidateResolver for LiveResolver<'_> {
                     }
                     if self.verified(&book, position, key)? {
                         taken.insert(address);
-                        lines.push(self.describe(hit_index, &book, position)?);
+                        lines.push(self.describe(hit_index, &book, position, 0)?);
                         emitted += 1;
                         books.insert(Arc::clone(&book.name));
                     }
@@ -2204,7 +2396,7 @@ impl CandidateResolver for LiveResolver<'_> {
                     let address = book.docs[position];
                     if !taken.contains(&address) && self.verified(&book, position, key)? {
                         taken.insert(address);
-                        lines.push(self.describe(hit_index, &book, position)?);
+                        lines.push(self.describe(hit_index, &book, position, 0)?);
                         emitted += 1;
                     }
                 }
@@ -2273,6 +2465,7 @@ mod tests {
                 book: Arc::from("/books/gone.txt"),
                 hint: 1,
             }],
+            window: 0,
             seg: 0,
             slot: 0,
         };
@@ -2297,5 +2490,130 @@ mod tests {
         };
         assert_eq!(of(once), [1]);
         assert_eq!(of(many), (0..31).collect::<Vec<u64>>());
+    }
+
+    /// A line of 300 distinct words, some 2,000 characters: six windows.
+    fn long_line(seed: &str) -> String {
+        (0..300)
+            .map(|word| format!("{seed}{word}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// One book of `lines` in an index of its own.
+    fn windowed_index(dir: &tempfile::TempDir, lines: &[String]) -> (Index, tantivy::IndexReader) {
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        engine
+            .add_text_book(
+                "ספר".into(),
+                "/א".into(),
+                "/books/long.txt".into(),
+                0,
+                0,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        drop(engine);
+        let index = Index::open_in_dir(dir.path()).unwrap();
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .unwrap();
+        (index, reader)
+    }
+
+    fn window_hit(key: ChunkKey, window: u8, book: &str, hint: u32) -> VectorHit {
+        VectorHit {
+            score: 1.0,
+            key,
+            records: vec![RecordRef {
+                book: Arc::from(book),
+                hint,
+            }],
+            window,
+            seg: 0,
+            slot: 0,
+        }
+    }
+
+    /// A window hit resolves at or within [`RECOMPUTE_REACH`] of its hint, with its window;
+    /// past the reach or in a gone book it stays unresolved, with no pass over the column.
+    #[test]
+    fn a_window_hit_resolves_to_its_line_near_its_hint_and_nowhere_else() {
+        let long = long_line("מילה");
+        let (_, key) = crate::semantic_keys::window_keys(&long)[1];
+        let opening = "שורה פותחת ארוכה דיה לעמוד לבדה".to_string();
+        for (inserted, hint, resolves) in [(0, 1, true), (3, 1, true), (40, 1, false)] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let mut lines = vec![opening.clone(); 1 + inserted];
+            lines.push(long.clone());
+            let (index, reader) = windowed_index(&dir, &lines);
+            let chunk_key = live_chunk_key_field(&index.schema(), dir.path());
+            for column in [chunk_key, None] {
+                let cache = Mutex::default();
+                let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+                let hit = window_hit(key, 2, "/books/long.txt", hint);
+                let lines = resolver
+                    .resolve(std::slice::from_ref(&hit), None, &CancellationToken::new())
+                    .unwrap();
+                let segments: Vec<u64> = lines.iter().map(|line| line.segment).collect();
+                if resolves {
+                    assert_eq!(segments, [1 + inserted as u64], "inserted {inserted}");
+                    let records = resolver.records();
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records.values().next().unwrap().window, 2);
+                } else {
+                    assert!(segments.is_empty(), "inserted {inserted}: {segments:?}");
+                }
+
+                let gone = window_hit(key, 2, "/books/gone.txt", hint);
+                let lines = resolver
+                    .resolve(std::slice::from_ref(&gone), None, &CancellationToken::new())
+                    .unwrap();
+                assert!(lines.is_empty());
+                let generation = resolver.generation_id();
+                assert_eq!(cache.lock().unwrap().at(generation).passes, 0);
+            }
+        }
+    }
+
+    /// A long line's first window is the column's key: a hit on it resolves as every hit
+    /// always has, recorded as window 0, and a key past the first is not taken for it.
+    #[test]
+    fn a_long_lines_first_window_resolves_by_its_column() {
+        let long = long_line("תיבה");
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, std::slice::from_ref(&long));
+        let chunk_key = live_chunk_key_field(&index.schema(), dir.path());
+        assert!(chunk_key.is_some());
+        let cache = Mutex::default();
+        let resolver = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
+        let book = resolver.book("/books/long.txt").unwrap().unwrap();
+        let first =
+            recompute_chunk_keys(resolver.searcher(), &book.docs, 0..1).unwrap()[0].unwrap();
+        let lines = resolver
+            .resolve(
+                &[window_hit(first, 0, "/books/long.txt", 0)],
+                None,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(resolver.records().values().next().unwrap().window, 0);
+
+        let (_, second) = crate::semantic_keys::window_keys(&long)[0];
+        let lines = resolver
+            .resolve(
+                &[window_hit(second, 0, "/books/long.txt", 0)],
+                None,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(lines.is_empty(), "the column holds only the first window");
     }
 }

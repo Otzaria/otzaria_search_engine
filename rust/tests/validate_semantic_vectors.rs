@@ -443,6 +443,36 @@ fn a_release_assembled_from_its_index_passes_every_gate() {
     assert_eq!(g6["countedOver"], "distinct texts (keys)");
 }
 
+/// A release whose index holds long lines records their further windows, and passes every
+/// gate on them: each window is recorded in its line's book and resolves at its line.
+#[test]
+fn a_release_with_long_lines_covers_and_resolves_their_windows() {
+    let mut books = books();
+    let long = (0..60).map(|at| line(4, at)).collect::<Vec<_>>().join(" ");
+    books[2].4 = format!(
+        "{}
+{long}
+{long}",
+        books[2].4
+    );
+    let release = release(&books);
+    let out = release.path("report.json");
+    let args = all_gates(&release, &release.warehouse, &out);
+    let (code, printed) = validate(&as_args(&args));
+    assert_eq!(code, 0, "{printed}");
+    let report = report(&out);
+    let (status, g3) = gate(&report, "G3");
+    assert_eq!(status, "passed", "{printed}");
+    assert!(g3["keyedWindows"].as_u64().unwrap() >= 4, "{g3}");
+    assert_eq!(g3["keyedWindows"], g3["coveredWindows"]);
+    assert_eq!(g3["uncoveredWindows"], 0);
+    let (status, g4) = gate(&report, "G4");
+    assert_eq!(status, "passed", "{printed}");
+    assert_eq!(g4["records"], g4["atHint"]);
+    assert_eq!(g4["unresolved"], 0);
+    assert_eq!(gate(&report, "G6").0, "passed", "{printed}");
+}
+
 /// A gate whose inputs are not given has not run, and the release has not passed it; one
 /// the caller skips by name is recorded, and holds nothing back. G3 runs on the index alone
 /// without a plan. Queries can come from a file, one per line, blank lines aside; and the

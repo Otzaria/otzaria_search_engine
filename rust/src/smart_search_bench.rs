@@ -1048,6 +1048,7 @@ fn passage_highlights() -> Result<()> {
                 .map(|hit| SemanticHighlightTarget {
                     file_path: hit.file_path.clone(),
                     id: hit.id,
+                    window: hit.matched_window,
                 })
                 .collect();
             let before = EMBEDDED_CLAUSES.get();
