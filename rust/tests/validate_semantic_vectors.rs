@@ -449,12 +449,7 @@ fn a_release_assembled_from_its_index_passes_every_gate() {
 fn a_release_with_long_lines_covers_and_resolves_their_windows() {
     let mut books = books();
     let long = (0..60).map(|at| line(4, at)).collect::<Vec<_>>().join(" ");
-    books[2].4 = format!(
-        "{}
-{long}
-{long}",
-        books[2].4
-    );
+    books[2].4 = format!("{}\n{long}\n{long}", books[2].4);
     let release = release(&books);
     let out = release.path("report.json");
     let args = all_gates(&release, &release.warehouse, &out);

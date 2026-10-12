@@ -15,14 +15,13 @@
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
 //!   recorded by the set in its own book, by all 128 bits of the key recomputed from the
 //!   stored text, and so has every further window of a long line under a recipe with them;
-//!   and with `--plan`, every record of the plan the set was assembled from is
-//!   one a scan of the installed set reaches, by the sidecar's own count.
-//! * **G4, resolution**: every record of the set resolves on the release index —
-//!   its book is there, and holds its text, in one of a line's windows, by all 128 bits of
-//!   the key recomputed from the stored text — and every line's `chunkKey` column, which a
-//!   device resolves by, is its
-//!   text's. A record whose text is elsewhere in its book than its hint is stale: reported,
-//!   and fatal only past `--max-stale-hints`.
+//!   and with `--plan`, every record of the plan the set was assembled from is one a scan
+//!   of the installed set reaches, by the sidecar's own count.
+//! * **G4, resolution**: every record of the set resolves on the release index — its book
+//!   is there, and holds its text, in one of a line's windows, by all 128 bits of the key
+//!   recomputed from the stored text — and every line's `chunkKey` column, which a device
+//!   resolves by, is its text's. A record whose text is elsewhere in its book than its hint
+//!   is stale: reported, and fatal only past `--max-stale-hints`.
 //! * **G6, retrieval** (with `--warehouse`, `--model` and `--model-identity`): recall@10 and
 //!   recall@50 of the set's scan, as a device runs it, against the exact `f32` scan of the
 //!   same keys in the warehouse the set was assembled from (the sidecar's

@@ -2541,6 +2541,23 @@ struct SemanticSnippetPainter {
 
 #[cfg(feature = "semantic-integration")]
 impl SemanticSnippetPainter {
+    /// [`Self::paint`] of the embedded `window` a result shows in place of its `line`; the
+    /// whole line instead when a lexical match marks nothing in the window.
+    fn paint_shown(
+        &self,
+        line: &str,
+        window: Option<&str>,
+        lexically_confirmed: bool,
+    ) -> (String, bool) {
+        if let Some(window) = window {
+            let painted = self.paint(window, lexically_confirmed);
+            if painted.1 || !lexically_confirmed {
+                return painted;
+            }
+        }
+        self.paint(line, lexically_confirmed)
+    }
+
     /// Returns the display markup for `text` and whether it carries highlights.
     ///
     /// Mirrors [`SearchEngine::build_results_with_generator`]: tantivy's
@@ -6138,7 +6155,7 @@ impl SearchEngine {
                 .iter()
                 .filter_map(|entry| entry.hydrated.as_ref().map(|(address, _)| *address))
                 .collect();
-            let mut page_texts = self.texts_at(&session.searcher, &page_addresses)?;
+            let page_texts = self.texts_at(&session.searcher, &page_addresses)?;
             let page_lines: Vec<EmbeddedLine<'_>> = page
                 .iter()
                 .filter_map(|entry| {
@@ -6161,12 +6178,7 @@ impl SearchEngine {
                 })
                 .collect();
             let windows = self.embedded_window_texts(&session.searcher, &page_lines)?;
-            for ((text, _), window) in page_texts.iter_mut().zip(windows) {
-                if let Some(window) = window {
-                    *text = window;
-                }
-            }
-            let mut page_texts = page_texts.into_iter();
+            let mut page_texts = page_texts.into_iter().zip(windows);
             // Same budget the lexical API's default highlight uses, so both
             // paths bound the display string identically.
             let snippet_budget = HighlightConfig::default().max_chars;
@@ -6206,16 +6218,17 @@ impl SearchEngine {
                 stale_siblings_dropped = stale_siblings_dropped.saturating_add(page_stale_siblings);
 
                 // Tantivy's copy for a hydrated item, the lexical candidate's otherwise.
-                let (title, reference, text, segment, is_pdf, file_path, text_status) =
+                let (title, reference, text, window, segment, is_pdf, file_path, text_status) =
                     match &entry.hydrated {
                         Some((_, document)) => {
-                            let (text, status) = page_texts
+                            let ((text, status), window) = page_texts
                                 .next()
-                                .unwrap_or((String::new(), TextStatus::Unavailable));
+                                .unwrap_or(((String::new(), TextStatus::Unavailable), None));
                             (
                                 document.title.clone(),
                                 document.reference.clone(),
                                 text,
+                                window,
                                 document.segment,
                                 document.is_pdf,
                                 document.file_path.clone(),
@@ -6226,6 +6239,7 @@ impl SearchEngine {
                             item.title.clone(),
                             item.reference.clone(),
                             item.text.clone(),
+                            None,
                             item.segment,
                             item.is_pdf,
                             item.file_path.clone(),
@@ -6237,14 +6251,22 @@ impl SearchEngine {
                         // A BM25 score is present exactly when Tantivy returned this
                         // line for the lexical query, which is what licenses the
                         // phrase-fallback term painting inside `paint`.
-                        (Some(painter), TextStatus::Ok) => {
-                            painter.paint(&text, item.lexical_score.is_some())
-                        }
+                        (Some(painter), TextStatus::Ok) => painter.paint_shown(
+                            &text,
+                            window.as_deref(),
+                            item.lexical_score.is_some(),
+                        ),
                         (_, TextStatus::Unavailable) => (String::new(), false),
                         // `SemanticOnly` runs no lexical query, so there is nothing
                         // to paint with — the line still crosses FFI bounded. A stale
                         // line is never painted.
-                        _ => (bounded_plain_snippet(&text, snippet_budget), false),
+                        _ => (
+                            bounded_plain_snippet(
+                                window.as_deref().unwrap_or(&text),
+                                snippet_budget,
+                            ),
+                            false,
+                        ),
                     };
 
                 results.push(SemanticSearchResult {
@@ -15394,6 +15416,27 @@ mod tests {
             let (semantic_html, painted) = painter.paint("משה לבדו ואהרן", false);
             assert!(!painted);
             assert_eq!(semantic_html, "משה לבדו ואהרן");
+
+            // A shown window the lexical match is not in gives way to the whole line; a
+            // window it is in, or a hit no lexical search confirmed, keeps the window.
+            let window = "…שלום שלום שלום…";
+            let (shown, painted) = painter.paint_shown(&text, Some(window), true);
+            assert!(painted);
+            assert!(shown.contains("ואהרן"), "{shown}");
+            assert_eq!(
+                painter.paint_shown(&text, Some(window), false),
+                painter.paint(window, false)
+            );
+            let marked = "…שלום משה ואהרן שלום…";
+            assert_eq!(
+                painter.paint_shown(&text, Some(marked), true),
+                painter.paint(marked, true)
+            );
+            assert!(painter.paint(marked, true).1);
+            assert_eq!(
+                painter.paint_shown(&text, None, true),
+                painter.paint(&text, true)
+            );
         }
     }
 
@@ -15996,6 +16039,34 @@ mod tests {
         }
         values.sort_unstable();
         values.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// An index the engine before long-line windows wrote, its column keyed under the
+    /// published chunking, is read by its column; one recording the windows chunking is not.
+    #[test]
+    fn an_index_written_before_the_windows_keeps_its_column() {
+        for (identity, used) in [
+            (2_685_558_872_390_372_738u64, true),
+            (
+                crate::semantic_keys::production_chunking().identity(),
+                false,
+            ),
+        ] {
+            let (engine, dir) = make_engine();
+            drop(engine);
+            let mut metadata = index_metadata(
+                INDEX_SCHEMA_VERSION,
+                Some(ChunkKeyRecipe {
+                    line_text_version: 1,
+                    key_version: 1,
+                    chunking_identity: identity,
+                }),
+            );
+            metadata.engine_version = "3.1.0".to_string();
+            write_index_metadata(dir.path(), &metadata).unwrap();
+            let engine = SearchEngine::new(dir.path().to_str().unwrap());
+            assert_eq!(engine.chunk_key_field.is_some(), used, "{identity}");
+        }
     }
 
     /// A new index is version 5: it has the column, its metadata records the recipe the

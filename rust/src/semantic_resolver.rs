@@ -1328,15 +1328,20 @@ impl<'a> LiveResolver<'a> {
                 .take(2 * RECOMPUTE_REACH + 1)
                 .filter(|&position| !taken.contains(&book.docs[position]))
                 .collect();
-            let addresses: Vec<DocAddress> =
-                near.iter().map(|&position| book.docs[position]).collect();
-            self.read_windows(&addresses)?;
-            for position in near {
-                if found.len() == limit {
-                    break;
-                }
-                if let Some(held) = self.window_of(book, position, key)? {
-                    found.push((position, held));
+            // The nearest few first: a line moved by an insertion above it is found there,
+            // without reading the whole reach.
+            let (close, far) = near.split_at(near.len().min(5));
+            for batch in [close, far] {
+                let addresses: Vec<DocAddress> =
+                    batch.iter().map(|&position| book.docs[position]).collect();
+                self.read_windows(&addresses)?;
+                for &position in batch {
+                    if found.len() == limit {
+                        return Ok(found);
+                    }
+                    if let Some(held) = self.window_of(book, position, key)? {
+                        found.push((position, held));
+                    }
                 }
             }
             return Ok(found);
@@ -2579,6 +2584,36 @@ mod tests {
                 let generation = resolver.generation_id();
                 assert_eq!(cache.lock().unwrap().at(generation).passes, 0);
             }
+        }
+    }
+
+    /// A long line held twice in its book, 41 lines apart — past the reach — and recorded
+    /// once: its repeat is found by its windows, with the column and without.
+    #[test]
+    fn a_window_hits_repeat_in_its_book_is_found_past_the_reach() {
+        let long = long_line("פסוק");
+        let (_, key) = crate::semantic_keys::window_keys(&long)[1];
+        let mut lines = vec!["שורה פותחת ארוכה דיה לעמוד לבדה".to_string(), long.clone()];
+        lines.extend((0..40).map(|n| format!("שורת ביניים מספר {n} ארוכה דיה")));
+        lines.push(long);
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &lines);
+        let chunk_key = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [chunk_key, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+            let hit = window_hit(key, 2, "/books/long.txt", 1);
+            let lines = resolver
+                .resolve(std::slice::from_ref(&hit), None, &CancellationToken::new())
+                .unwrap();
+            let segments: Vec<u64> = lines.iter().map(|line| line.segment).collect();
+            assert_eq!(segments, [1, 42], "column: {}", column.is_some());
+            let records = resolver.records();
+            let windows: Vec<u8> = lines
+                .iter()
+                .map(|line| records[&(line.file_path.clone(), line.line_id)].window)
+                .collect();
+            assert_eq!(windows, [2, 2]);
         }
     }
 

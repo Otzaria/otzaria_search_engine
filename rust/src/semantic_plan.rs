@@ -10,13 +10,13 @@
 //!
 //! The text of a line is what the index stores, chunked under the recipe compiled into this
 //! build — with long-line windows, or without them as the `chunkKey` column is written,
-//! whichever the family names — so a plan describes the index the application opens. A line's
-//! first window is what the column holds; the others are records of their own. An index
-//! whose column was written under another recipe has none
-//! this build uses, and its keys are only ever computed from that text. A column this build
-//! uses is held to the same computation, line by line: the key's first eight bytes for a line the recipe embeds, `0` for one it does
-//! not. That is the plan manifest's parity gate, and a plan that fails it is refused by
-//! every reader of plans.
+//! whichever the family names — so a plan describes the index the application opens. A
+//! line's first window is what the column holds; the others are records of their own. An
+//! index whose column was written under another recipe has none this build uses, and its
+//! keys are only ever computed from that text. A column this build uses is held to the same
+//! computation, line by line: the key's first eight bytes for a line the recipe embeds, `0`
+//! for one it does not. That is the plan manifest's parity gate, and a plan that fails it
+//! is refused by every reader of plans.
 //!
 //! A PDF's lines are not planned. No vector is built from them: the index keys them `0`,
 //! and a device never resolves a hit to one.
