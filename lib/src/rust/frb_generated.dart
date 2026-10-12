@@ -8813,11 +8813,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticHighlightTarget dco_decode_semantic_highlight_target(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return SemanticHighlightTarget(
       filePath: dco_decode_String(arr[0]),
       id: dco_decode_u_64(arr[1]),
+      window: dco_decode_u_8(arr[2]),
     );
   }
 
@@ -8895,8 +8896,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticRankingOptions dco_decode_semantic_ranking_options(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return SemanticRankingOptions(
       fusionStrategy: dco_decode_semantic_fusion_strategy(arr[0]),
       rrfK: dco_decode_u_32(arr[1]),
@@ -8913,6 +8914,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       candidateWindowMultiplier: dco_decode_f_64(arr[12]),
       foundationalBonus: dco_decode_f_64(arr[13]),
       foundationalCandidateShare: dco_decode_f_64(arr[14]),
+      windowPenalty: dco_decode_f_64(arr[15]),
     );
   }
 
@@ -8981,8 +8983,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticSearchResult dco_decode_semantic_search_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return SemanticSearchResult(
       title: dco_decode_String(arr[0]),
       reference: dco_decode_String(arr[1]),
@@ -9000,6 +9002,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       source: dco_decode_semantic_result_source(arr[13]),
       needsHydration: dco_decode_bool(arr[14]),
       textStatus: dco_decode_text_status(arr[15]),
+      matchedWindow: dco_decode_u_8(arr[16]),
     );
   }
 
@@ -10850,7 +10853,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_filePath = sse_decode_String(deserializer);
     var var_id = sse_decode_u_64(deserializer);
-    return SemanticHighlightTarget(filePath: var_filePath, id: var_id);
+    var var_window = sse_decode_u_8(deserializer);
+    return SemanticHighlightTarget(
+      filePath: var_filePath,
+      id: var_id,
+      window: var_window,
+    );
   }
 
   @protected
@@ -10968,6 +10976,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_candidateWindowMultiplier = sse_decode_f_64(deserializer);
     var var_foundationalBonus = sse_decode_f_64(deserializer);
     var var_foundationalCandidateShare = sse_decode_f_64(deserializer);
+    var var_windowPenalty = sse_decode_f_64(deserializer);
     return SemanticRankingOptions(
       fusionStrategy: var_fusionStrategy,
       rrfK: var_rrfK,
@@ -10984,6 +10993,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       candidateWindowMultiplier: var_candidateWindowMultiplier,
       foundationalBonus: var_foundationalBonus,
       foundationalCandidateShare: var_foundationalCandidateShare,
+      windowPenalty: var_windowPenalty,
     );
   }
 
@@ -11093,6 +11103,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_source = sse_decode_semantic_result_source(deserializer);
     var var_needsHydration = sse_decode_bool(deserializer);
     var var_textStatus = sse_decode_text_status(deserializer);
+    var var_matchedWindow = sse_decode_u_8(deserializer);
     return SemanticSearchResult(
       title: var_title,
       reference: var_reference,
@@ -11110,6 +11121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       source: var_source,
       needsHydration: var_needsHydration,
       textStatus: var_textStatus,
+      matchedWindow: var_matchedWindow,
     );
   }
 
@@ -12898,6 +12910,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.filePath, serializer);
     sse_encode_u_64(self.id, serializer);
+    sse_encode_u_8(self.window, serializer);
   }
 
   @protected
@@ -12986,6 +12999,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_f_64(self.candidateWindowMultiplier, serializer);
     sse_encode_f_64(self.foundationalBonus, serializer);
     sse_encode_f_64(self.foundationalCandidateShare, serializer);
+    sse_encode_f_64(self.windowPenalty, serializer);
   }
 
   @protected
@@ -13074,6 +13088,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_semantic_result_source(self.source, serializer);
     sse_encode_bool(self.needsHydration, serializer);
     sse_encode_text_status(self.textStatus, serializer);
+    sse_encode_u_8(self.matchedWindow, serializer);
   }
 
   @protected

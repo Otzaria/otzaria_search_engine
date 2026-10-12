@@ -2935,10 +2935,17 @@ class SemanticHighlightTarget {
   final String filePath;
   final BigInt id;
 
-  const SemanticHighlightTarget({required this.filePath, required this.id});
+  /// [`SemanticSearchResult::matched_window`]: the window of the line that is marked.
+  final int window;
+
+  const SemanticHighlightTarget({
+    required this.filePath,
+    required this.id,
+    this.window = 0,
+  });
 
   @override
-  int get hashCode => filePath.hashCode ^ id.hashCode;
+  int get hashCode => filePath.hashCode ^ id.hashCode ^ window.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2946,7 +2953,8 @@ class SemanticHighlightTarget {
       other is SemanticHighlightTarget &&
           runtimeType == other.runtimeType &&
           filePath == other.filePath &&
-          id == other.id;
+          id == other.id &&
+          window == other.window;
 }
 
 class SemanticIndexDiff {
@@ -3162,6 +3170,7 @@ class SemanticQueryTypeAlphas {
 /// | `candidate_window_multiplier` | 2 | 1 to 10 |
 /// | `foundational_bonus` | 0.002 | 0 to 1 |
 /// | `foundational_candidate_share` | 0.5 | 0 to 1 |
+/// | `window_penalty` | 0.04 | 0 to 0.2 |
 ///
 /// A value outside its range, or one that is not a number, is refused before the search runs,
 /// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
@@ -3222,6 +3231,10 @@ class SemanticRankingOptions {
   /// the main query's candidates; 0 runs none. Skipped when the facets already name `/base`.
   final double foundationalCandidateShare;
 
+  /// Taken off the cosine of a vector of a long line's window past its first, before the
+  /// scan keeps its best: such a window matches a part of a line rather than the line.
+  final double windowPenalty;
+
   const SemanticRankingOptions({
     this.fusionStrategy = SemanticFusionStrategy.rrf,
     this.rrfK = 60,
@@ -3238,6 +3251,7 @@ class SemanticRankingOptions {
     this.candidateWindowMultiplier = 2.0,
     this.foundationalBonus = 0.002,
     this.foundationalCandidateShare = 0.5,
+    this.windowPenalty = 0.04,
   });
 
   /// The ranking a search runs on when it is passed none, read from the engine: the defaults
@@ -3261,7 +3275,8 @@ class SemanticRankingOptions {
       metadataRankingEnabled.hashCode ^
       candidateWindowMultiplier.hashCode ^
       foundationalBonus.hashCode ^
-      foundationalCandidateShare.hashCode;
+      foundationalCandidateShare.hashCode ^
+      windowPenalty.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3282,7 +3297,8 @@ class SemanticRankingOptions {
           metadataRankingEnabled == other.metadataRankingEnabled &&
           candidateWindowMultiplier == other.candidateWindowMultiplier &&
           foundationalBonus == other.foundationalBonus &&
-          foundationalCandidateShare == other.foundationalCandidateShare;
+          foundationalCandidateShare == other.foundationalCandidateShare &&
+          windowPenalty == other.windowPenalty;
 }
 
 class SemanticRemoveResult {
@@ -3471,6 +3487,10 @@ class SemanticSearchResult {
   /// unpainted (`Stale`) or empty (`Unavailable`).
   final TextStatus textStatus;
 
+  /// The window of a long line the semantic hit matched (0: the line's first); past 0,
+  /// `snippet_html` shows that window. Pass it on as [`SemanticHighlightTarget::window`].
+  final int matchedWindow;
+
   const SemanticSearchResult({
     required this.title,
     required this.reference,
@@ -3488,6 +3508,7 @@ class SemanticSearchResult {
     required this.source,
     required this.needsHydration,
     required this.textStatus,
+    required this.matchedWindow,
   });
 
   @override
@@ -3507,7 +3528,8 @@ class SemanticSearchResult {
       fusedScore.hashCode ^
       source.hashCode ^
       needsHydration.hashCode ^
-      textStatus.hashCode;
+      textStatus.hashCode ^
+      matchedWindow.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3529,7 +3551,8 @@ class SemanticSearchResult {
           fusedScore == other.fusedScore &&
           source == other.source &&
           needsHydration == other.needsHydration &&
-          textStatus == other.textStatus;
+          textStatus == other.textStatus &&
+          matchedWindow == other.matchedWindow;
 }
 
 /// One segment of an installed vector set.
