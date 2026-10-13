@@ -31,7 +31,7 @@ use tantivy_fst::Automaton;
 
 use crate::cross_line;
 use crate::display_highlight;
-use crate::gap_phrase::{GapVerifiedPhraseQuery, TermListPhraseQuery};
+use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
@@ -2736,9 +2736,8 @@ pub enum ResultsOrder {
     Generation,
 }
 
-/// Per-word index-term sets plus the intermediate-word allowance, used by the
-/// snippet renderer to keep only highlights that form an in-order *phrase*
-/// occurrence.
+/// Per-word index-term sets plus their [`Proximity`], used by the snippet
+/// renderer to keep only highlights that form a *phrase* occurrence.
 ///
 /// tantivy's `SnippetGenerator` highlights term-by-term: it paints every
 /// occurrence of every query term with no positional constraint. For the
@@ -2747,15 +2746,14 @@ pub enum ResultsOrder {
 /// search matched only the adjacent phrase "משה ואהרן". This filter drops such
 /// stray highlights so the snippet paints exactly what the search matched.
 ///
-/// `gaps[i]` is the maximum number of intermediate index tokens allowed
-/// between query words `i` and `i+1` — the same per-pair intermediate-word
-/// model `display_highlight` and the engine's phrase verification use, so the
-/// results snippet, the search, and the book agree.
+/// The proximity is the one `display_highlight` and the engine's phrase
+/// verification use (per-pair gaps, or one any-order window), so the results
+/// snippet, the search, and the book agree.
 struct PhraseHighlight {
-    /// One index-term set per query word, in query (= phrase) order.
+    /// One index-term set per query word, in query order.
     per_word_terms: Vec<HashSet<String>>,
-    /// Per adjacent pair; length `per_word_terms.len() - 1`.
-    gaps: Vec<u32>,
+    /// Ordered gaps have length `per_word_terms.len() - 1`.
+    proximity: Proximity,
     /// The analyzer that tokenizes snippet fragments for re-highlighting —
     /// must match the field the terms came from (`"hebrew"` for `text`,
     /// `"hebrew_vocalized"` for `textVocalized`).
@@ -2800,8 +2798,8 @@ impl HighlightPlan {
 
 /// What [`SearchEngine::build_advanced_query`] returns: the executable query,
 /// one joined regex pattern per word (for highlight-term materialization), the
-/// resolved per-pair gap allowances (fold `custom_spacing`/`distance` in — the
-/// phrase highlight filter's gap allowances), and whether single-word
+/// resolved proximity (folds `custom_spacing`/`distance`/any-order in — the
+/// phrase highlight filter's allowances), and whether single-word
 /// collection truncated. The fifth element carries the acronym-expansion
 /// alternatives ("ראשי תיבות") as per-word literal-pattern lists — the
 /// highlight builders materialize their terms so a document matched through
@@ -2809,7 +2807,7 @@ impl HighlightPlan {
 type AdvancedQueryBuild = (
     Box<dyn Query>,
     Vec<String>,
-    Vec<u32>,
+    Proximity,
     bool,
     Vec<Vec<String>>,
 );
@@ -3210,7 +3208,8 @@ pub fn sqlite_host_entry_address() -> usize {
 /// default intermediate-word allowance, `custom_spacing` is keyed
 /// `"i-(i+1)"`, `alternative_words` is keyed by word position, and
 /// `search_options` is keyed `"{word}_{index}"` using the same tokenization
-/// as engine queries.
+/// as engine queries. `any_order` (default false) matches the words in any
+/// order within one window, like the advanced search's flag.
 ///
 /// Returns `None` when the query contains no highlightable words.
 #[frb(sync)]
@@ -3220,6 +3219,7 @@ pub fn generate_highlight_pattern(
     custom_spacing: HashMap<String, String>,
     alternative_words: HashMap<u32, Vec<String>>,
     search_options: HashMap<String, HashMap<String, bool>>,
+    any_order: Option<bool>,
 ) -> Option<HighlightPattern> {
     display_highlight::build_display_highlight(
         &query,
@@ -3227,6 +3227,7 @@ pub fn generate_highlight_pattern(
         &custom_spacing,
         &alternative_words,
         &search_options,
+        any_order.unwrap_or(false),
     )
     .map(|hl| HighlightPattern {
         combined_pattern: hl.combined_pattern,
@@ -8927,6 +8928,7 @@ impl SearchEngine {
         grouping: Option<ResultGrouping>,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<Vec<SearchResult>> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
@@ -8934,10 +8936,11 @@ impl SearchEngine {
         // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
         // בתוך בניית השאילתה.
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
+        let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
+            any_order.unwrap_or(false),
             &alternative_words,
             &search_options,
             facets,
@@ -8956,6 +8959,7 @@ impl SearchEngine {
             &negative_search_options,
             &voc,
             &negative_scope,
+            any_order.unwrap_or(false),
         )?;
         self.run_search(
             q,
@@ -8963,7 +8967,7 @@ impl SearchEngine {
                 self.advanced_highlight_plan_for_scope(
                     s,
                     &regex_terms,
-                    &gaps,
+                    &proximity,
                     &voc_mode,
                     &scope,
                     &match_mode,
@@ -9002,14 +9006,16 @@ impl SearchEngine {
         grouping: Option<ResultGrouping>,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<SearchPageResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
+        let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
+            any_order.unwrap_or(false),
             &alternative_words,
             &search_options,
             facets,
@@ -9028,6 +9034,7 @@ impl SearchEngine {
             &negative_search_options,
             &voc,
             &negative_scope,
+            any_order.unwrap_or(false),
         )?;
         self.run_search_and_count(
             q,
@@ -9035,7 +9042,7 @@ impl SearchEngine {
                 self.advanced_highlight_plan_for_scope(
                     s,
                     &regex_terms,
-                    &gaps,
+                    &proximity,
                     &voc_mode,
                     &scope,
                     &match_mode,
@@ -9080,16 +9087,18 @@ impl SearchEngine {
         grouping: Option<ResultGrouping>,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let result = (|| {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
+                any_order.unwrap_or(false),
                 &alternative_words,
                 &search_options,
                 facets,
@@ -9108,6 +9117,7 @@ impl SearchEngine {
                 &negative_search_options,
                 &voc,
                 &negative_scope,
+                any_order.unwrap_or(false),
             )?;
             self.run_search_stream(
                 q,
@@ -9115,7 +9125,7 @@ impl SearchEngine {
                     self.advanced_highlight_plan_for_scope(
                         s,
                         &regex_terms,
-                        &gaps,
+                        &proximity,
                         &voc_mode,
                         &scope,
                         &match_mode,
@@ -9164,16 +9174,18 @@ impl SearchEngine {
         grouping: Option<ResultGrouping>,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let result = (|| {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, gaps, truncated, acronym_alts) = self.build_advanced_query(
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
                 &query,
                 distance,
                 &custom_spacing,
+                any_order.unwrap_or(false),
                 &alternative_words,
                 &search_options,
                 facets,
@@ -9192,6 +9204,7 @@ impl SearchEngine {
                 &negative_search_options,
                 &voc,
                 &negative_scope,
+                any_order.unwrap_or(false),
             )?;
             self.run_search_stream_with_counts(
                 q,
@@ -9199,7 +9212,7 @@ impl SearchEngine {
                     self.advanced_highlight_plan_for_scope(
                         s,
                         &regex_terms,
-                        &gaps,
+                        &proximity,
                         &voc_mode,
                         &scope,
                         &match_mode,
@@ -9242,6 +9255,7 @@ impl SearchEngine {
         negative_scope: SearchScope,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<u32> {
         Ok(self
             .count_advanced_with_status(
@@ -9262,6 +9276,7 @@ impl SearchEngine {
                 negative_scope,
                 word_match_mode,
                 word_match_count,
+                any_order,
             )?
             .count)
     }
@@ -9287,12 +9302,14 @@ impl SearchEngine {
         negative_scope: SearchScope,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<CountResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
+            any_order.unwrap_or(false),
             &alternative_words,
             &search_options,
             facets,
@@ -9311,6 +9328,7 @@ impl SearchEngine {
             &negative_search_options,
             &voc,
             &negative_scope,
+            any_order.unwrap_or(false),
         )?;
         Ok(CountResult {
             count: self.run_count(q)?,
@@ -9340,6 +9358,7 @@ impl SearchEngine {
         negative_scope: SearchScope,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_advanced_with_status(
@@ -9360,6 +9379,7 @@ impl SearchEngine {
                 negative_scope,
                 word_match_mode,
                 word_match_count,
+                any_order,
             )?
             .counts)
     }
@@ -9385,12 +9405,14 @@ impl SearchEngine {
         negative_scope: SearchScope,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<BookCountResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
+            any_order.unwrap_or(false),
             &alternative_words,
             &search_options,
             facets,
@@ -9409,6 +9431,7 @@ impl SearchEngine {
             &negative_search_options,
             &voc,
             &negative_scope,
+            any_order.unwrap_or(false),
         )?;
         Ok(BookCountResult {
             counts: self.run_count_by_book(q)?,
@@ -9440,6 +9463,7 @@ impl SearchEngine {
         negative_scope: SearchScope,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<Vec<FacetCount>> {
         Ok(self
             .get_facet_counts_advanced_with_status(
@@ -9461,6 +9485,7 @@ impl SearchEngine {
                 negative_scope,
                 word_match_mode,
                 word_match_count,
+                any_order,
             )?
             .counts)
     }
@@ -9487,12 +9512,14 @@ impl SearchEngine {
         negative_scope: SearchScope,
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
+        any_order: Option<bool>,
     ) -> Result<FacetCountsResult> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
             distance,
             &custom_spacing,
+            any_order.unwrap_or(false),
             &alternative_words,
             &search_options,
             facets,
@@ -9511,6 +9538,7 @@ impl SearchEngine {
             &negative_search_options,
             &voc,
             &negative_scope,
+            any_order.unwrap_or(false),
         )?;
         Ok(FacetCountsResult {
             counts: self.run_facet_counts(q, facet_prefix)?,
@@ -9909,6 +9937,7 @@ impl SearchEngine {
                     query,
                     distance,
                     &HashMap::new(),
+                    false,
                     &HashMap::new(),
                     &HashMap::new(),
                     facets.to_vec(),
@@ -10043,14 +10072,14 @@ impl SearchEngine {
             .iter()
             .map(|t| hebrew_query::WordPattern::parse(t))
             .collect();
-        let gaps = vec![slop; patterns.len().saturating_sub(1)];
+        let proximity = Proximity::Ordered(vec![slop; patterns.len().saturating_sub(1)]);
         let text_field = self.schema.get_field("text")?;
         self.build_query_from_patterns(
             patterns,
             &[],
             &[],
             facets,
-            &gaps,
+            &proximity,
             max_expansions,
             text_field,
             &SearchScope::WordDistance,
@@ -10071,6 +10100,7 @@ impl SearchEngine {
         negative_search_options: &HashMap<String, HashMap<String, bool>>,
         voc: &VocalizedFlags,
         negative_scope: &SearchScope,
+        any_order: bool,
     ) -> Result<(Box<dyn Query>, bool)> {
         if hebrew_query::split_query_words(negative_query).is_empty() {
             return Ok((positive_query, positive_truncated));
@@ -10082,6 +10112,7 @@ impl SearchEngine {
             negative_query,
             negative_distance,
             negative_custom_spacing,
+            any_order,
             negative_alternative_words,
             negative_search_options,
             Vec::new(),
@@ -10124,9 +10155,9 @@ impl SearchEngine {
     /// plain `text` field, or `textVocalized` on the vocalized paths (whose
     /// patterns carry free-mark runs and must never hit the plain field).
     ///
-    /// `gaps` is the per-pair intermediate-word allowance (`gaps[i]` between
-    /// words `i` and `i+1`). The phrase branch goes through
-    /// [`Self::phrase_query_with_degrade`]: on its exact path tantivy gets
+    /// `proximity` holds the per-pair intermediate-word allowance (`gaps[i]`
+    /// between words `i` and `i+1`) or the any-order window. The phrase branch
+    /// goes through [`Self::phrase_query_with_degrade`]: on its exact path tantivy gets
     /// the *sum* as its slop — tantivy spends slop cumulatively across the
     /// phrase, so the max would reject a match using its allowance in two
     /// different gaps — wrapped in [`GapVerifiedPhraseQuery`], which
@@ -10141,7 +10172,7 @@ impl SearchEngine {
         source_words: &[String],
         typo_tokens: &[String],
         facets: Vec<String>,
-        gaps: &[u32],
+        proximity: &Proximity,
         max_expansions: u32,
         text_field: Field,
         scope: &SearchScope,
@@ -10185,17 +10216,14 @@ impl SearchEngine {
                     facets_query.as_deref(),
                     match_mode,
                 )?,
-                (SearchScope::WordDistance, WordMatch::All) => {
-                    debug_assert_eq!(gaps.len() + 1, regex_terms.len());
-                    self.phrase_query_with_degrade(
-                        &regex_terms,
-                        gaps,
-                        text_field,
-                        max_expansions,
-                        cross_line,
-                        facets_query.as_deref(),
-                    )?
-                }
+                (SearchScope::WordDistance, WordMatch::All) => self.phrase_query_with_degrade(
+                    &regex_terms,
+                    proximity,
+                    text_field,
+                    max_expansions,
+                    cross_line,
+                    facets_query.as_deref(),
+                )?,
             },
         };
 
@@ -10233,15 +10261,23 @@ impl SearchEngine {
     ///   now serves complete results when only the *cumulative* ceiling was
     ///   the problem, and budget-truncated (highest-priority-first) results
     ///   with `truncated: true` when a single position outgrew its own caps.
+    ///
+    /// An any-order proximity always takes the degrade path: tantivy's slop is
+    /// no superset of every word order.
     fn phrase_query_with_degrade(
         &self,
         regex_terms: &[hebrew_query::WordPattern],
-        gaps: &[u32],
+        proximity: &Proximity,
         text_field: Field,
         max_expansions: u32,
         cross_line: bool,
         facets_query: Option<&dyn Query>,
     ) -> Result<(Box<dyn Query>, bool)> {
+        let Proximity::Ordered(gaps) = proximity else {
+            // Cross-line matching assumes an order; any-order stays within a line.
+            return self.term_list_phrase_query(regex_terms, proximity, text_field, false, None);
+        };
+        debug_assert_eq!(gaps.len() + 1, regex_terms.len());
         let joined: Vec<String> = regex_terms
             .iter()
             .map(hebrew_query::WordPattern::joined)
@@ -10292,6 +10328,19 @@ impl SearchEngine {
             );
         }
 
+        self.term_list_phrase_query(regex_terms, proximity, text_field, cross_line, facets_query)
+    }
+
+    /// The degrade path of [`Self::phrase_query_with_degrade`]: a
+    /// [`TermListPhraseQuery`] over the materialized term sets.
+    fn term_list_phrase_query(
+        &self,
+        regex_terms: &[hebrew_query::WordPattern],
+        proximity: &Proximity,
+        text_field: Field,
+        cross_line: bool,
+        facets_query: Option<&dyn Query>,
+    ) -> Result<(Box<dyn Query>, bool)> {
         // Materialize every *distinct* branch set once, in parallel, only
         // after the exact engine is known to be unusable. This is the costly
         // work the fallback actually needs; doing it for all phrases both
@@ -10348,11 +10397,11 @@ impl SearchEngine {
         let inline: Box<dyn Query> = Box::new(TermListPhraseQuery::new(
             text_field,
             position_terms,
-            gaps.to_vec(),
+            proximity.clone(),
         ));
-        if !cross_line {
+        let (true, Proximity::Ordered(gaps)) = (cross_line, proximity) else {
             return Ok((inline, truncated));
-        }
+        };
         Ok((
             self.with_cross_line(inline, text_field, &words, gaps, facets_query)?,
             truncated,
@@ -11203,10 +11252,10 @@ impl SearchEngine {
                     .iter()
                     .map(|p| hebrew_query::WordPattern::parse(p))
                     .collect();
-                let gaps = vec![0u32; word_patterns.len().saturating_sub(1)];
+                let proximity = Proximity::adjacent(word_patterns.len());
                 self.phrase_query_with_degrade(
                     &word_patterns,
-                    &gaps,
+                    &proximity,
                     voc_field,
                     VOC_PHRASE_MAX_EXPANSIONS,
                     false,
@@ -11800,7 +11849,7 @@ impl SearchEngine {
         Ok(Box::new(TermListPhraseQuery::new(
             text_f,
             position_terms,
-            gaps,
+            Proximity::Ordered(gaps),
         )))
     }
 
@@ -11876,11 +11925,14 @@ impl SearchEngine {
     /// Advanced mode: ports the Dart morphological query builder to produce regex
     /// terms + slop + max_expansions, then reuses `build_query`. Also returns the
     /// regex patterns so callers can materialize concrete terms for highlighting.
+    /// `any_order` applies as [`hebrew_query::resolve_proximity`] says; acronym
+    /// expansions stay ordered.
     fn build_advanced_query(
         &self,
         query: &str,
         distance: u32,
         custom_spacing: &HashMap<String, String>,
+        any_order: bool,
         alternative_words: &HashMap<u32, Vec<String>>,
         search_options: &HashMap<String, HashMap<String, bool>>,
         facets: Vec<String>,
@@ -11938,7 +11990,12 @@ impl SearchEngine {
         // `distance` for every pair) — the phrase filter's gap allowances
         // must use it, not the raw `distance`, or a spacing-permitted match
         // would be rejected and fall back to the broad term highlight.
-        let gaps = prepared.gaps.clone();
+        let proximity = hebrew_query::resolve_proximity(
+            std::mem::take(&mut prepared.gaps),
+            distance,
+            custom_spacing,
+            any_order,
+        );
         let source_words = std::mem::take(&mut prepared.words);
         // The highlight builders want one pattern string per word; the query
         // builder gets the structured patterns so a single word compiles per
@@ -11966,7 +12023,7 @@ impl SearchEngine {
             &source_words,
             &prepared.typo_tokens,
             facets,
-            &gaps,
+            &proximity,
             prepared.max_expansions,
             text_field,
             scope,
@@ -11992,7 +12049,7 @@ impl SearchEngine {
                 alt_patterns,
             )
         };
-        Ok((query, regex_terms, gaps, truncated, acronym_patterns))
+        Ok((query, regex_terms, proximity, truncated, acronym_patterns))
     }
 
     /// בונה תת-שאילתות פענוח ראשי-תיבות (דו-כיווני) שיש ל-OR עם השאילתה
@@ -12072,13 +12129,13 @@ impl SearchEngine {
                 .collect();
             // פענוח הוא ביטוי קנוני — מילים צמודות (slop 0, ללא GapVerified),
             // וכל מילותיו חובה גם כשהשאילתה הראשית בהתאמה חלקית.
-            let gaps = vec![0u32; patterns.len().saturating_sub(1)];
+            let proximity = Proximity::adjacent(patterns.len());
             let (alt_query, truncated) = self.build_query_from_patterns(
                 patterns,
                 &[],
                 &[],
                 facets.clone(),
-                &gaps,
+                &proximity,
                 max_expansions,
                 text_field,
                 scope,
@@ -12769,6 +12826,7 @@ impl SearchEngine {
         custom_spacing: HashMap<String, String>,
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
+        any_order: Option<bool>,
     ) -> Result<Option<HighlightPattern>> {
         let advanced = hebrew_query::prepare_advanced_query(
             &query,
@@ -12830,6 +12888,7 @@ impl SearchEngine {
             &alternative_words,
             &search_options,
             &per_word_terms,
+            any_order.unwrap_or(false),
         )
         .map(|hl| HighlightPattern {
             combined_pattern: hl.combined_pattern,
@@ -12892,6 +12951,7 @@ impl SearchEngine {
             &HashMap::new(),
             &HashMap::new(),
             &per_word_terms,
+            false,
         )
         .map(|hl| HighlightPattern {
             combined_pattern: hl.combined_pattern,
@@ -12972,7 +13032,7 @@ impl SearchEngine {
         &self,
         searcher: &Searcher,
         regex_terms: &[String],
-        gaps: &[u32],
+        proximity: &Proximity,
         voc: &VocalizedFlags,
         scope: &SearchScope,
         match_mode: &WordMatch,
@@ -12983,7 +13043,7 @@ impl SearchEngine {
         let partial = !matches!(match_mode, WordMatch::All);
         match scope {
             SearchScope::WordDistance if !partial => {
-                self.advanced_highlight_plan(searcher, regex_terms, gaps, voc, acronym_alts)
+                self.advanced_highlight_plan(searcher, regex_terms, proximity, voc, acronym_alts)
             }
             _ => {
                 if regex_terms.len() < 2 && acronym_alts.is_empty() {
@@ -13007,7 +13067,7 @@ impl SearchEngine {
         &self,
         searcher: &Searcher,
         regex_terms: &[String],
-        gaps: &[u32],
+        proximity: &Proximity,
         voc: &VocalizedFlags,
         acronym_alts: &[Vec<String>],
     ) -> Result<HighlightPlan> {
@@ -13027,7 +13087,7 @@ impl SearchEngine {
             let alt_terms = self.phrase_per_word_terms(searcher, alt, field)?;
             all_word_sets.extend(alt_terms.iter().cloned());
             alternatives.push(PhraseHighlight {
-                gaps: vec![0; alt_terms.len().saturating_sub(1)],
+                proximity: Proximity::adjacent(alt_terms.len()),
                 per_word_terms: alt_terms,
                 analyzer,
                 cross_line: !voc.any(),
@@ -13040,9 +13100,10 @@ impl SearchEngine {
         // detect and render a match that continues on the next line.
         let phrase = Some(PhraseHighlight {
             per_word_terms,
-            gaps: gaps.to_vec(),
+            proximity: proximity.clone(),
             analyzer,
-            cross_line: !voc.any(),
+            // As in the query: an any-order match never continues across lines.
+            cross_line: !voc.any() && !proximity.is_any_order(),
             alternatives,
             allow_term_fallback: true,
         });
@@ -13077,12 +13138,11 @@ impl SearchEngine {
             let field = self.schema.get_field("textVocalized")?;
             let per_word_terms = self.phrase_per_word_terms(searcher, &patterns, field)?;
             let query = self.terms_query_from_word_sets(&per_word_terms, field)?;
-            let gaps = vec![0; per_word_terms.len().saturating_sub(1)];
             return Ok(HighlightPlan {
                 query,
                 phrase: Some(PhraseHighlight {
+                    proximity: Proximity::adjacent(per_word_terms.len()),
                     per_word_terms,
-                    gaps,
                     analyzer: "hebrew_vocalized",
                     cross_line: false,
                     alternatives: Vec::new(),
@@ -13096,12 +13156,11 @@ impl SearchEngine {
         }
         let per_word_terms: Vec<HashSet<String>> =
             tokens.into_iter().map(|t| HashSet::from([t])).collect();
-        let gaps = vec![0; per_word_terms.len().saturating_sub(1)];
         Ok(HighlightPlan {
             query: None,
             phrase: Some(PhraseHighlight {
+                proximity: Proximity::adjacent(per_word_terms.len()),
                 per_word_terms,
-                gaps,
                 analyzer: "hebrew",
                 cross_line: true,
                 alternatives: Vec::new(),
@@ -13168,7 +13227,7 @@ impl SearchEngine {
             }
             all_word_sets.extend(per_word_terms.iter().cloned());
             variants.push(PhraseHighlight {
-                gaps: vec![0; per_word_terms.len().saturating_sub(1)],
+                proximity: Proximity::adjacent(per_word_terms.len()),
                 per_word_terms,
                 analyzer,
                 cross_line: false,
@@ -13218,7 +13277,7 @@ impl SearchEngine {
             all_word_sets.push(terms.clone());
             variants.push(PhraseHighlight {
                 per_word_terms: vec![terms],
-                gaps: Vec::new(),
+                proximity: Proximity::Ordered(Vec::new()),
                 analyzer,
                 cross_line: false,
                 alternatives: Vec::new(),
@@ -13258,7 +13317,7 @@ impl SearchEngine {
             let gaps = vec![LEXICAL_FUZZY_PHRASE_SLOP; per_word_terms.len().saturating_sub(1)];
             Some(PhraseHighlight {
                 per_word_terms,
-                gaps,
+                proximity: Proximity::Ordered(gaps),
                 analyzer: "hebrew",
                 cross_line: false,
                 alternatives: Vec::new(),
@@ -13508,16 +13567,18 @@ impl SearchEngine {
         Ok(snippet_generator)
     }
 
-    /// Re-derives a snippet's highlight markup so only complete, in-order
-    /// phrase occurrences stay painted (see [`PhraseHighlight`]).
+    /// Re-derives a snippet's highlight markup so only complete phrase
+    /// occurrences under the phrase's [`Proximity`] stay painted (see
+    /// [`PhraseHighlight`]).
     ///
     /// Tokenizes the fragment with the same `text`-field analyzer the index and
     /// `SnippetGenerator` use, tags each token with the query words it can fill,
-    /// then keeps the byte ranges of tokens forming an occurrence
-    /// `w0 … w1 … w_{k-1}` where each adjacent pair `w-1, w` is at most
-    /// `gaps[w-1]` intermediate tokens apart. Selects the leftmost complete,
+    /// then keeps the byte ranges of tokens forming an occurrence. Ordered: an
+    /// occurrence `w0 … w1 … w_{k-1}` where each adjacent pair `w-1, w` is at
+    /// most `gaps[w-1]` intermediate tokens apart — the leftmost complete,
     /// non-overlapping matches, retaining a candidate only when its entire
-    /// phrase suffix can be completed.
+    /// phrase suffix can be completed. Any order: every word at its own token
+    /// within one window — the earliest-ending, non-overlapping windows.
     ///
     /// Returns `None` when the fragment holds no complete occurrence, so the
     /// caller falls back to the plain term highlight instead of painting
@@ -13602,6 +13663,46 @@ impl SearchEngine {
             }
         }
 
+        let gaps = match &phrase.proximity {
+            Proximity::Ordered(gaps) => gaps,
+            &Proximity::AnyOrder { max_span } => {
+                // By position, then token: a shared position paints its first token.
+                let mut cells = Vec::new();
+                for (w, word_candidates) in by_word.iter().enumerate() {
+                    cells.extend(
+                        word_candidates
+                            .iter()
+                            .map(|&ci| (candidates[ci].order, ci, w)),
+                    );
+                }
+                cells.sort_unstable();
+                let mut windows = WordWindows::default();
+                windows.reset(word_count);
+                let mut slots = Vec::new();
+                for (order, ci, w) in cells {
+                    let Ok(at) = u32::try_from(order) else {
+                        break;
+                    };
+                    if windows.push(at, w).is_some() {
+                        slots.push(ci);
+                    }
+                }
+                let mut ranges = Vec::new();
+                let mut assignment = Vec::new();
+                let mut from = 0;
+                while let Some(last) = windows.next_window(from, max_span, &mut assignment) {
+                    let occurrence = ranges.len();
+                    ranges.extend(assignment.iter().enumerate().map(|(w, &entry)| {
+                        let candidate = &candidates[slots[windows.slot(entry, w)]];
+                        (candidate.from, candidate.to)
+                    }));
+                    // Callers take an occurrence's first and last range as its edges.
+                    ranges[occurrence..].sort_unstable();
+                    from = last + 1;
+                }
+                return (!ranges.is_empty()).then_some(ranges);
+            }
+        };
         // Layer w stores only candidates able to complete words w..end and
         // the earliest viable continuation in layer w+1. A monotone cursor
         // finds that continuation in linear time per layer. Unlike greedily
@@ -13612,7 +13713,7 @@ impl SearchEngine {
         let mut layers: Vec<Vec<(usize, usize)>> = vec![Vec::new(); word_count];
         layers[word_count - 1] = by_word[word_count - 1].iter().map(|&ci| (ci, 0)).collect();
         for w in (0..word_count - 1).rev() {
-            let max_step = (phrase.gaps.get(w).copied().unwrap_or(0) as usize).saturating_add(1);
+            let max_step = (gaps.get(w).copied().unwrap_or(0) as usize).saturating_add(1);
             let next = &layers[w + 1];
             let mut cursor = 0;
             let mut viable = Vec::new();
@@ -14957,7 +15058,7 @@ mod tests {
                 HashSet::from(["משה".into()]),
                 HashSet::from(["ואהרן".into()]),
             ],
-            gaps: vec![1000],
+            proximity: Proximity::Ordered(vec![1000]),
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
@@ -14982,7 +15083,7 @@ mod tests {
                 HashSet::from(["רמב\"ם".into()]),
                 HashSet::from(["רמבם".into()]),
             ],
-            gaps: vec![0],
+            proximity: Proximity::Ordered(vec![0]),
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
@@ -15054,7 +15155,7 @@ mod tests {
                 for gaps in [vec![0, 0], vec![0, 1], vec![1, 0], vec![1, 1], vec![2, 2]] {
                     let phrase = PhraseHighlight {
                         per_word_terms: sets.clone(),
-                        gaps: gaps.clone(),
+                        proximity: Proximity::Ordered(gaps.clone()),
                         analyzer: "hebrew",
                         cross_line: false,
                         alternatives: Vec::new(),
@@ -15086,7 +15187,7 @@ mod tests {
                 HashSet::from(["רמב\"ם".into(), "רמבם".into()]),
                 HashSet::from(["רמב\"ם".into(), "רמבם".into()]),
             ],
-            gaps: vec![0],
+            proximity: Proximity::Ordered(vec![0]),
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
@@ -15158,7 +15259,7 @@ mod tests {
                 HashSet::from(["משה".into()]),
                 HashSet::from(["ואהרן".into()]),
             ],
-            gaps: vec![0],
+            proximity: Proximity::Ordered(vec![0]),
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
@@ -15245,7 +15346,7 @@ mod tests {
                 HashSet::from(["משה".into()]),
                 HashSet::from(["ואהרן".into()]),
             ],
-            gaps: vec![1000],
+            proximity: Proximity::Ordered(vec![1000]),
             analyzer: "hebrew",
             cross_line: false,
             alternatives: Vec::new(),
@@ -15350,6 +15451,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -15392,6 +15494,7 @@ mod tests {
             negative_scope,
             None,
             None,
+            None,
         )
     }
 
@@ -15424,6 +15527,7 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
             None,
             None,
         )
@@ -16582,6 +16686,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 HashMap::new(),
+                None,
             )
             .unwrap();
             assert_eq!(pattern.combined_pattern, "(?!)");
@@ -16610,6 +16715,7 @@ mod tests {
                     HashMap::new(),
                     HashMap::new(),
                     HashMap::new(),
+                    None,
                 )
                 .unwrap();
                 assert_eq!(
@@ -18890,6 +18996,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 typo_options("משה"),
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -18916,6 +19023,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options.clone(),
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -18929,6 +19037,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             options,
+            None,
         )
         .expect("pattern");
         assert_eq!(hl.combined_pattern, query_shape.combined_pattern);
@@ -18948,6 +19057,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 typo_options("משה"),
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -18957,6 +19067,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             typo_options("משה"),
+            None,
         )
         .expect("pattern");
         // Nothing in the index matches → never worse than the pure-string
@@ -18985,6 +19096,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options,
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -19036,6 +19148,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 HashMap::new(),
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -19077,6 +19190,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options,
+                None,
             )
             .unwrap()
             .expect("pattern")
@@ -19124,6 +19238,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options,
+                None,
             )
             .unwrap()
             .expect("pattern")
@@ -21158,6 +21273,7 @@ mod tests {
                 SearchScope::WordDistance,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(
@@ -21182,6 +21298,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
             )
@@ -21209,6 +21326,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
             )
@@ -21239,6 +21357,7 @@ mod tests {
                 SearchScope::WordDistance,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(!count.truncated, "under the cap the count must not flag");
@@ -21262,6 +21381,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
             )
@@ -22582,6 +22702,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -22610,6 +22731,7 @@ mod tests {
                 false,
                 SearchScope::SameSection,
                 SearchScope::SameSection,
+                None,
                 None,
                 None,
                 None,
@@ -22718,6 +22840,7 @@ mod tests {
                 None,
                 mode,
                 count,
+                None,
             )
             .unwrap()
     }
@@ -22914,6 +23037,7 @@ mod tests {
                 None,
                 Some(WordMatchMode::AnyWord),
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -22986,6 +23110,7 @@ mod tests {
                         &HashMap::new(),
                         &HashMap::new(),
                         &HashMap::new(),
+                        false,
                     )
                     .unwrap();
                     if !highlight.matcher.find_matches(line, &[]).is_empty() {
@@ -22998,6 +23123,428 @@ mod tests {
                 "שורה {line:?}: החיפוש וההדגשה חייבים להתאים באותו מרווח"
             );
         }
+    }
+
+    // ── Any-order word distance (Otzaria/otzaria#2006) ────────────────────
+
+    const ANY_ORDER_LINES: [&str; 7] = [
+        "חייב להחזיר",
+        "להחזיר חייב",
+        "להחזיר את החפץ חייב",
+        "להחזיר את החפץ הזה חייב",
+        "חייב לשלם ולא להחזיר",
+        "אמר רבי יוחנן",
+        "אמר רבי אמר",
+    ];
+
+    /// Line `i` lands at segment `2 * i`: filler lines keep the ordered
+    /// search's cross-line matches out of these tests.
+    fn lines_engine(lines: &[&str]) -> (SearchEngine, TempDir) {
+        let (mut engine, dir) = make_engine();
+        engine
+            .add_text_book(
+                "ספר הסדר".to_string(),
+                "/root".to_string(),
+                "/books/any_order.txt".to_string(),
+                9,
+                0,
+                lines.join("\nמילים אחרות לגמרי בשורה\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        (engine, dir)
+    }
+
+    /// One advanced query, run through every public advanced entry point.
+    struct AdvancedCall<'a> {
+        query: &'a str,
+        negative: &'a str,
+        distance: u32,
+        custom_spacing: HashMap<String, String>,
+        options: HashMap<String, HashMap<String, bool>>,
+        any_order: Option<bool>,
+    }
+
+    impl<'a> AdvancedCall<'a> {
+        fn new(query: &'a str, distance: u32, any_order: Option<bool>) -> Self {
+            Self {
+                query,
+                negative: "",
+                distance,
+                custom_spacing: HashMap::new(),
+                options: HashMap::new(),
+                any_order,
+            }
+        }
+
+        fn search(&self, engine: &SearchEngine) -> Vec<SearchResult> {
+            self.search_in_order(engine, ResultsOrder::Catalogue)
+        }
+
+        fn search_in_order(&self, engine: &SearchEngine, order: ResultsOrder) -> Vec<SearchResult> {
+            engine
+                .search_advanced(
+                    self.query.to_string(),
+                    self.negative.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    self.distance,
+                    self.distance,
+                    self.custom_spacing.clone(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    self.options.clone(),
+                    HashMap::new(),
+                    order,
+                    false,
+                    false,
+                    SearchScope::WordDistance,
+                    SearchScope::WordDistance,
+                    None,
+                    None,
+                    None,
+                    self.any_order,
+                )
+                .unwrap()
+        }
+
+        fn lines(&self, engine: &SearchEngine) -> Vec<u64> {
+            self.search(engine).iter().map(|r| r.segment / 2).collect()
+        }
+
+        fn count(&self, engine: &SearchEngine) -> u32 {
+            engine
+                .count_advanced(
+                    self.query.to_string(),
+                    self.negative.to_string(),
+                    vec!["/root".to_string()],
+                    self.distance,
+                    self.distance,
+                    self.custom_spacing.clone(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    self.options.clone(),
+                    HashMap::new(),
+                    false,
+                    false,
+                    SearchScope::WordDistance,
+                    SearchScope::WordDistance,
+                    None,
+                    None,
+                    self.any_order,
+                )
+                .unwrap()
+        }
+
+        fn count_by_book(&self, engine: &SearchEngine) -> u32 {
+            engine
+                .count_by_book_advanced(
+                    self.query.to_string(),
+                    self.negative.to_string(),
+                    vec!["/root".to_string()],
+                    self.distance,
+                    self.distance,
+                    self.custom_spacing.clone(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    self.options.clone(),
+                    HashMap::new(),
+                    false,
+                    false,
+                    SearchScope::WordDistance,
+                    SearchScope::WordDistance,
+                    None,
+                    None,
+                    self.any_order,
+                )
+                .unwrap()
+                .values()
+                .sum()
+        }
+
+        fn facet_count(&self, engine: &SearchEngine) -> u64 {
+            engine
+                .get_facet_counts_advanced(
+                    self.query.to_string(),
+                    self.negative.to_string(),
+                    vec!["/root".to_string()],
+                    "/".to_string(),
+                    self.distance,
+                    self.distance,
+                    self.custom_spacing.clone(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    self.options.clone(),
+                    HashMap::new(),
+                    false,
+                    false,
+                    SearchScope::WordDistance,
+                    SearchScope::WordDistance,
+                    None,
+                    None,
+                    self.any_order,
+                )
+                .unwrap()
+                .iter()
+                .filter(|facet| facet.path == "/root")
+                .map(|facet| facet.count)
+                .sum()
+        }
+
+        fn page_count(&self, engine: &SearchEngine) -> u32 {
+            engine
+                .search_and_count_advanced(
+                    self.query.to_string(),
+                    self.negative.to_string(),
+                    vec!["/root".to_string()],
+                    100,
+                    0,
+                    self.distance,
+                    self.distance,
+                    self.custom_spacing.clone(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    self.options.clone(),
+                    HashMap::new(),
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    SearchScope::WordDistance,
+                    SearchScope::WordDistance,
+                    None,
+                    None,
+                    None,
+                    self.any_order,
+                )
+                .unwrap()
+                .total_count
+        }
+    }
+
+    #[test]
+    fn any_order_finds_reversed_words_within_the_window_only() {
+        let (engine, _dir) = lines_engine(&ANY_ORDER_LINES);
+        let lines = |distance, any_order| {
+            AdvancedCall::new("חייב להחזיר", distance, any_order).lines(&engine)
+        };
+        // Two words: at most `distance` words between them, in either order.
+        assert_eq!(lines(0, Some(true)), [0, 1]);
+        assert_eq!(lines(1, Some(true)), [0, 1]);
+        assert_eq!(lines(2, Some(true)), [0, 1, 2, 4]);
+        assert_eq!(lines(3, Some(true)), [0, 1, 2, 3, 4]);
+        assert_eq!(
+            AdvancedCall::new("להחזיר חייב", 2, Some(true)).lines(&engine),
+            [0, 1, 2, 4]
+        );
+        // Three words: the window is what an ordered match may span, (k-1)·(d+1).
+        assert_eq!(
+            AdvancedCall::new("להחזיר החפץ חייב", 1, None).lines(&engine),
+            [2, 3]
+        );
+        for query in ["להחזיר החפץ חייב", "חייב החפץ להחזיר"] {
+            assert_eq!(
+                AdvancedCall::new(query, 1, Some(true)).lines(&engine),
+                [2, 3]
+            );
+            assert!(AdvancedCall::new(query, 0, Some(true))
+                .lines(&engine)
+                .is_empty());
+        }
+        // The ordered search is unchanged, whether the flag is off or absent.
+        for any_order in [None, Some(false)] {
+            assert_eq!(lines(0, any_order), [0]);
+            assert_eq!(lines(3, any_order), [0, 4]);
+        }
+    }
+
+    #[test]
+    fn any_order_relevance_ranks_tighter_windows_first() {
+        let (engine, _dir) =
+            lines_engine(&["להחזיר את החפץ הזה חייב", "להחזיר את חייב", "חייב להחזיר"]);
+        let call = AdvancedCall::new("חייב להחזיר", 3, Some(true));
+        let ranked: Vec<u64> = call
+            .search_in_order(&engine, ResultsOrder::Relevance)
+            .iter()
+            .map(|r| r.segment / 2)
+            .collect();
+        assert_eq!(ranked, [2, 1, 0]);
+        assert_eq!(call.lines(&engine), [0, 1, 2]);
+    }
+
+    #[test]
+    fn any_order_gives_each_repeated_word_its_own_occurrence() {
+        let (engine, _dir) = lines_engine(&ANY_ORDER_LINES);
+        let lines = |query, distance| AdvancedCall::new(query, distance, Some(true)).lines(&engine);
+        // Line 5 holds "אמר" once; line 6 twice, two positions apart.
+        assert!(lines("אמר אמר", 0).is_empty());
+        assert_eq!(lines("אמר אמר", 1), [6]);
+        assert_eq!(lines("אמר רבי אמר", 0), [6]);
+        assert_eq!(lines("רבי אמר אמר", 0), [6]);
+        assert!(lines("רבי אמר רבי", 5).is_empty());
+    }
+
+    #[test]
+    fn any_order_is_ignored_with_custom_spacing() {
+        let (engine, _dir) = lines_engine(&ANY_ORDER_LINES);
+        let mut call = AdvancedCall::new("חייב להחזיר", 0, Some(true));
+        call.custom_spacing = HashMap::from([("0-1".to_string(), "3".to_string())]);
+        assert_eq!(call.lines(&engine), [0, 4]);
+        let pattern = generate_highlight_pattern(
+            "חייב להחזיר".to_string(),
+            0,
+            call.custom_spacing.clone(),
+            HashMap::new(),
+            HashMap::new(),
+            Some(true),
+        )
+        .unwrap();
+        let matcher = pattern.matcher.unwrap();
+        assert!(matcher
+            .find_matches(ANY_ORDER_LINES[2].to_string(), Vec::new())
+            .is_empty());
+        assert_eq!(
+            matcher
+                .find_matches(ANY_ORDER_LINES[4].to_string(), Vec::new())
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn negative_query_follows_the_any_order_flag() {
+        let (engine, _dir) = lines_engine(&ANY_ORDER_LINES);
+        // "החפץ" is in lines 2 and 3; the negative words are reversed in both,
+        // three positions apart in line 2 and four in line 3.
+        let mut call = AdvancedCall::new("החפץ", 2, None);
+        call.negative = "חייב להחזיר";
+        assert_eq!(call.lines(&engine), [2, 3]);
+        call.any_order = Some(true);
+        assert_eq!(call.lines(&engine), [3]);
+        assert_eq!(call.count(&engine), 1);
+    }
+
+    #[test]
+    fn any_order_counts_agree_with_search() {
+        let (engine, _dir) = lines_engine(&ANY_ORDER_LINES);
+        for (query, distance, any_order) in [
+            ("חייב להחזיר", 0, Some(true)),
+            ("חייב להחזיר", 2, Some(true)),
+            ("להחזיר חייב", 3, Some(true)),
+            ("להחזיר חייב", 3, None),
+            ("אמר אמר", 1, Some(true)),
+        ] {
+            let call = AdvancedCall::new(query, distance, any_order);
+            let found = call.search(&engine).len() as u32;
+            let label = format!("{query:?} distance={distance} any_order={any_order:?}");
+            assert_eq!(call.count(&engine), found, "{label}");
+            assert_eq!(call.count_by_book(&engine), found, "{label}");
+            assert_eq!(call.facet_count(&engine), found as u64, "{label}");
+            assert_eq!(call.page_count(&engine), found, "{label}");
+        }
+    }
+
+    /// The query word count a snippet paints, from its highlight markup.
+    fn painted_words(html: &str) -> Vec<String> {
+        html.split("<font color=red>")
+            .skip(1)
+            .map(|rest| rest.split("</font>").next().unwrap().to_string())
+            .collect()
+    }
+
+    /// Search, results snippet and both book highlighters agree on any-order
+    /// matches. With a prefix option every word keeps its own bounded affix
+    /// window — the engine's pattern — even when the caller waives boundaries.
+    #[test]
+    fn any_order_highlights_agree_with_search() {
+        let lines = [
+            "חייב להחזיר",
+            "להחזיר חייב",
+            "להחזיר את החפץ חייב",
+            "להחזיר וחייב",
+            "להחזיר אבגדחייב",
+            "אבגדחייב להחזיר",
+            "וחייב אחד להחזיר",
+            "חייב",
+        ];
+        let (engine, _dir) = lines_engine(&lines);
+        let prefix = HashMap::from([(
+            "חייב_0".to_string(),
+            HashMap::from([("קידומות".to_string(), true)]),
+        )]);
+        let mut prefixed = AdvancedCall::new("חייב להחזיר", 1, Some(true));
+        prefixed.options = prefix.clone();
+        // Four letters before the root exceed its prefix window, on either side.
+        assert_eq!(prefixed.lines(&engine), [0, 1, 3, 6]);
+        for options in [HashMap::new(), prefix] {
+            for distance in 0..=2 {
+                let mut call = AdvancedCall::new("חייב להחזיר", distance, Some(true));
+                call.options = options.clone();
+                let results = call.search(&engine);
+                let index_pattern = engine
+                    .generate_index_highlight_pattern(
+                        "חייב להחזיר".to_string(),
+                        distance,
+                        HashMap::new(),
+                        HashMap::new(),
+                        options.clone(),
+                        Some(true),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .matcher
+                    .unwrap();
+                let plain_pattern = generate_highlight_pattern(
+                    "חייב להחזיר".to_string(),
+                    distance,
+                    HashMap::new(),
+                    HashMap::new(),
+                    options.clone(),
+                    Some(true),
+                )
+                .unwrap()
+                .matcher
+                .unwrap();
+                for (index, line) in lines.iter().enumerate() {
+                    let label = format!("{line:?} distance={distance} options={options:?}");
+                    let hit = results.iter().find(|r| r.segment as usize == 2 * index);
+                    for matcher in [&index_pattern, &plain_pattern] {
+                        for boundaries in [Vec::new(), vec![false, false]] {
+                            assert_eq!(
+                                !matcher
+                                    .find_matches(line.to_string(), boundaries)
+                                    .is_empty(),
+                                hit.is_some(),
+                                "{label}"
+                            );
+                        }
+                    }
+                    if let Some(hit) = hit {
+                        assert_eq!(painted_words(&hit.text).len(), 2, "{label}: {}", hit.text);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn any_order_snippet_paints_the_reversed_occurrence_only() {
+        let (engine, _dir) = lines_engine(&["חייב בדבר ואחר כך להחזיר חייב"]);
+        // Only the last two words are within the window; the first "חייב" stays plain.
+        let results = AdvancedCall::new("חייב להחזיר", 0, Some(true)).search(&engine);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].text,
+            "חייב בדבר ואחר כך <font color=red>להחזיר</font> <font color=red>חייב</font>"
+        );
     }
 
     #[test]
@@ -23021,6 +23568,7 @@ mod tests {
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
                 Some(WordMatchMode::AnyWord),
+                None,
                 None,
             )
             .unwrap();
@@ -23115,6 +23663,7 @@ mod tests {
                 None,
                 Some(WordMatchMode::AtLeast),
                 Some(2),
+                None,
             )
             .unwrap()
             .into_iter()

@@ -796,6 +796,7 @@ fn probes() -> Vec<(String, Probe)> {
                         grouping,
                         any_word.then_some(WordMatchMode::AnyWord),
                         None,
+                        None,
                     )
                     .unwrap()
                 }),

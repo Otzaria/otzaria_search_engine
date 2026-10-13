@@ -78,6 +78,7 @@ fn advanced_with(
         None,
         None,
         None,
+        None,
     )
     .unwrap()
 }
@@ -99,6 +100,7 @@ fn count_advanced(e: &SearchEngine, query: &str, distance: u32) -> u32 {
         false,
         SearchScope::WordDistance,
         SearchScope::WordDistance,
+        None,
         None,
         None,
     )
@@ -331,6 +333,42 @@ fn word_distance_counts_the_words_of_both_lines() {
     assert_eq!(hits(&advanced(&e, "ואת הארץ והארץ היתה", 0)), [(0, true)]);
     // Order still matters across the break.
     assert!(advanced(&e, "היתה השמים", 5).is_empty());
+}
+
+#[test]
+fn any_order_stays_within_one_line() {
+    let (e, _dir) = book_engine(&["השמים ואת הארץ", "והארץ היתה תהו ובהו"]);
+    let any_order = |query: &str, distance| {
+        e.search_advanced(
+            query.to_string(),
+            String::new(),
+            vec![],
+            100,
+            0,
+            distance,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+            SearchScope::WordDistance,
+            None,
+            None,
+            None,
+            Some(true),
+        )
+        .unwrap()
+    };
+    assert_eq!(hits(&advanced(&e, "השמים היתה", 3)), [(0, true)]);
+    assert!(any_order("השמים היתה", 3).is_empty());
+    assert!(any_order("היתה השמים", 5).is_empty());
+    assert_eq!(hits(&any_order("הארץ השמים", 1)), [(0, false)]);
 }
 
 #[test]
@@ -753,6 +791,7 @@ fn real_library_cross_line_cost() {
                     false,
                     SearchScope::WordDistance,
                     SearchScope::WordDistance,
+                    None,
                     None,
                     None,
                     None,

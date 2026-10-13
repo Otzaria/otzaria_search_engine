@@ -68,10 +68,18 @@ fn assert_search_hit_highlights(
             None,
             None,
             None,
+            None,
         )
         .unwrap();
     let pattern = engine
-        .generate_index_highlight_pattern(query.into(), 0, HashMap::new(), alternatives, options)
+        .generate_index_highlight_pattern(
+            query.into(),
+            0,
+            HashMap::new(),
+            alternatives,
+            options,
+            None,
+        )
         .unwrap()
         .unwrap();
     let ids: HashSet<_> = hits.iter().map(|hit| hit.id).collect();
@@ -171,6 +179,7 @@ fn hybrid_alternatives_and_quoted_nikud_forms_keep_offsets() {
             HashMap::new(),
             HashMap::new(),
             options("רמבם", 1, &["קידומות", "שגיאות כתיב", "כתיב מלא/חסר"]),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -201,6 +210,7 @@ fn typo_without_morphology_keeps_token_boundaries() {
             HashMap::new(),
             HashMap::new(),
             options("קונטרסים", 0, &["שגיאות כתיב", "כתיב מלא/חסר"]),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -240,6 +250,7 @@ fn hybrid_large_dictionary_compiles_and_scans_with_bounded_pattern() {
                 0,
                 &["קידומות", "סיומות", "שגיאות כתיב", "כתיב מלא/חסר"],
             ),
+            None,
         )
         .unwrap()
         .unwrap();
