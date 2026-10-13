@@ -155,7 +155,9 @@ pub enum ResultGrouping {
 ///   a document's `segment` is the 0-based position of its row among the book's
 ///   rows ordered by `lineIndex`. Each line keeps a check of its exact text
 ///   (`lineCheck`), which the row read back must match. The lines the call lists in
-///   `stored_lines` are stored as for `InIndex` instead.
+///   `stored_lines` are stored as for `InIndex` instead. A personal book
+///   (`uid:<bookId>`) is read the same way from the user-books database configured
+///   with [`configure_user_books_line_source`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStorage {
     LibraryDb,
@@ -198,6 +200,15 @@ pub struct LineSourceStatus {
     /// read or its row count differed from the book's lines. Only grows within a
     /// process.
     pub library_fallbacks: u64,
+    /// A user-books database path has been configured
+    /// ([`configure_user_books_line_source`]).
+    pub user_books_configured: bool,
+    /// A connection to the user-books database is currently open.
+    pub user_books_open: bool,
+    /// `generation` of the user-books source.
+    pub user_books_generation: u64,
+    /// `library_fallbacks` of personal (`uid:`) books.
+    pub user_books_fallbacks: u64,
 }
 
 pub struct DocumentInput {
@@ -2300,7 +2311,9 @@ impl SemanticRequest<'_> {
         facets.dedup();
         // Opened before it is sampled, or the first search's read opening it would change the
         // sample and start a second session.
-        let _ = crate::line_source::with_store(|_| Ok(()));
+        for source in crate::line_source::Source::ALL {
+            let _ = crate::line_source::with_store(source, |_| Ok(()));
+        }
         SessionKey {
             query: self.query.to_string(),
             facets,
@@ -2372,7 +2385,7 @@ impl Default for SessionState {
             stale_primaries_dropped: 0,
             unverified: 0,
             capped_request: None,
-            library_generation: (0, None, false),
+            library_generation: Default::default(),
         }
     }
 }
@@ -3180,8 +3193,21 @@ pub fn resume_line_source_owned(owner_port: i64) -> Result<()> {
     Ok(())
 }
 
+/// Points the second line source at the personal-books database (`user_books.db`)
+/// that `uid:<bookId>` [`TextStorage::LibraryDb`] documents read their text from;
+/// `None` closes it (waiting for a window that is reading it) and unconfigures it.
+/// Opened lazily and read-only like the library database. The app may keep writing
+/// it (WAL): a commit is seen by the next window, and a row that no longer matches
+/// its line comes back [`TextStatus::Stale`]. [`suspend_line_source`] does not
+/// apply to it.
+pub fn configure_user_books_line_source(db_path: Option<String>) -> Result<()> {
+    crate::line_source::configure_user_books(db_path.as_deref())
+}
+
 pub fn line_source_status() -> LineSourceStatus {
-    let status = crate::line_source::status();
+    use crate::line_source::Source;
+    let status = crate::line_source::status(Source::Library);
+    let user_books = crate::line_source::status(Source::UserBooks);
     LineSourceStatus {
         configured: status.configured,
         open: status.open,
@@ -3189,6 +3215,10 @@ pub fn line_source_status() -> LineSourceStatus {
         host_api_ready: crate::sqlite_host::is_ready(),
         generation: status.generation,
         library_fallbacks: status.library_fallbacks,
+        user_books_configured: user_books.configured,
+        user_books_open: user_books.open,
+        user_books_generation: user_books.generation,
+        user_books_fallbacks: user_books.library_fallbacks,
     }
 }
 
@@ -3642,9 +3672,25 @@ fn add_stored_text(
 }
 
 /// The library book id of an official book's `file_path` (`id:<bookId>`).
+#[cfg(feature = "semantic-integration")]
 pub(crate) fn library_book_id(file_path: &str) -> Option<i64> {
-    let id: i64 = file_path.strip_prefix("id:")?.parse().ok()?;
-    (id >= 0 && format!("id:{id}") == file_path).then_some(id)
+    match line_source_book(file_path)? {
+        (crate::line_source::Source::Library, id) => Some(id),
+        _ => None,
+    }
+}
+
+/// The line source and book id of a `file_path` whose rows a database holds:
+/// `id:<bookId>` (library) or `uid:<bookId>` (user books), in canonical form only.
+pub(crate) fn line_source_book(file_path: &str) -> Option<(crate::line_source::Source, i64)> {
+    use crate::line_source::Source;
+    let (source, prefix, digits) = if let Some(digits) = file_path.strip_prefix("id:") {
+        (Source::Library, "id:", digits)
+    } else {
+        (Source::UserBooks, "uid:", file_path.strip_prefix("uid:")?)
+    };
+    let id: i64 = digits.parse().ok()?;
+    (id >= 0 && format!("{prefix}{id}") == file_path).then_some((source, id))
 }
 
 /// `DocumentInput` always stores its text: nothing ties a ready-made document's `segment`
@@ -3664,26 +3710,32 @@ fn refuse_library_storage(docs: &[DocumentInput]) -> Result<()> {
     Ok(())
 }
 
-fn require_library_book_id(file_path: &str) -> Result<i64> {
-    library_book_id(file_path).with_context(|| {
+fn require_library_book_id(file_path: &str) -> Result<(crate::line_source::Source, i64)> {
+    line_source_book(file_path).with_context(|| {
         format!(
-            "TextStorage::LibraryDb needs a file_path of the form id:<bookId>, got {file_path:?}"
+            "TextStorage::LibraryDb needs a file_path of the form id:<bookId> or \
+             uid:<bookId>, got {file_path:?}"
         )
     })
 }
 
-/// `LibraryDb` when the configured line source holds exactly `lines` rows for the book;
+/// `LibraryDb` when the book's line source holds exactly `lines` rows for the book;
 /// otherwise `InIndex`, since a document's `segment` would not be its row's ordinal (a row
 /// containing `\n` splits into two lines) or nothing can tell.
-fn library_storage_or_fallback(book_id: i64, lines: usize, title: &str) -> TextStorage {
-    let rows = crate::line_source::with_store_for_indexing(|store| store.book_row_count(book_id));
+fn library_storage_or_fallback(
+    (source, book_id): (crate::line_source::Source, i64),
+    lines: usize,
+    title: &str,
+) -> TextStorage {
+    let rows =
+        crate::line_source::with_store_for_indexing(source, |store| store.book_row_count(book_id));
     match rows {
         Ok(rows) if rows == lines as u64 => TextStorage::LibraryDb,
         rows => {
-            crate::line_source::note_library_fallback();
+            crate::line_source::note_library_fallback(source);
             warn!(
-                "add_text_book '{title}' (id:{book_id}): {lines} lines against library rows \
-                 {rows:?}; storing its text in the index"
+                "add_text_book '{title}' ({source:?} {book_id}): {lines} lines against \
+                 database rows {rows:?}; storing its text in the index"
             );
             TextStorage::InIndex
         }
@@ -7243,10 +7295,11 @@ impl SearchEngine {
     ///
     /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
     /// newline-joined rows of an official book read from the library database
-    /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
+    /// (then `file_path` must be `id:<bookId>`), or of a personal book read from the
+    /// user-books database (`uid:<bookId>`); the lines are then not stored in
     /// the index and results read them back from that database. The book is
     /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
-    /// configured line source does not hold exactly as many rows for it as `text`
+    /// book's configured line source does not hold exactly as many rows for it as `text`
     /// has lines — a row containing `\n`, a different database — or cannot be read
     /// (unconfigured, suspended, busy).
     ///
@@ -7340,7 +7393,7 @@ impl SearchEngine {
         let started = Instant::now();
         let lines: Vec<&str> = text.split('\n').collect();
         let text_storage = match library_book {
-            Some(book_id) => library_storage_or_fallback(book_id, lines.len(), &title),
+            Some(book) => library_storage_or_fallback(book, lines.len(), &title),
             None => TextStorage::InIndex,
         };
         let text_bytes = text.len();
@@ -13985,6 +14038,7 @@ impl SearchEngine {
 
         struct Pending {
             slot: usize,
+            source: crate::line_source::Source,
             key: crate::line_source::LineKey,
             line_check: Option<u32>,
             line_hash: u64,
@@ -14009,8 +14063,8 @@ impl SearchEngine {
                 .get_first(file_path_f)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let Some(book_id) = library_book_id(file_path) else {
-                log::warn!("document without stored text has no library book id: {file_path:?}");
+            let Some((source, book_id)) = line_source_book(file_path) else {
+                log::warn!("document without stored text has no line-source book: {file_path:?}");
                 continue;
             };
             let ordinal = document
@@ -14026,6 +14080,7 @@ impl SearchEngine {
             };
             pending.push(Pending {
                 slot,
+                source,
                 key: crate::line_source::LineKey { book_id, ordinal },
                 line_check: check_column
                     .first(address.doc_id)
@@ -14037,29 +14092,39 @@ impl SearchEngine {
             return Ok(out);
         }
 
-        let keys: Vec<_> = pending.iter().map(|p| p.key).collect();
-        let checks: Vec<_> = pending.iter().map(|p| p.line_check).collect();
-        let rows = match crate::line_source::with_store(|store| store.fetch_window(&keys, &checks))
-        {
-            Ok(rows) => rows,
-            Err(reason) => {
-                debug!(
-                    "library text unavailable for {} hit(s): {reason:?}",
-                    keys.len()
-                );
-                return Ok(out);
+        // One transaction per source, one after the other: never both mutexes at once.
+        for source in crate::line_source::Source::ALL {
+            let pending: Vec<&Pending> = pending.iter().filter(|p| p.source == source).collect();
+            if pending.is_empty() {
+                continue;
             }
-        };
-        // Normalizing a window's rows is most of its cost; a lone row is not worth the hop.
-        use rayon::prelude::*;
-        let hits: Vec<HitText> = pending
-            .par_iter()
-            .zip(rows.into_par_iter())
-            .with_min_len(LIBRARY_ROWS_PER_TASK)
-            .map(|(p, row)| HitText::from_library_row(row, p.line_check, p.line_hash, vocalized))
-            .collect();
-        for (p, hit) in pending.iter().zip(hits) {
-            out[p.slot] = hit;
+            let keys: Vec<_> = pending.iter().map(|p| p.key).collect();
+            let checks: Vec<_> = pending.iter().map(|p| p.line_check).collect();
+            let rows = match crate::line_source::with_store(source, |store| {
+                store.fetch_window(&keys, &checks)
+            }) {
+                Ok(rows) => rows,
+                Err(reason) => {
+                    debug!(
+                        "{source:?} text unavailable for {} hit(s): {reason:?}",
+                        keys.len()
+                    );
+                    continue;
+                }
+            };
+            // Normalizing a window's rows is most of its cost; a lone row is not worth the hop.
+            use rayon::prelude::*;
+            let hits: Vec<HitText> = pending
+                .par_iter()
+                .zip(rows.into_par_iter())
+                .with_min_len(LIBRARY_ROWS_PER_TASK)
+                .map(|(p, row)| {
+                    HitText::from_library_row(row, p.line_check, p.line_hash, vocalized)
+                })
+                .collect();
+            for (p, hit) in pending.iter().zip(hits) {
+                out[p.slot] = hit;
+            }
         }
         Ok(out)
     }

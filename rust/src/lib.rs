@@ -25,13 +25,15 @@ mod magic;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
 mod lexicons;
-// Line text of official books read from the library database at search time, and the
+// Line text of official and personal books read from their databases at search time, and the
 // choice of SQLite (bundled or the host's) — internal; only thin wrappers live in
 // `crate::api`.
 #[cfg(test)]
 mod external_text_tests;
 mod line_source;
 mod sqlite_host;
+#[cfg(test)]
+mod user_books_text_tests;
 // Real-data benchmark of smart search, opened read-only; outside `api` so FRB ignores it.
 #[cfg(test)]
 mod smart_search_bench;

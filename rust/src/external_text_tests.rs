@@ -144,7 +144,7 @@ pub(crate) fn books() -> Vec<Book> {
     ]
 }
 
-fn train_dictionary() -> Vec<u8> {
+pub(crate) fn train_dictionary() -> Vec<u8> {
     let samples: Vec<Vec<u8>> = (0..2000)
         .map(|n| {
             format!(
@@ -484,7 +484,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn guard() -> std::sync::MutexGuard<'static, ()> {
     let guard = line_source::TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -971,7 +971,7 @@ fn assert_answers_like_stored(stored_index: &SearchEngine, library_index: &Searc
 }
 
 /// `(filePath, has textStored, lineCheck)` of every live document.
-fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
+pub(crate) fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
     use tantivy::schema::Value;
     let searcher = engine.corpus_searcher();
     let schema = searcher.schema().clone();
@@ -1032,7 +1032,7 @@ fn library_documents_keep_no_text_in_the_doc_store() {
         .all(|(_, has_text, check)| *has_text && check.is_none()));
 }
 
-fn exact(e: &SearchEngine, word: &str) -> Vec<SearchResult> {
+pub(crate) fn exact(e: &SearchEngine, word: &str) -> Vec<SearchResult> {
     e.search_exact(
         word.to_string(),
         vec![],
@@ -2220,7 +2220,7 @@ fn library_storage_needs_an_official_book_key() {
     let _guard = guard();
     let dir = TempDir::new().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
-    for bad in ["/books/a.txt", "uid:3", "id:", "id:x", "id:-1", "id:007"] {
+    for bad in ["/books/a.txt", "id:", "id:x", "id:-1", "id:007"] {
         let err = engine
             .add_text_book(
                 "t".to_string(),
