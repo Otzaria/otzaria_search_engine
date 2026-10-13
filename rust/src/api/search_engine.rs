@@ -2311,9 +2311,8 @@ impl SemanticRequest<'_> {
         facets.dedup();
         // Opened before it is sampled, or the first search's read opening it would change the
         // sample and start a second session.
-        for source in crate::line_source::Source::ALL {
-            let _ = crate::line_source::with_store(source, |_| Ok(()));
-        }
+        // The user-books part of the key does not change when that store opens.
+        let _ = crate::line_source::with_store(crate::line_source::Source::Library, |_| Ok(()));
         SessionKey {
             query: self.query.to_string(),
             facets,
@@ -13915,6 +13914,7 @@ impl SearchEngine {
         phrase: &PhraseHighlight,
     ) -> Result<Vec<Option<String>>> {
         let id_field = schema.get_field("id")?;
+        let file_path_field = schema.get_field("filePath")?;
         let mut out = vec![None; documents.len()];
         let mut next_documents = Vec::new();
         let mut slots = Vec::new();
@@ -13938,10 +13938,27 @@ impl SearchEngine {
             if !ends_open {
                 continue;
             }
-            let next_query = TermQuery::new(
-                Term::from_field_u64(id_field, id + 1),
-                IndexRecordOption::Basic,
-            );
+            // By the book too: two books' lines can share an id (see `address_in_book`).
+            let file_path = document
+                .get_first(file_path_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let next_query = BooleanQuery::new(vec![
+                (
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(file_path_field, file_path),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>,
+                ),
+                (
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_u64(id_field, id + 1),
+                        IndexRecordOption::Basic,
+                    )),
+                ),
+            ]);
             let Some((_, next)) = searcher
                 .search(&next_query, &TopDocs::with_limit(1).order_by_score())?
                 .into_iter()
