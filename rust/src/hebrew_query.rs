@@ -152,13 +152,10 @@ const INSERTION_LETTERS: &[&str] = &[
 // ── Budget constants ───────────────────────────────────────────────────────
 
 /// Char budget for a *joined* per-word pattern on the phrase path, where
-/// `RegexPhraseQuery` compiles each word's whole pattern as one DFA. It is a
-/// crude proxy for the vendored tantivy-fst 8 192-state cap (chars ≠ states —
-/// heavily overlapping wildcard branches can fail far below this), kept as a
-/// cheap guard for the path that has no per-branch alternative yet. Scaled ×6
-/// with the state-cap raise from 1 000 (see vendor/tantivy-fst/README.md),
-/// leaving headroom for shape variance; calibrate via `benchmark_cli`.
-const MAX_PATTERN_CHARS: usize = 6_000;
+/// `RegexPhraseQuery` compiles each word's whole pattern as one DFA. A pattern
+/// the DFA limits refuse falls back to the term-list engine, so this only bounds
+/// build cost: 12K keeps ~8 typo × spelling × affix branches (~60ms to build, cached).
+const MAX_PATTERN_CHARS: usize = 12_000;
 
 /// Phrase-path variation cap when typo tolerance is active (substitution +
 /// deletion + insertion can produce many candidates; we keep the most useful
@@ -1872,6 +1869,13 @@ fn partial_word_window(root_len: usize) -> usize {
 /// form — never a digit, a Latin letter or another script.
 const AFFIX_LETTER: &str = "[א-תװ-ײ\"']";
 
+/// A branch's length against the char budget: [`AFFIX_LETTER`] costs as the one `.` it
+/// narrows, so narrowing a window does not crowd typo branches out of a phrase word.
+fn budget_chars(branch: &str) -> usize {
+    branch.chars().count()
+        - branch.matches(AFFIX_LETTER).count() * (AFFIX_LETTER.chars().count() - 1)
+}
+
 /// Up to `n` letters before or after the root.
 fn affix_window(n: usize, voc: bool) -> String {
     affix_window_between(0, n, voc)
@@ -2306,7 +2310,7 @@ fn build_word_regex_vocalized(
         if b.trim().is_empty() {
             continue;
         }
-        let len = b.chars().count();
+        let len = budget_chars(&b);
         if let Some(max_chars) = budget.max_pattern_chars {
             if !kept.is_empty() && total + len > max_chars {
                 break;
@@ -2319,7 +2323,7 @@ fn build_word_regex_vocalized(
         return fallback();
     }
     if let Some(max_chars) = budget.max_pattern_chars {
-        let joined_chars = kept.iter().map(|b| b.chars().count()).sum::<usize>()
+        let joined_chars = kept.iter().map(|b| budget_chars(b)).sum::<usize>()
             + if kept.len() == 1 {
                 0
             } else {
@@ -2471,7 +2475,7 @@ fn build_word_regex(
         if b.trim().is_empty() {
             continue;
         }
-        let len = b.chars().count();
+        let len = budget_chars(&b);
         if let Some(max_chars) = budget.max_pattern_chars {
             if !kept.is_empty() && total + len > max_chars {
                 break;
@@ -2493,7 +2497,7 @@ fn build_word_regex(
     // pattern) still falls back to the plain literal, which always compiles.
     if let Some(max_chars) = budget.max_pattern_chars {
         let joined_chars = |kept: &[String]| {
-            kept.iter().map(|b| b.chars().count()).sum::<usize>()
+            kept.iter().map(|b| budget_chars(b)).sum::<usize>()
                 + if kept.len() == 1 {
                     0
                 } else {
