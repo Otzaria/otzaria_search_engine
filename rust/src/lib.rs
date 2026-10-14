@@ -26,6 +26,7 @@ mod magic;
 mod page_cache;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
+mod lexical_cancellation;
 mod lexicons;
 // Line text of official and personal books read from their databases at search time, and the
 // choice of SQLite (bundled or the host's) — internal; only thin wrappers live in

@@ -38,6 +38,7 @@ use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::highlight_cache::{DisplayPattern, HighlightCache};
 use crate::highlight_matcher as display_highlight_matcher;
 use crate::index_directory::{atomic_replace, IndexDirectory};
+use crate::lexical_cancellation::{LexicalCancellations, LexicalRequest, LexicalSearchCancelled};
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
@@ -4430,6 +4431,8 @@ pub struct SearchEngine {
     page_cache: PageCache,
     /// Highlight term sets and display patterns: see [`crate::highlight_cache`].
     highlight_cache: HighlightCache,
+    /// Request ids of running lexical searches: see [`crate::lexical_cancellation`].
+    lexical_cancellations: LexicalCancellations,
 }
 
 /// The analyzers every field and query of the index is tokenized with.
@@ -4576,6 +4579,7 @@ impl SearchEngine {
             semantic_highlights: Default::default(),
             page_cache: PageCache::default(),
             highlight_cache: HighlightCache::default(),
+            lexical_cancellations: LexicalCancellations::default(),
         }
     }
 
@@ -4620,6 +4624,7 @@ impl SearchEngine {
             semantic_highlights: Default::default(),
             page_cache: PageCache::default(),
             highlight_cache: HighlightCache::default(),
+            lexical_cancellations: LexicalCancellations::default(),
         })
     }
 
@@ -6906,6 +6911,7 @@ impl SearchEngine {
                         request.facets.to_vec(),
                         request.match_nikud,
                         request.match_taamim,
+                        None,
                     )?,
                     SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
                         request.query,
@@ -7101,6 +7107,7 @@ impl SearchEngine {
                     facets.to_vec(),
                     match_nikud,
                     match_taamim,
+                    None,
                 )?,
                 SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
                     query,
@@ -8644,6 +8651,7 @@ impl SearchEngine {
                 &hl,
                 chunk_size,
                 None,
+                &self.lexical_cancellations.begin(None),
                 &sink,
             )
         })();
@@ -8959,9 +8967,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
             self.run_search_stream(
@@ -8974,10 +8985,11 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -8996,9 +9008,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             // The mark-free exact path never degrades under a collection
             // budget; the vocalized single-word path can (its term set is
@@ -9015,10 +9030,11 @@ impl SearchEngine {
                 chunk_size,
                 truncated,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Exact-mode hit count. Drops the truncation flag: the mark-free path
@@ -9031,9 +9047,10 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<u32> {
         Ok(self
-            .count_exact_with_status(query, facets, match_nikud, match_taamim)?
+            .count_exact_with_status(query, facets, match_nikud, match_taamim, cancel_request_id)?
             .count)
     }
 
@@ -9045,11 +9062,14 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
         Ok(CountResult {
-            count: self.run_count(q)?,
+            count: request.finish(self.run_count(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9062,9 +9082,16 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
-            .count_by_book_exact_with_status(query, facets, match_nikud, match_taamim)?
+            .count_by_book_exact_with_status(
+                query,
+                facets,
+                match_nikud,
+                match_taamim,
+                cancel_request_id,
+            )?
             .counts)
     }
 
@@ -9076,11 +9103,14 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
         Ok(BookCountResult {
-            counts: self.run_count_by_book(q)?,
+            counts: request.finish(self.run_count_by_book(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9310,9 +9340,12 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
@@ -9361,10 +9394,11 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -9397,9 +9431,12 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
@@ -9449,10 +9486,11 @@ impl SearchEngine {
                 chunk_size,
                 truncated,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Advanced-query hit count. Drops the single-word truncation flag — see
@@ -9478,6 +9516,7 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<u32> {
         Ok(self
             .count_advanced_with_status(
@@ -9499,6 +9538,7 @@ impl SearchEngine {
                 word_match_mode,
                 word_match_count,
                 any_order,
+                cancel_request_id,
             )?
             .count)
     }
@@ -9525,7 +9565,10 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
@@ -9553,7 +9596,7 @@ impl SearchEngine {
             any_order.unwrap_or(false),
         )?;
         Ok(CountResult {
-            count: self.run_count(q)?,
+            count: request.finish(self.run_count(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9581,6 +9624,7 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_advanced_with_status(
@@ -9602,6 +9646,7 @@ impl SearchEngine {
                 word_match_mode,
                 word_match_count,
                 any_order,
+                cancel_request_id,
             )?
             .counts)
     }
@@ -9628,7 +9673,10 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
@@ -9656,7 +9704,7 @@ impl SearchEngine {
             any_order.unwrap_or(false),
         )?;
         Ok(BookCountResult {
-            counts: self.run_count_by_book(q)?,
+            counts: request.finish(self.run_count_by_book(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9876,9 +9924,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             if voc.any() {
                 let (q, _) =
@@ -9893,6 +9944,7 @@ impl SearchEngine {
                     &HighlightConfig::default(),
                     chunk_size,
                     grouping.as_ref(),
+                    &request,
                     &sink,
                 );
             }
@@ -9911,10 +9963,11 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -9934,9 +9987,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             if voc.any() {
                 let (q, truncated) =
@@ -9952,6 +10008,7 @@ impl SearchEngine {
                     chunk_size,
                     truncated,
                     grouping.as_ref(),
+                    &request,
                     &sink,
                 );
             }
@@ -9973,10 +10030,11 @@ impl SearchEngine {
                 // single-word degrade mechanism.
                 false,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Builds the fuzzy-mode query for the count family: the vocalized path
@@ -10007,9 +10065,17 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<u32> {
         Ok(self
-            .count_fuzzy_with_status(query, facets, max_distance, match_nikud, match_taamim)?
+            .count_fuzzy_with_status(
+                query,
+                facets,
+                max_distance,
+                match_nikud,
+                match_taamim,
+                cancel_request_id,
+            )?
             .count)
     }
 
@@ -10022,11 +10088,14 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
         Ok(CountResult {
-            count: self.run_count(q)?,
+            count: request.finish(self.run_count(request.wrap(q)))?,
             truncated,
         })
     }
@@ -10040,6 +10109,7 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_fuzzy_with_status(
@@ -10048,6 +10118,7 @@ impl SearchEngine {
                 max_distance,
                 match_nikud,
                 match_taamim,
+                cancel_request_id,
             )?
             .counts)
     }
@@ -10061,11 +10132,14 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
         Ok(BookCountResult {
-            counts: self.run_count_by_book(q)?,
+            counts: request.finish(self.run_count_by_book(request.wrap(q)))?,
             truncated,
         })
     }
@@ -12600,6 +12674,15 @@ impl SearchEngine {
         Ok(results)
     }
 
+    /// Stops every lexical call tagged with `request_id` (the streams, counts and
+    /// per-book counts that take `cancel_request_id`), running or still to come.
+    /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
+    /// cancelled stream closes without another event. Returns at once.
+    #[frb(sync)]
+    pub fn cancel_lexical_search(&self, request_id: u32) {
+        self.lexical_cancellations.cancel(request_id);
+    }
+
     /// Routes a stream-search failure into the stream itself, where the Dart
     /// side receives it as an `onError` event.
     ///
@@ -12615,6 +12698,10 @@ impl SearchEngine {
         result: Result<()>,
     ) -> Result<()> {
         if let Err(err) = result {
+            if LexicalSearchCancelled::is(&err) {
+                debug!("stream search cancelled");
+                return Ok(());
+            }
             error!("stream search failed: {err:#}");
             let _ = sink.add_error(err);
         }
@@ -12633,12 +12720,14 @@ impl SearchEngine {
         hl: &HighlightConfig,
         chunk_size: u32,
         grouping: Option<&ResultGrouping>,
+        request: &LexicalRequest<'_>,
         sink: &StreamSink<Vec<SearchResult>>,
     ) -> Result<()>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
+        let query = request.wrap(query);
         let chunk_size = (chunk_size.max(1)) as usize;
         if let Some(grouping) = grouping {
             let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
@@ -12652,6 +12741,7 @@ impl SearchEngine {
                 &page,
             )?;
             for chunk in results.chunks(chunk_size) {
+                request.check()?;
                 if sink.add(chunk.to_vec()).is_err() {
                     break;
                 }
@@ -12681,6 +12771,7 @@ impl SearchEngine {
                 phrase,
             )?;
             // If the Dart side cancelled the stream, stop early.
+            request.check()?;
             if sink.add(results).is_err() {
                 break;
             }
@@ -12706,12 +12797,14 @@ impl SearchEngine {
         chunk_size: u32,
         truncated: bool,
         grouping: Option<&ResultGrouping>,
+        request: &LexicalRequest<'_>,
         sink: &StreamSink<SearchStreamUpdate>,
     ) -> Result<()>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
+        let query = request.wrap(query);
         let chunk_size = (chunk_size.max(1)) as usize;
 
         if let Some(grouping) = grouping {
@@ -12719,6 +12812,7 @@ impl SearchEngine {
             let collectors = (GroupCollector::new(grouping, order), BookCountCollector);
             let ((), book_counts) = searcher.search(&*query, &collectors)?;
             let page = Self::finalize_grouped(collectors.0.take_hits(), limit, offset);
+            request.check()?;
             if sink
                 .add(SearchStreamUpdate {
                     total_count: Some(page.raw_total),
@@ -12741,6 +12835,7 @@ impl SearchEngine {
                 &page,
             )?;
             for chunk in results.chunks(chunk_size) {
+                request.check()?;
                 if sink
                     .add(SearchStreamUpdate {
                         total_count: None,
@@ -12772,6 +12867,7 @@ impl SearchEngine {
 
         // Counts first — the page addresses may be empty (offset past the
         // end) while the totals are still meaningful.
+        request.check()?;
         if sink
             .add(SearchStreamUpdate {
                 total_count: Some(total_count),
@@ -12805,6 +12901,7 @@ impl SearchEngine {
                 phrase,
             )?;
             // If the Dart side cancelled the stream, stop early.
+            request.check()?;
             if sink
                 .add(SearchStreamUpdate {
                     total_count: None,
@@ -15864,6 +15961,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -15896,6 +15994,7 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
             None,
             None,
             None,
@@ -19800,7 +19899,7 @@ mod tests {
         };
         let by_book = |engine: &SearchEngine| {
             engine
-                .count_by_book_exact("שלום".to_string(), vec![], false, false)
+                .count_by_book_exact("שלום".to_string(), vec![], false, false, None)
                 .unwrap()
         };
 
@@ -19859,6 +19958,38 @@ mod tests {
         add(&mut engine, 2, "ירושלם עיר הקודש", "/books/a.txt");
         engine.commit().unwrap();
         assert_ne!(pattern(&engine), first);
+    }
+
+    /// A cancelled request id stops its counts, and leaves nothing behind for
+    /// the same search without it; other ids and untagged calls run.
+    #[test]
+    fn cancelled_lexical_request_fails_its_counts_only() {
+        let (mut engine, _dir) = make_engine();
+        for id in 1..=20u64 {
+            add(
+                &mut engine,
+                id,
+                "שלום עולם",
+                &format!("/books/{}.txt", id % 3),
+            );
+        }
+        engine.commit().unwrap();
+        let by_book = |id: Option<u32>| {
+            engine.count_by_book_exact("שלום".to_string(), vec![], false, false, id)
+        };
+        let count =
+            |id: Option<u32>| engine.count_exact("שלום".to_string(), vec![], false, false, id);
+
+        engine.cancel_lexical_search(9);
+        for err in [by_book(Some(9)).unwrap_err(), count(Some(9)).unwrap_err()] {
+            assert!(LexicalSearchCancelled::is(&err));
+            assert_eq!(err.to_string(), LexicalSearchCancelled::MESSAGE);
+        }
+        let expected = by_book(None).unwrap();
+        assert_eq!(expected.values().sum::<u32>(), 20);
+        assert_eq!(by_book(Some(10)).unwrap(), expected);
+        assert_eq!(count(Some(10)).unwrap(), 20);
+        assert_eq!(count(None).unwrap(), 20);
     }
 
     #[test]
@@ -20475,6 +20606,7 @@ mod tests {
                 2,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(count, 1);
@@ -20505,6 +20637,7 @@ mod tests {
                 0,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(count, 2);
@@ -20603,6 +20736,7 @@ mod tests {
                 2,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(count, 3, "ranking boosts must not change the recall set");
@@ -20724,6 +20858,7 @@ mod tests {
                 max_distance,
                 false,
                 false,
+                None,
             )
             .unwrap()
     }
@@ -21822,6 +21957,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(
@@ -21846,6 +21982,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
                 None,
@@ -21903,6 +22040,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
                 None,
@@ -22738,6 +22876,7 @@ mod tests {
             3,
             false,
             false,
+            None,
         );
         assert!(count.is_err(), "distance > 2 should error, not panic");
     }
@@ -22804,13 +22943,25 @@ mod tests {
 
         assert_eq!(
             engine
-                .count_exact("שלום".to_string(), vec!["/root".to_string()], false, false)
+                .count_exact(
+                    "שלום".to_string(),
+                    vec!["/root".to_string()],
+                    false,
+                    false,
+                    None
+                )
                 .unwrap(),
             2
         );
 
         let by_book = engine
-            .count_by_book_exact("שלום".to_string(), vec!["/root".to_string()], false, false)
+            .count_by_book_exact(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                false,
+                false,
+                None,
+            )
             .unwrap();
         assert_eq!(by_book.get("/books/a.txt").copied(), Some(2));
 
@@ -22994,7 +23145,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
 
         let by_book = engine
-            .count_by_book_exact("בָּרָא".to_string(), vec![], true, false)
+            .count_by_book_exact("בָּרָא".to_string(), vec![], true, false, None)
             .unwrap();
         assert_eq!(by_book.get("/books/b.txt"), Some(&1));
     }
@@ -23786,6 +23937,7 @@ mod tests {
                     None,
                     None,
                     self.any_order,
+                    None,
                 )
                 .unwrap()
         }
@@ -23811,6 +23963,7 @@ mod tests {
                     None,
                     None,
                     self.any_order,
+                    None,
                 )
                 .unwrap()
                 .values()
@@ -24118,6 +24271,7 @@ mod tests {
                 Some(WordMatchMode::AnyWord),
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(count, 3);
@@ -24270,6 +24424,7 @@ mod tests {
                 facets.iter().map(|s| s.to_string()).collect(),
                 false,
                 false,
+                None,
             )
             .unwrap()
     }
@@ -26042,7 +26197,7 @@ mod tests {
             let first = page(&engine, 5, 0);
             let second = page(&engine, 5, 5);
             let lexical = engine
-                .count_exact_with_status("שבת".to_string(), Vec::new(), false, false)
+                .count_exact_with_status("שבת".to_string(), Vec::new(), false, false, None)
                 .unwrap();
             for response in [&first, &second] {
                 assert_eq!(response.lexical_total_count, lexical.count);

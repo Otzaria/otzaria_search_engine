@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_fuzzy_query`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_storage_or_fallback`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_fuzzy`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_fuzzy_query`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_storage_or_fallback`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `set_search_executor`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PageCounts`, `PhraseHighlight`, `RankedPage`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -378,6 +378,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
     Uint32List? storedLines,
   });
 
+  /// Stops every lexical call tagged with `request_id` (the streams, counts and
+  /// per-book counts that take `cancel_request_id`), running or still to come.
+  /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
+  /// cancelled stream closes without another event. Returns at once.
+  void cancelLexicalSearch({required int requestId});
+
   /// Delete all documents. Does not commit.
   Future<void> clear();
 
@@ -477,6 +483,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
     bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
@@ -499,6 +506,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
     bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -531,6 +539,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
     bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
@@ -553,6 +562,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
     bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Exact-mode per-book counts. Drops the truncation flag — see
@@ -562,6 +572,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book_exact`] but also reports whether the
@@ -571,6 +582,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Fuzzy-mode per-book counts. Drops the truncation flag — see
@@ -581,6 +593,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book_fuzzy`] but also reports whether the
@@ -591,6 +604,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book`] but also reports single-word truncation.
@@ -619,6 +633,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_exact`] but also reports whether the vocalized
@@ -628,6 +643,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Fuzzy-mode hit count. Drops the truncation flag: the mark-free path
@@ -640,6 +656,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_fuzzy`] but also reports whether the vocalized
@@ -650,6 +667,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count`] but also reports whether single-word collection
@@ -1087,6 +1105,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
     bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -1117,6 +1136,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
     bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Search and return total hit count alongside paged results in one call.
@@ -1201,6 +1221,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -1217,6 +1238,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   Future<List<SearchResult>> searchFuzzy({
@@ -1242,6 +1264,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -1259,6 +1282,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.

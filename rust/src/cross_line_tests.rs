@@ -103,6 +103,7 @@ fn count_advanced(e: &SearchEngine, query: &str, distance: u32) -> u32 {
         None,
         None,
         None,
+        None,
     )
     .unwrap()
 }
@@ -182,7 +183,7 @@ fn a_phrase_continues_onto_the_next_line() {
     assert!(text.find("ויאמר").unwrap() > text.find("<br>").unwrap());
     assert!(text.find("ובין").unwrap() < text.find("<br>").unwrap());
     assert_eq!(
-        e.count_exact("ובין המים ויאמר אלהים".into(), vec![], false, false)
+        e.count_exact("ובין המים ויאמר אלהים".into(), vec![], false, false, None)
             .unwrap(),
         1
     );
@@ -290,12 +291,12 @@ fn a_hit_in_line_and_across_the_break_counts_once() {
     // Line 0 holds the phrase in line and across the break; it is one hit, shown in line.
     assert_eq!(hits(&results), [(0, false)]);
     assert_eq!(
-        e.count_exact("אמר רבי".into(), vec![], false, false)
+        e.count_exact("אמר רבי".into(), vec![], false, false, None)
             .unwrap(),
         1
     );
     let by_book = e
-        .count_by_book_exact("אמר רבי".into(), vec![], false, false)
+        .count_by_book_exact("אמר רבי".into(), vec![], false, false, None)
         .unwrap();
     assert_eq!(by_book.values().sum::<u32>(), 1);
     let page = e
@@ -562,7 +563,7 @@ fn either_paired_reading_can_end_a_cross_line_phrase_part() {
             assert!(results[0].text.contains("היצא"), "{}", results[0].text);
             assert!(results[0].text.contains("אתך"), "{}", results[0].text);
             assert_eq!(
-                e.count_exact(query, vec![], false, false).unwrap(),
+                e.count_exact(query, vec![], false, false, None).unwrap(),
                 1,
                 "{left}"
             );
@@ -586,7 +587,7 @@ fn either_paired_reading_can_start_a_cross_line_phrase_part() {
             assert_eq!(hits(&results), [(0, true)], "{right}: {query}");
             assert!(results[0].text.contains("הוצא"), "{}", results[0].text);
             assert!(results[0].text.contains("היצא"), "{}", results[0].text);
-            assert_eq!(e.count_exact(query, vec![], false, false).unwrap(), 1);
+            assert_eq!(e.count_exact(query, vec![], false, false, None).unwrap(), 1);
         }
         assert!(exact(&e, "החיה הוצא היצא").is_empty(), "{right}");
     }

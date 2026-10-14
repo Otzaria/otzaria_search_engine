@@ -1963,7 +1963,7 @@ fn a_cross_line_hit_counts_while_the_source_is_suspended() {
         assert_eq!(results[0].continues_to_next_line, continues);
         assert_eq!(
             external
-                .count_exact(query.into(), vec![], false, false)
+                .count_exact(query.into(), vec![], false, false, None)
                 .unwrap(),
             1
         );
