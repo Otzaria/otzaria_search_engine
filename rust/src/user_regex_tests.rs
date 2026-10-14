@@ -103,7 +103,11 @@ fn explosive_patterns_compile_fast_or_are_refused() {
             "{raw:<40} {:>8.1} ms  {}",
             took.as_secs_f64() * 1000.0,
             match &parsed {
-                Ok(r) => format!("{:?} relaxed={}", r.kind, r.parts.iter().any(|p| p.verify.is_some())),
+                Ok(r) => format!(
+                    "{:?} relaxed={}",
+                    r.kind,
+                    r.parts.iter().any(|p| p.verify.is_some())
+                ),
                 Err(e) => format!("refused: {e}"),
             }
         );
@@ -128,7 +132,10 @@ fn relaxed_term_patterns_are_verified_exactly() {
     // A whole term, whatever the anchors.
     for raw in ["/ספר/", "/^ספר$/", r"/\bספר\b/"] {
         let p = part(raw);
-        assert!(p.accepts("ספר") && !p.accepts("ספרים") && !p.accepts("הספר"), "{raw}");
+        assert!(
+            p.accepts("ספר") && !p.accepts("ספרים") && !p.accepts("הספר"),
+            "{raw}"
+        );
     }
 }
 
@@ -186,7 +193,12 @@ fn fixed_words_of_a_line_pattern_become_required_clauses() {
     assert_eq!(plan.clauses.len(), 2, "{:?}", plan.clauses);
     assert_eq!(plan.clauses[0].len(), 2);
     assert!(!plan.clauses[1][0].whole);
-    assert!(parse(r"/^\S+\s\S+$/").unwrap().line.unwrap().clauses.is_empty());
+    assert!(parse(r"/^\S+\s\S+$/")
+        .unwrap()
+        .line
+        .unwrap()
+        .clauses
+        .is_empty());
 }
 
 // ── Engine ─────────────────────────────────────────────────────────────────────
@@ -306,16 +318,26 @@ fn term_patterns_search_the_index_and_paint_their_snippets() {
     assert_eq!(found[0].total_count, Some(1), "counts come first");
     let hits = results(&found);
     assert_eq!(hits.len(), 1);
-    assert!(hits[0].text.contains("<font color=red>ספרים</font>"), "{}", hits[0].text);
+    assert!(
+        hits[0].text.contains("<font color=red>ספרים</font>"),
+        "{}",
+        hits[0].text
+    );
 
     let found = events(&engine, "/(משה|אהרן) רבנו/", &[], &none);
     let hits = results(&found);
     assert_eq!(hits.len(), 2);
-    assert!(hits.iter().all(|h| h.text.contains("<font color=red>רבנו</font>")));
+    assert!(hits
+        .iter()
+        .all(|h| h.text.contains("<font color=red>רבנו</font>")));
 
     assert_eq!(count(&engine, "/רמב״ם/", &[]), 1);
     assert_eq!(count(&engine, "/רמבם/", &[]), 1);
-    assert_eq!(count(&engine, "/שמע/", &[]), 4, "nikud in the text is ignored");
+    assert_eq!(
+        count(&engine, "/שמע/", &[]),
+        4,
+        "nikud in the text is ignored"
+    );
     assert_eq!(count(&engine, "/שמע/", &["/תנך/נביאים"]), 2);
 }
 
@@ -349,7 +371,11 @@ fn a_word_sequence_continues_onto_the_next_line() {
     let engine = stored_engine(dir.path(), &sample_books());
     let found = events(&engine, r"/שמע\s+ישראל/", &[], &AtomicBool::new(false));
     let hits = results(&found);
-    assert_eq!(last(&found).total_count, Some(3), "two lines, and one across a line break");
+    assert_eq!(
+        last(&found).total_count,
+        Some(3),
+        "two lines, and one across a line break"
+    );
     assert_eq!(hits.iter().filter(|h| h.continues_to_next_line).count(), 1);
     let books = last(&found).book_counts.clone().unwrap();
     assert_eq!(books.get("a.txt"), Some(&2));
@@ -368,14 +394,13 @@ fn a_cross_space_pattern_verifies_candidate_lines() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].file_path, "b.txt");
     assert!(
-        hits[0].text.contains("<font color=red>שמע בני ישראל</font>"),
+        hits[0]
+            .text
+            .contains("<font color=red>שמע בני ישראל</font>"),
         "{}",
         hits[0].text
     );
-    let ranges: Vec<_> = found
-        .iter()
-        .flat_map(|e| e.match_ranges.iter())
-        .collect();
+    let ranges: Vec<_> = found.iter().flat_map(|e| e.match_ranges.iter()).collect();
     assert_eq!(ranges.len(), 1);
     let line = engine.get_document_by_id(hits[0].id).unwrap().unwrap().text;
     let units: Vec<u16> = line.encode_utf16().collect();
@@ -430,7 +455,11 @@ fn a_cross_space_pattern_without_fixed_words_reads_the_books_in_scope() {
             &UserRegexCancellationToken::new(),
         )
         .unwrap();
-    let mut counts: Vec<(String, u64)> = facets.counts.into_iter().map(|f| (f.path, f.count)).collect();
+    let mut counts: Vec<(String, u64)> = facets
+        .counts
+        .into_iter()
+        .map(|f| (f.path, f.count))
+        .collect();
     counts.sort();
     assert_eq!(
         counts,
@@ -744,7 +773,10 @@ fn the_book_view_matcher_finds_matches_in_displayed_html() {
     assert_eq!(found.len(), 1);
     let m = &found[0];
     let painted = text(m.start, m.end);
-    assert!(painted.starts_with("שְׁמַע") && painted.ends_with("יִשְׂרָאֵל"), "{painted}");
+    assert!(
+        painted.starts_with("שְׁמַע") && painted.ends_with("יִשְׂרָאֵל"),
+        "{painted}"
+    );
 
     let words = prepare_user_regex_matcher("/(שמע|בני) .*אל/".to_string());
     let found = words.unwrap().find_matches(data.to_string());
@@ -780,11 +812,8 @@ fn write_library(path: &Path, books: &[(i64, &[&str])]) {
     let mut compressor = zstd::bulk::Compressor::with_dictionary(3, &dict).unwrap();
     let mut id = 0;
     for (book, rows) in books {
-        conn.execute(
-            "INSERT INTO book (id, title) VALUES (?1, 'x')",
-            [book],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO book (id, title) VALUES (?1, 'x')", [book])
+            .unwrap();
         for (index, row) in rows.iter().enumerate() {
             id += 1;
             conn.execute(
@@ -853,14 +882,23 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
     let end = last(&found);
     assert_eq!(end.total_count, Some(5));
     assert!(!end.truncated);
-    assert!(results(&found).iter().all(|r| r.text_status == TextStatus::Ok));
+    assert!(results(&found)
+        .iter()
+        .all(|r| r.text_status == TextStatus::Ok));
     assert_eq!(count(&engine, pattern, &["/lib/9"]), 2, "one book only");
 
     // Fixed words: candidates read one by one, the compressed row among them.
     let found = events(&engine, r"/\S*שמע \S+ ישראל/", &[], &AtomicBool::new(false));
     let hits = results(&found);
-    assert_eq!(hits.len(), 3, "{:?}", hits.iter().map(|h| &h.text).collect::<Vec<_>>());
-    assert!(hits.iter().any(|h| h.text.contains("<font color=red>ושמע עמי ישראל</font>")));
+    assert_eq!(
+        hits.len(),
+        3,
+        "{:?}",
+        hits.iter().map(|h| &h.text).collect::<Vec<_>>()
+    );
+    assert!(hits
+        .iter()
+        .any(|h| h.text.contains("<font color=red>ושמע עמי ישראל</font>")));
 
     // A suspended database cannot be read: the answer is partial and says so.
     suspend_line_source().unwrap();
@@ -1023,14 +1061,15 @@ fn real_data() {
     let only: Option<String> = std::env::var("OTZ_ONLY").ok();
     let book_facet = largest_book_facet(&engine);
     println!("in-book runs use {book_facet}");
-    let runs = patterns
-        .iter()
-        .map(|raw| (*raw, None))
-        .chain(
-            [r"/שמע \S+ ישראל/", r"/[א-ת]{11,}\s[א-ת]{11,}/", r"/^\S+\s\S+$/"]
-                .into_iter()
-                .map(|raw| (raw, Some(book_facet.clone()))),
-        );
+    let runs = patterns.iter().map(|raw| (*raw, None)).chain(
+        [
+            r"/שמע \S+ ישראל/",
+            r"/[א-ת]{11,}\s[א-ת]{11,}/",
+            r"/^\S+\s\S+$/",
+        ]
+        .into_iter()
+        .map(|raw| (raw, Some(book_facet.clone()))),
+    );
     for (raw, facet) in runs {
         if only.as_deref().is_some_and(|o| !raw.contains(o)) {
             continue;
@@ -1074,7 +1113,11 @@ fn real_data() {
         let facet_refs: Vec<&str> = facets.iter().map(String::as_str).collect();
         let again = count(&engine, raw, &facet_refs);
         let cached = started.elapsed().as_secs_f64() * 1000.0;
-        let raw = if facets.is_empty() { raw.to_string() } else { format!("{raw} [book]") };
+        let raw = if facets.is_empty() {
+            raw.to_string()
+        } else {
+            format!("{raw} [book]")
+        };
         println!(
             "{raw:<36} parse {parse_ms:7.1} ms | {mode:<16} | total {:>9} trunc={} | first {:>8.0} ms | all {total:>8.0} ms | count again {cached:>7.0} ms ({again})",
             end.total_count.unwrap_or(0),
@@ -1117,7 +1160,14 @@ fn raw_read_throughput() {
     let db = std::path::PathBuf::from(std::env::var("OTZ_LIBRARY_DB").expect("OTZ_LIBRARY_DB"));
     let engine = crate::smart_search_bench::open_read_only(Path::new(&index)).unwrap();
     let searcher = engine.searcher_for_tests();
-    let books = searcher.search(&tantivy::query::AllQuery, &ScopeBooksCollector { keep_documents: false }).unwrap();
+    let books = searcher
+        .search(
+            &tantivy::query::AllQuery,
+            &ScopeBooksCollector {
+                keep_documents: false,
+            },
+        )
+        .unwrap();
     let ids: Vec<i64> = books
         .iter()
         .filter_map(|b| line_source_book(&b.file_path).map(|(_, id)| id))
@@ -1160,19 +1210,36 @@ fn scan_step_costs() {
     let db = std::path::PathBuf::from(std::env::var("OTZ_LIBRARY_DB").expect("OTZ_LIBRARY_DB"));
     let engine = crate::smart_search_bench::open_read_only(Path::new(&index)).unwrap();
     let searcher = engine.searcher_for_tests();
-    let mut books = searcher.search(&tantivy::query::AllQuery, &ScopeBooksCollector { keep_documents: false }).unwrap();
+    let mut books = searcher
+        .search(
+            &tantivy::query::AllQuery,
+            &ScopeBooksCollector {
+                keep_documents: false,
+            },
+        )
+        .unwrap();
     books.sort_unstable_by_key(|b| b.min_id);
     let plan = parse(r"/שמע \S+ ישראל/").unwrap().line.unwrap();
     let mut store = line_source::LineStore::open(&db).unwrap();
     let mut dctx = FrameDecoder::context().unwrap();
-    let (mut fetch, mut decode, mut prepare, mut fill, mut prefilter, mut full) =
-        (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    let (mut fetch, mut decode, mut prepare, mut fill, mut prefilter, mut full) = (
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+    );
     let (mut lines, mut bytes, mut hits) = (0usize, 0usize, 0usize);
     let mut view = LineView::default();
     for book in books.iter().take(600) {
-        let Some((_, id)) = line_source_book(&book.file_path) else { continue };
+        let Some((_, id)) = line_source_book(&book.file_path) else {
+            continue;
+        };
         let t = Instant::now();
-        let Some((rows, decoder)) = store.fetch_book_raw(id).unwrap() else { continue };
+        let Some((rows, decoder)) = store.fetch_book_raw(id).unwrap() else {
+            continue;
+        };
         fetch += t.elapsed();
         for row in &rows {
             let t = Instant::now();
@@ -1225,5 +1292,8 @@ fn a_scan_that_panicked_starts_over_once() {
         book_counts: HashMap::new(),
         truncated: false,
     }));
-    assert!(lock_unless_cancelled(&scan, &none).unwrap().outcome.is_some());
+    assert!(lock_unless_cancelled(&scan, &none)
+        .unwrap()
+        .outcome
+        .is_some());
 }

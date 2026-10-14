@@ -53,9 +53,9 @@ mod library_indexing_tests;
 mod sqlite_host;
 // רג'קס מהמשתמש (`/…/`): ניתוח, קמפול מוגבל-גודל וחיפוש שורות — מחוץ ל-crate::api כדי ש-FRB
 // לא ינסה לגזור לו bindings.
-mod user_regex;
 #[cfg(test)]
 mod user_books_text_tests;
+mod user_regex;
 // Books of attached databases (`db:<slug>:<bookId>`) read from those databases.
 #[cfg(test)]
 mod attached_text_tests;

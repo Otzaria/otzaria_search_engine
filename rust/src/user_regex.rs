@@ -40,12 +40,12 @@ use crate::api::search_engine::{
     indexed_texts, line_source_book, HighlightRange, SearchResult, TextStatus, UserRegexKind,
     UserRegexLineMatches, UserRegexStreamUpdate, LINE_CHECK_FIELD,
 };
+use crate::doc_store::DocumentLoader;
+use crate::gap_phrase::Proximity;
 use crate::hebrew_query::{
     fold_presentation_form, is_invisible_char, is_word_mark, BREAKING_TAG_NAMES,
 };
 use crate::highlight_matcher::{Match, PreparedHighlightMatcher, Range};
-use crate::gap_phrase::Proximity;
-use crate::doc_store::DocumentLoader;
 use crate::line_source::{self, FrameDecoder, RawRow, Source};
 use crate::quote_expansion::{is_quote, QuoteTransparent};
 use crate::term_automaton::{self, TermDfa};
@@ -167,7 +167,8 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
         })?;
     let mut elements = top_elements(strip_captures(hir));
     loop {
-        let edge = |e: &Hir| matches!(e.kind(), HirKind::Look(_) | HirKind::Empty) || is_separator(e);
+        let edge =
+            |e: &Hir| matches!(e.kind(), HirKind::Look(_) | HirKind::Empty) || is_separator(e);
         if elements.first().is_some_and(edge) {
             elements.remove(0);
         } else if elements.last().is_some_and(edge) {
@@ -179,7 +180,9 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
     if elements.is_empty() {
         return Err("matches only anchors or spaces".to_string());
     }
-    let inner_looks = elements.iter().any(|e| !e.properties().look_set().is_empty());
+    let inner_looks = elements
+        .iter()
+        .any(|e| !e.properties().look_set().is_empty());
     let mut parts: Vec<Vec<Hir>> = vec![Vec::new()];
     for element in &elements {
         if is_separator(element) {
@@ -187,7 +190,10 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
                 parts.push(Vec::new());
             }
         } else {
-            parts.last_mut().expect("one part at least").push(element.clone());
+            parts
+                .last_mut()
+                .expect("one part at least")
+                .push(element.clone());
         }
     }
     let parts: Vec<Hir> = parts.into_iter().map(Hir::concat).collect();
@@ -256,7 +262,8 @@ fn is_breaking_tag_name(body: &str) -> bool {
 /// What `cleanLineForSearch` deletes: the whole nikud/cantillation block (sof pasuq too),
 /// except maqaf and paseq, which it turns into a space.
 fn is_dropped_mark(c: char) -> bool {
-    (matches!(c, '\u{0591}'..='\u{05C7}') && !matches!(c, '\u{05BE}' | '\u{05C0}')) || is_word_mark(c)
+    (matches!(c, '\u{0591}'..='\u{05C7}') && !matches!(c, '\u{05BE}' | '\u{05C0}'))
+        || is_word_mark(c)
 }
 
 fn strip_captures(hir: Hir) -> Hir {
@@ -321,7 +328,9 @@ fn literal_text(hir: &Hir) -> Option<&str> {
 /// Whitespace and nothing else, at least once: what separates the words of a sequence.
 fn is_separator(hir: &Hir) -> bool {
     match hir.kind() {
-        HirKind::Literal(_) => literal_text(hir).is_some_and(|t| t.chars().all(char::is_whitespace)),
+        HirKind::Literal(_) => {
+            literal_text(hir).is_some_and(|t| t.chars().all(char::is_whitespace))
+        }
         HirKind::Class(Class::Unicode(class)) => {
             !class.ranges().is_empty()
                 && class
@@ -345,7 +354,9 @@ fn class_contains(class: &ClassUnicode, c: char) -> bool {
 /// letter (`\s`, `\W`, `[ ,]`). `.` and `[^א]` have letters too, so they stay in a word.
 fn has_explicit_whitespace(hir: &Hir) -> bool {
     match hir.kind() {
-        HirKind::Literal(_) => literal_text(hir).is_some_and(|t| t.chars().any(char::is_whitespace)),
+        HirKind::Literal(_) => {
+            literal_text(hir).is_some_and(|t| t.chars().any(char::is_whitespace))
+        }
         HirKind::Class(Class::Unicode(class)) => {
             class_contains(class, ' ') && !class_contains(class, 'א') && !class_contains(class, 'a')
         }
@@ -389,12 +400,11 @@ static TERM_ALPHABET: Lazy<ClassUnicode> = Lazy::new(|| {
     ])
 });
 
-static WORD_CLASS: Lazy<ClassUnicode> = Lazy::new(|| {
-    match regex_syntax::parse(r"\w").map(Hir::into_kind) {
+static WORD_CLASS: Lazy<ClassUnicode> =
+    Lazy::new(|| match regex_syntax::parse(r"\w").map(Hir::into_kind) {
         Ok(HirKind::Class(Class::Unicode(class))) => class,
         _ => ClassUnicode::empty(),
-    }
-});
+    });
 
 /// How much compiling `hir` costs, roughly in automaton states: every class weighs its
 /// ranges, and a repetition multiplies its body by its count.
@@ -409,9 +419,9 @@ fn cost(hir: &Hir) -> u64 {
             cost(&rep.sub).saturating_mul(copies)
         }
         HirKind::Capture(capture) => cost(&capture.sub),
-        HirKind::Concat(subs) | HirKind::Alternation(subs) => {
-            subs.iter().fold(0u64, |acc, sub| acc.saturating_add(cost(sub)))
-        }
+        HirKind::Concat(subs) | HirKind::Alternation(subs) => subs
+            .iter()
+            .fold(0u64, |acc, sub| acc.saturating_add(cost(sub))),
     }
 }
 
@@ -579,7 +589,10 @@ fn verifies(verify: &Regex, term: &str) -> bool {
     if verify.is_match(term) {
         return true;
     }
-    let bare: String = term.chars().filter(|&c| !c.is_ascii() || !is_quote(c as u8)).collect();
+    let bare: String = term
+        .chars()
+        .filter(|&c| !c.is_ascii() || !is_quote(c as u8))
+        .collect();
     !bare.is_empty() && bare.len() != term.len() && verify.is_match(&bare)
 }
 
@@ -971,7 +984,13 @@ impl LineView {
         let mut has_entity_end = true;
         let mut byte = 0usize;
         let mut utf16 = 0u32;
-        let units = |text: &str| if map { text.encode_utf16().count() as u32 } else { 0 };
+        let units = |text: &str| {
+            if map {
+                text.encode_utf16().count() as u32
+            } else {
+                0
+            }
+        };
         while byte < bytes.len() {
             let b = bytes[byte];
             if b == b'<' && has_tag_end {
@@ -1232,7 +1251,9 @@ struct ScopeBook {
 impl ScopeBook {
     /// Lines the scan reads.
     fn lines(&self) -> u64 {
-        self.candidates.as_ref().map_or(self.docs, |c| c.len() as u64)
+        self.candidates
+            .as_ref()
+            .map_or(self.docs, |c| c.len() as u64)
     }
 }
 
@@ -1603,7 +1624,10 @@ fn search_lines(
         scan.work = Some(match &candidates {
             Some(query) => {
                 let count = ctx.searcher.search(query.as_ref(), &Count)? as u32;
-                log::info!("user regex: {count} candidate lines in {:?}", started.elapsed());
+                log::info!(
+                    "user regex: {count} candidate lines in {:?}",
+                    started.elapsed()
+                );
                 if count <= CANDIDATE_FETCH_LIMIT {
                     let mut docs = ctx.searcher.search(query.as_ref(), &IdAddressCollector)?;
                     docs.sort_unstable_by_key(|(id, _)| *id);
@@ -1653,7 +1677,10 @@ static FETCH_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// The lines that hold every selective fixed word, in scope; `None` when no fixed word
 /// narrows the search.
-fn candidate_query(ctx: &LineSearch<'_>, plan: &LinePlan) -> anyhow::Result<Option<Box<dyn Query>>> {
+fn candidate_query(
+    ctx: &LineSearch<'_>,
+    plan: &LinePlan,
+) -> anyhow::Result<Option<Box<dyn Query>>> {
     let text_field = ctx.schema.get_field("text")?;
     let mut clauses: Vec<(u64, Box<dyn Query>)> = Vec::new();
     for clause in &plan.clauses {
@@ -1701,9 +1728,7 @@ fn candidate_query(ctx: &LineSearch<'_>, plan: &LinePlan) -> anyhow::Result<Opti
             continue;
         }
         let query: Box<dyn Query> = Box::new(TermSetQuery::new(
-            terms
-                .iter()
-                .map(|t| Term::from_field_text(text_field, t)),
+            terms.iter().map(|t| Term::from_field_text(text_field, t)),
         ));
         clauses.push((postings, query));
     }
@@ -1876,7 +1901,10 @@ fn fetch_rows(
 ) -> anyhow::Result<Option<BookRows>> {
     match &book.candidates {
         Some(candidates) => {
-            let mut ordinals: Vec<u64> = candidates.iter().filter_map(|&(id, _)| ordinal_of(id)).collect();
+            let mut ordinals: Vec<u64> = candidates
+                .iter()
+                .filter_map(|&(id, _)| ordinal_of(id))
+                .collect();
             ordinals.sort_unstable();
             ordinals.dedup();
             // A row read alone is a random read (~0.3 ms on a cold file); reading the whole
@@ -1900,9 +1928,9 @@ fn fetch_rows(
                 .collect();
             Ok(Some((rows, decoder)))
         }
-        None => Ok(store.fetch_book_raw(book_id)?.map(|(rows, decoder)| {
-            ((0u64..).zip(rows).collect(), decoder)
-        })),
+        None => Ok(store
+            .fetch_book_raw(book_id)?
+            .map(|(rows, decoder)| ((0u64..).zip(rows).collect(), decoder))),
     }
 }
 
@@ -1915,9 +1943,7 @@ fn scan_batch(
     books: &[ScopeBook],
 ) -> anyhow::Result<Vec<BookScan>> {
     use rayon::prelude::*;
-    let source_of = |book: &ScopeBook| {
-        line_source_book(&book.file_path).filter(|_| book.library)
-    };
+    let source_of = |book: &ScopeBook| line_source_book(&book.file_path).filter(|_| book.library);
     let sessions: Vec<(Source, line_source::ScanSession)> = books
         .iter()
         .filter_map(|book| source_of(book).map(|(source, _)| source))
@@ -2088,11 +2114,13 @@ fn scan_stored_book(
             Ok(scan)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(batches.into_iter().fold(BookScan::empty(false), |mut acc, scan| {
-        acc.hits.extend(scan.hits);
-        acc.unavailable |= scan.unavailable;
-        acc
-    }))
+    Ok(batches
+        .into_iter()
+        .fold(BookScan::empty(false), |mut acc, scan| {
+            acc.hits.extend(scan.hits);
+            acc.unavailable |= scan.unavailable;
+            acc
+        }))
 }
 
 /// Every live document of one book, with its id.
@@ -2335,7 +2363,8 @@ impl SegmentCollector for ScopeBooksSegment {
         book.docs += 1;
         book.library |= self.checks.first(doc).is_some();
         if self.keep_documents {
-            book.documents.push((id, DocAddress::new(self.segment, doc)));
+            book.documents
+                .push((id, DocAddress::new(self.segment, doc)));
         }
     }
 

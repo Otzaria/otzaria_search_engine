@@ -15181,19 +15181,19 @@ impl SearchEngine {
     ) -> Result<FacetCountsResult> {
         let regex = Self::user_regex(&raw)?;
         let searcher = self.index_reader.searcher();
-        let (query, truncated): (Box<dyn Query>, bool) =
-            if regex.kind == crate::user_regex::RegexKind::Line {
-                let outcome =
-                    self.user_regex_line_outcome(&searcher, &regex, &facets, cancellation)?;
-                (
-                    Box::new(crate::user_regex::HitSetQuery::new(&searcher, &outcome)),
-                    outcome.truncated,
-                )
-            } else {
-                let (query, truncated, _) =
-                    self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
-                (query, truncated)
-            };
+        let (query, truncated): (Box<dyn Query>, bool) = if regex.kind
+            == crate::user_regex::RegexKind::Line
+        {
+            let outcome = self.user_regex_line_outcome(&searcher, &regex, &facets, cancellation)?;
+            (
+                Box::new(crate::user_regex::HitSetQuery::new(&searcher, &outcome)),
+                outcome.truncated,
+            )
+        } else {
+            let (query, truncated, _) =
+                self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
+            (query, truncated)
+        };
         let mut collector = FacetCollector::for_field("topics");
         collector.add_facet(&facet_prefix);
         let counts = searcher.search(&*query, &collector)?;
@@ -15210,7 +15210,8 @@ impl SearchEngine {
     }
 
     fn user_regex(raw: &str) -> Result<crate::user_regex::UserRegex> {
-        crate::user_regex::parse(raw).map_err(|reason| anyhow::anyhow!("invalid user regex: {reason}"))
+        crate::user_regex::parse(raw)
+            .map_err(|reason| anyhow::anyhow!("invalid user regex: {reason}"))
     }
 
     fn user_regex_line_search<'a>(
@@ -15258,7 +15259,10 @@ impl SearchEngine {
         let (max_terms, budget) = if single {
             (USER_REGEX_WORD_MAX_TERMS, SINGLE_WORD_POSTINGS_BUDGET)
         } else {
-            (PHRASE_POSITION_MAX_EXPANSIONS, PHRASE_POSITION_POSTINGS_BUDGET)
+            (
+                PHRASE_POSITION_MAX_EXPANSIONS,
+                PHRASE_POSITION_POSTINGS_BUDGET,
+            )
         };
         let mut truncated = false;
         let mut sets = Vec::with_capacity(regex.parts.len());
@@ -15292,7 +15296,13 @@ impl SearchEngine {
                 .iter()
                 .map(|s| cross_line::CrossLineWord::Terms(s.as_ref().clone()))
                 .collect();
-            self.with_cross_line(inline, text_field, &words, &vec![0; n - 1], facets_query.as_deref())?
+            self.with_cross_line(
+                inline,
+                text_field,
+                &words,
+                &vec![0; n - 1],
+                facets_query.as_deref(),
+            )?
         };
         let query: Box<dyn Query> = match facets_query {
             Some(facets_query) => Box::new(BooleanQuery::new(vec![
@@ -15352,7 +15362,11 @@ impl SearchEngine {
                 let top = top.order_by_fast_field::<u64>("id", Order::Asc);
                 let (docs, count, by_book) =
                     searcher.search(&*query, &(top, Count, BookCountCollector))?;
-                (docs.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), count, by_book)
+                (
+                    docs.into_iter().map(|(_, a)| a).collect::<Vec<_>>(),
+                    count,
+                    by_book,
+                )
             }
             ResultsOrder::Generation => {
                 let top = top.order_by((GenerationSort, Order::Asc));
@@ -15370,7 +15384,13 @@ impl SearchEngine {
         let (addresses, total, by_book) = collected;
         let addresses = if limit == 0 { Vec::new() } else { addresses };
         let total = total as u32;
-        if !emit(event(Vec::new(), Some((total, &by_book)), truncated, false, false)) {
+        if !emit(event(
+            Vec::new(),
+            Some((total, &by_book)),
+            truncated,
+            false,
+            false,
+        )) {
             return Ok(());
         }
         if !addresses.is_empty() {
@@ -15392,7 +15412,13 @@ impl SearchEngine {
             let generator = Self::make_snippet_generator(searcher, hl_query, text_field, &hl)?;
             for chunk in addresses.chunks(chunk_size.max(1) as usize) {
                 if cancel.load(Ordering::Relaxed) {
-                    emit(event(Vec::new(), Some((total, &by_book)), truncated, true, true));
+                    emit(event(
+                        Vec::new(),
+                        Some((total, &by_book)),
+                        truncated,
+                        true,
+                        true,
+                    ));
                     return Ok(());
                 }
                 let results = Self::build_results_with_generator(
@@ -15409,7 +15435,13 @@ impl SearchEngine {
                 }
             }
         }
-        emit(event(Vec::new(), Some((total, &by_book)), truncated, true, false));
+        emit(event(
+            Vec::new(),
+            Some((total, &by_book)),
+            truncated,
+            true,
+            false,
+        ));
         Ok(())
     }
 }
