@@ -20294,7 +20294,9 @@ mod tests {
                 loaded.to_json(&engine.schema),
                 alone.to_json(&engine.schema)
             );
-            assert!(loaded.get_first(engine.schema.get_field("title").unwrap()).is_some());
+            assert!(loaded
+                .get_first(engine.schema.get_field("title").unwrap())
+                .is_some());
         }
     }
 
