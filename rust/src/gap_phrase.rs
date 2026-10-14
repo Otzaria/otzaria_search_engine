@@ -51,6 +51,7 @@ use tantivy::query::{
 };
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{DocId, DocSet, InvertedIndexReader, Score, SegmentReader, Term, TERMINATED};
+use tantivy_fst::Automaton;
 
 use crate::term_automaton::TermDfa;
 
@@ -84,10 +85,10 @@ fn positional_postings(
 
 /// A phrase query whose matches are verified position-by-position against
 /// per-pair intermediate-word allowances. See the module docs.
-#[derive(Clone, Debug)]
-pub(crate) struct GapVerifiedPhraseQuery {
+#[derive(Debug)]
+pub(crate) struct GapVerifiedPhraseQuery<A = TermDfa> {
     /// The recall-superset phrase query (slop = sum of `gaps`).
-    inner: RegexPhraseQuery<TermDfa>,
+    inner: RegexPhraseQuery<A>,
     /// The field whose positional postings verify candidates — must be the
     /// same field `inner` runs against.
     field: Field,
@@ -95,14 +96,32 @@ pub(crate) struct GapVerifiedPhraseQuery {
     gaps: Vec<u32>,
 }
 
-impl GapVerifiedPhraseQuery {
-    pub(crate) fn new(inner: RegexPhraseQuery<TermDfa>, field: Field, gaps: Vec<u32>) -> Self {
+impl<A> Clone for GapVerifiedPhraseQuery<A> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            field: self.field,
+            gaps: self.gaps.clone(),
+        }
+    }
+}
+
+impl<A> GapVerifiedPhraseQuery<A>
+where
+    A: Automaton + Send + Sync + 'static,
+    A::State: Clone,
+{
+    pub(crate) fn new(inner: RegexPhraseQuery<A>, field: Field, gaps: Vec<u32>) -> Self {
         debug_assert_eq!(gaps.len() + 1, inner.phrase_terms().len());
         Self { inner, field, gaps }
     }
 }
 
-impl Query for GapVerifiedPhraseQuery {
+impl<A> Query for GapVerifiedPhraseQuery<A>
+where
+    A: Automaton + Send + Sync + std::fmt::Debug + 'static,
+    A::State: Clone,
+{
     fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
         let inner = self.inner.weight(enable_scoring)?;
         // Word automata: the same ones `inner` runs, one per word position.
@@ -116,14 +135,18 @@ impl Query for GapVerifiedPhraseQuery {
     }
 }
 
-struct GapVerifiedWeight {
+struct GapVerifiedWeight<A> {
     inner: Box<dyn Weight>,
     field: Field,
-    regexes: Vec<Arc<TermDfa>>,
+    regexes: Vec<Arc<A>>,
     gaps: Vec<u32>,
 }
 
-impl Weight for GapVerifiedWeight {
+impl<A> Weight for GapVerifiedWeight<A>
+where
+    A: Automaton + Send + Sync + 'static,
+    A::State: Clone,
+{
     fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
         let inner = self.inner.scorer(reader, boost)?;
         let inverted = reader.inverted_index(self.field)?;

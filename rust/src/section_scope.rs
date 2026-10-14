@@ -26,18 +26,16 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::derived_columns::SectionIdColumn;
 use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::query::{EmptyScorer, EnableScoring, Explanation, Query, Scorer, Weight};
 use tantivy::{DocId, DocSet, Score, SegmentOrdinal, SegmentReader, TERMINATED};
-
-/// The schema name of the section fast field (see `current_schema`).
-pub(crate) const SECTION_ID_FIELD: &str = "sectionId";
 
 /// Collects the distinct `sectionId` values of every matching document.
 pub(crate) struct SectionIdsCollector;
 
 pub(crate) struct SectionIdsSegmentCollector {
-    column: tantivy::columnar::Column<u64>,
+    column: SectionIdColumn,
     sections: HashSet<u64>,
 }
 
@@ -51,7 +49,7 @@ impl Collector for SectionIdsCollector {
         reader: &SegmentReader,
     ) -> tantivy::Result<SectionIdsSegmentCollector> {
         Ok(SectionIdsSegmentCollector {
-            column: reader.fast_fields().u64(SECTION_ID_FIELD)?,
+            column: SectionIdColumn::open(reader)?,
             sections: HashSet::new(),
         })
     }
@@ -127,7 +125,7 @@ impl Weight for SectionFilteredWeight {
             return Ok(Box::new(EmptyScorer));
         }
         let inner = self.inner.scorer(reader, boost)?;
-        let column = reader.fast_fields().u64(SECTION_ID_FIELD)?;
+        let column = SectionIdColumn::open(reader)?;
         Ok(Box::new(SectionFilteredScorer::new(
             inner,
             column,
@@ -142,16 +140,12 @@ impl Weight for SectionFilteredWeight {
 
 struct SectionFilteredScorer {
     inner: Box<dyn Scorer>,
-    column: tantivy::columnar::Column<u64>,
+    column: SectionIdColumn,
     allowed: Arc<HashSet<u64>>,
 }
 
 impl SectionFilteredScorer {
-    fn new(
-        inner: Box<dyn Scorer>,
-        column: tantivy::columnar::Column<u64>,
-        allowed: Arc<HashSet<u64>>,
-    ) -> Self {
+    fn new(inner: Box<dyn Scorer>, column: SectionIdColumn, allowed: Arc<HashSet<u64>>) -> Self {
         let mut scorer = Self {
             inner,
             column,

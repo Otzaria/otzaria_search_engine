@@ -982,9 +982,11 @@ pub(crate) fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option
     for (ord, reader) in searcher.segment_readers().iter().enumerate() {
         let checks = reader.fast_fields().u64("lineCheck").unwrap();
         for doc_id in reader.doc_ids_alive() {
-            let doc: tantivy::TantivyDocument = searcher
-                .doc(tantivy::DocAddress::new(ord as u32, doc_id))
-                .unwrap();
+            let doc: tantivy::TantivyDocument = crate::doc_store::load_document(
+                &searcher,
+                tantivy::DocAddress::new(ord as u32, doc_id),
+            )
+            .unwrap();
             let path = doc
                 .get_first(path_f)
                 .and_then(|v| v.as_str())
@@ -1003,7 +1005,9 @@ pub(crate) fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option
 #[test]
 fn library_documents_keep_no_text_in_the_doc_store() {
     let _guard = guard();
-    let f = fixture();
+    let mut f = fixture();
+    f.external.merge_into_one_segment();
+    f.stored.merge_into_one_segment();
     let size = |p: &Path| -> u64 {
         std::fs::read_dir(p)
             .unwrap()
@@ -1290,10 +1294,13 @@ fn image_rows_are_shown_from_the_index_without_reading_the_database() {
 fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
     use tantivy::schema::Value;
     let _guard = guard();
-    let f = fixture();
+    let mut f = fixture();
     let legacy_path = f.dir.path().join("legacy");
     std::fs::create_dir_all(&legacy_path).unwrap();
-    let legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    let mut legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    for engine in [&mut legacy, &mut f.external, &mut f.stored] {
+        engine.merge_into_one_segment();
+    }
     // `textStored` of the official books' documents, by (filePath, segment).
     let official_text = |e: &SearchEngine| -> std::collections::BTreeMap<(String, u64), String> {
         let searcher = e.corpus_searcher();
@@ -1303,9 +1310,11 @@ fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
         let mut out = std::collections::BTreeMap::new();
         for (ord, reader) in searcher.segment_readers().iter().enumerate() {
             for doc_id in reader.doc_ids_alive() {
-                let doc: tantivy::TantivyDocument = searcher
-                    .doc(tantivy::DocAddress::new(ord as u32, doc_id))
-                    .unwrap();
+                let doc: tantivy::TantivyDocument = crate::doc_store::load_document(
+                    &searcher,
+                    tantivy::DocAddress::new(ord as u32, doc_id),
+                )
+                .unwrap();
                 let path = doc.get_first(path_f).and_then(|v| v.as_str()).unwrap();
                 let text = doc.get_first(text_f).and_then(|v| v.as_str());
                 if let (true, Some(text)) = (path.starts_with("id:"), text) {
@@ -2270,20 +2279,20 @@ fn library_storage_needs_an_official_book_key() {
 }
 
 #[test]
-fn the_v4_schema_is_refused() {
+fn the_v5_schema_is_refused() {
     let dir = TempDir::new().unwrap();
     drop(SearchEngine::new(dir.path().to_str().unwrap()));
     let meta = dir.path().join("otzaria_index_meta.json");
     let raw = std::fs::read_to_string(&meta).unwrap();
     std::fs::write(
         &meta,
-        raw.replace("\"schema_version\": 5", "\"schema_version\": 4"),
+        raw.replace("\"schema_version\": 6", "\"schema_version\": 5"),
     )
     .unwrap();
     let compat = check_index_compatibility(dir.path().to_string_lossy().into_owned());
     assert!(!compat.compatible);
     assert_eq!(compat.status, "rebuild_required");
-    assert_eq!(compat.required_schema_version, 5);
+    assert_eq!(compat.required_schema_version, 6);
 }
 
 /// Read-only smoke test against a real library: indexes the first books of

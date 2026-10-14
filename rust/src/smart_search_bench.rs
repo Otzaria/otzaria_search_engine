@@ -1524,7 +1524,6 @@ fn paging_stability() -> Result<()> {
 struct FoundationalProbe {
     searcher: tantivy::Searcher,
     file_path: tantivy::schema::Field,
-    id: tantivy::schema::Field,
     topics: tantivy::schema::Field,
 }
 
@@ -1540,7 +1539,6 @@ impl FoundationalProbe {
         Ok(Self {
             searcher: reader.searcher(),
             file_path: schema.get_field("filePath")?,
-            id: schema.get_field("id")?,
             topics: schema.get_field("topics")?,
         })
     }
@@ -1557,7 +1555,10 @@ impl FoundationalProbe {
                 Occur::Must,
                 term(Term::from_field_text(self.file_path, file_path)),
             ),
-            (Occur::Must, term(Term::from_field_u64(self.id, id))),
+            (
+                Occur::Must,
+                Box::new(crate::id_lookup::IdSetQuery::new([id])),
+            ),
             (
                 Occur::Must,
                 term(Term::from_facet(self.topics, &Facet::from_text("/base")?)),

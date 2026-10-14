@@ -88,6 +88,9 @@ pub struct TantivyCorpus {
     /// [`DOCUMENT_ID_SCHEME_VERSION`].
     books: BTreeMap<String, Vec<u64>>,
     locations: HashMap<u64, Location>,
+    /// Book key → its `contentHash`, which one of its documents holds: 0 for a book with
+    /// none (a PDF) or with two that disagree.
+    content_hashes: HashMap<String, u64>,
     /// The plan, computed at most once. `expected_line_ids` is called by both `pack` and
     /// `validate_artifact`, and chunking the library twice to answer the same question
     /// twice is the kind of cost a build notices.
@@ -263,6 +266,7 @@ impl TantivyCorpus {
             .map(Mutex::new);
         let mut books: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         let mut locations: HashMap<u64, Location> = HashMap::new();
+        let mut content_hashes: HashMap<String, Option<u64>> = HashMap::new();
         let mut scanned: u64 = 0;
 
         for (segment_ord, reader) in searcher.segment_readers().iter().enumerate() {
@@ -276,6 +280,10 @@ impl TantivyCorpus {
                 .str("filePath")
                 .context("reading the `filePath` column")?
                 .context("the `filePath` column is required to group lines into books")?;
+            let hashes = reader
+                .fast_fields()
+                .u64("contentHash")
+                .context("reading the `contentHash` column")?;
 
             let mut key = String::new();
             for doc in reader.doc_ids_alive() {
@@ -305,6 +313,8 @@ impl TantivyCorpus {
                     );
                 }
                 books.entry(key.clone()).or_default().push(line_id);
+                let hash = content_hashes.entry(key.clone()).or_default();
+                *hash = crate::api::search_engine::combine_fingerprint(*hash, hashes.first(doc));
             }
         }
 
@@ -346,6 +356,10 @@ impl TantivyCorpus {
             chunking,
             books,
             locations,
+            content_hashes: content_hashes
+                .into_iter()
+                .map(|(book, hash)| (book, hash.unwrap_or(0)))
+                .collect(),
             plan: Mutex::new(None),
             library,
         };
@@ -443,9 +457,8 @@ impl TantivyCorpus {
     /// the application would filter and group by. A document the index counts but cannot
     /// describe has to stop the build.
     ///
-    /// `contentHash` is the one field where `0` is a real answer — a PDF has no fingerprint
-    /// in the library database — which is exactly why "the column has no value for this
-    /// document" and "the value is zero" must not collapse into each other.
+    /// `contentHash` is the book's, read where the scan found it: one document of a book
+    /// holds it, and `0` is a real answer — a PDF has no fingerprint in the library database.
     ///
     /// A line whose text is in the library database comes back with an empty `text` and
     /// the [`LibraryLine`] to read it from — see [`Self::library_text`].
@@ -454,9 +467,7 @@ impl TantivyCorpus {
         address: DocAddress,
         line_id: u64,
     ) -> Result<(CorpusLine, Option<LibraryLine>), String> {
-        let document: TantivyDocument = self
-            .searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(&self.searcher, address)
             .map_err(|error| format!("reading line {line_id}: {error}"))?;
         let reader = self.searcher.segment_reader(address.segment_ord);
         let doc = address.doc_id;
@@ -499,7 +510,7 @@ impl TantivyCorpus {
                 .as_bool()
                 .ok_or_else(|| format!("line {line_id} carries a {name} that is not a bool"))
         };
-        // `sectionId`, `lineHash` and `contentHash` are FAST and **not stored**, so they
+        // `sectionId` and `lineHash` are FAST and **not stored**, so they
         // come off the columnar readers rather than out of the document. Reading them from
         // the stored document yields nothing at all — which, defaulted, is a zero in every
         // record of every artifact.
@@ -565,16 +576,25 @@ impl TantivyCorpus {
             )
         };
 
+        let content_hash = self
+            .content_hashes
+            .get(&source_book_key)
+            .copied()
+            .unwrap_or(0);
         Ok((
             CorpusLine {
                 source_book_key,
                 title: text_field("title")?,
                 reference: text_field("reference")?,
-                section_id: column_u64("sectionId")?,
+                section_id: {
+                    let column = crate::derived_columns::SectionIdColumn::open(reader)
+                        .map_err(|error| format!("reading the sectionId columns: {error}"))?;
+                    exactly_one(column.values_for_doc(doc), "sectionId", line_id)?
+                },
                 segment,
                 is_pdf: stored_bool("isPdf")?,
                 line_hash: column_u64("lineHash")?,
-                content_hash: column_u64("contentHash")?,
+                content_hash,
                 facets: self
                     .read_facets(address)
                     .map_err(|error| format!("reading the facets of line {line_id}: {error}"))?,
@@ -895,6 +915,12 @@ mod tests {
             line.content_hash, 0,
             "contentHash is FAST-only and must be read columnar"
         );
+        let second = corpus.book_line_ids(GENESIS).unwrap()[1];
+        assert_eq!(
+            corpus.line(second).unwrap().unwrap().content_hash,
+            line.content_hash,
+            "every line carries its book's contentHash, which one document holds"
+        );
         assert_eq!(
             line.facets,
             vec!["/era/תנך".to_string(), "/מקרא/תורה".to_string()],
@@ -1081,7 +1107,7 @@ mod tests {
         maimed.add_u64(field("segment"), 1);
         // Everything else present, so the refusal below can only be about the one field
         // that is not — otherwise this would pass for the wrong reason.
-        for name in ["sectionId", "lineHash", "contentHash", "generationSort"] {
+        for name in ["sectionOffset", "lineHash", "contentHash", "generation"] {
             maimed.add_u64(field(name), 1);
         }
         // `isPdf` deliberately absent. Defaulted it would read as `false` — a filterable
@@ -1116,7 +1142,7 @@ mod tests {
     fn a_document_with_two_values_in_a_single_valued_field_is_refused() {
         use tantivy::{Index, TantivyDocument};
 
-        for (field_name, expected) in [("id", "id"), ("sectionId", "sectionId")] {
+        for (field_name, expected) in [("id", "id"), ("sectionOffset", "sectionId")] {
             let dir = TempDir::new().unwrap();
             let engine = engine_with_books(&dir);
             let next_id = corpus(&engine).book_line_ids(BERACHOT).unwrap()[0] + 1;
@@ -1144,7 +1170,7 @@ mod tests {
             doubled.add_bool(field("isPdf"), false);
             doubled.add_u64(field("id"), next_id);
             doubled.add_u64(field("segment"), 1);
-            for name in ["sectionId", "lineHash", "contentHash", "generationSort"] {
+            for name in ["sectionOffset", "lineHash", "contentHash", "generation"] {
                 doubled.add_u64(field(name), 1);
             }
             // The second value, on the field under test.

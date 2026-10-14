@@ -18,7 +18,7 @@ use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
     AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, DfaWrapper, EmptyQuery, FuzzyTermQuery,
-    Occur, PhraseQuery, TermQuery, TermSetQuery,
+    Occur, TermQuery, TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
@@ -33,13 +33,19 @@ use crate::api::library_indexing::{
     IndexingCancellationToken, LibraryBookInput, LibraryBookResult,
 };
 use crate::cross_line;
+use crate::derived_columns::{
+    generation_value, section_offset, GenerationSort, GenerationSortColumn, SectionIdColumn,
+    GENERATION_FIELD, SECTION_OFFSET_FIELD,
+};
 use crate::display_highlight;
+use crate::doc_store::{load_document, segment_to_store};
 use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::highlight_cache::{DisplayPattern, HighlightCache};
 use crate::highlight_matcher as display_highlight_matcher;
+use crate::id_lookup::IdSetQuery;
 use crate::index_directory::{atomic_replace, IndexDirectory};
 use crate::lexical_cancellation::{LexicalCancellations, LexicalRequest, LexicalSearchCancelled};
 use crate::lexicons::{
@@ -47,6 +53,7 @@ use crate::lexicons::{
 };
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::page_cache::{self, PageCache, PageKey};
+use crate::quote_expansion::{self, AutomatonQuery, QuoteTransparent};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
@@ -2774,8 +2781,8 @@ struct PhraseHighlight {
     /// Ordered gaps have length `per_word_terms.len() - 1`.
     proximity: Proximity,
     /// The analyzer that tokenizes snippet fragments for re-highlighting —
-    /// must match the field the terms came from (`"hebrew"` for `text`,
-    /// `"hebrew_vocalized"` for `textVocalized`).
+    /// must match the field the terms came from ([`DISPLAY_ANALYZER`] for `text`,
+    /// [`VOCALIZED_DISPLAY_ANALYZER`] for `textVocalized`).
     analyzer: &'static str,
     /// The search also matches the phrase across a line break (see [`cross_line`]): a
     /// hit without an in-line occurrence is shown joined with its next line.
@@ -3021,11 +3028,17 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // A change to `normalize_text_for_indexing` or to the row preparation
 // (`line_source::prepare_row`) needs a bump: that is what keeps `TextStatus::Ok` true,
 // the promise that the displayed text is exactly what was indexed.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
+//
+// v6: disk savings. `id` and `filePath` carry no fieldnorms; `id` is not indexed; the
+// doc store keeps `reference`, `id` and the stored texts (see `doc_store`); the book
+// fingerprints sit on one document of a book; `sectionId`/`generationSort` are derived
+// (see `derived_columns`); and the fields no longer index a quote-free twin beside a
+// quoted word (see `quote_expansion`). A version 5 index is rebuilt.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 6;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 5;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 6;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -3048,8 +3061,6 @@ pub(crate) const LINE_TEXT_VERSION: u32 = 1;
 /// גרשיים וניקוד), ומתחת לכל ריצת-זבל אמיתית (base64 שזלג לקורפוס).
 const MAX_TOKEN_BYTES: usize = 128;
 const DEFAULT_GENERATION_ORDER: u32 = 5;
-const GENERATION_SORT_SHIFT: u32 = 56;
-const GENERATION_SORT_ID_MASK: u64 = (1u64 << GENERATION_SORT_SHIFT) - 1;
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
@@ -3136,8 +3147,20 @@ fn catalogue_id_base(catalogue_order: u32) -> Result<u64> {
     Ok((u64::from(catalogue_order) + 1) << 32)
 }
 
-fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
-    (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
+/// Records a book's `(contentHash, textHash)` on one of its documents, the columns' only
+/// value for the book: a value repeated on every line cost 64 bits a line once blocks of
+/// the column straddle two books. 0, "no fingerprint", is not written.
+fn stamp_book_fingerprints(
+    document: &mut TantivyDocument,
+    (content_field, text_field): (Field, Field),
+    (content_hash, text_hash): (u64, u64),
+) {
+    if content_hash != 0 {
+        document.add_u64(content_field, content_hash);
+    }
+    if text_hash != 0 {
+        document.add_u64(text_field, text_hash);
+    }
 }
 
 /// Records `key` in the `chunkKey` column, when the index has one this build writes: `0`
@@ -4182,7 +4205,10 @@ pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option
 /// older version in turn. A schema none of them is stays refused, as the `SchemaError`
 /// `open_or_create` returns.
 fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
-    let mut opened = Index::open_or_create(directory.clone(), current_schema());
+    let mut opened = Index::builder()
+        .schema(current_schema())
+        .settings(new_index_settings())
+        .open_or_create(directory.clone());
     for version in (MIN_READABLE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).rev() {
         if !matches!(opened, Err(tantivy::TantivyError::SchemaError(_))) {
             break;
@@ -4192,6 +4218,21 @@ fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
     }
     opened
 }
+
+/// Doc-store settings of a new index; an existing index keeps those it was created with.
+/// Measured on the full library: zstd over 64K blocks is about half the size of lz4 over 16K.
+fn new_index_settings() -> tantivy::IndexSettings {
+    tantivy::IndexSettings {
+        docstore_compression: tantivy::store::Compressor::Zstd(tantivy::store::ZstdCompressor {
+            compression_level: Some(DOCSTORE_ZSTD_LEVEL),
+        }),
+        docstore_blocksize: DOCSTORE_BLOCK_SIZE,
+        ..tantivy::IndexSettings::default()
+    }
+}
+
+const DOCSTORE_ZSTD_LEVEL: i32 = 3;
+const DOCSTORE_BLOCK_SIZE: usize = 65_536;
 
 fn index_metadata_path(index_path: &Path) -> PathBuf {
     index_path.join(INDEX_METADATA_FILE_NAME)
@@ -4259,6 +4300,8 @@ fn index_schema() -> Schema {
         ),
     );
     schema_builder.add_text_field("reference", STORED);
+    // `title`, `isPdf` and `filePath` are read from their columns (see `doc_store`), and
+    // `segment` is stored only where `id` does not imply it.
     schema_builder.add_text_field(
         "title",
         TextOptions::default()
@@ -4267,13 +4310,22 @@ fn index_schema() -> Schema {
                     .set_tokenizer("raw")
                     .set_fieldnorms(false),
             )
-            .set_stored(),
+            .set_fast(None),
     );
-    // INDEXED is required for delete_term / upsert by id to work.
-    schema_builder.add_u64_field("id", STORED | FAST | INDEXED);
+    // Not indexed: a lookup by id scans the column instead (see `id_lookup`).
+    schema_builder.add_u64_field("id", FAST | STORED);
     schema_builder.add_u64_field("segment", STORED);
-    schema_builder.add_bool_field("isPdf", STORED);
-    schema_builder.add_text_field("filePath", STRING | FAST | STORED);
+    schema_builder.add_bool_field("isPdf", FAST);
+    schema_builder.add_text_field(
+        "filePath",
+        TextOptions::default()
+            .set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer("raw")
+                    .set_fieldnorms(false),
+            )
+            .set_fast(None),
+    );
     // Book-level content fingerprint, stamped identically on all documents of
     // a book. FAST-only: read columnar by get_book_fingerprints, never searched
     // or returned. 0 = no fingerprint recorded.
@@ -4286,8 +4338,10 @@ fn index_schema() -> Schema {
     // (ב-PDF: מספר העמוד). FAST בלבד: מסלול "תחת אותה כותרת"
     // (SearchScope::SameSection) קורא אותו עמודתית לחיתוך סעיפים; אינו
     // מאוחסן ואינו מחופש ישירות.
-    schema_builder.add_u64_field("sectionId", FAST);
-    schema_builder.add_u64_field("generationSort", FAST);
+    // `sectionId` and `generationSort` are derived from `id` and these (see
+    // `derived_columns`): a value relative to the book compresses to a few bits.
+    schema_builder.add_u64_field(SECTION_OFFSET_FIELD, FAST);
+    schema_builder.add_u64_field(GENERATION_FIELD, FAST);
     // חתימת דה-דופליקציה של גוף השורה (ראו line_dedup_hash). FAST בלבד:
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
@@ -4483,56 +4537,39 @@ pub struct SearchEngine {
     lexical_cancellations: LexicalCancellations,
 }
 
+/// Analyzers that keep the quote-free twin of a quoted word (`רמב"ם` → `רמבם` at the
+/// same position): what snippets and phrase highlights tokenize text with, so a query
+/// reaching `רמב"ם` through `רמבם` paints it, and what `lineEdge` terms are made with.
+pub(crate) const DISPLAY_ANALYZER: &str = "hebrew_display";
+pub(crate) const VOCALIZED_DISPLAY_ANALYZER: &str = "hebrew_vocalized_display";
+
 /// The analyzers every field and query of the index is tokenized with.
-fn register_hebrew_tokenizers(index: &Index) {
-    // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
-    // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
-    // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
-    // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
-    // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
-    // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
-    index.tokenizers().register(
-        "hebrew",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: true,
-            keep_marks: false,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
-    index.tokenizers().register(
-        "hebrew_vocalized",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: true,
-            keep_marks: true,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
-    // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
-    // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
-    index.tokenizers().register(
-        "hebrew_query",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: false,
-            keep_marks: false,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
-    index.tokenizers().register(
-        "hebrew_vocalized_query",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: false,
-            keep_marks: true,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
+/// `index_twins`: the fields' analyzers emit the quote-free twin, as up to schema 5 —
+/// only for tests comparing such an index with one without.
+fn register_hebrew_tokenizers_with(index: &Index, index_twins: bool) {
+    // The fields index each word once; a query reaches its quoted spellings through
+    // `quote_expansion`, and the query analyzers never split a word in two.
+    // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת ספירת הטוקנים
+    // ב-PhraseQuery סוטה מהאינדקס (זבל base64 שזלג לקורפוס לא נכנס למילון).
+    for (name, emit_quote_free, keep_marks) in [
+        ("hebrew", index_twins, false),
+        ("hebrew_vocalized", index_twins, true),
+        (DISPLAY_ANALYZER, true, false),
+        (VOCALIZED_DISPLAY_ANALYZER, true, true),
+        ("hebrew_query", false, false),
+        ("hebrew_vocalized_query", false, true),
+    ] {
+        index.tokenizers().register(
+            name,
+            TextAnalyzer::builder(HebrewTokenizer {
+                emit_quote_free,
+                keep_marks,
+            })
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+            .filter(LowerCaser)
+            .build(),
+        );
+    }
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -4553,6 +4590,17 @@ impl SearchEngine {
     /// Deliberately **not** `#[frb(sync)]` — opening the index mmaps and reads every
     /// segment footer; a synchronous binding blocks the calling Dart isolate throughout.
     pub fn new(path: &str) -> Self {
+        Self::open_with(path, false)
+    }
+
+    /// An engine whose index holds the quote-free twins schema 5 indexed: for tests that
+    /// compare answers with and without them.
+    #[cfg(test)]
+    pub(crate) fn with_quote_free_twins(path: &str) -> Self {
+        Self::open_with(path, true)
+    }
+
+    fn open_with(path: &str, index_twins: bool) -> Self {
         init_engine_logger();
         debug!("new path={}", path);
         let directory =
@@ -4566,7 +4614,7 @@ impl SearchEngine {
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
         let schema = index.schema();
-        register_hebrew_tokenizers(&index);
+        register_hebrew_tokenizers_with(&index, index_twins);
         set_search_executor(&mut index);
         let index_reader = index
             .reader_builder()
@@ -4631,12 +4679,27 @@ impl SearchEngine {
         }
     }
 
+    /// Merges every committed segment into one, so a test can compare on-disk sizes that
+    /// do not depend on how the writer's threads happened to split the documents.
+    #[cfg(test)]
+    pub(crate) fn merge_into_one_segment(&mut self) {
+        let writer = self.writer_mut().unwrap();
+        writer.commit().unwrap();
+        let segments = self.index.searchable_segment_ids().unwrap();
+        let writer = self.writer_mut().unwrap();
+        if segments.len() > 1 {
+            writer.merge(&segments).wait().unwrap();
+        }
+        writer.garbage_collect_files().wait().unwrap();
+        self.index_reader.reload().unwrap();
+    }
+
     /// An engine over an index opened by the caller, with no writer and no metadata written:
     /// benchmarks on an index another process owns.
     #[cfg(test)]
     pub(crate) fn from_read_only_index(mut index: Index, path: &Path) -> Result<Self> {
         let schema = index.schema();
-        register_hebrew_tokenizers(&index);
+        register_hebrew_tokenizers_with(&index, false);
         set_search_executor(&mut index);
         let index_reader = index
             .reader_builder()
@@ -7313,8 +7376,8 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            content_hash_f,
-            text_hash_f,
+            _content_hash_f,
+            _text_hash_f,
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
@@ -7327,19 +7390,18 @@ impl SearchEngine {
             reference_f    => _reference,
             text_f         => normalized_text.as_str(),
             id_f           => _id,
-            segment_f      => _segment,
             is_pdf_f       => _is_pdf,
             file_path_f    => _file_path,
             topics_f       => topics_facet,
-            content_hash_f => 0u64,
-            text_hash_f    => 0u64,
-            section_id_f   => _section_id.unwrap_or(_id),
-            generation_sort_f => generation_sort_key(
-                _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
-                _id
+            section_id_f   => section_offset(_id, _section_id.unwrap_or(_id)),
+            generation_sort_f => generation_value(
+                _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
             ),
             line_hash_f    => line_dedup_hash(&normalized_text)
         );
+        if let Some(stored) = segment_to_store(_id, _segment) {
+            document.add_u64(segment_f, stored);
+        }
         // Not a line of a book, so no key: only `add_text_book` knows a line's neighbours.
         set_chunk_key(&mut document, self.chunk_key_field, 0);
         for facet in _extra_facets.iter().flatten() {
@@ -7392,6 +7454,8 @@ impl SearchEngine {
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
         refuse_library_storage(&docs)?;
+        let hash_fields = (content_hash_f, text_hash_f);
+        let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
@@ -7402,20 +7466,24 @@ impl SearchEngine {
                 reference_f    => doc.reference,
                 text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
-                segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                content_hash_f => doc.content_hash.unwrap_or(0),
-                text_hash_f    => doc.text_hash.unwrap_or(0),
-                section_id_f   => doc.section_id.unwrap_or(doc.id),
-                generation_sort_f => generation_sort_key(
-                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
-                    doc.id
+                section_id_f   => section_offset(doc.id, doc.section_id.unwrap_or(doc.id)),
+                generation_sort_f => generation_value(
+                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
                 ),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(doc.id, doc.segment) {
+                document.add_u64(segment_f, stored);
+            }
             set_chunk_key(&mut document, chunk_key_f, 0);
+            let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
+            if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
+                stamp_book_fingerprints(&mut document, hash_fields, fingerprints);
+                stamped.insert(doc.file_path.clone(), fingerprints);
+            }
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -7741,20 +7809,27 @@ impl SearchEngine {
                 reference_f    => reference,
                 text_f         => normalized_line.as_str(),
                 id_f           => id,
-                segment_f      => segment as u64,
                 is_pdf_f       => false,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
-                content_hash_f => content_hash,
-                text_hash_f    => text_hash,
                 // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
-                // בין ספרים, אז המזהה ייחודי גלובלית.
-                section_id_f   => id_base + u64::from(reference_of_line[segment]),
-                generation_sort_f => generation_sort_key(generation_order, id),
+                // בין ספרים, אז sectionId הנגזר ייחודי גלובלית.
+                section_id_f   => u64::from(reference_of_line[segment]),
+                generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(id, segment as u64) {
+                document.add_u64(segment_f, stored);
+            }
             let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
             set_chunk_key(&mut document, chunk_key_f, chunk_key);
+            if segment == 0 {
+                stamp_book_fingerprints(
+                    &mut document,
+                    (content_hash_f, text_hash_f),
+                    (content_hash, text_hash),
+                );
+            }
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -7861,8 +7936,8 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            content_hash_f,
-            text_hash_f,
+            _content_hash_f,
+            _text_hash_f,
             // PDF אינו משתתף בחיפוש מנוקד: ניקוד שמגיע מ-OCR אינו אמין,
             // והנרמול של PDF ממילא מוחק אותו.
             _text_vocalized_f,
@@ -7928,17 +8003,17 @@ impl SearchEngine {
                 reference_f    => page.reference.as_str(),
                 text_f         => normalized.as_str(),
                 id_f           => id,
-                segment_f      => u64::from(page.page_index),
                 is_pdf_f       => true,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
-                content_hash_f => 0u64,
-                text_hash_f    => 0u64,
                 // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
-                section_id_f   => id_base + u64::from(page.page_index),
-                generation_sort_f => generation_sort_key(generation_order, id),
+                section_id_f   => u64::from(page.page_index),
+                generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(id, u64::from(page.page_index)) {
+                document.add_u64(segment_f, stored);
+            }
             // A PDF's lines are not the library's text, so no vector is built from them.
             set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
@@ -8020,9 +8095,22 @@ impl SearchEngine {
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
         refuse_library_storage(&docs)?;
+        let hash_fields = (content_hash_f, text_hash_f);
+        let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
+        // One deletion for the batch, which scans the `id` column once; of two documents
+        // with one id the later wins, as when each deleted its own id.
+        let mut seen = HashSet::new();
+        let mut docs: Vec<DocumentInput> = docs
+            .into_iter()
+            .rev()
+            .filter(|doc| seen.insert(doc.id))
+            .collect();
+        docs.reverse();
         let writer = self.writer_mut()?;
+        if !seen.is_empty() {
+            writer.delete_query(Box::new(IdSetQuery::new(seen)))?;
+        }
         for doc in docs {
-            writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
             let line_hash = line_dedup_hash(&normalized_text);
@@ -8031,20 +8119,24 @@ impl SearchEngine {
                 reference_f    => doc.reference,
                 text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
-                segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                content_hash_f => doc.content_hash.unwrap_or(0),
-                text_hash_f    => doc.text_hash.unwrap_or(0),
-                section_id_f   => doc.section_id.unwrap_or(doc.id),
-                generation_sort_f => generation_sort_key(
-                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
-                    doc.id
+                section_id_f   => section_offset(doc.id, doc.section_id.unwrap_or(doc.id)),
+                generation_sort_f => generation_value(
+                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
                 ),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(doc.id, doc.segment) {
+                document.add_u64(segment_f, stored);
+            }
             set_chunk_key(&mut document, chunk_key_f, 0);
+            let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
+            if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
+                stamp_book_fingerprints(&mut document, hash_fields, fingerprints);
+                stamped.insert(doc.file_path.clone(), fingerprints);
+            }
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -8091,9 +8183,8 @@ impl SearchEngine {
 
     /// Delete a document by its numeric id. Does not commit.
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
-        let id_f = self.schema.get_field("id").unwrap();
         self.writer_mut()?
-            .delete_term(Term::from_field_u64(id_f, id));
+            .delete_query(Box::new(IdSetQuery::new([id])))?;
         Ok(())
     }
 
@@ -8521,9 +8612,7 @@ impl SearchEngine {
     /// The `text` field contains the raw text (no snippet/highlight) — for a
     /// [`TextStorage::LibraryDb`] document, the library row; see `text_status`.
     pub fn get_document_by_id(&self, id: u64) -> Result<Option<SearchResult>> {
-        let id_f = self.schema.get_field("id")?;
-        let term = Term::from_field_u64(id_f, id);
-        let query = TermQuery::new(term, IndexRecordOption::Basic);
+        let query = IdSetQuery::new([id]);
         let searcher = self.index_reader.searcher();
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
@@ -8548,10 +8637,7 @@ impl SearchEngine {
             Term::from_field_text(self.schema.get_field("filePath")?, file_path),
             IndexRecordOption::Basic,
         );
-        let line = TermQuery::new(
-            Term::from_field_u64(self.schema.get_field("id")?, id),
-            IndexRecordOption::Basic,
-        );
+        let line = IdSetQuery::new([id]);
         let query = BooleanQuery::new(vec![
             (Occur::Must, Box::new(book) as Box<dyn Query>),
             (Occur::Must, Box::new(line) as Box<dyn Query>),
@@ -8571,7 +8657,7 @@ impl SearchEngine {
         id: u64,
         with_text: bool,
     ) -> Result<SearchResult> {
-        let doc = searcher.doc::<TantivyDocument>(address)?;
+        let doc = load_document(searcher, address)?;
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
         let segment_f = self.schema.get_field("segment")?;
@@ -8624,7 +8710,7 @@ impl SearchEngine {
     ) -> Result<Vec<(String, TextStatus)>> {
         let documents = addresses
             .iter()
-            .map(|&address| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .map(|&address| Ok((address, load_document(searcher, address)?)))
             .collect::<Result<Vec<_>>>()?;
         Ok(
             Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?
@@ -8980,7 +9066,7 @@ impl SearchEngine {
 
         let documents = hits
             .iter()
-            .map(|&(_, address)| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .map(|&(_, address)| Ok((address, load_document(searcher, address)?)))
             .collect::<Result<Vec<_>>>()?;
         // The whole candidate window's library rows in one transaction.
         let texts = Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?;
@@ -8994,8 +9080,7 @@ impl SearchEngine {
         for (((score, _), (address, document)), text) in hits.iter().zip(&documents).zip(texts) {
             let reader = searcher.segment_reader(address.segment_ord);
             let fast = reader.fast_fields();
-            let section_id = fast
-                .u64("sectionId")?
+            let section_id = SectionIdColumn::open(reader)?
                 .first(address.doc_id)
                 .unwrap_or_default();
             let line_hash = fast
@@ -10374,11 +10459,12 @@ impl SearchEngine {
     }
 
     /// The `text` field's indexing analyzer (with quote-free twins).
+    /// The analyzer `lineEdge` terms are made with: twins included, as up to schema 5.
     fn text_index_analyzer(&self) -> Result<TextAnalyzer> {
         self.index
             .tokenizers()
-            .get("hebrew")
-            .context("the hebrew analyzer is not registered")
+            .get(DISPLAY_ANALYZER)
+            .context("the hebrew display analyzer is not registered")
     }
 
     fn stored_text_fields(&self) -> Result<(Field, Field)> {
@@ -10401,8 +10487,8 @@ impl SearchEngine {
             self.schema.get_field("contentHash")?,
             self.schema.get_field("textHash")?,
             self.schema.get_field("textVocalized")?,
-            self.schema.get_field("sectionId")?,
-            self.schema.get_field("generationSort")?,
+            self.schema.get_field(SECTION_OFFSET_FIELD)?,
+            self.schema.get_field(GENERATION_FIELD)?,
             self.schema.get_field("lineHash")?,
         ))
     }
@@ -10715,10 +10801,14 @@ impl SearchEngine {
             .map(hebrew_query::WordPattern::joined)
             .collect();
         let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-        // One DFA per word; the checks below and the query's weight share them.
-        let automata: Option<Vec<Arc<TermDfa>>> = joined
+        // One quote-transparent DFA per word; the checks below and the query's weight share them.
+        let automata: Option<Vec<Arc<QuoteTransparent<TermDfa>>>> = joined
             .iter()
-            .map(|pattern| term_automaton::compile_pattern(pattern).ok())
+            .map(|pattern| {
+                term_automaton::compile_pattern(pattern)
+                    .ok()
+                    .map(|dfa| Arc::new(QuoteTransparent::from_arc(dfa)))
+            })
             .collect();
         let joined_compiles = automata.is_some();
         let exceeds = match &automata {
@@ -11324,31 +11414,33 @@ impl SearchEngine {
             .transpose()?;
         let text_f = self.schema.get_field("text")?;
         let token_texts = self.index_token_texts(query_str)?;
-        let mut terms: Vec<Term> = token_texts
-            .iter()
-            .map(|t| Term::from_field_text(text_f, t))
-            .collect();
-        let main_query: Box<dyn Query> = match terms.len() {
+        let searcher = self.index_reader.searcher();
+        let main_query: Box<dyn Query> = match token_texts.len() {
             0 => Box::new(EmptyQuery),
-            1 => Box::new(TermQuery::new(
-                terms.pop().unwrap(),
+            1 => quote_expansion::term_query(
+                &searcher,
+                text_f,
+                &token_texts[0],
                 IndexRecordOption::Basic,
-            )),
+            )?,
             _ if cross_line => {
                 let words: Vec<cross_line::CrossLineWord> = token_texts
                     .iter()
-                    .map(|t| cross_line::CrossLineWord::Terms(vec![t.clone()]))
-                    .collect();
+                    .map(|t| {
+                        quote_expansion::spellings(&searcher, text_f, t)
+                            .map(cross_line::CrossLineWord::Terms)
+                    })
+                    .collect::<tantivy::Result<_>>()?;
                 let gaps = vec![0; words.len() - 1];
                 self.with_cross_line(
-                    Box::new(PhraseQuery::new(terms)),
+                    quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?,
                     text_f,
                     &words,
                     &gaps,
                     facets_query.as_deref(),
                 )?
             }
-            _ => Box::new(PhraseQuery::new(terms)),
+            _ => quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?,
         };
         if let Some(facets_query) = facets_query {
             Ok((
@@ -11573,24 +11665,28 @@ impl SearchEngine {
     /// relevance tier: a `ConstScoreQuery` floor (immune to BM25 `idf` collapse
     /// on near-ubiquitous terms) plus a small BM25 `TermQuery` add-on for
     /// intra-exact ordering. Only used on the ranked (`Relevance`) fuzzy path.
-    fn exact_rank_clauses(text_f: Field, token: &str) -> Vec<(Occur, Box<dyn Query>)> {
-        let term = Term::from_field_text(text_f, token);
-        vec![
+    fn exact_rank_clauses(
+        searcher: &Searcher,
+        text_f: Field,
+        token: &str,
+    ) -> Result<Vec<(Occur, Box<dyn Query>)>> {
+        let exact = |option| quote_expansion::term_query(searcher, text_f, token, option);
+        Ok(vec![
             (
                 Occur::Should,
                 Box::new(ConstScoreQuery::new(
-                    Box::new(TermQuery::new(term.clone(), IndexRecordOption::Basic)),
+                    exact(IndexRecordOption::Basic)?,
                     FUZZY_BOOST_EXACT,
                 )) as Box<dyn Query>,
             ),
             (
                 Occur::Should,
                 Box::new(BoostQuery::new(
-                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)),
+                    exact(IndexRecordOption::WithFreqs)?,
                     FUZZY_BOOST_EXACT_REL,
                 )),
             ),
-        ]
+        ])
     }
 
     /// Fuzzy mode from pre-tokenized terms: one `FuzzyTermQuery` per term, ANDed,
@@ -11617,11 +11713,15 @@ impl SearchEngine {
             return Ok(Box::new(EmptyQuery));
         }
         let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = term_texts
             .iter()
-            .map(|t| {
-                let term = Term::from_field_text(text_f, t);
-                let fuzzy = FuzzyTermQuery::new(term, max_distance, true);
+            .map(|t| -> Result<(Occur, Box<dyn Query>)> {
+                let fuzzy = AutomatonQuery::new(
+                    text_f,
+                    format!("{t}~{max_distance}"),
+                    self.fuzzy_automaton(t, max_distance)?,
+                );
                 // Bare recall is one fuzzy automaton per token. distance 0 is
                 // exact already, and unranked paths (count/catalogue) need no
                 // scoring, so both stay the bare query — except that a
@@ -11636,18 +11736,20 @@ impl SearchEngine {
                             (Occur::Should, Box::new(fuzzy) as Box<dyn Query>),
                             (
                                 Occur::Should,
-                                Box::new(TermQuery::new(
-                                    Term::from_field_text(text_f, &clean),
+                                quote_expansion::term_query(
+                                    &searcher,
+                                    text_f,
+                                    &clean,
                                     IndexRecordOption::Basic,
-                                )),
+                                )?,
                             ),
                         ])),
                         None => Box::new(fuzzy),
                     }
                 } else {
-                    let mut should = Self::exact_rank_clauses(text_f, t);
+                    let mut should = Self::exact_rank_clauses(&searcher, text_f, t)?;
                     if let Some(clean) = Self::quoteless_variant(t) {
-                        should.extend(Self::exact_rank_clauses(text_f, &clean));
+                        should.extend(Self::exact_rank_clauses(&searcher, text_f, &clean)?);
                     }
                     should.push((
                         Occur::Should,
@@ -11655,11 +11757,11 @@ impl SearchEngine {
                     ));
                     Box::new(BooleanQuery::new(should))
                 };
-                (Occur::Must, token_query)
+                Ok((Occur::Must, token_query))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         if rank {
-            clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
+            clauses.extend(Self::exact_phrase_boost(&searcher, text_f, term_texts)?);
         }
         if !facets.is_empty() {
             clauses.push((Occur::Must, self.facet_filter_query(facets)?));
@@ -11669,27 +11771,36 @@ impl SearchEngine {
 
     /// The ranking-only `Should` that lifts hits where the typed words stand
     /// adjacent (within [`LEXICAL_FUZZY_PHRASE_SLOP`]) above scattered ones.
-    fn exact_phrase_boost(text_f: Field, term_texts: &[String]) -> Option<(Occur, Box<dyn Query>)> {
-        let phrase = Self::exact_phrase(text_f, term_texts)?;
-        Some((
+    fn exact_phrase_boost(
+        searcher: &Searcher,
+        text_f: Field,
+        term_texts: &[String],
+    ) -> Result<Option<(Occur, Box<dyn Query>)>> {
+        let Some(phrase) = Self::exact_phrase(searcher, text_f, term_texts)? else {
+            return Ok(None);
+        };
+        Ok(Some((
             Occur::Should,
-            Box::new(ConstScoreQuery::new(Box::new(phrase), FUZZY_BOOST_PHRASE)),
-        ))
+            Box::new(ConstScoreQuery::new(phrase, FUZZY_BOOST_PHRASE)),
+        )))
     }
 
     /// The typed words, exact, within [`LEXICAL_FUZZY_PHRASE_SLOP`]; `None`
     /// for a single word.
-    fn exact_phrase(text_f: Field, words: &[String]) -> Option<PhraseQuery> {
+    fn exact_phrase(
+        searcher: &Searcher,
+        text_f: Field,
+        words: &[String],
+    ) -> Result<Option<Box<dyn Query>>> {
         if words.len() < 2 {
-            return None;
+            return Ok(None);
         }
-        let terms = words
-            .iter()
-            .map(|t| Term::from_field_text(text_f, t))
-            .collect();
-        let mut phrase = PhraseQuery::new(terms);
-        phrase.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
-        Some(phrase)
+        Ok(Some(quote_expansion::phrase_query(
+            searcher,
+            text_f,
+            words,
+            LEXICAL_FUZZY_PHRASE_SLOP,
+        )?))
     }
 
     /// Whether one quotation contains every searchable word of the query. Independent
@@ -11883,6 +11994,7 @@ impl SearchEngine {
             .as_ref()
             .context("lexical fuzzy query requires a loaded magic dictionary")?;
         let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
 
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(term_texts.len() + 3);
         for phrase in phrases.iter().filter(|p| p.len() >= 2) {
@@ -11892,8 +12004,7 @@ impl SearchEngine {
             ));
             if rank {
                 clauses.extend(
-                    Self::exact_phrase(text_f, phrase)
-                        .map(|q| (Occur::Should, Box::new(q) as Box<dyn Query>)),
+                    Self::exact_phrase(&searcher, text_f, phrase)?.map(|q| (Occur::Should, q)),
                 );
             }
         }
@@ -11903,19 +12014,24 @@ impl SearchEngine {
             if phrases.iter().any(|p| p.len() >= 2 && p.contains(token)) {
                 continue;
             }
-            let exact_term = Term::from_field_text(text_f, token);
             // Wrap the fuzzy automaton in the fuzzy-tier boost only when ranking;
             // an unranked recall query (count/catalogue) carries no boost so it
-            // stays the bare `FuzzyTermQuery` it always was.
-            let fuzzy: Option<Box<dyn Query>> = (max_distance > 0).then(|| {
-                let fuzzy_q = FuzzyTermQuery::new(exact_term.clone(), max_distance, true);
-                if rank {
+            // stays the bare fuzzy automaton it always was.
+            let fuzzy: Option<Box<dyn Query>> = if max_distance > 0 {
+                let fuzzy_q = AutomatonQuery::new(
+                    text_f,
+                    format!("{token}~{max_distance}"),
+                    self.fuzzy_automaton(token, max_distance)?,
+                );
+                Some(if rank {
                     Box::new(BoostQuery::new(Box::new(fuzzy_q), FUZZY_BOOST_FUZZY))
                         as Box<dyn Query>
                 } else {
                     Box::new(fuzzy_q)
-                }
-            });
+                })
+            } else {
+                None
+            };
             let clean = Self::quoteless_variant(token);
             let mut forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
             forms.retain(|f| f != token && Some(f.as_str()) != clean.as_deref());
@@ -11930,34 +12046,38 @@ impl SearchEngine {
             // the exact tier — clean-typography editions match at distance 0
             // and rank as exact, not as edit-distance tail.
             let mut should: Vec<(Occur, Box<dyn Query>)> = if rank {
-                Self::exact_rank_clauses(text_f, token)
+                Self::exact_rank_clauses(&searcher, text_f, token)?
             } else if fuzzy.is_none() {
                 vec![(
                     Occur::Should,
-                    Box::new(TermQuery::new(exact_term, IndexRecordOption::Basic)),
+                    quote_expansion::term_query(
+                        &searcher,
+                        text_f,
+                        token,
+                        IndexRecordOption::Basic,
+                    )?,
                 )]
             } else {
                 Vec::with_capacity(3)
             };
             if let Some(clean) = &clean {
                 if rank {
-                    should.extend(Self::exact_rank_clauses(text_f, clean));
+                    should.extend(Self::exact_rank_clauses(&searcher, text_f, clean)?);
                 } else {
                     should.push((
                         Occur::Should,
-                        Box::new(TermQuery::new(
-                            Term::from_field_text(text_f, clean),
+                        quote_expansion::term_query(
+                            &searcher,
+                            text_f,
+                            clean,
                             IndexRecordOption::Basic,
-                        )),
+                        )?,
                     ));
                 }
             }
             should.extend(fuzzy.map(|fuzzy| (Occur::Should, fuzzy)));
             if !forms.is_empty() {
-                let set_terms: Vec<Term> = forms
-                    .iter()
-                    .map(|f| Term::from_field_text(text_f, f))
-                    .collect();
+                let set_terms = quote_expansion::spelling_terms(&searcher, text_f, &forms)?;
                 let termset: Box<dyn Query> = if rank {
                     Box::new(BoostQuery::new(
                         Box::new(TermSetQuery::new(set_terms)),
@@ -11979,7 +12099,7 @@ impl SearchEngine {
             clauses.push((Occur::Must, token_query));
         }
         if rank {
-            clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
+            clauses.extend(Self::exact_phrase_boost(&searcher, text_f, term_texts)?);
             if LEXICAL_FUZZY_EXPANDED_PHRASE_BOOST && term_texts.len() >= 2 {
                 let expanded = self.lexical_fuzzy_phrase_query(dict, term_texts, max_distance)?;
                 clauses.push((
@@ -12004,16 +12124,12 @@ impl SearchEngine {
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
         let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
         let position_terms = self
             .lexical_fuzzy_phrase_terms(dict, term_texts, max_distance)?
             .into_iter()
-            .map(|terms| {
-                terms
-                    .iter()
-                    .map(|t| Term::from_field_text(text_f, t))
-                    .collect()
-            })
-            .collect();
+            .map(|terms| quote_expansion::spelling_terms(&searcher, text_f, &terms))
+            .collect::<tantivy::Result<_>>()?;
         let gaps = vec![LEXICAL_FUZZY_PHRASE_SLOP; term_texts.len().saturating_sub(1)];
         Ok(Box::new(TermListPhraseQuery::new(
             text_f,
@@ -12913,7 +13029,7 @@ impl SearchEngine {
             ResultsOrder::Generation => collect_ranked(
                 searcher,
                 query,
-                top.order_by_fast_field::<u64>("generationSort", Order::Asc),
+                top.order_by((GenerationSort, Order::Asc)),
                 counts,
             )?,
             ResultsOrder::Relevance => {
@@ -13038,7 +13154,7 @@ impl SearchEngine {
         searcher: &Searcher,
         address: DocAddress,
     ) -> Result<Option<MergedSibling>> {
-        let doc = match searcher.doc::<TantivyDocument>(address) {
+        let doc = match load_document(searcher, address) {
             Ok(d) => d,
             Err(e) => {
                 log::error!(
@@ -13321,11 +13437,9 @@ impl SearchEngine {
         per_word_terms: &[HashSet<String>],
         text_f: Field,
     ) -> Result<Option<Box<dyn Query>>> {
-        let terms: Vec<Term> = per_word_terms
-            .iter()
-            .flat_map(|set| set.iter())
-            .map(|t| Term::from_field_text(text_f, t))
-            .collect();
+        let words: Vec<&String> = per_word_terms.iter().flatten().collect();
+        let searcher = self.index_reader.searcher();
+        let terms = quote_expansion::spelling_terms(&searcher, text_f, &words)?;
         Ok((!terms.is_empty()).then(|| Box::new(TermSetQuery::new(terms)) as Box<dyn Query>))
     }
 
@@ -13400,9 +13514,9 @@ impl SearchEngine {
         }
         let field = self.search_text_field(voc)?;
         let analyzer = if voc.any() {
-            "hebrew_vocalized"
+            VOCALIZED_DISPLAY_ANALYZER
         } else {
-            "hebrew"
+            DISPLAY_ANALYZER
         };
         let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
         let mut all_word_sets = per_word_terms.clone();
@@ -13467,7 +13581,7 @@ impl SearchEngine {
                 phrase: Some(PhraseHighlight {
                     proximity: Proximity::adjacent(per_word_terms.len()),
                     per_word_terms,
-                    analyzer: "hebrew_vocalized",
+                    analyzer: VOCALIZED_DISPLAY_ANALYZER,
                     cross_line: false,
                     alternatives: Vec::new(),
                     allow_term_fallback: true,
@@ -13485,7 +13599,7 @@ impl SearchEngine {
             phrase: Some(PhraseHighlight {
                 proximity: Proximity::adjacent(per_word_terms.len()),
                 per_word_terms,
-                analyzer: "hebrew",
+                analyzer: DISPLAY_ANALYZER,
                 cross_line: true,
                 alternatives: Vec::new(),
                 allow_term_fallback: true,
@@ -13517,9 +13631,9 @@ impl SearchEngine {
             };
         }
         let (query_analyzer, analyzer) = if voc.any() {
-            ("hebrew_vocalized_query", "hebrew_vocalized")
+            ("hebrew_vocalized_query", VOCALIZED_DISPLAY_ANALYZER)
         } else {
-            ("hebrew_query", "hebrew")
+            ("hebrew_query", DISPLAY_ANALYZER)
         };
         let field = self.search_text_field(voc)?;
         let mut outside = self.index_token_texts_with(query_analyzer, query)?;
@@ -13642,7 +13756,7 @@ impl SearchEngine {
             Some(PhraseHighlight {
                 per_word_terms,
                 proximity: Proximity::Ordered(gaps),
-                analyzer: "hebrew",
+                analyzer: DISPLAY_ANALYZER,
                 cross_line: false,
                 alternatives: Vec::new(),
                 allow_term_fallback: true,
@@ -13771,10 +13885,8 @@ impl SearchEngine {
             }
         }
 
-        let terms: Vec<Term> = matched
-            .into_iter()
-            .map(|t| Term::from_field_text(text_f, &t))
-            .collect();
+        let matched: Vec<String> = matched.into_iter().collect();
+        let terms = quote_expansion::spelling_terms(searcher, text_f, &matched)?;
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
@@ -13858,7 +13970,10 @@ impl SearchEngine {
         let mut seen = HashSet::new();
         'segments: for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_f)?;
-            let mut stream = inverted.terms().search(automaton).into_stream()?;
+            let mut stream = inverted
+                .terms()
+                .search(QuoteTransparent::new(automaton))
+                .into_stream()?;
             while stream.advance() {
                 if let Ok(term) = std::str::from_utf8(stream.key()) {
                     // contains-before-insert: a term already seen in an
@@ -13886,9 +14001,41 @@ impl SearchEngine {
         text_field: Field,
         hl: &HighlightConfig,
     ) -> Result<SnippetGenerator> {
-        let mut snippet_generator = SnippetGenerator::create(searcher, query, text_field)?;
-        snippet_generator.set_max_num_chars(hl.max_chars as usize);
-        Ok(snippet_generator)
+        // `SnippetGenerator::create` with the display analyzer instead of the field's:
+        // a term reached through its quote-free spelling paints the quoted word.
+        let mut terms = std::collections::BTreeSet::new();
+        query.query_terms(&mut |term, _| {
+            if term.field() == text_field {
+                terms.insert(term.clone());
+            }
+        });
+        let mut terms_text = std::collections::BTreeMap::new();
+        for term in terms {
+            let Some(text) = term.value().as_str().map(str::to_string) else {
+                continue;
+            };
+            let doc_freq = searcher.doc_freq(&term)?;
+            if doc_freq > 0 {
+                terms_text.insert(text, 1.0 / (1.0 + doc_freq as Score));
+            }
+        }
+        let vocalized = text_field == searcher.schema().get_field("textVocalized")?;
+        let analyzer = if vocalized {
+            VOCALIZED_DISPLAY_ANALYZER
+        } else {
+            DISPLAY_ANALYZER
+        };
+        let tokenizer = searcher
+            .index()
+            .tokenizers()
+            .get(analyzer)
+            .with_context(|| format!("{analyzer} is not registered"))?;
+        Ok(SnippetGenerator::new(
+            terms_text,
+            tokenizer,
+            text_field,
+            hl.max_chars as usize,
+        ))
     }
 
     /// Re-derives a snippet's highlight markup so only complete phrase
@@ -14178,7 +14325,7 @@ impl SearchEngine {
 
         let mut documents = Vec::with_capacity(addresses.len());
         for doc_address in addresses {
-            match searcher.doc::<TantivyDocument>(doc_address) {
+            match load_document(searcher, doc_address) {
                 Ok(d) => documents.push((doc_address, d)),
                 Err(e) => {
                     // A hit the collectors counted but the doc store cannot
@@ -14316,28 +14463,39 @@ impl SearchEngine {
                 .get_first(file_path_field)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let next_query = BooleanQuery::new(vec![
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(file_path_field, file_path),
-                        IndexRecordOption::Basic,
-                    )) as Box<dyn Query>,
-                ),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_u64(id_field, id + 1),
-                        IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            let Some((_, next)) = searcher
-                .search(&next_query, &TopDocs::with_limit(1).order_by_score())?
-                .into_iter()
-                .next()
-            else {
-                continue;
+            let reader = searcher.segment_reader(address.segment_ord);
+            let paths = reader.fast_fields().str("filePath")?;
+            let book_of = |doc| paths.as_ref().and_then(|p| p.term_ords(doc).next());
+            let beside = crate::id_lookup::neighbour(
+                reader,
+                &reader.fast_fields().u64("id")?,
+                address.doc_id,
+                id + 1,
+            )
+            .filter(|&doc| book_of(doc) == book_of(address.doc_id))
+            .map(|doc| DocAddress::new(address.segment_ord, doc));
+            let next = match beside {
+                Some(next) => next,
+                None => {
+                    let next_query = BooleanQuery::new(vec![
+                        (
+                            Occur::Must,
+                            Box::new(TermQuery::new(
+                                Term::from_field_text(file_path_field, file_path),
+                                IndexRecordOption::Basic,
+                            )) as Box<dyn Query>,
+                        ),
+                        (Occur::Must, Box::new(IdSetQuery::new([id + 1]))),
+                    ]);
+                    let Some((_, next)) = searcher
+                        .search(&next_query, &TopDocs::with_limit(1).order_by_score())?
+                        .into_iter()
+                        .next()
+                    else {
+                        continue;
+                    };
+                    next
+                }
             };
             let starts_open = searcher
                 .segment_reader(next.segment_ord)
@@ -14346,7 +14504,7 @@ impl SearchEngine {
                 .first(next.doc_id)
                 .is_some_and(|v| v > 0);
             if starts_open {
-                next_documents.push((next, searcher.doc::<TantivyDocument>(next)?));
+                next_documents.push((next, load_document(searcher, next)?));
                 slots.push(slot);
             }
         }
@@ -14970,15 +15128,29 @@ impl GroupCollector {
     }
 }
 
+enum GroupKeyColumn {
+    Section(SectionIdColumn),
+    LineHash(tantivy::columnar::Column<u64>),
+}
+
+impl GroupKeyColumn {
+    fn first(&self, doc: DocId) -> Option<u64> {
+        match self {
+            Self::Section(column) => column.first(doc),
+            Self::LineHash(column) => column.first(doc),
+        }
+    }
+}
+
 struct GroupSegmentCollector {
     seg_ord: SegmentOrdinal,
     mode: ResultGrouping,
     sort: GroupSort,
     id_col: tantivy::columnar::Column<u64>,
-    /// עמודת המיון (`id`/`generationSort`); `None` במיון לפי ציון.
-    sort_col: Option<tantivy::columnar::Column<u64>>,
+    /// עמודת המיון (`generationSort`); `None` במיון לפי id או ציון.
+    sort_col: Option<GenerationSortColumn>,
     /// עמודת מפתח הקבוצה: `sectionId` או `lineHash` לפי המצב.
-    key_col: tantivy::columnar::Column<u64>,
+    key_col: GroupKeyColumn,
     shared: Arc<Mutex<SharedGroupedAcc>>,
     buffer: Vec<((u8, u64), GroupEntry)>,
 }
@@ -15009,12 +15181,12 @@ impl Collector for GroupCollector {
         let id_col = fast.u64("id")?;
         let sort_col = match self.sort {
             GroupSort::IdAsc => None, // עמודת ה-id כבר בידינו
-            GroupSort::GenerationAsc => Some(fast.u64("generationSort")?),
+            GroupSort::GenerationAsc => Some(GenerationSortColumn::open(reader)?),
             GroupSort::ScoreDesc => None,
         };
         let key_col = match self.mode {
-            ResultGrouping::SameSection => fast.u64("sectionId")?,
-            ResultGrouping::IdenticalText => fast.u64("lineHash")?,
+            ResultGrouping::SameSection => GroupKeyColumn::Section(SectionIdColumn::open(reader)?),
+            ResultGrouping::IdenticalText => GroupKeyColumn::LineHash(fast.u64("lineHash")?),
         };
         Ok(GroupSegmentCollector {
             seg_ord,
@@ -15078,8 +15250,9 @@ impl SegmentCollector for GroupSegmentCollector {
 
 /// Collects a u64 fast-field value (`hash_column`) per `filePath` fast field.
 /// Per-segment work uses term ordinals; strings are decoded only in harvest().
-/// Documents of the same book that disagree on the hash collapse to 0
-/// ("unverifiable"), and 0 wins over any value when merging segments.
+/// Only the document [`stamp_book_fingerprints`] wrote holds a book's value: a book
+/// whose documents hold none is 0, and two that disagree collapse to 0
+/// ("unverifiable"), which wins over any value when merging segments.
 struct BookFingerprintCollector {
     hash_column: &'static str,
 }
@@ -15087,7 +15260,18 @@ struct BookFingerprintCollector {
 struct BookFingerprintSegmentCollector {
     str_col: Option<tantivy::columnar::StrColumn>,
     hash_col: Option<tantivy::columnar::Column<u64>>,
-    fingerprints: HashMap<u64, u64>,
+    fingerprints: HashMap<u64, Option<u64>>,
+}
+
+/// One more of a book's fingerprint values, `None` for a document without one:
+/// `Some(0)` once two values disagree.
+pub(crate) fn combine_fingerprint(seen: Option<u64>, value: Option<u64>) -> Option<u64> {
+    match (seen, value) {
+        (seen, None) => seen,
+        (None, value) => value,
+        (Some(a), Some(b)) if a == b => Some(a),
+        _ => Some(0),
+    }
 }
 
 impl Collector for BookFingerprintCollector {
@@ -15115,31 +15299,28 @@ impl Collector for BookFingerprintCollector {
 
     fn merge_fruits(
         &self,
-        per_segment: Vec<tantivy::Result<HashMap<String, u64>>>,
+        per_segment: Vec<tantivy::Result<HashMap<String, Option<u64>>>>,
     ) -> tantivy::Result<HashMap<String, u64>> {
-        let mut merged: HashMap<String, u64> = HashMap::new();
+        let mut merged: HashMap<String, Option<u64>> = HashMap::new();
         for seg_result in per_segment {
             for (path, hash) in seg_result? {
-                merged
-                    .entry(path)
-                    .and_modify(|existing| {
-                        if *existing != hash {
-                            *existing = 0;
-                        }
-                    })
-                    .or_insert(hash);
+                let seen = merged.entry(path).or_default();
+                *seen = combine_fingerprint(*seen, hash);
             }
         }
-        Ok(merged)
+        Ok(merged
+            .into_iter()
+            .map(|(path, hash)| (path, hash.unwrap_or(0)))
+            .collect())
     }
 }
 
 // ── SingleBookFingerprintCollector ────────────────────────────────────────────
 
-/// The `textHash` of the documents a single-book query matched. Documents that
-/// disagree collapse to 0 ("unverifiable"), and 0 wins over any value — same
-/// semantics as [`BookFingerprintCollector`], without touching `filePath`:
-/// the query already restricts the documents to one book.
+/// The `textHash` of the documents a single-book query matched, read from those
+/// that hold one. Values that disagree collapse to 0 ("unverifiable"), and 0 wins
+/// over any value — same semantics as [`BookFingerprintCollector`], without
+/// touching `filePath`: the query already restricts the documents to one book.
 struct SingleBookFingerprintCollector;
 
 struct SingleBookFingerprintSegmentCollector {
@@ -15168,15 +15349,10 @@ impl Collector for SingleBookFingerprintCollector {
     }
 
     fn merge_fruits(&self, per_segment: Vec<Option<u64>>) -> tantivy::Result<u64> {
-        let mut merged: Option<u64> = None;
-        for hash in per_segment.into_iter().flatten() {
-            match merged {
-                None => merged = Some(hash),
-                Some(existing) if existing != hash => return Ok(0),
-                Some(_) => {}
-            }
-        }
-        Ok(merged.unwrap_or(0))
+        Ok(per_segment
+            .into_iter()
+            .fold(None, combine_fingerprint)
+            .unwrap_or(0))
     }
 }
 
@@ -15184,16 +15360,8 @@ impl SegmentCollector for SingleBookFingerprintSegmentCollector {
     type Fruit = Option<u64>;
 
     fn collect(&mut self, doc_id: DocId, _score: Score) {
-        let hash = self
-            .hash_col
-            .as_ref()
-            .and_then(|col| col.first(doc_id))
-            .unwrap_or(0);
-        match self.fingerprint {
-            None => self.fingerprint = Some(hash),
-            Some(existing) if existing != hash => self.fingerprint = Some(0),
-            Some(_) => {}
-        }
+        let hash = self.hash_col.as_ref().and_then(|col| col.first(doc_id));
+        self.fingerprint = combine_fingerprint(self.fingerprint, hash);
     }
 
     fn harvest(self) -> Option<u64> {
@@ -15202,7 +15370,7 @@ impl SegmentCollector for SingleBookFingerprintSegmentCollector {
 }
 
 impl SegmentCollector for BookFingerprintSegmentCollector {
-    type Fruit = tantivy::Result<HashMap<String, u64>>;
+    type Fruit = tantivy::Result<HashMap<String, Option<u64>>>;
 
     fn collect(&mut self, doc_id: DocId, _score: Score) {
         let Some(str_col) = &self.str_col else {
@@ -15211,22 +15379,12 @@ impl SegmentCollector for BookFingerprintSegmentCollector {
         let Some(term_ord) = str_col.term_ords(doc_id).next() else {
             return;
         };
-        let hash = self
-            .hash_col
-            .as_ref()
-            .and_then(|col| col.first(doc_id))
-            .unwrap_or(0);
-        self.fingerprints
-            .entry(term_ord)
-            .and_modify(|existing| {
-                if *existing != hash {
-                    *existing = 0;
-                }
-            })
-            .or_insert(hash);
+        let hash = self.hash_col.as_ref().and_then(|col| col.first(doc_id));
+        let seen = self.fingerprints.entry(term_ord).or_default();
+        *seen = combine_fingerprint(*seen, hash);
     }
 
-    fn harvest(self) -> tantivy::Result<HashMap<String, u64>> {
+    fn harvest(self) -> tantivy::Result<HashMap<String, Option<u64>>> {
         let Some(col) = self.str_col else {
             return Ok(HashMap::new());
         };
@@ -15473,7 +15631,7 @@ mod tests {
                 HashSet::from(["ואהרן".into()]),
             ],
             proximity: Proximity::Ordered(vec![1000]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15498,7 +15656,7 @@ mod tests {
                 HashSet::from(["רמבם".into()]),
             ],
             proximity: Proximity::Ordered(vec![0]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15570,7 +15728,7 @@ mod tests {
                     let phrase = PhraseHighlight {
                         per_word_terms: sets.clone(),
                         proximity: Proximity::Ordered(gaps.clone()),
-                        analyzer: "hebrew",
+                        analyzer: DISPLAY_ANALYZER,
                         cross_line: false,
                         alternatives: Vec::new(),
                         allow_term_fallback: true,
@@ -15602,7 +15760,7 @@ mod tests {
                 HashSet::from(["רמב\"ם".into(), "רמבם".into()]),
             ],
             proximity: Proximity::Ordered(vec![0]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15674,7 +15832,7 @@ mod tests {
                 HashSet::from(["ואהרן".into()]),
             ],
             proximity: Proximity::Ordered(vec![0]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15761,7 +15919,7 @@ mod tests {
                 HashSet::from(["ואהרן".into()]),
             ],
             proximity: Proximity::Ordered(vec![1000]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -16215,45 +16373,134 @@ mod tests {
         cross_line::LINE_EDGE_FIELD,
     ];
 
-    /// Version 5 is the released version 4 schema with `text` and `textVocalized` out of the
-    /// store, and the `chunkKey` column and [`VERSION_5_FIELDS`] beside it. No other
-    /// version is one this engine reads.
+    /// The schema of a real version 5 index, as the `meta.json` of a full library index
+    /// (6,910,973 lines) built by the engine before version 6 holds it.
+    const RELEASED_VERSION_5_SCHEMA: &str = r#"[
+        {"name": "text", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew"}, "stored": false, "fast": false}},
+        {"name": "textVocalized", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew_vocalized"}, "stored": false, "fast": false}},
+        {"name": "reference", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "title", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": true, "fast": false}},
+        {"name": "id", "type": "u64", "options": {"indexed": true, "fieldnorms": true, "fast": true, "stored": true}},
+        {"name": "segment", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "isPdf", "type": "bool", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "filePath", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": true, "tokenizer": "raw"}, "stored": true, "fast": true}},
+        {"name": "contentHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "textHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "sectionId", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "generationSort", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineCheck", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "topics", "type": "facet", "options": {"stored": false}},
+        {"name": "chunkKey", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "textStored", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "textVocalizedStored", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "lineFirst", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineLast", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineEdge", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": false, "fast": false}}
+    ]"#;
+
+    /// The version 5 fields version 6 changes, and how; every other version 5 field is
+    /// unchanged. No other version is one this engine reads.
     #[test]
-    fn version_5_is_version_4_with_the_text_out_of_its_store() {
-        let released: Schema = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
+    fn version_6_is_version_5_with_its_disk_savings() {
+        let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
             schema_of_version(INDEX_SCHEMA_VERSION),
             Some(current.clone())
         );
-        for (_, entry) in released.fields() {
-            let now = current.get_field_entry(current.get_field(entry.name()).unwrap());
-            if ["text", "textVocalized"].contains(&entry.name()) {
-                assert!(entry.is_stored() && !now.is_stored(), "{}", entry.name());
-                assert_eq!(now.is_indexed(), entry.is_indexed(), "{}", entry.name());
-            } else {
-                assert_eq!(now, entry);
+        let entry = |name: &str| current.get_field_entry(current.get_field(name).unwrap());
+        let mut removed = Vec::new();
+        for (_, old) in released.fields() {
+            match old.name() {
+                "id" => {
+                    let now = entry("id");
+                    assert!(now.is_fast() && now.is_stored() && !now.is_indexed());
+                }
+                // Out of the doc store, read from their columns.
+                "title" | "isPdf" | "filePath" => {
+                    let now = entry(old.name());
+                    assert!(old.is_stored() && !now.is_stored(), "{}", old.name());
+                    assert!(now.is_fast(), "{}", old.name());
+                    assert_eq!(now.is_indexed(), old.is_indexed(), "{}", old.name());
+                    assert!(!now.has_fieldnorms(), "{}", old.name());
+                }
+                name if current.get_field(name).is_err() => removed.push(name),
+                name => assert_eq!(entry(name), old, "{name}"),
             }
         }
-        let mut added: Vec<&str> = current
+        // Derived at query time from `id` and the two small columns that replace them.
+        assert_eq!(removed, ["sectionId", "generationSort"]);
+        let added: Vec<&str> = current
             .fields()
             .map(|(_, entry)| entry.name())
             .filter(|name| released.get_field(name).is_err())
             .collect();
-        added.sort_unstable();
-        let mut expected = VERSION_5_FIELDS.to_vec();
-        expected.push(CHUNK_KEY_FIELD);
-        expected.sort_unstable();
-        assert_eq!(added, expected);
+        assert_eq!(added, [SECTION_OFFSET_FIELD, GENERATION_FIELD]);
+        for name in added {
+            let added = entry(name);
+            assert!(added.is_fast() && !added.is_indexed() && !added.is_stored());
+        }
 
-        let chunk_key = current.get_field_entry(current.get_field(CHUNK_KEY_FIELD).unwrap());
-        assert!(chunk_key.is_fast());
-        assert!(!chunk_key.is_indexed());
-        assert!(!chunk_key.is_stored());
-        assert_eq!(chunk_key.field_type().value_type(), Type::U64);
-
-        for version in [4, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
+        for version in [5, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
             assert_eq!(schema_of_version(version), None, "{version}");
+        }
+    }
+
+    /// A new index compresses its doc store with zstd over 64K blocks; one created with
+    /// other settings is opened with its own.
+    #[test]
+    fn a_new_index_compresses_its_store_with_zstd() {
+        let (mut engine, dir) = make_engine();
+        let settings = engine.index.settings();
+        assert_eq!(
+            settings.docstore_compression,
+            tantivy::store::Compressor::Zstd(tantivy::store::ZstdCompressor {
+                compression_level: Some(DOCSTORE_ZSTD_LEVEL)
+            })
+        );
+        assert_eq!(settings.docstore_blocksize, DOCSTORE_BLOCK_SIZE);
+        add(&mut engine, 7, "שורה ראשונה", "/a.txt");
+        engine.commit().unwrap();
+        drop(engine);
+        let engine = SearchEngine::new(dir.path().to_str().unwrap());
+        let found = engine.get_document_by_id(7).unwrap().unwrap();
+        assert_eq!(found.text, "שורה ראשונה");
+
+        let lz4 = TempDir::new().unwrap();
+        Index::builder()
+            .schema(current_schema())
+            .settings(tantivy::IndexSettings {
+                docstore_compression: tantivy::store::Compressor::Lz4,
+                ..tantivy::IndexSettings::default()
+            })
+            .create_in_dir(lz4.path())
+            .unwrap();
+        let mut engine = SearchEngine::new(lz4.path().to_str().unwrap());
+        assert_eq!(
+            engine.index.settings().docstore_compression,
+            tantivy::store::Compressor::Lz4
+        );
+        add(&mut engine, 8, "שורה שנייה", "/b.txt");
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(
+            engine.get_document_by_id(8).unwrap().unwrap().text,
+            "שורה שנייה"
+        );
+    }
+
+    /// A version 5 index is rebuilt, with its metadata or without.
+    #[test]
+    fn a_released_version_5_index_is_rebuilt() {
+        let fields: JsonValue = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
+        for version in [Some(5), None] {
+            let dir = index_of_schema(fields.clone(), version);
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version:?}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
+            assert_eq!(compatibility.found_schema_version, version);
+            assert_eq!(compatibility.required_schema_version, 6);
         }
     }
 
@@ -19490,6 +19737,36 @@ mod tests {
         assert_eq!(page(&engine, 28), (31, vec![29, 30, 31]));
     }
 
+    /// A fuzzy query's cache key names its word: two fuzzy searches never share a page.
+    #[test]
+    fn fuzzy_searches_for_different_words_do_not_share_a_cached_page() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שלום", "/books/a.txt");
+        add(&mut engine, 2, "ירושלים", "/books/b.txt");
+        engine.commit().unwrap();
+        let ids = |word: &str| -> Vec<u64> {
+            engine
+                .search_and_count_fuzzy(
+                    word.to_string(),
+                    vec![],
+                    10,
+                    0,
+                    1,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap()
+                .results
+                .iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(ids("שלום"), vec![1]);
+        assert_eq!(ids("ירושלים"), vec![2]);
+    }
+
     /// The index-based display pattern is computed once per index snapshot: equal
     /// requests share it, and a commit brings in the variants it added.
     #[test]
@@ -19851,6 +20128,214 @@ mod tests {
             .unwrap();
         engine.commit().unwrap();
         assert!(engine.count_documents_by_file_path().unwrap().is_empty());
+    }
+
+    /// The doc store keeps `reference`, `id` and the stored texts, and `segment` only where
+    /// `id` does not imply it; results still carry every field, read from the columns.
+    #[test]
+    fn the_doc_store_keeps_only_what_no_column_answers() {
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book(
+                "ספר טקסט".to_string(),
+                "/root".to_string(),
+                "id:1".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                "<h1>ספר</h1>
+שורה עם מילה ייחודית"
+                    .to_string(),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine
+            .add_pdf_book(
+                "ספר סרוק".to_string(),
+                "/root".to_string(),
+                "/pdf/a.pdf".to_string(),
+                2,
+                DEFAULT_GENERATION_ORDER,
+                vec![PdfPageInput {
+                    reference: "עמוד 5".to_string(),
+                    text: "עמוד עם מילה ייחודית".to_string(),
+                    page_index: 4,
+                }],
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+
+        let searcher = engine.index_reader.searcher();
+        for (ord, reader) in searcher.segment_readers().iter().enumerate() {
+            for doc in reader.doc_ids_alive() {
+                let stored: TantivyDocument =
+                    searcher.doc(DocAddress::new(ord as u32, doc)).unwrap();
+                let mut names: Vec<&str> = stored
+                    .field_values()
+                    .map(|(field, _)| engine.schema.get_field_name(field))
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
+                let pdf = names.contains(&"segment");
+                let mut expected = vec!["id", "reference", TEXT_STORED_FIELD];
+                if pdf {
+                    expected.push("segment");
+                }
+                expected.sort_unstable();
+                assert_eq!(names, expected);
+            }
+        }
+
+        let mut results = engine
+            .search_exact(
+                "ייחודית".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        let pdf = results.pop().unwrap();
+        let text = results.pop().unwrap();
+        assert_eq!(
+            (
+                text.title.as_str(),
+                text.is_pdf,
+                text.file_path.as_str(),
+                text.segment
+            ),
+            ("ספר טקסט", false, "id:1", 1)
+        );
+        assert_eq!(
+            (
+                pdf.title.as_str(),
+                pdf.is_pdf,
+                pdf.file_path.as_str(),
+                pdf.segment
+            ),
+            ("ספר סרוק", true, "/pdf/a.pdf", 4)
+        );
+        let by_id = engine.get_document_by_id(pdf.id).unwrap().unwrap();
+        assert_eq!(
+            (by_id.title, by_id.is_pdf, by_id.segment),
+            (pdf.title, true, 4)
+        );
+    }
+
+    /// `id` has no term index: deleting, replacing and fetching by id scan its column.
+    #[test]
+    fn lookups_by_id_need_no_id_index() {
+        let (mut engine, _dir) = make_engine();
+        assert!(!engine
+            .schema
+            .get_field_entry(engine.schema.get_field("id").unwrap())
+            .is_indexed());
+        for id in 1..=4 {
+            engine
+                .add_documents_batch(vec![fingerprint_doc(
+                    id,
+                    &format!("שורה {id}"),
+                    "id:1",
+                    None,
+                )])
+                .unwrap();
+            engine.commit().unwrap();
+        }
+        engine.delete_document_by_id(2).unwrap();
+        engine
+            .upsert_documents_batch(vec![
+                fingerprint_doc(3, "ראשונה", "id:1", None),
+                fingerprint_doc(3, "אחרונה", "id:1", None),
+                fingerprint_doc(5, "חדשה", "id:1", None),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+
+        assert!(engine.get_document_by_id(2).unwrap().is_none());
+        assert_eq!(
+            engine.get_document_by_id(1).unwrap().unwrap().text,
+            "שורה 1"
+        );
+        assert_eq!(
+            engine.get_document_by_id(3).unwrap().unwrap().text,
+            "אחרונה"
+        );
+        assert_eq!(engine.get_document_by_id(5).unwrap().unwrap().text, "חדשה");
+        assert_eq!(engine.get_document_count(), 4);
+    }
+
+    /// One document of a book holds its fingerprints, so the columns cost nothing on the
+    /// rest; the book's value is read from it, whatever its other documents lack.
+    #[test]
+    fn book_fingerprints_live_on_one_document() {
+        let (mut engine, _dir) = make_engine();
+        let text = "<h1>ספר</h1>
+שורה ראשונה
+שורה שנייה
+שורה שלישית";
+        engine
+            .add_text_book(
+                "ספר".to_string(),
+                "/root".to_string(),
+                "id:1".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                text.to_string(),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(100, "א", "id:2", Some(5)),
+                fingerprint_doc(101, "ב", "id:2", Some(5)),
+                fingerprint_doc(102, "ג", "id:2", None),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+
+        let searcher = engine.index_reader.searcher();
+        let mut holders = 0;
+        for reader in searcher.segment_readers() {
+            for name in ["contentHash", "textHash"] {
+                let column = reader.fast_fields().u64(name).unwrap();
+                holders += reader
+                    .doc_ids_alive()
+                    .filter(|&doc| column.first(doc).is_some())
+                    .count();
+            }
+        }
+        assert_eq!(holders, 4, "two books, two columns, one document each");
+
+        let text_hash = compute_content_fingerprint(text.to_string());
+        assert_eq!(
+            engine.get_book_text_fingerprints().unwrap()["id:1"],
+            text_hash
+        );
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("id:1".to_string())
+                .unwrap(),
+            text_hash
+        );
+        assert_ne!(engine.get_book_fingerprints().unwrap()["id:1"], 0);
+        assert_eq!(engine.get_book_fingerprints().unwrap()["id:2"], 5);
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("id:2".to_string())
+                .unwrap(),
+            5
+        );
     }
 
     #[test]
@@ -26247,13 +26732,15 @@ mod tests {
                 field("topics") => Facet::from_text("/root").unwrap(),
                 field("contentHash") => 0u64,
                 field("textHash") => 0u64,
-                field("sectionId") => id & !0xFFFF_FFFF,
-                field("generationSort") => 0u64,
+                field(SECTION_OFFSET_FIELD) => 0u64,
+                field(GENERATION_FIELD) => 0u64,
                 field("lineHash") => 0u64
             );
             document.add_u64(field(CHUNK_KEY_FIELD), column);
             let writer = engine.writer_mut().unwrap();
-            writer.delete_term(Term::from_field_u64(field("id"), id));
+            writer
+                .delete_query(Box::new(IdSetQuery::new([id])))
+                .unwrap();
             writer.add_document(document).unwrap();
             engine.commit().unwrap();
         }

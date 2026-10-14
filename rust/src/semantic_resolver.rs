@@ -365,7 +365,7 @@ impl FairPlaces {
 /// The columns a resolver reads, opened once per segment for one search.
 struct SegmentColumns {
     id: Column<u64>,
-    section: Column<u64>,
+    section: crate::derived_columns::SectionIdColumn,
     line_hash: Column<u64>,
     /// The book's text hash, stamped on every line of it.
     text_hash: Column<u64>,
@@ -443,7 +443,8 @@ impl<'a> LiveResolver<'a> {
                 let fast = reader.fast_fields();
                 Ok(SegmentColumns {
                     id: fast.u64("id").map_err(index_error)?,
-                    section: fast.u64("sectionId").map_err(index_error)?,
+                    section: crate::derived_columns::SectionIdColumn::open(reader)
+                        .map_err(index_error)?,
                     line_hash: fast.u64("lineHash").map_err(index_error)?,
                     text_hash: fast.u64("textHash").map_err(index_error)?,
                     chunk_key: match &chunk_key_name {
@@ -777,7 +778,8 @@ impl<'a> LiveResolver<'a> {
         }
         facets.sort();
         facets.dedup();
-        let document: TantivyDocument = self.searcher.doc(address).map_err(index_error)?;
+        let document: TantivyDocument =
+            crate::doc_store::load_document(&self.searcher, address).map_err(index_error)?;
         let is_pdf_field = self
             .searcher
             .schema()
@@ -1761,8 +1763,10 @@ impl LiveResolver<'_> {
             let mut doc = postings.doc();
             while doc != TERMINATED {
                 if !reader.is_deleted(doc) {
-                    let hash = columns.text_hash.first(doc).unwrap_or(0);
-                    one_text &= *text_hash.get_or_insert(hash) == hash;
+                    // Only the document `stamp_book_fingerprints` wrote holds the book's hash.
+                    if let Some(hash) = columns.text_hash.first(doc) {
+                        one_text &= *text_hash.get_or_insert(hash) == hash;
+                    }
                     let value = columns.chunk_key.as_ref().and_then(|keys| keys.first(doc));
                     if let (Some(value), Some(id)) = (value, columns.id.first(doc)) {
                         if value != 0 {

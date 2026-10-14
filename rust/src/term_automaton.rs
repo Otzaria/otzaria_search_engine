@@ -12,6 +12,7 @@
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
+use crate::quote_expansion::{is_quote, QuoteTransparent};
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use regex_automata::dfa::{dense, Automaton as _, StartKind};
@@ -337,7 +338,7 @@ where
             if let Some(part) = automata.parts.get(source) {
                 let single = (part.branch_count() == 1).then_some(part.first_branch);
                 scan(inverted, part.as_ref(), cap, |term| {
-                    single.or_else(|| part.matched_branch(term))
+                    single.or_else(|| quote_transparent_branch(part, term))
                 })
             } else {
                 let branch = branches + (source - automata.parts.len());
@@ -387,6 +388,23 @@ where
     Ok((keyed.into_iter().map(|(_, t)| t).collect(), capped))
 }
 
+/// The branch [`TermDfa::matched_branch`] gives `term` as written or without its
+/// quotes (the scan is quote-transparent), the lower of the two.
+fn quote_transparent_branch(part: &TermDfa, term: &[u8]) -> Option<usize> {
+    let written = part.matched_branch(term);
+    if !term.iter().copied().any(is_quote) {
+        return written;
+    }
+    let bare: Vec<u8> = term.iter().copied().filter(|&b| !is_quote(b)).collect();
+    let bare = (!bare.is_empty())
+        .then(|| part.matched_branch(&bare))
+        .flatten();
+    match (written, bare) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 fn scan<A>(
     inverted: &InvertedIndexReader,
     automaton: &A,
@@ -398,7 +416,10 @@ where
     A::State: Clone,
 {
     let mut hits = Vec::new();
-    let mut stream = inverted.terms().search(automaton).into_stream()?;
+    let mut stream = inverted
+        .terms()
+        .search(QuoteTransparent::new(automaton))
+        .into_stream()?;
     while stream.advance() {
         if hits.len() >= cap {
             return Ok((hits, true));
@@ -491,6 +512,15 @@ mod tests {
         assert_eq!(dfa.matched_branch("בשבת".as_bytes()), Some(1));
         assert_eq!(dfa.matched_branch("שבתו".as_bytes()), Some(2));
         assert_eq!(dfa.matched_branch("בשבתו".as_bytes()), None);
+    }
+
+    #[test]
+    fn a_quoted_term_ranks_by_the_branch_of_its_quote_free_spelling() {
+        let automata = build_uncached(&["רמבם".to_string(), "ה.*".to_string()]).unwrap();
+        let dfa = automata.single().unwrap();
+        assert_eq!(quote_transparent_branch(dfa, "רמב\"ם".as_bytes()), Some(0));
+        assert_eq!(quote_transparent_branch(dfa, "הרמב\"ם".as_bytes()), Some(1));
+        assert_eq!(quote_transparent_branch(dfa, "\"".as_bytes()), None);
     }
 
     #[test]
