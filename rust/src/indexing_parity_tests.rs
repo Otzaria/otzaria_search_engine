@@ -160,9 +160,27 @@ fn real_library_prepare_passes_timing() {
             sink += crate::cross_line::line_edges(&mut analyzer, line).is_some() as usize;
         }
     });
+    let books_lines = keyed_books(&books);
+    let old_keys = time(&mut || {
+        for lines in &books_lines {
+            sink += crate::semantic_keys::sidecar_column_values(&line_refs(lines)).len();
+        }
+    });
+    // One thread, as the others: the production call fans out over rayon.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let new_keys = pool.install(|| {
+        time(&mut || {
+            for lines in &books_lines {
+                sink += crate::semantic_keys::column_values(&line_refs(lines)).len();
+            }
+        })
+    });
     let mb = raw.iter().map(String::len).sum::<usize>() as f64 / 1e6;
     println!(
-        "{mb:.1} MB, {} lines: normalize {old_norm:?} -> {new_norm:?}; line edges {old_edges:?} -> {new_edges:?} ({sink})",
+        "{mb:.1} MB, {} lines: normalize {old_norm:?} -> {new_norm:?}; line edges {old_edges:?} -> {new_edges:?}; keys {old_keys:?} -> {new_keys:?} ({sink})",
         raw.len()
     );
 }
@@ -201,4 +219,59 @@ fn thread_cpu_time() -> std::time::Duration {
             once_cell::sync::Lazy::new(std::time::Instant::now);
         START.elapsed()
     }
+}
+
+/// Each book's lines as the index keys them: normalized text, and the heading block each
+/// belongs to.
+fn keyed_books(books: &[(i64, Vec<String>)]) -> Vec<Vec<(String, u64)>> {
+    books
+        .iter()
+        .map(|(_, rows)| {
+            let mut section = 0u64;
+            rows.iter()
+                .flat_map(|row| row.split('\n'))
+                .map(|raw| {
+                    if raw.starts_with("<h") {
+                        section += 1;
+                    }
+                    (
+                        crate::hebrew_query::normalize_text_for_indexing(raw),
+                        section,
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn line_refs(
+    lines: &[(String, u64)],
+) -> Vec<otzaria_semantic_search::semantic::chunk_key::LineRef<'_>> {
+    lines
+        .iter()
+        .map(
+            |(text, section)| otzaria_semantic_search::semantic::chunk_key::LineRef {
+                text,
+                section: *section,
+            },
+        )
+        .collect()
+}
+
+#[test]
+#[ignore = "needs OTZARIA_SEFORIM_DB pointing at a real seforim.db"]
+fn real_library_streamed_keys_are_the_sidecar_keys() {
+    let Some(books) = sample_books() else {
+        return;
+    };
+    let mut lines = 0;
+    for book in keyed_books(&books) {
+        let refs = line_refs(&book);
+        assert_eq!(
+            crate::semantic_keys::column_values(&refs),
+            crate::semantic_keys::sidecar_column_values(&refs)
+        );
+        lines += refs.len();
+    }
+    println!("{} books, {lines} lines: chunk keys identical", books.len());
 }
