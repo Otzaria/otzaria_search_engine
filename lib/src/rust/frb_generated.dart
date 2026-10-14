@@ -212,6 +212,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountAdvancedWithStatus({
@@ -233,6 +234,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBook({
@@ -262,6 +264,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<BookCountResult>
@@ -284,6 +287,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookExact({
@@ -412,6 +416,7 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   });
 
   Future<Map<String, BigInt>>
@@ -468,6 +473,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<FacetCountsResult>
@@ -491,6 +497,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<List<FacetCount>> crateApiSearchEngineSearchEngineGetFacetCountsExact({
@@ -638,6 +645,7 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Stream<List<SearchResult>>
@@ -665,6 +673,7 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Stream<SearchStreamUpdate>
@@ -692,6 +701,7 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCount({
@@ -730,6 +740,7 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCountExact({
@@ -1008,6 +1019,7 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   });
 
   String? crateApiSearchEngineGenerateLiteralHighlightPattern({
@@ -1867,6 +1879,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1902,6 +1915,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1933,6 +1947,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -1961,6 +1976,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -1984,6 +2000,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2019,6 +2036,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2051,6 +2069,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -2080,6 +2099,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -2147,6 +2167,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2182,6 +2203,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2214,6 +2236,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -2243,6 +2266,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -2267,6 +2291,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2302,6 +2327,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2334,6 +2360,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -2363,6 +2390,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -3103,6 +3131,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3120,6 +3149,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             searchOptions,
             serializer,
           );
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3140,6 +3170,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           customSpacing,
           alternativeWords,
           searchOptions,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -3157,6 +3188,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "customSpacing",
           "alternativeWords",
           "searchOptions",
+          "anyOrder",
         ],
       );
 
@@ -3428,6 +3460,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3464,6 +3497,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3497,6 +3531,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -3527,6 +3562,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -3552,6 +3588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3588,6 +3625,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -3621,6 +3659,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -3651,6 +3690,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -4533,6 +4573,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4572,6 +4613,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4607,6 +4649,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           grouping,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -4639,6 +4682,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -4668,6 +4712,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -4716,6 +4761,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               serializer,
             );
             sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+            sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4754,6 +4800,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             grouping,
             wordMatchMode,
             wordMatchCount,
+            anyOrder,
             sink,
           ],
           apiImpl: this,
@@ -4791,6 +4838,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
           "sink",
         ],
       );
@@ -4821,6 +4869,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -4869,6 +4918,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               serializer,
             );
             sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+            sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
@@ -4907,6 +4957,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             grouping,
             wordMatchMode,
             wordMatchCount,
+            anyOrder,
             sink,
           ],
           apiImpl: this,
@@ -4944,6 +4995,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
           "sink",
         ],
       );
@@ -5045,6 +5097,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -5084,6 +5137,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -5120,6 +5174,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           grouping,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -5153,6 +5208,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -6970,6 +7026,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -6983,6 +7040,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             searchOptions,
             serializer,
           );
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -7000,6 +7058,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           customSpacing,
           alternativeWords,
           searchOptions,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -7015,6 +7074,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "customSpacing",
           "alternativeWords",
           "searchOptions",
+          "anyOrder",
         ],
       );
 
@@ -7889,6 +7949,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
+  }
+
+  @protected
   double dco_decode_box_autoadd_f_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as double;
@@ -8416,6 +8482,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_benchmark_result(raw);
+  }
+
+  @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_bool(raw);
   }
 
   @protected
@@ -9565,6 +9637,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bool(deserializer));
+  }
+
+  @protected
   double sse_decode_box_autoadd_f_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_f_32(deserializer));
@@ -10313,6 +10391,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_benchmark_result(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bool(deserializer));
     } else {
       return null;
     }
@@ -11773,6 +11862,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_f_32(double self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_f_32(self, serializer);
@@ -12448,6 +12543,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_benchmark_result(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bool(self, serializer);
     }
   }
 
@@ -13690,6 +13795,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountAdvanced(
     that: this,
     query: query,
@@ -13709,6 +13815,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     negativeScope: negativeScope,
     wordMatchMode: wordMatchMode,
     wordMatchCount: wordMatchCount,
+    anyOrder: anyOrder,
   );
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
@@ -13730,6 +13837,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountAdvancedWithStatus(
         that: this,
@@ -13750,6 +13858,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -13787,6 +13896,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookAdvanced(
         that: this,
@@ -13807,6 +13917,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
@@ -13828,6 +13939,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus(
         that: this,
@@ -13848,6 +13960,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Exact-mode per-book counts. Drops the truncation flag — see
@@ -14101,6 +14214,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGenerateIndexHighlightPattern(
         that: this,
@@ -14109,6 +14223,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         customSpacing: customSpacing,
         alternativeWords: alternativeWords,
         searchOptions: searchOptions,
+        anyOrder: anyOrder,
       );
 
   /// Content fingerprint per distinct `filePath`, read columnar from the
@@ -14208,6 +14323,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvanced(
         that: this,
@@ -14229,6 +14345,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
@@ -14251,6 +14368,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus(
         that: this,
@@ -14272,6 +14390,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Exact-mode facet counts. Drops the truncation flag — see
@@ -14578,6 +14697,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvanced(
     that: this,
     query: query,
@@ -14601,6 +14721,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     grouping: grouping,
     wordMatchMode: wordMatchMode,
     wordMatchCount: wordMatchCount,
+    anyOrder: anyOrder,
   );
 
   /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -14630,6 +14751,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvancedStream(
         that: this,
@@ -14655,6 +14777,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         grouping: grouping,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -14684,6 +14807,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAdvancedStreamWithCounts(
         that: this,
@@ -14709,6 +14833,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         grouping: grouping,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Search and return total hit count alongside paged results in one call.
@@ -14756,6 +14881,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAndCountAdvanced(
         that: this,
@@ -14780,6 +14906,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         grouping: grouping,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   Future<SearchPageResult> searchAndCountExact({

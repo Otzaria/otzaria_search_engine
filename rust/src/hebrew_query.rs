@@ -41,6 +41,8 @@ use std::collections::{HashMap, HashSet};
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::gap_phrase::Proximity;
+
 // ── Search-option UI keys (must match the Dart layer exactly) ──────────────
 
 pub const OPT_TYPO: &str = "שגיאות כתיב";
@@ -2346,6 +2348,22 @@ pub(crate) fn resolve_gaps(
                 .unwrap_or(max_custom)
         })
         .collect()
+}
+
+/// The proximity of an advanced query whose resolved per-pair allowances are
+/// `gaps`. `any_order` holds only without `custom_spacing`, whose per-pair
+/// keys presume an order; the search and both highlight builders share this.
+pub(crate) fn resolve_proximity(
+    gaps: Vec<u32>,
+    distance: u32,
+    custom_spacing: &HashMap<String, String>,
+    any_order: bool,
+) -> Proximity {
+    if any_order && custom_spacing.is_empty() {
+        Proximity::any_order(gaps.len() + 1, distance)
+    } else {
+        Proximity::Ordered(gaps)
+    }
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────
