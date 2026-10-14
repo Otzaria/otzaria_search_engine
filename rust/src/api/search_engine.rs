@@ -2968,11 +2968,14 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // A change to `normalize_text_for_indexing` or to the row preparation
 // (`line_source::prepare_row`) needs a bump: that is what keeps `TextStatus::Ok` true,
 // the promise that the displayed text is exactly what was indexed.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 5;
+//
+// v6: disk savings. `id` and `filePath` carry no fieldnorms. A version 5 index is
+// rebuilt: nothing older than [`MIN_READABLE_SCHEMA_VERSION`] is read.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 6;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 5;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 6;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -4171,11 +4174,28 @@ fn index_schema() -> Schema {
             )
             .set_stored(),
     );
-    // INDEXED is required for delete_term / upsert by id to work.
-    schema_builder.add_u64_field("id", STORED | FAST | INDEXED);
+    // INDEXED is required for delete_term / upsert by id to work. No fieldnorms:
+    // nothing scores `id` or `filePath`.
+    schema_builder.add_u64_field(
+        "id",
+        NumericOptions::default()
+            .set_indexed()
+            .set_fast()
+            .set_stored(),
+    );
     schema_builder.add_u64_field("segment", STORED);
     schema_builder.add_bool_field("isPdf", STORED);
-    schema_builder.add_text_field("filePath", STRING | FAST | STORED);
+    schema_builder.add_text_field(
+        "filePath",
+        TextOptions::default()
+            .set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer("raw")
+                    .set_fieldnorms(false),
+            )
+            .set_fast(None)
+            .set_stored(),
+    );
     // Book-level content fingerprint, stamped identically on all documents of
     // a book. FAST-only: read columnar by get_book_fingerprints, never searched
     // or returned. 0 = no fingerprint recorded.
@@ -15987,45 +16007,77 @@ mod tests {
         cross_line::LINE_EDGE_FIELD,
     ];
 
-    /// Version 5 is the released version 4 schema with `text` and `textVocalized` out of the
-    /// store, and the `chunkKey` column and [`VERSION_5_FIELDS`] beside it. No other
-    /// version is one this engine reads.
+    /// The schema of a real version 5 index, as the `meta.json` of a full library index
+    /// (6,910,973 lines) built by the engine before version 6 holds it.
+    const RELEASED_VERSION_5_SCHEMA: &str = r#"[
+        {"name": "text", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew"}, "stored": false, "fast": false}},
+        {"name": "textVocalized", "type": "text", "options": {"indexing": {"record": "position", "fieldnorms": true, "tokenizer": "hebrew_vocalized"}, "stored": false, "fast": false}},
+        {"name": "reference", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "title", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": true, "fast": false}},
+        {"name": "id", "type": "u64", "options": {"indexed": true, "fieldnorms": true, "fast": true, "stored": true}},
+        {"name": "segment", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "isPdf", "type": "bool", "options": {"indexed": false, "fieldnorms": false, "fast": false, "stored": true}},
+        {"name": "filePath", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": true, "tokenizer": "raw"}, "stored": true, "fast": true}},
+        {"name": "contentHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "textHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "sectionId", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "generationSort", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineHash", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineCheck", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "topics", "type": "facet", "options": {"stored": false}},
+        {"name": "chunkKey", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "textStored", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "textVocalizedStored", "type": "text", "options": {"stored": true, "fast": false}},
+        {"name": "lineFirst", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineLast", "type": "u64", "options": {"indexed": false, "fieldnorms": false, "fast": true, "stored": false}},
+        {"name": "lineEdge", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": false, "fast": false}}
+    ]"#;
+
+    /// The version 5 fields version 6 changes, and how; every other version 5 field is
+    /// unchanged. No other version is one this engine reads.
     #[test]
-    fn version_5_is_version_4_with_the_text_out_of_its_store() {
-        let released: Schema = serde_json::from_str(RELEASED_VERSION_4_SCHEMA).unwrap();
+    fn version_6_is_version_5_with_its_disk_savings() {
+        let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
             schema_of_version(INDEX_SCHEMA_VERSION),
             Some(current.clone())
         );
-        for (_, entry) in released.fields() {
-            let now = current.get_field_entry(current.get_field(entry.name()).unwrap());
-            if ["text", "textVocalized"].contains(&entry.name()) {
-                assert!(entry.is_stored() && !now.is_stored(), "{}", entry.name());
-                assert_eq!(now.is_indexed(), entry.is_indexed(), "{}", entry.name());
-            } else {
-                assert_eq!(now, entry);
+        let entry = |name: &str| current.get_field_entry(current.get_field(name).unwrap());
+        for (_, old) in released.fields() {
+            match old.name() {
+                "id" | "filePath" => {
+                    let now = entry(old.name());
+                    assert!(!now.has_fieldnorms(), "{}", old.name());
+                    assert_eq!(now.is_fast(), old.is_fast(), "{}", old.name());
+                    assert_eq!(now.is_stored(), old.is_stored(), "{}", old.name());
+                }
+                name => assert_eq!(entry(name), old, "{name}"),
             }
         }
-        let mut added: Vec<&str> = current
+        let added: Vec<&str> = current
             .fields()
             .map(|(_, entry)| entry.name())
             .filter(|name| released.get_field(name).is_err())
             .collect();
-        added.sort_unstable();
-        let mut expected = VERSION_5_FIELDS.to_vec();
-        expected.push(CHUNK_KEY_FIELD);
-        expected.sort_unstable();
-        assert_eq!(added, expected);
+        assert!(added.is_empty(), "{added:?}");
 
-        let chunk_key = current.get_field_entry(current.get_field(CHUNK_KEY_FIELD).unwrap());
-        assert!(chunk_key.is_fast());
-        assert!(!chunk_key.is_indexed());
-        assert!(!chunk_key.is_stored());
-        assert_eq!(chunk_key.field_type().value_type(), Type::U64);
-
-        for version in [4, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
+        for version in [5, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
             assert_eq!(schema_of_version(version), None, "{version}");
+        }
+    }
+
+    /// A version 5 index is rebuilt, with its metadata or without.
+    #[test]
+    fn a_released_version_5_index_is_rebuilt() {
+        let fields: JsonValue = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
+        for version in [Some(5), None] {
+            let dir = index_of_schema(fields.clone(), version);
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version:?}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
+            assert_eq!(compatibility.found_schema_version, version);
+            assert_eq!(compatibility.required_schema_version, 6);
         }
     }
 

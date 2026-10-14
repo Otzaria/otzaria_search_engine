@@ -2270,20 +2270,20 @@ fn library_storage_needs_an_official_book_key() {
 }
 
 #[test]
-fn the_v4_schema_is_refused() {
+fn the_v5_schema_is_refused() {
     let dir = TempDir::new().unwrap();
     drop(SearchEngine::new(dir.path().to_str().unwrap()));
     let meta = dir.path().join("otzaria_index_meta.json");
     let raw = std::fs::read_to_string(&meta).unwrap();
     std::fs::write(
         &meta,
-        raw.replace("\"schema_version\": 5", "\"schema_version\": 4"),
+        raw.replace("\"schema_version\": 6", "\"schema_version\": 5"),
     )
     .unwrap();
     let compat = check_index_compatibility(dir.path().to_string_lossy().into_owned());
     assert!(!compat.compatible);
     assert_eq!(compat.status, "rebuild_required");
-    assert_eq!(compat.required_schema_version, 5);
+    assert_eq!(compat.required_schema_version, 6);
 }
 
 /// Read-only smoke test against a real library: indexes the first books of
