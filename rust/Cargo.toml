@@ -142,7 +142,8 @@ fancy-regex = "0.14"
 tantivy-fst = { path = "vendor/tantivy-fst" }
 # TODO: return to crates.io once a tantivy release includes quickwit-oss/tantivy#3134,
 # #3135, #3136 and #3137. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
-tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "85b76fe364f11c452bd2ce941521ece474a02227" }
+# Local round only: replace with a git rev of Otzaria/tantivy once otzaria-0.26-search-round is pushed.
+tantivy = { path = "C:/wt/tantivy-otz" }
 
 # Applies to cargokit's `--release` builds as well: it passes no profile overrides.
 [profile.release]
