@@ -301,6 +301,9 @@ pub(crate) struct RankedTerm {
     pub(crate) doc_freq: u64,
 }
 
+/// One segment scan: `(term, branch, doc_freq)` hits and whether the cap cut it.
+type ScanHits = (Vec<(String, usize, u32)>, bool);
+
 /// Distinct terms gathered before ranking — a memory cap, far above any
 /// collection budget a word is served with.
 pub(crate) const COLLECT_CAP: usize = 50_000;
@@ -327,7 +330,7 @@ where
     let pairs: Vec<(usize, usize)> = (0..sources)
         .flat_map(|a| (0..segments.len()).map(move |s| (a, s)))
         .collect();
-    let scans: Vec<(Vec<(String, usize, u32)>, bool)> = pairs
+    let scans: Vec<ScanHits> = pairs
         .par_iter()
         .map(|&(source, segment)| {
             let inverted = &segments[segment];
@@ -389,7 +392,7 @@ fn scan<A>(
     automaton: &A,
     cap: usize,
     branch_of: impl Fn(&[u8]) -> Option<usize>,
-) -> tantivy::Result<(Vec<(String, usize, u32)>, bool)>
+) -> tantivy::Result<ScanHits>
 where
     A: tantivy_fst::Automaton,
     A::State: Clone,

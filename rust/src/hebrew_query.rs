@@ -1716,8 +1716,8 @@ fn base_form_of_final(c: char) -> Option<char> {
 /// Byte index and char of the root's last letter (marks skipped).
 fn last_letter(root: &str) -> Option<(usize, char)> {
     root.char_indices()
-        .filter(|&(_, c)| !is_attached_mark(c))
-        .last()
+        .rev()
+        .find(|&(_, c)| !is_attached_mark(c))
 }
 
 /// Past-tense endings suit a verb-sized root (3–4 letters) that does not
@@ -2102,7 +2102,7 @@ pub(crate) fn match_tier(term: &str, roots: &[String]) -> u8 {
         .filter(|r| !r.is_empty())
         .collect();
     let term = unquoted(term);
-    if roots.iter().any(|r| *r == term) {
+    if roots.contains(&term) {
         return 0;
     }
     // The suffixed forms of a root: final letter in its base form (מלכ־),
