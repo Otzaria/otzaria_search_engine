@@ -1,6 +1,7 @@
 //! Line text of official books, read from the library database (`seforim.db`) at search
 //! time instead of the Tantivy doc store; personal books (`uid:<bookId>`) likewise from the
-//! user-books database, a second [`Source`] with the same layout rules.
+//! user-books database, and books of an attached database (`db:<slug>:<bookId>`) from that
+//! database — each its own [`Source`] with the same layout rules.
 //!
 //! A document indexed with `TextStorage::LibraryDb` keeps its text in the inverted index
 //! only. Its display text is the database row it was indexed from: book `id:<bookId>`
@@ -21,7 +22,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
 /// Same ceiling as the app's `LineContentCodec.maxLineBytes`.
@@ -348,15 +349,27 @@ pub(crate) struct LineStore {
 }
 
 impl LineStore {
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, OpenMode::default())
+    }
+
+    pub(crate) fn open_with(path: &Path, mode: OpenMode) -> Result<Self> {
         sqlite_host::ensure_ready()?;
         // A plain path, not a `file:` URI: a UNC path (`\\server\share\...`) has no URI
-        // form SQLite accepts.
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
+        // form SQLite accepts. Only an immutable file needs the URI's parameter.
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = if mode.immutable {
+            Connection::open_with_flags(immutable_uri(path), flags | OpenFlags::SQLITE_OPEN_URI)
+        } else {
+            Connection::open_with_flags(path, flags)
+        }
         .with_context(|| format!("opening the library database {}", path.display()))?;
+        if mode.untrusted {
+            // The app's `openUntrustedReadOnlyDatabase`: a hostile schema runs nothing unsafe.
+            conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+            conn.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0")?;
+        }
         conn.busy_timeout(BUSY_TIMEOUT)?;
         // With the library's sqlite_stat4, a plan that depends on bound values is re-prepared
         // on every new binding: the per-line lookups would each pay a full prepare.
@@ -828,6 +841,37 @@ fn file_identity(path: &Path) -> Option<FileIdentity> {
     path.exists().then_some(())
 }
 
+/// How a source's file is opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OpenMode {
+    /// A database the app does not control (an attached library).
+    pub untrusted: bool,
+    /// Opened with `immutable=1`: no locks and no side files, for a WAL database or a folder
+    /// without write access. SQLite then never sees a change to the file.
+    pub immutable: bool,
+}
+
+/// The `file:` URI of `path` with `mode=ro&immutable=1`, like the app's `immutableDatabaseUri`.
+fn immutable_uri(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    // `file:///C:/x`, `file:///home/x`, and `file:////server/share/x` (empty authority).
+    let mut uri = String::from(if raw.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for c in raw.chars() {
+        match c {
+            '%' => uri.push_str("%25"),
+            '?' => uri.push_str("%3F"),
+            '#' => uri.push_str("%23"),
+            c => uri.push(c),
+        }
+    }
+    uri.push_str("?mode=ro&immutable=1");
+    uri
+}
+
 fn data_version(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("PRAGMA data_version", [], |r| r.get(0))?)
 }
@@ -895,15 +939,29 @@ pub(crate) enum Source {
     /// Personal books (`uid:<bookId>`) in the user-books database, which the app keeps
     /// writing (WAL) while the engine reads it.
     UserBooks,
+    /// Books (`db:<slug>:<bookId>`) of one attached database.
+    Attached(AttachedRef),
 }
 
 impl Source {
-    pub(crate) const ALL: [Source; 2] = [Source::Library, Source::UserBooks];
+    /// Every source, the attached ones in the order their slugs were first seen.
+    pub(crate) fn all() -> Vec<Source> {
+        let attached = ATTACHED.read().unwrap_or_else(|p| p.into_inner());
+        [Source::Library, Source::UserBooks]
+            .into_iter()
+            .chain(
+                attached
+                    .iter()
+                    .map(|&cell| Source::Attached(AttachedRef(cell))),
+            )
+            .collect()
+    }
 
     fn cell(self) -> &'static Mutex<Global> {
         match self {
             Source::Library => &LIBRARY,
             Source::UserBooks => &USER_BOOKS,
+            Source::Attached(attached) => &attached.0.global,
         }
     }
 
@@ -911,9 +969,93 @@ impl Source {
         match self {
             Source::Library => &LIBRARY_SCANS_DONE,
             Source::UserBooks => &USER_BOOKS_SCANS_DONE,
+            Source::Attached(attached) => &attached.0.scans_done,
         }
     }
+
+    /// The source of the attached database `slug`, registered on first use; `None` for a
+    /// slug the app refuses (`BookSource.isValidSlug`).
+    pub(crate) fn attached(slug: &str) -> Option<Source> {
+        static SLUG: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+            regex::Regex::new(r"^[\p{L}\p{N}._-]{1,64}$").expect("valid pattern")
+        });
+        if let Some(found) = Self::registered_attached(slug) {
+            return Some(found);
+        }
+        if !SLUG.is_match(slug) {
+            return None;
+        }
+        let mut attached = ATTACHED.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(&cell) = attached.iter().find(|cell| &*cell.slug == slug) {
+            return Some(Source::Attached(AttachedRef(cell)));
+        }
+        // Never freed: one small cell per slug the process ever sees.
+        let cell: &'static AttachedCell = Box::leak(Box::new(AttachedCell {
+            id: attached.len() as u32,
+            slug: slug.into(),
+            global: Mutex::new(Global::new()),
+            scans_done: Condvar::new(),
+        }));
+        attached.push(cell);
+        Some(Source::Attached(AttachedRef(cell)))
+    }
+
+    fn registered_attached(slug: &str) -> Option<Source> {
+        ATTACHED
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|cell| &*cell.slug == slug)
+            .map(|&cell| Source::Attached(AttachedRef(cell)))
+    }
 }
+
+/// One attached database's source state.
+pub(crate) struct AttachedCell {
+    /// Registration order.
+    id: u32,
+    slug: Box<str>,
+    global: Mutex<Global>,
+    scans_done: Condvar,
+}
+
+/// An attached source; compared by registration order, shown by its slug.
+#[derive(Clone, Copy)]
+pub(crate) struct AttachedRef(&'static AttachedCell);
+
+impl PartialEq for AttachedRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl Eq for AttachedRef {}
+
+impl std::hash::Hash for AttachedRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.id.hash(state);
+    }
+}
+
+impl PartialOrd for AttachedRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AttachedRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.id.cmp(&other.0.id)
+    }
+}
+
+impl std::fmt::Debug for AttachedRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0.slug)
+    }
+}
+
+static ATTACHED: RwLock<Vec<&'static AttachedCell>> = RwLock::new(Vec::new());
 
 /// Why a window could not be served.
 #[derive(Debug, Clone)]
@@ -930,6 +1072,7 @@ pub(crate) enum SourceUnavailable {
 
 struct Global {
     path: Option<PathBuf>,
+    mode: OpenMode,
     store: Option<LineStore>,
     generation: u64,
     suspend_depth: u32,
@@ -953,6 +1096,10 @@ impl Global {
     const fn new() -> Self {
         Global {
             path: None,
+            mode: OpenMode {
+                untrusted: false,
+                immutable: false,
+            },
             store: None,
             generation: 0,
             suspend_depth: 0,
@@ -1016,10 +1163,11 @@ impl Global {
         }
     }
 
-    fn set_path(&mut self, path: Option<PathBuf>) {
-        if self.path != path {
+    fn set_path(&mut self, path: Option<PathBuf>, mode: OpenMode) {
+        if self.path != path || self.mode != mode {
             self.drop_store();
             self.path = path;
+            self.mode = mode;
             self.generation += 1;
             self.missing_logged = false;
         } else if let Some(store) = &self.store {
@@ -1049,7 +1197,7 @@ pub(crate) fn configure(db_path: &str) -> Result<()> {
     }
     let mut g = global(Source::Library);
     let generation = g.generation;
-    g.set_path(Some(PathBuf::from(db_path)));
+    g.set_path(Some(PathBuf::from(db_path)), OpenMode::default());
     if g.generation != generation {
         wait_for_scans(g, Source::Library);
     }
@@ -1064,11 +1212,44 @@ pub(crate) fn configure_user_books(db_path: Option<&str>) -> Result<()> {
     }
     let mut g = global(Source::UserBooks);
     let generation = g.generation;
-    g.set_path(db_path.map(PathBuf::from));
+    g.set_path(db_path.map(PathBuf::from), OpenMode::default());
     if g.generation != generation {
         wait_for_scans(g, Source::UserBooks);
     }
     Ok(())
+}
+
+/// [`configure_user_books`] for the attached database `slug`, opened hardened, and with
+/// `immutable=1` when asked.
+pub(crate) fn configure_attached(slug: &str, db_path: Option<&str>, immutable: bool) -> Result<()> {
+    if db_path == Some("") {
+        anyhow::bail!("configure_attached_line_source needs a database path or None");
+    }
+    let source = match db_path {
+        Some(_) => Source::attached(slug),
+        // A slug never configured has nothing to close.
+        None => match Source::registered_attached(slug) {
+            Some(source) => Some(source),
+            None => return Ok(()),
+        },
+    }
+    .with_context(|| format!("invalid attached database slug {slug:?}"))?;
+    let mut g = global(source);
+    let generation = g.generation;
+    let mode = OpenMode {
+        untrusted: true,
+        immutable,
+    };
+    g.set_path(db_path.map(PathBuf::from), mode);
+    if g.generation != generation {
+        wait_for_scans(g, source);
+    }
+    Ok(())
+}
+
+/// The state of the attached database `slug`; `None` when it was never configured.
+pub(crate) fn attached_status(slug: &str) -> Option<Status> {
+    Source::registered_attached(slug).map(status)
 }
 
 pub(crate) fn suspend() {
@@ -1140,11 +1321,28 @@ pub(crate) type SourceGeneration = (u64, Option<i64>, bool);
 /// lexical window may already have refreshed those after an unpaused write. This reads
 /// metadata only, without opening a database or reading/decoding any book content.
 #[cfg(feature = "semantic-integration")]
-pub(crate) fn query_cache_generation() -> [SourceGeneration; 2] {
+pub(crate) fn query_cache_generation() -> [SourceGeneration; 3] {
     [
         source_cache_generation(Source::Library),
         user_books_cache_generation(),
+        attached_cache_generation(),
     ]
+}
+
+/// Every attached source's [`source_cache_generation`], folded into one.
+#[cfg(feature = "semantic-integration")]
+fn attached_cache_generation() -> SourceGeneration {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut suspended = false;
+    for source in Source::all() {
+        if let Source::Attached(_) = source {
+            let generation = source_cache_generation(source);
+            suspended |= generation.2;
+            (source, generation).hash(&mut hasher);
+        }
+    }
+    (hasher.finish(), None, suspended)
 }
 
 /// The user-books part of the key never opens the file, and a closed or newly opened store
@@ -1269,7 +1467,7 @@ fn with_store_inner<R>(
     }
     let result = match g.store.as_mut() {
         Some(store) => f(store),
-        None => LineStore::open(&path).and_then(|store| {
+        None => LineStore::open_with(&path, g.mode).and_then(|store| {
             g.missing_logged = false;
             g.seen_version = Some(store.data_version);
             f(g.store.insert(store))
@@ -1308,6 +1506,7 @@ fn wait_for_scans(mut g: MutexGuard<'static, Global>, source: Source) {
 pub(crate) struct ScanSession {
     source: Source,
     path: PathBuf,
+    mode: OpenMode,
     generation: u64,
     idle: Mutex<Vec<LineStore>>,
 }
@@ -1328,6 +1527,7 @@ pub(crate) fn begin_scan(source: Source) -> std::result::Result<ScanSession, Sou
     Ok(ScanSession {
         source,
         path,
+        mode: g.mode,
         generation: g.generation,
         idle: Mutex::new(Vec::new()),
     })
@@ -1349,7 +1549,7 @@ impl ScanSession {
         let idle = self.idle.lock().unwrap_or_else(|p| p.into_inner()).pop();
         let mut store = match idle {
             Some(store) => store,
-            None => LineStore::open(&self.path).map_err(|err| {
+            None => LineStore::open_with(&self.path, self.mode).map_err(|err| {
                 log::warn!("{:?} scan connection failed: {err:#}", self.source);
                 SourceUnavailable::Failed
             })?,
@@ -1394,7 +1594,7 @@ pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 /// Resets the global source between tests.
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
-    for source in Source::ALL {
+    for source in Source::all() {
         let mut g = global(source);
         g.drop_store();
         g.path = None;
@@ -1569,6 +1769,111 @@ mod tests {
         assert_ne!(query_cache_generation()[1], written[1]);
         assert!(!status(Source::UserBooks).configured);
         reset_for_tests();
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn query_cache_generation_covers_attached_sources() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attached.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch(
+            "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);
+             INSERT INTO line VALUES (1, 1, 0, 'before');",
+        ).unwrap();
+        let before = query_cache_generation();
+        configure_attached("cache-key", Some(path.to_str().unwrap()), false).unwrap();
+        let configured = query_cache_generation();
+        assert_eq!(configured[..2], before[..2]);
+        assert_ne!(configured[2], before[2]);
+        let source = Source::attached("cache-key").unwrap();
+        with_store(source, |store| store.book_row_count(1)).unwrap();
+        let opened = query_cache_generation();
+        writer
+            .execute("UPDATE line SET content = 'after'", [])
+            .unwrap();
+        assert_ne!(
+            query_cache_generation()[2],
+            opened[2],
+            "a commit is another answer"
+        );
+        configure_attached("cache-key", None, false).unwrap();
+        assert_ne!(query_cache_generation()[2], opened[2]);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn attached_sources_are_registered_once_per_valid_slug() {
+        let a = Source::attached("ספרייה.1_x-y").unwrap();
+        assert_eq!(Source::attached("ספרייה.1_x-y"), Some(a));
+        assert!(Source::all().contains(&a));
+        assert_ne!(Source::attached("other-slug"), Some(a));
+        assert_eq!(format!("{a:?}"), "Attached(\"ספרייה.1_x-y\")");
+        for bad in ["", "a:b", "a b", "a/b", &"x".repeat(65)] {
+            assert_eq!(Source::attached(bad), None, "{bad}");
+        }
+        assert!(Source::attached(&"x".repeat(64)).is_some());
+    }
+
+    #[test]
+    fn immutable_uris_follow_the_app() {
+        assert_eq!(
+            immutable_uri(Path::new("C:\\a b\\מסד#1%?.db")),
+            "file:///C:/a b/מסד%231%25%3F.db?mode=ro&immutable=1"
+        );
+        assert_eq!(
+            immutable_uri(Path::new("/home/x/a.db")),
+            "file:///home/x/a.db?mode=ro&immutable=1"
+        );
+        assert_eq!(
+            immutable_uri(Path::new("\\\\server\\share\\a.db")),
+            "file:////server/share/a.db?mode=ro&immutable=1"
+        );
+    }
+
+    #[test]
+    fn an_untrusted_store_is_hardened_and_an_immutable_one_takes_no_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attached.db");
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER,
+                                    content TEXT);
+                 INSERT INTO line VALUES (1, 1, 0, 'x');",
+            )
+            .unwrap();
+        let trusted_schema = |store: &LineStore| -> i64 {
+            store
+                .conn
+                .query_row("PRAGMA trusted_schema", [], |r| r.get(0))
+                .unwrap()
+        };
+        let plain = LineStore::open(&path).unwrap();
+        assert_eq!(trusted_schema(&plain), 1);
+        plain.close();
+        let mut store = LineStore::open_with(
+            &path,
+            OpenMode {
+                untrusted: true,
+                immutable: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(trusted_schema(&store), 0);
+        store
+            .in_read_txn(|store| {
+                let rows = store.book_row_count(1)?;
+                // An immutable reader holds no shared lock: a writer is never kept waiting.
+                writer.busy_timeout(Duration::ZERO).unwrap();
+                writer.execute_batch("BEGIN EXCLUSIVE; COMMIT").unwrap();
+                Ok(rows)
+            })
+            .unwrap();
     }
 
     #[test]

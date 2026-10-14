@@ -222,6 +222,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AttachedLineSourceStatus dco_decode_attached_line_source_status(dynamic raw);
+
+  @protected
   BenchmarkResult dco_decode_benchmark_result(dynamic raw);
 
   @protected
@@ -926,6 +929,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
+
+  @protected
+  AttachedLineSourceStatus sse_decode_attached_line_source_status(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BenchmarkResult sse_decode_benchmark_result(SseDeserializer deserializer);
@@ -1812,6 +1820,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_attached_line_source_status(
+    AttachedLineSourceStatus self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_benchmark_result(

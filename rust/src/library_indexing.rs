@@ -29,23 +29,32 @@ const PREPARE_WORKERS: usize = 4;
 /// much.
 const IN_FLIGHT_BYTES: usize = 64 << 20;
 
-impl From<LibraryBookSource> for Source {
-    fn from(source: LibraryBookSource) -> Self {
-        match source {
-            LibraryBookSource::Library => Source::Library,
-            LibraryBookSource::UserBooks => Source::UserBooks,
+/// The line source of a book's `source` and `attached_slug`, or why they do not name one.
+pub(crate) fn line_source_of(
+    source: LibraryBookSource,
+    attached_slug: Option<&str>,
+) -> std::result::Result<Source, String> {
+    match (source, attached_slug) {
+        (LibraryBookSource::Library, None) => Ok(Source::Library),
+        (LibraryBookSource::UserBooks, None) => Ok(Source::UserBooks),
+        (LibraryBookSource::Attached, Some(slug)) => {
+            Source::attached(slug).ok_or_else(|| format!("invalid attached database slug {slug:?}"))
         }
+        (source, slug) => Err(format!(
+            "attached_slug must be given exactly for LibraryBookSource::Attached, got \
+             {source:?} with {slug:?}"
+        )),
     }
 }
 
 /// A book's text as the app would hand it to `add_text_book_bytes`. A read that fails is
 /// logged by the line source and comes back `SourceUnavailable::Failed`.
 pub(crate) fn read_library_book(
-    source: LibraryBookSource,
+    source: Source,
     book_id: i64,
     db_title: Option<&str>,
 ) -> std::result::Result<Option<IndexingText>, SourceUnavailable> {
-    line_source::with_store_for_indexing(source.into(), |store| {
+    line_source::with_store_for_indexing(source, |store| {
         store.read_book_for_indexing(book_id, db_title)
     })
 }
@@ -76,18 +85,22 @@ fn failed(book: &LibraryBookInput, error: impl std::fmt::Display) -> LibraryBook
 
 /// Reads and prepares one book; never touches the writer.
 pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome {
+    let source = match line_source_of(book.source, book.attached_slug.as_deref()) {
+        Ok(source) => source,
+        Err(error) => return Outcome::Done(failed(book, error)),
+    };
     if book.text_storage == TextStorage::LibraryDb
-        && line_source_book(&book.file_path) != Some((book.source.into(), book.book_id))
+        && line_source_book(&book.file_path) != Some((source, book.book_id))
     {
         return Outcome::Done(failed(
             book,
             format!(
-                "TextStorage::LibraryDb needs the file_path of book {} in {:?}, got {:?}",
-                book.book_id, book.source, book.file_path
+                "TextStorage::LibraryDb needs the file_path of book {} in {source:?}, got {:?}",
+                book.book_id, book.file_path
             ),
         ));
     }
-    let text = match read_library_book(book.source, book.book_id, book.db_title.as_deref()) {
+    let text = match read_library_book(source, book.book_id, book.db_title.as_deref()) {
         Err(SourceUnavailable::Failed) => {
             return Outcome::Done(failed(
                 book,

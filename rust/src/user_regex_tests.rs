@@ -1,8 +1,8 @@
 use super::*;
 use crate::api::search_engine::{
-    configure_line_source, parse_user_regex, prepare_user_regex_matcher, resume_line_source,
-    suspend_line_source, ResultsOrder, SearchEngine, TextStorage, UserRegexCancellationToken,
-    UserRegexKind, UserRegexStreamUpdate,
+    configure_attached_line_source, configure_line_source, parse_user_regex,
+    prepare_user_regex_matcher, resume_line_source, suspend_line_source, ResultsOrder,
+    SearchEngine, TextStorage, UserRegexCancellationToken, UserRegexKind, UserRegexStreamUpdate,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -614,6 +614,76 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
     let found = events(&engine, r"/^\S+\s\S+\s\S+$/", &[], &AtomicBool::new(false));
     assert!(last(&found).truncated);
     resume_line_source().unwrap();
+}
+
+#[test]
+fn a_cross_space_pattern_reads_attached_databases() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let first: &[&str] = &["<h1>מצורף</h1>", "שמע בני ישראל", "*שמע עמי ישראל"];
+    let second: &[&str] = &["*שמע קולי ישראל", "מילה"];
+    let idx = dir.path().join("idx");
+    std::fs::create_dir_all(&idx).unwrap();
+    let mut engine = SearchEngine::new(idx.to_str().unwrap());
+    // Two databases with the same book id, and an `InIndex` book of a third slug.
+    for (n, (slug, rows)) in [("a", first), ("b", second), ("c", second)]
+        .iter()
+        .enumerate()
+    {
+        let db = dir.path().join(format!("{slug}.db"));
+        write_library(&db, &[(7, rows)]);
+        if *slug != "c" {
+            configure_attached_line_source(
+                slug.to_string(),
+                Some(db.to_string_lossy().into_owned()),
+                false,
+            )
+            .unwrap();
+        }
+        let text: Vec<&str> = rows.iter().map(|r| r.trim_start_matches('*')).collect();
+        engine
+            .add_text_book(
+                format!("ספר {slug}"),
+                format!("/att/{slug}"),
+                format!("db:{slug}:7"),
+                n as u32,
+                0,
+                text.join("\n"),
+                None,
+                if *slug == "c" {
+                    TextStorage::InIndex
+                } else {
+                    TextStorage::LibraryDb
+                },
+                None,
+            )
+            .unwrap();
+    }
+    engine.commit().unwrap();
+
+    let pattern = r"/^\S+\s\S+\s\S+$/";
+    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    assert!(!last(&found).truncated);
+    let mut hits: Vec<(String, u64)> = results(&found)
+        .iter()
+        .map(|r| (r.file_path.clone(), r.segment))
+        .collect();
+    hits.sort();
+    let expected = [("db:a:7", 1), ("db:a:7", 2), ("db:b:7", 0), ("db:c:7", 0)];
+    assert_eq!(
+        hits,
+        expected.map(|(path, segment)| (path.to_string(), segment))
+    );
+    assert!(results(&found)
+        .iter()
+        .all(|r| r.text_status == TextStatus::Ok));
+    assert_eq!(count(&engine, pattern, &["/att/b"]), 1, "one database only");
+
+    // A removed database cannot be read: the answer is partial and says so.
+    configure_attached_line_source("a".to_string(), None, false).unwrap();
+    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    assert!(last(&found).truncated);
+    assert_eq!(results(&found).len(), 2);
 }
 
 #[test]

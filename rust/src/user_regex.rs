@@ -1167,7 +1167,7 @@ impl LineOutcome {
 #[derive(Hash, PartialEq, Eq)]
 struct LineCacheKey {
     index: String,
-    sources: [u64; 2],
+    sources: Vec<u64>,
     facets: Vec<String>,
     pattern: String,
     max_hits: usize,
@@ -1210,10 +1210,10 @@ pub(crate) fn run_line_search(
     facets.sort();
     let key = LineCacheKey {
         index: index_identity(ctx.searcher),
-        sources: [
-            line_source::status(Source::Library).generation,
-            line_source::status(Source::UserBooks).generation,
-        ],
+        sources: Source::all()
+            .into_iter()
+            .map(|source| line_source::status(source).generation)
+            .collect(),
         facets,
         pattern: regex.pattern.clone(),
         max_hits: ctx.max_hits,
@@ -1705,20 +1705,19 @@ fn scan_batch(
     let source_of = |book: &ScopeBook| {
         line_source_book(&book.file_path).filter(|_| book.library)
     };
-    let session = |source: Source| {
-        books
-            .iter()
-            .any(|book| source_of(book).is_some_and(|(s, _)| s == source))
-            .then(|| line_source::begin_scan(source).ok())
-            .flatten()
-    };
-    let (library, user_books) = (session(Source::Library), session(Source::UserBooks));
+    let sessions: Vec<(Source, line_source::ScanSession)> = books
+        .iter()
+        .filter_map(|book| source_of(book).map(|(source, _)| source))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|source| Some((source, line_source::begin_scan(source).ok()?)))
+        .collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, Fetched)>(FETCH_AHEAD);
     std::thread::scope(|scope| {
         for _ in 0..SCAN_READERS {
             let sender = sender.clone();
-            let (library, user_books, next) = (&library, &user_books, &next);
+            let (sessions, next) = (&sessions, &next);
             scope.spawn(move || loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= books.len() || ctx.cancel.load(Ordering::Relaxed) {
@@ -1727,10 +1726,7 @@ fn scan_batch(
                 let book = &books[i];
                 let fetched = match source_of(book) {
                     Some((source, book_id)) => {
-                        let session = match source {
-                            Source::Library => library,
-                            Source::UserBooks => user_books,
-                        };
+                        let session = sessions.iter().find(|(s, _)| *s == source).map(|(_, s)| s);
                         let started = std::time::Instant::now();
                         let rows = match session {
                             Some(session) => session

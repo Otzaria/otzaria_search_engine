@@ -9,7 +9,8 @@ import 'search_engine.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
-/// The `textHash` a book of the library or user-books database would be indexed with by
+/// The `textHash` a book of the library, user-books or an attached database (`source`
+/// `Attached` with its `attached_slug`) would be indexed with by
 /// [`SearchEngine::add_library_books`] — what `compute_content_fingerprint_bytes` gives for
 /// the text the app reads for it — read and hashed off the Dart heap. `None` when the book
 /// has no rows, its title is not `db_title`, or its text is empty (the cases
@@ -18,10 +19,12 @@ import 'search_engine.dart';
 /// [`SearchEngine::add_library_books`]: crate::api::search_engine::SearchEngine::add_library_books
 Future<BigInt?> libraryBookContentFingerprint({
   required LibraryBookSource source,
+  String? attachedSlug,
   required PlatformInt64 bookId,
   String? dbTitle,
 }) => RustLib.instance.api.crateApiLibraryIndexingLibraryBookContentFingerprint(
   source: source,
+  attachedSlug: attachedSlug,
   bookId: bookId,
   dbTitle: dbTitle,
 );
@@ -47,6 +50,9 @@ abstract class IndexingCancellationToken implements RustOpaqueInterface {
 class LibraryBookInput {
   final LibraryBookSource source;
 
+  /// The attached database's slug: given exactly when `source` is `Attached`.
+  final String? attachedSlug;
+
   /// The book's `book.id` in that database.
   final PlatformInt64 bookId;
 
@@ -61,12 +67,13 @@ class LibraryBookInput {
   final List<String>? extraFacets;
 
   /// As for `add_text_book_bytes`. `LibraryDb` is kept only when every row is one line
-  /// (no row holds `\n`); `file_path` must then be `id:<bookId>` (library) or
-  /// `uid:<bookId>` (user books) of this very book.
+  /// (no row holds `\n`); `file_path` must then be `id:<bookId>` (library),
+  /// `uid:<bookId>` (user books) or `db:<slug>:<bookId>` (attached) of this very book.
   final TextStorage textStorage;
 
   const LibraryBookInput({
     required this.source,
+    this.attachedSlug,
     required this.bookId,
     this.dbTitle,
     required this.title,
@@ -81,6 +88,7 @@ class LibraryBookInput {
   @override
   int get hashCode =>
       source.hashCode ^
+      attachedSlug.hashCode ^
       bookId.hashCode ^
       dbTitle.hashCode ^
       title.hashCode ^
@@ -97,6 +105,7 @@ class LibraryBookInput {
       other is LibraryBookInput &&
           runtimeType == other.runtimeType &&
           source == other.source &&
+          attachedSlug == other.attachedSlug &&
           bookId == other.bookId &&
           dbTitle == other.dbTitle &&
           title == other.title &&
@@ -168,6 +177,10 @@ enum LibraryBookSource {
 
   /// The user-books database configured with `configure_user_books_line_source`.
   userBooks,
+
+  /// The attached database named by `attached_slug`, configured with
+  /// `configure_attached_line_source`.
+  attached,
 }
 
 /// What became of one book.

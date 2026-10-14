@@ -1,5 +1,5 @@
 //! Types of [`SearchEngine::add_library_books`]: indexing books whose text the engine reads
-//! itself from the library or user-books database.
+//! itself from the library, user-books or an attached database.
 //!
 //! [`SearchEngine::add_library_books`]: crate::api::search_engine::SearchEngine::add_library_books
 
@@ -14,6 +14,9 @@ pub enum LibraryBookSource {
     Library,
     /// The user-books database configured with `configure_user_books_line_source`.
     UserBooks,
+    /// The attached database named by `attached_slug`, configured with
+    /// `configure_attached_line_source`.
+    Attached,
 }
 
 /// One book of [`SearchEngine::add_library_books`]: where its rows are, and everything the
@@ -23,6 +26,8 @@ pub enum LibraryBookSource {
 #[derive(Clone, Debug)]
 pub struct LibraryBookInput {
     pub source: LibraryBookSource,
+    /// The attached database's slug: given exactly when `source` is `Attached`.
+    pub attached_slug: Option<String>,
     /// The book's `book.id` in that database.
     pub book_id: i64,
     /// When given, the rows are read only if `book.title` is still this (the app's guard
@@ -35,8 +40,8 @@ pub struct LibraryBookInput {
     pub generation_order: u32,
     pub extra_facets: Option<Vec<String>>,
     /// As for `add_text_book_bytes`. `LibraryDb` is kept only when every row is one line
-    /// (no row holds `\n`); `file_path` must then be `id:<bookId>` (library) or
-    /// `uid:<bookId>` (user books) of this very book.
+    /// (no row holds `\n`); `file_path` must then be `id:<bookId>` (library),
+    /// `uid:<bookId>` (user books) or `db:<slug>:<bookId>` (attached) of this very book.
     pub text_storage: TextStorage,
 }
 
@@ -101,7 +106,8 @@ impl IndexingCancellationToken {
     }
 }
 
-/// The `textHash` a book of the library or user-books database would be indexed with by
+/// The `textHash` a book of the library, user-books or an attached database (`source`
+/// `Attached` with its `attached_slug`) would be indexed with by
 /// [`SearchEngine::add_library_books`] — what `compute_content_fingerprint_bytes` gives for
 /// the text the app reads for it — read and hashed off the Dart heap. `None` when the book
 /// has no rows, its title is not `db_title`, or its text is empty (the cases
@@ -110,9 +116,12 @@ impl IndexingCancellationToken {
 /// [`SearchEngine::add_library_books`]: crate::api::search_engine::SearchEngine::add_library_books
 pub fn library_book_content_fingerprint(
     source: LibraryBookSource,
+    attached_slug: Option<String>,
     book_id: i64,
     db_title: Option<String>,
 ) -> anyhow::Result<Option<u64>> {
+    let source = crate::library_indexing::line_source_of(source, attached_slug.as_deref())
+        .map_err(anyhow::Error::msg)?;
     let text = crate::library_indexing::read_library_book(source, book_id, db_title.as_deref())
         .map_err(|unavailable| {
             anyhow::anyhow!("book {book_id} of {source:?} cannot be read: {unavailable:?}")

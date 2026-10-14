@@ -94,9 +94,9 @@ const BOOK_LINES: usize = 2_000_000;
 /// the foundational books' query, resolve many of the lines the last one did.
 const KEY_CACHE: usize = 65_536;
 
-/// The line-source databases' state (library, user books) as a session is keyed by it
+/// The line-source databases' state (library, user books, attached) as a session is keyed by it
 /// (`line_source::query_cache_generation`): the keys recomputed under one serve only it.
-pub(crate) type LibraryGeneration = [crate::line_source::SourceGeneration; 2];
+pub(crate) type LibraryGeneration = [crate::line_source::SourceGeneration; 3];
 
 /// How many filters' scan plans are kept between searches, for one generation of the index.
 const PLAN_CACHE: usize = 16;

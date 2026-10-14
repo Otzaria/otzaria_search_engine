@@ -66,6 +66,31 @@ Future<void> configureUserBooksLineSource({String? dbPath}) => RustLib
     .api
     .crateApiSearchEngineConfigureUserBooksLineSource(dbPath: dbPath);
 
+/// Points the line source of the attached database `slug` at its file, which
+/// `db:<slug>:<bookId>` [`TextStorage::LibraryDb`] documents read their text from; `None`
+/// closes it (waiting for a window or scan that is reading it) and unconfigures it, after
+/// which its documents come back [`TextStatus::Unavailable`]. Opened lazily, read-only and
+/// hardened like the app's untrusted connections; `immutable` opens it with
+/// `immutable=1` (the app's `AttachedLibrary.immutable`), and SQLite then never notices a
+/// change to the file. The open file cannot be replaced or deleted on Windows: configure
+/// `None` before the app updates, replaces or removes the file, and the path again after.
+/// Any number of slugs may be configured at once. [`suspend_line_source`] does not apply.
+Future<void> configureAttachedLineSource({
+  required String slug,
+  String? dbPath,
+  required bool immutable,
+}) => RustLib.instance.api.crateApiSearchEngineConfigureAttachedLineSource(
+  slug: slug,
+  dbPath: dbPath,
+  immutable: immutable,
+);
+
+Future<AttachedLineSourceStatus> attachedLineSourceStatus({
+  required String slug,
+}) => RustLib.instance.api.crateApiSearchEngineAttachedLineSourceStatus(
+  slug: slug,
+);
+
 Future<LineSourceStatus> lineSourceStatus() =>
     RustLib.instance.api.crateApiSearchEngineLineSourceStatus();
 
@@ -311,8 +336,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   Future<void> addDocumentsBatch({required List<DocumentInput> docs});
 
   /// Indexes books whose text the engine reads itself, from the library database
-  /// ([`configure_line_source`]) or the user-books database
-  /// ([`configure_user_books_line_source`]). Does not commit.
+  /// ([`configure_line_source`]), the user-books database
+  /// ([`configure_user_books_line_source`]) or an attached database
+  /// ([`configure_attached_line_source`]). Does not commit.
   ///
   /// Each book is indexed exactly as `add_text_book_bytes` indexes the text the app reads
   /// for it: rows in `lineIndex` order joined with `\n`, embedded `data:` images removed
@@ -374,7 +400,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
   /// newline-joined rows of an official book read from the library database
   /// (then `file_path` must be `id:<bookId>`), or of a personal book read from the
-  /// user-books database (`uid:<bookId>`); the lines are then not stored in
+  /// user-books database (`uid:<bookId>`) or an attached database
+  /// (`db:<slug>:<bookId>`); the lines are then not stored in
   /// the index and results read them back from that database. The book is
   /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
   /// book's configured line source does not hold exactly as many rows for it as `text`
@@ -1634,6 +1661,46 @@ abstract class UserRegexMatcher implements RustOpaqueInterface {
   /// Every match in `data` (one line of the book, HTML as shown), in UTF-16 units, with
   /// one word range per word of a `WordSequence`.
   List<HighlightMatch> findMatches({required String data});
+}
+
+/// State of the attached database `slug`'s line source.
+class AttachedLineSourceStatus {
+  /// A database path is configured ([`configure_attached_line_source`]).
+  final bool configured;
+
+  /// A connection is currently open.
+  final bool open;
+
+  /// Bumped whenever cached knowledge of the database is discarded.
+  final BigInt generation;
+
+  /// Books of this database asked for as [`TextStorage::LibraryDb`] that were stored
+  /// [`TextStorage::InIndex`] instead. Only grows within a process.
+  final BigInt libraryFallbacks;
+
+  const AttachedLineSourceStatus({
+    required this.configured,
+    required this.open,
+    required this.generation,
+    required this.libraryFallbacks,
+  });
+
+  @override
+  int get hashCode =>
+      configured.hashCode ^
+      open.hashCode ^
+      generation.hashCode ^
+      libraryFallbacks.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AttachedLineSourceStatus &&
+          runtimeType == other.runtimeType &&
+          configured == other.configured &&
+          open == other.open &&
+          generation == other.generation &&
+          libraryFallbacks == other.libraryFallbacks;
 }
 
 /// Per-`filePath` live-document counts paired with the truncation flag — the
@@ -4146,7 +4213,9 @@ enum TextStatus { ok, stale, unavailable }
 ///   (`lineCheck`), which the row read back must match. The lines the call lists in
 ///   `stored_lines` are stored as for `InIndex` instead. A personal book
 ///   (`uid:<bookId>`) is read the same way from the user-books database configured
-///   with [`configure_user_books_line_source`].
+///   with [`configure_user_books_line_source`], and a book of an attached database
+///   (`db:<slug>:<bookId>`) from the one configured with
+///   [`configure_attached_line_source`].
 enum TextStorage { libraryDb, inIndex }
 
 /// How a `/…/` pattern is searched (see [`parse_user_regex`]).

@@ -221,6 +221,7 @@ fn new_engine(dir: &Path) -> SearchEngine {
 fn library_input(book_id: i64, title: &str) -> LibraryBookInput {
     LibraryBookInput {
         source: LibraryBookSource::Library,
+        attached_slug: None,
         book_id,
         db_title: Some(title.to_string()),
         title: format!("כותרת {title}"),
@@ -388,6 +389,7 @@ fn library_books_index_like_the_bytes_the_app_reads() {
         assert_eq!(
             library_book_content_fingerprint(
                 LibraryBookSource::Library,
+                None,
                 result.book_id,
                 Some(fixture_books()[result.book_id as usize - 1].1.to_string()),
             )
@@ -396,7 +398,7 @@ fn library_books_index_like_the_bytes_the_app_reads() {
         );
     }
     assert_eq!(
-        library_book_content_fingerprint(LibraryBookSource::Library, 7, None).unwrap(),
+        library_book_content_fingerprint(LibraryBookSource::Library, None, 7, None).unwrap(),
         None
     );
 }

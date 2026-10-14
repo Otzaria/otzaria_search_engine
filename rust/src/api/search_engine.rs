@@ -171,7 +171,9 @@ pub enum ResultGrouping {
 ///   (`lineCheck`), which the row read back must match. The lines the call lists in
 ///   `stored_lines` are stored as for `InIndex` instead. A personal book
 ///   (`uid:<bookId>`) is read the same way from the user-books database configured
-///   with [`configure_user_books_line_source`].
+///   with [`configure_user_books_line_source`], and a book of an attached database
+///   (`db:<slug>:<bookId>`) from the one configured with
+///   [`configure_attached_line_source`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStorage {
     LibraryDb,
@@ -3282,6 +3284,53 @@ pub fn configure_user_books_line_source(db_path: Option<String>) -> Result<()> {
     crate::line_source::configure_user_books(db_path.as_deref())
 }
 
+/// Points the line source of the attached database `slug` at its file, which
+/// `db:<slug>:<bookId>` [`TextStorage::LibraryDb`] documents read their text from; `None`
+/// closes it (waiting for a window or scan that is reading it) and unconfigures it, after
+/// which its documents come back [`TextStatus::Unavailable`]. Opened lazily, read-only and
+/// hardened like the app's untrusted connections; `immutable` opens it with
+/// `immutable=1` (the app's `AttachedLibrary.immutable`), and SQLite then never notices a
+/// change to the file. The open file cannot be replaced or deleted on Windows: configure
+/// `None` before the app updates, replaces or removes the file, and the path again after.
+/// Any number of slugs may be configured at once. [`suspend_line_source`] does not apply.
+pub fn configure_attached_line_source(
+    slug: String,
+    db_path: Option<String>,
+    immutable: bool,
+) -> Result<()> {
+    crate::line_source::configure_attached(&slug, db_path.as_deref(), immutable)
+}
+
+/// State of the attached database `slug`'s line source.
+pub struct AttachedLineSourceStatus {
+    /// A database path is configured ([`configure_attached_line_source`]).
+    pub configured: bool,
+    /// A connection is currently open.
+    pub open: bool,
+    /// Bumped whenever cached knowledge of the database is discarded.
+    pub generation: u64,
+    /// Books of this database asked for as [`TextStorage::LibraryDb`] that were stored
+    /// [`TextStorage::InIndex`] instead. Only grows within a process.
+    pub library_fallbacks: u64,
+}
+
+pub fn attached_line_source_status(slug: String) -> AttachedLineSourceStatus {
+    match crate::line_source::attached_status(&slug) {
+        Some(status) => AttachedLineSourceStatus {
+            configured: status.configured,
+            open: status.open,
+            generation: status.generation,
+            library_fallbacks: status.library_fallbacks,
+        },
+        None => AttachedLineSourceStatus {
+            configured: false,
+            open: false,
+            generation: 0,
+            library_fallbacks: 0,
+        },
+    }
+}
+
 pub fn line_source_status() -> LineSourceStatus {
     use crate::line_source::Source;
     let status = crate::line_source::status(Source::Library);
@@ -3803,16 +3852,21 @@ pub(crate) fn library_book_id(file_path: &str) -> Option<i64> {
 }
 
 /// The line source and book id of a `file_path` whose rows a database holds:
-/// `id:<bookId>` (library) or `uid:<bookId>` (user books), in canonical form only.
+/// `id:<bookId>` (library), `uid:<bookId>` (user books) or `db:<slug>:<bookId>` (an
+/// attached database), in canonical form only.
 pub(crate) fn line_source_book(file_path: &str) -> Option<(crate::line_source::Source, i64)> {
     use crate::line_source::Source;
-    let (source, prefix, digits) = if let Some(digits) = file_path.strip_prefix("id:") {
-        (Source::Library, "id:", digits)
+    let (source, digits) = if let Some(digits) = file_path.strip_prefix("id:") {
+        (Source::Library, digits)
+    } else if let Some(digits) = file_path.strip_prefix("uid:") {
+        (Source::UserBooks, digits)
     } else {
-        (Source::UserBooks, "uid:", file_path.strip_prefix("uid:")?)
+        // As the app's `attachedSlugOfKey`: the id follows the last `:`.
+        let (slug, digits) = file_path.strip_prefix("db:")?.rsplit_once(':')?;
+        (Source::attached(slug)?, digits)
     };
     let id: i64 = digits.parse().ok()?;
-    (id >= 0 && format!("{prefix}{id}") == file_path).then_some((source, id))
+    (id >= 0 && id.to_string() == digits).then_some((source, id))
 }
 
 /// `DocumentInput` always stores its text: nothing ties a ready-made document's `segment`
@@ -3835,8 +3889,8 @@ fn refuse_library_storage(docs: &[DocumentInput]) -> Result<()> {
 fn require_library_book_id(file_path: &str) -> Result<(crate::line_source::Source, i64)> {
     line_source_book(file_path).with_context(|| {
         format!(
-            "TextStorage::LibraryDb needs a file_path of the form id:<bookId> or \
-             uid:<bookId>, got {file_path:?}"
+            "TextStorage::LibraryDb needs a file_path of the form id:<bookId>, \
+             uid:<bookId> or db:<slug>:<bookId>, got {file_path:?}"
         )
     })
 }
@@ -7523,7 +7577,8 @@ impl SearchEngine {
     /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
     /// newline-joined rows of an official book read from the library database
     /// (then `file_path` must be `id:<bookId>`), or of a personal book read from the
-    /// user-books database (`uid:<bookId>`); the lines are then not stored in
+    /// user-books database (`uid:<bookId>`) or an attached database
+    /// (`db:<slug>:<bookId>`); the lines are then not stored in
     /// the index and results read them back from that database. The book is
     /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
     /// book's configured line source does not hold exactly as many rows for it as `text`
@@ -7863,8 +7918,9 @@ impl SearchEngine {
     }
 
     /// Indexes books whose text the engine reads itself, from the library database
-    /// ([`configure_line_source`]) or the user-books database
-    /// ([`configure_user_books_line_source`]). Does not commit.
+    /// ([`configure_line_source`]), the user-books database
+    /// ([`configure_user_books_line_source`]) or an attached database
+    /// ([`configure_attached_line_source`]). Does not commit.
     ///
     /// Each book is indexed exactly as `add_text_book_bytes` indexes the text the app reads
     /// for it: rows in `lineIndex` order joined with `\n`, embedded `data:` images removed
@@ -14648,8 +14704,8 @@ impl SearchEngine {
             return Ok(out);
         }
 
-        // One transaction per source, one after the other: never both mutexes at once.
-        for source in crate::line_source::Source::ALL {
+        // One transaction per source, one after the other: never two mutexes at once.
+        for source in crate::line_source::Source::all() {
             let pending: Vec<&Pending> = pending.iter().filter(|p| p.source == source).collect();
             if pending.is_empty() {
                 continue;

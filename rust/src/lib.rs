@@ -56,6 +56,9 @@ mod sqlite_host;
 mod user_regex;
 #[cfg(test)]
 mod user_books_text_tests;
+// Books of attached databases (`db:<slug>:<bookId>`) read from those databases.
+#[cfg(test)]
+mod attached_text_tests;
 // Real-data benchmark of smart search, opened read-only; outside `api` so FRB ignores it.
 #[cfg(test)]
 mod smart_search_bench;
