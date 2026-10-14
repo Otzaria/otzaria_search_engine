@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 
 use crate::hebrew_query::{
-    aramaic_root_variants, generate_spelling_variations, highlight_affix_patterns, is_word_mark,
+    affix_arms, aramaic_root_variants, generate_spelling_variations, is_word_mark,
     normalize_for_index, split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES,
     MAX_SPELLING_BRANCHES,
 };
@@ -391,8 +391,13 @@ fn matcher_branches(
             break;
         }
         total += len;
-        for (lead, trail) in highlight_affix_patterns(&root, flags) {
-            branches.push((lead, pattern.clone(), trail));
+        for arm in affix_arms(&root, flags, false) {
+            let core = if arm.core == root {
+                pattern.clone()
+            } else {
+                charwise_display_pattern(&arm.core)
+            };
+            branches.push((arm.lead, core, arm.trail));
         }
     }
     branches
