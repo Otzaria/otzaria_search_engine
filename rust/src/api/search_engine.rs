@@ -10533,13 +10533,15 @@ impl SearchEngine {
         let phrase_query = joined_compiles
             .then(|| quote_expansion::quote_transparent_phrase(&compiled, slop_budget))
             .transpose()?;
-        if let Some(mut phrase_query) = phrase_query.filter(|phrase_query| {
-            phrase_query.automata().is_ok_and(|automata| {
-                !self
-                    .phrase_exceeds_max_expansions(automata, text_field, max_expansions)
-                    .unwrap_or(true)
-            })
-        }) {
+        let fits = match &phrase_query {
+            Some(phrase_query) => !self.phrase_exceeds_max_expansions(
+                phrase_query.automata()?,
+                text_field,
+                max_expansions,
+            )?,
+            None => false,
+        };
+        if let (true, Some(mut phrase_query)) = (fits, phrase_query) {
             phrase_query.set_max_expansions(max_expansions);
             let inline: Box<dyn Query> = if slop_budget == 0 {
                 Box::new(phrase_query)
