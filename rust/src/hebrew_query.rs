@@ -94,6 +94,8 @@ const GRAM_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "כש", "כ", "ב", "�
 /// `MIN_STEM_LETTERS` of the dictionary path. Abbreviations (ר', רמב"ם)
 /// are exempt: their letters stand for whole words.
 const MIN_GRAM_PREFIX_ROOT_LETTERS: usize = 3;
+/// The same floor for grammatical suffixes: a short root takes none (מה↛מות, ה↛ת).
+const MIN_GRAM_SUFFIX_ROOT_LETTERS: usize = 3;
 /// Second slot, after the first prefix (ו+ב, ש+ל, ו+כש…).
 const GRAM_PREFIX_ALTS_B: &[&str] = &["כש", "כ", "ב", "ש", "ל", "ה", "ד"];
 /// The definite article, last before the root.
@@ -1922,10 +1924,13 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
     if letters == 0 {
         return Vec::new();
     }
+    let abbreviation = root.contains(['\'', '"']);
+    let gram_suffix =
+        flags.gram_suffix && (abbreviation || letters >= MIN_GRAM_SUFFIX_ROOT_LETTERS);
     let mut arms = Vec::new();
     if flags.aramaic_prefix {
         let lead = prefix_group(ARAMAIC_PREFIX_ALTS_A, voc);
-        for (core, trail) in suffix_sides(root, letters, None, flags.gram_suffix, voc) {
+        for (core, trail) in suffix_sides(root, letters, None, gram_suffix, voc) {
             arms.push(AffixArm {
                 lead: lead.clone(),
                 core,
@@ -1952,12 +1957,11 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
             trail_window = Some(user_suffix_window(letters));
         }
     }
-    let abbreviation = root.contains(['\'', '"']);
     if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
         leads.push(prefix_group(GRAM_PREFIX_ALTS_A, voc));
     }
     let lead = alternation(leads);
-    for (core, trail) in suffix_sides(root, letters, trail_window, flags.gram_suffix, voc) {
+    for (core, trail) in suffix_sides(root, letters, trail_window, gram_suffix, voc) {
         let arm = AffixArm {
             lead: lead.clone(),
             core,
@@ -3907,6 +3911,29 @@ mod tests {
         let voc = word_to_pattern_vocalized("שבת", &VocalizedFlags::default(), &partial);
         assert!(accepts(&voc, "בְּשַׁבָּת"));
         assert!(!accepts(&voc, "1שַׁבָּת"));
+    }
+
+    #[test]
+    fn grammatical_suffixes_need_a_root() {
+        let gram = WordFlags {
+            gram_suffix: true,
+            ..Default::default()
+        };
+        // שורש קצר משלוש אותיות אינו מקבל סיומות דקדוקיות, וגם לא ה→ת/ות.
+        for (word, term) in [("מה", "מות"), ("מה", "מתי"), ("זה", "זות"), ("אב", "אבות")]
+        {
+            assert!(!word_accepts(word, &gram, term), "{word} {term}");
+            assert!(word_accepts(word, &gram, word), "{word}");
+        }
+        // "ה" לבדה אינה הופכת לשורש ריק.
+        for term in ["ת", "בת", "ותו"] {
+            assert!(!word_accepts("ה", &gram, term), "{term}");
+        }
+        assert!(word_accepts("ה", &gram, "ה"));
+        assert!(word_accepts("תורה", &gram, "תורתו"));
+        assert!(word_accepts("מלך", &gram, "מלכים"));
+        // ראשי תיבות פטורים, כמו בקידומות.
+        assert!(word_accepts("ר'", &gram, "ר'ים"));
     }
 
     #[test]
