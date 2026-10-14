@@ -17848,23 +17848,23 @@ mod tests {
         // typo-only single word expands through a Levenshtein-1 automaton
         // scan (VARIATION_CEILING_RESEARCH §3.ג): full edit-distance-1
         // coverage, a superset of the historical literal variant list.
-        // "ספגר" — an insertion of ג, which is NOT in INSERTION_LETTERS — was
+        // "ברכגה" — an insertion of ג, which is NOT in INSERTION_LETTERS — was
         // invisible to the sampled variants and must now match; a distance-2
-        // word must not.
+        // word must not. (A word needs four letters for the full distance.)
         let (mut engine, _dir) = make_engine();
-        add(&mut engine, 1, "ספר בראשית", "/books/a.txt");
-        add(&mut engine, 2, "ספגר אחר", "/books/b.txt");
+        add(&mut engine, 1, "ברכה בראשית", "/books/a.txt");
+        add(&mut engine, 2, "ברכגה אחר", "/books/b.txt");
         add(&mut engine, 3, "תורה צוה", "/books/c.txt");
         engine.commit().unwrap();
 
         let mut options: HashMap<String, HashMap<String, bool>> = HashMap::new();
         options.insert(
-            "ספר_0".to_string(),
+            "ברכה_0".to_string(),
             HashMap::from([("שגיאות כתיב".to_string(), true)]),
         );
         let mut ids: Vec<u64> = search_advanced_default(
             &engine,
-            "ספר".to_string(),
+            "ברכה".to_string(),
             vec!["/root".to_string()],
             100,
             0,
@@ -18721,15 +18721,15 @@ mod tests {
     }
 
     /// A one-sided expansion must keep painting a typo variant its own
-    /// branches cannot cover (`ספרא` under prefixes only).
+    /// branches cannot cover (`ברכתא` under prefixes only).
     #[test]
     fn index_highlight_one_sided_affix_typo_paints_variant() {
         let (mut engine, _dir) = make_engine();
-        add(&mut engine, 1, "ספרא תורה", "/books/a.txt");
+        add(&mut engine, 1, "ברכתא תורה", "/books/a.txt");
         engine.commit().unwrap();
 
         let options = HashMap::from([(
-            "ספר_0".to_string(),
+            "ברכת_0".to_string(),
             HashMap::from([
                 ("קידומות".to_string(), true),
                 ("שגיאות כתיב".to_string(), true),
@@ -18737,7 +18737,7 @@ mod tests {
         )]);
         let matcher = engine
             .generate_index_highlight_pattern(
-                "ספר תורה".to_string(),
+                "ברכת תורה".to_string(),
                 0,
                 HashMap::new(),
                 HashMap::new(),
@@ -18748,9 +18748,9 @@ mod tests {
             .expect("pattern")
             .matcher
             .expect("matcher");
-        let found = matcher.find_matches("ספרא תורה".to_string(), vec![]);
+        let found = matcher.find_matches("ברכתא תורה".to_string(), vec![]);
         assert_eq!(found.len(), 1);
-        assert_eq!((found[0].start, found[0].end), (0, 9));
+        assert_eq!((found[0].start, found[0].end), (0, 10));
     }
 
     #[test]

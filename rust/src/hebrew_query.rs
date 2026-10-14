@@ -1438,13 +1438,51 @@ fn generate_common_typo_variations(word: &str) -> Vec<String> {
     out
 }
 
-/// Full edit-distance-1 expansion: common substitutions/transpositions, then
-/// single deletions, then single insertions. Capped at `max` variants.
+/// Typo tolerance by word length: no letters to spare in a word of up to
+/// two letters (אב would match א, ב, אם…), only the common letter confusions
+/// in a three-letter word, and the full edit distance 1 from four letters.
+const MIN_TYPO_SUBSTITUTION_LETTERS: usize = 3;
+const MIN_TYPO_EDIT_LETTERS: usize = 4;
+
+/// Letters of `word` that a typo may change: quotes and marks not counted.
+pub(crate) fn typo_letter_count(word: &str) -> usize {
+    word.chars()
+        .filter(|&c| !matches!(c, '\'' | '"') && !is_attached_mark(c))
+        .count()
+}
+
+/// Whether a word gets the full edit-distance-1 neighborhood (the engine's
+/// Levenshtein scan or [`generate_typo_variations`]' edits).
+pub(crate) fn takes_typo_edits(word: &str) -> bool {
+    typo_letter_count(word) >= MIN_TYPO_EDIT_LETTERS
+}
+
+/// Typo variants of `word`, original first, capped at `max`: by length (see
+/// [`MIN_TYPO_EDIT_LETTERS`]) nothing, the common letter confusions, or the
+/// full edit-distance-1 expansion — confusions/transpositions, then single
+/// deletions, then single insertions.
 fn generate_typo_variations(word: &str, max: usize) -> Vec<String> {
     if word.is_empty() {
         return vec![String::new()];
     }
+    let letters = typo_letter_count(word);
+    if letters < MIN_TYPO_SUBSTITUTION_LETTERS {
+        return vec![word.to_string()];
+    }
     let graphemes: Vec<&str> = word.graphemes(true).collect();
+    if letters < MIN_TYPO_EDIT_LETTERS {
+        let mut out = vec![word.to_string()];
+        let mut seen: HashSet<String> = HashSet::from([word.to_string()]);
+        for (i, &g) in graphemes.iter().enumerate() {
+            for &sub in typo_substitutions(g) {
+                let mut v = graphemes.clone();
+                v[i] = sub;
+                push_unique(&mut out, &mut seen, v.concat());
+            }
+        }
+        out.truncate(max.max(1));
+        return out;
+    }
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -2362,13 +2400,20 @@ fn prepare_advanced_query_impl(
         } else {
             Vec::new()
         };
+    // Only words long enough for the full edit distance take the automaton;
+    // shorter ones keep the literal (length-limited) variants.
+    let typo_literal = typo_tokens.iter().any(|t| !takes_typo_edits(t));
+    let typo_tokens: Vec<String> = typo_tokens
+        .into_iter()
+        .filter(|t| takes_typo_edits(t))
+        .collect();
 
     let regex_terms: Vec<WordPattern> = words
         .iter()
         .enumerate()
         .map(|(i, word)| {
             let mut flags = word_flags_at(&words, i, search_options);
-            if !typo_tokens.is_empty() {
+            if !typo_tokens.is_empty() && !typo_literal {
                 // The Levenshtein automaton supplies the typo coverage; the
                 // branches keep only the exact candidate forms.
                 flags.typo = false;
@@ -2860,9 +2905,9 @@ mod tests {
     #[test]
     fn prepare_vocalized_single_typo_word_yields_stripped_typo_token() {
         let voc = VocalizedFlags::new(true, false);
-        let options = make_options(&[("בָּרָא_0", &[(OPT_TYPO, true)])]);
+        let options = make_options(&[("בְּרָכָה_0", &[(OPT_TYPO, true)])]);
         let q = prepare_advanced_query_vocalized(
-            "בָּרָא",
+            "בְּרָכָה",
             0,
             &HashMap::new(),
             &HashMap::new(),
@@ -2870,7 +2915,7 @@ mod tests {
             &voc,
         );
         // הטוקן לסריקת ה-Levenshtein חוזר נטול סימנים (נסרק מול המילון הרגיל).
-        assert_eq!(q.typo_tokens, vec!["ברא".to_string()]);
+        assert_eq!(q.typo_tokens, vec!["ברכה".to_string()]);
         // וה-branch המדויק עדיין דורש את הסימנים שהוקלדו.
         assert!(q.regex_terms[0].joined().contains('\u{05B8}'));
     }
@@ -3269,6 +3314,39 @@ mod tests {
         assert!(v.contains(&"בע".to_string()));
         assert!(v.contains(&"בה".to_string()));
         assert!(v.contains(&"אב".to_string()));
+    }
+
+    #[test]
+    fn typo_tolerance_scales_with_word_length() {
+        // עד שתי אותיות — אין טעות; שלוש — רק חילופי אותיות מטבלת הבלבול;
+        // מארבע — מרחק עריכה 1 מלא.
+        assert_eq!(generate_typo_variations("אב", 100), vec!["אב"]);
+        let three = generate_typo_variations("שבת", 100);
+        for v in ["שבת", "סבת", "שות", "שבט"] {
+            assert!(three.contains(&v.to_string()), "{v}");
+        }
+        for v in ["שב", "שבתי", "בשת", "ששבת"] {
+            assert!(!three.contains(&v.to_string()), "{v}");
+        }
+        let four = generate_typo_variations("ברכה", 500);
+        for v in ["ברכ", "רבכה", "בברכה", "ברקה"] {
+            assert!(four.contains(&v.to_string()), "{v}");
+        }
+        // מרחק העריכה במנוע (אוטומט לבנשטיין) רק למילה של ארבע אותיות לפחות;
+        // מילה קצרה נשארת עם הווריאנטים המוגבלים.
+        let typo = |w: &str| make_options(&[(&format!("{w}_0"), &[(OPT_TYPO, true)])]);
+        let q = prepare_advanced_query("אב", 0, &HashMap::new(), &HashMap::new(), &typo("אב"));
+        assert!(q.typo_tokens.is_empty());
+        assert_eq!(joined_terms(&q), vec!["אב"]);
+        let q = prepare_advanced_query("שבת", 0, &HashMap::new(), &HashMap::new(), &typo("שבת"));
+        assert!(q.typo_tokens.is_empty());
+        assert!(q.regex_terms[0].branches().contains(&"שבט".to_string()));
+        let q =
+            prepare_advanced_query("ברכות", 0, &HashMap::new(), &HashMap::new(), &typo("ברכות"));
+        assert_eq!(q.typo_tokens, vec!["ברכות"]);
+        assert_eq!(joined_terms(&q), vec!["ברכות"]);
+        // גרשיים אינם נספרים כאותיות.
+        assert!(!takes_typo_edits("ר\"ת"));
     }
 
     #[test]
