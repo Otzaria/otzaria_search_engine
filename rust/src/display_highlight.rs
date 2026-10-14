@@ -9,7 +9,8 @@
 //! it is the ECMAScript never-match sentinel `(?!)`; callers must use `matcher`.
 //! Morphological bounds belong to each normalized spelling/alternative branch,
 //! rather than the typed word's length. A waived boundary lets a word carry
-//! its own affixes — at the phrase's outer endpoints as inside it.
+//! its own affixes — at the phrase's outer endpoints as inside it. A caller
+//! waiving a plain word's boundary gets the root anywhere in its token.
 
 use std::collections::{HashMap, HashSet};
 

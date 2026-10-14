@@ -14,12 +14,20 @@ use crate::hebrew_query::{fold_presentation_form, is_breaking_tag, is_word_mark}
 use crate::hebrew_tokenizer::{is_geresh, is_gershayim, is_transparent, HebrewTokenizer};
 
 pub(crate) struct PreparedHighlightMatcher {
-    // Mode bits let the outer left/right word carry its own affixes (otherwise
-    // it must be the whole token).
-    words: Vec<[Arc<Regex>; 4]>,
-    independent_words: Vec<[Arc<Regex>; 2]>,
+    // Indexed by the outer left word's `Edge` + 3 * the outer right word's.
+    words: Vec<[Arc<Regex>; 9]>,
+    independent_words: Vec<[Arc<Regex>; 3]>,
     proximity: Proximity,
     boundary_eligible: Vec<bool>,
+}
+
+/// How an outer word may sit in its token.
+struct Edge;
+
+impl Edge {
+    const WHOLE: usize = 0;
+    const AFFIXES: usize = 1;
+    const ANY: usize = 2;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,26 +75,27 @@ impl PreparedHighlightMatcher {
                 .iter()
                 .map(|(lead, root, trail)| format!("(?:{lead})({root})(?:{trail})"))
                 .collect();
-            // A waived boundary admits the word's own affixes, never any
+            // An expanded word's waiver admits its own affixes, never any
             // letters: "שבת" with prefixes alone does not paint "מחשבתו".
             independent_words.push([
                 compile(format!("\\A(?:{roots})\\z"))?,
                 compile(format!("\\A(?:{})\\z", affixed.join("|")))?,
+                compile(format!("(?:{roots})"))?,
             ]);
-            let mut modes = Vec::with_capacity(4);
-            for mode in 0..4 {
+            let mut modes = Vec::with_capacity(9);
+            for mode in 0..9 {
                 let alternatives: Vec<String> = branches
                     .iter()
                     .map(|(lead, root, trail)| {
-                        let lead = if edges && i == 0 && mode & 1 == 0 {
-                            ""
-                        } else {
-                            lead.as_str()
+                        let lead = match (edges && i == 0).then_some(mode % 3) {
+                            Some(Edge::WHOLE) => "",
+                            Some(Edge::ANY) => ".*?",
+                            _ => lead.as_str(),
                         };
-                        let trail = if edges && i + 1 == word_count && mode & 2 == 0 {
-                            ""
-                        } else {
-                            trail.as_str()
+                        let trail = match (edges && i + 1 == word_count).then_some(mode / 3) {
+                            Some(Edge::WHOLE) => "",
+                            Some(Edge::ANY) => ".*",
+                            _ => trail.as_str(),
                         };
                         format!("(?:{lead})({root})(?:{trail})")
                     })
@@ -134,13 +143,14 @@ impl PreparedHighlightMatcher {
                 if candidates[i][position].is_some() {
                     continue;
                 }
-                let boundary = require_boundaries
-                    .get(i)
-                    .copied()
-                    .unwrap_or(self.boundary_eligible[i]);
-                let mode = usize::from(i == 0 && !boundary)
-                    | (usize::from(i + 1 == self.words.len() && !boundary) << 1);
-                if let Some(captures) = patterns[mode].captures(&mapped.text) {
+                let edge = self.edge(i, require_boundaries);
+                let left = if i == 0 { edge } else { Edge::WHOLE };
+                let right = if i + 1 == self.words.len() {
+                    edge
+                } else {
+                    Edge::WHOLE
+                };
+                if let Some(captures) = patterns[left + 3 * right].captures(&mapped.text) {
                     if let Some(root) = captures.iter().skip(1).flatten().next() {
                         if !root.is_empty() {
                             candidates[i][position] = Some(Range {
@@ -171,19 +181,21 @@ impl PreparedHighlightMatcher {
                 !token.text.contains(['\'', '"']),
             );
             for (i, patterns) in self.independent_words.iter().enumerate() {
-                let boundary = require_boundaries
-                    .get(i)
-                    .copied()
-                    .unwrap_or(self.boundary_eligible[i]);
-                let pattern = &patterns[usize::from(!boundary)];
-                if let Some(captures) = pattern.captures(&mapped.text) {
-                    if let Some(root) = captures.iter().skip(1).flatten().next() {
-                        if !root.is_empty() {
-                            ranges.push(Range {
-                                start: mapped.starts[root.start()],
-                                end: mapped.ends[root.end() - 1],
-                            });
-                        }
+                let edge = self.edge(i, require_boundaries);
+                // Only a waived plain word may occur more than once in a token.
+                for captures in patterns[edge].captures_iter(&mapped.text) {
+                    let Some(root) = captures.iter().skip(1).flatten().next() else {
+                        break;
+                    };
+                    if root.is_empty() {
+                        break;
+                    }
+                    ranges.push(Range {
+                        start: mapped.starts[root.start()],
+                        end: mapped.ends[root.end() - 1],
+                    });
+                    if edge != Edge::ANY {
+                        break;
                     }
                 }
             }
@@ -206,6 +218,17 @@ impl PreparedHighlightMatcher {
             });
         }
         matches
+    }
+
+    /// A caller waiving a plain word's boundary asks for the root anywhere in
+    /// the token: partial-word display, or a quote cut mid-word.
+    fn edge(&self, word: usize, require_boundaries: &[bool]) -> usize {
+        let eligible = self.boundary_eligible[word];
+        match require_boundaries.get(word).copied().unwrap_or(eligible) {
+            true => Edge::WHOLE,
+            false if eligible => Edge::ANY,
+            false => Edge::AFFIXES,
+        }
     }
 
     fn resolve(&self, candidates: Vec<Vec<Option<Range>>>) -> Vec<Match> {
@@ -559,6 +582,25 @@ mod tests {
         assert!(plan.find_matches("אאא", &[true]).is_empty());
         // A token longer than root + windows is no match; scanning stays linear.
         assert!(plan.find_word_matches(&"א".repeat(10_000), &[]).is_empty());
+    }
+
+    #[test]
+    fn caller_waived_boundary_paints_inside_the_token() {
+        // The app waives boundaries for partial-word highlighting and counting.
+        let plain = matcher("אמר", &[], 0);
+        assert!(plain.find_matches("ויאמר משה", &[]).is_empty());
+        assert_eq!(plain.find_matches("וַיֹּאמֶר משה אמר", &[false]).len(), 2);
+        assert_eq!(plain.find_matches("אמר ויאמר ונאמר", &[false]).len(), 3);
+        // ...and for a quote whose selection stopped mid-word.
+        let quote = matcher("שֶׁנָּדַרְתָּ עָשִׂיתָ – יְה", &[], 0);
+        let text = "אִם כְּמָה שֶׁנָּדַרְתָּ עָשִׂיתָ – יְהֵא נֶדֶר";
+        assert!(quote.find_matches(text, &[]).is_empty());
+        assert_eq!(quote.find_matches(text, &[false, false, false]).len(), 1);
+        // A word with its own affix options keeps their window when waived.
+        let prefixes = matcher("שבת", &["קידומות"], 0);
+        assert!(prefixes.find_matches("מחשבתו", &[false]).is_empty());
+        let phrase = matcher("שבת קודש", &["קידומות"], 0);
+        assert!(phrase.find_matches("שבת קודשו", &[false, false]).is_empty());
     }
 
     #[test]
