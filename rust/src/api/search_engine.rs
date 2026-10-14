@@ -15198,6 +15198,10 @@ fn select_level_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<Seg
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[path = "../search_quality_tests.rs"]
+mod quality_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

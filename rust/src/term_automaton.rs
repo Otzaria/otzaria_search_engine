@@ -1,5 +1,5 @@
 //! Whole-term automata over the term dictionary, built as `regex-automata`
-//! dense DFAs.
+//! dense DFAs and shared through one process-wide cache.
 //!
 //! A pattern accepts a dictionary term when the *whole* term matches — the
 //! contract of `tantivy_fst::Regex`, whose syntax restrictions are mirrored
@@ -9,8 +9,11 @@
 //! it in full, and the accepting state names every branch that matched —
 //! which is what lets one DFA over all branches still rank terms by branch.
 
-use std::sync::Arc;
+use std::cell::Cell;
+use std::sync::{Arc, Mutex};
 
+use lru::LruCache;
+use once_cell::sync::Lazy;
 use regex_automata::dfa::{dense, Automaton as _, StartKind};
 use regex_automata::nfa::thompson::{self, WhichCaptures};
 use regex_automata::util::primitives::StateID;
@@ -27,6 +30,9 @@ const NFA_SIZE_LIMIT: usize = 10 << 20;
 const DFA_SIZE_LIMIT: usize = 32 << 20;
 /// Working memory of determinization.
 const DETERMINIZE_SIZE_LIMIT: usize = 64 << 20;
+/// Cache bounds: entry count and the summed DFA memory.
+const CACHE_ENTRIES: usize = 256;
+const CACHE_BYTES: usize = 96 << 20;
 
 /// One anchored dense DFA over a contiguous range of branches.
 pub(crate) struct TermDfa {
@@ -132,12 +138,63 @@ impl TermAutomata {
     }
 }
 
-/// Compiles `branches` (each a whole-term pattern) into automata.
-pub(crate) fn compile_branches(branches: &[String]) -> Result<Arc<TermAutomata>, String> {
-    build_branches(branches).map(Arc::new)
+type CacheValue = Result<Arc<TermAutomata>, String>;
+
+struct Cache {
+    entries: LruCache<Vec<String>, CacheValue>,
+    bytes: usize,
 }
 
-/// One DFA for `pattern` (no splitting).
+/// Keyed by the branch list alone: a DFA does not depend on the field it
+/// scans, so one entry serves the plain and the vocalized dictionary alike.
+static CACHE: Lazy<Mutex<Cache>> = Lazy::new(|| {
+    Mutex::new(Cache {
+        entries: LruCache::unbounded(),
+        bytes: 0,
+    })
+});
+
+thread_local! {
+    static BUILDS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// DFA builds run by this thread (test hook for the cache).
+#[cfg(test)]
+pub(crate) fn builds_on_this_thread() -> u64 {
+    BUILDS.with(Cell::get)
+}
+
+fn cached_bytes(value: &CacheValue) -> usize {
+    value.as_ref().map_or(0, |a| a.memory_usage())
+}
+
+/// Compiles `branches` (each a whole-term pattern) into automata, served
+/// from the shared cache. Failures are cached too, so a pattern over the
+/// size limits is not rebuilt by every search, count, page and highlight
+/// call behind one user search. Builds run outside the lock.
+pub(crate) fn compile_branches(branches: &[String]) -> Result<Arc<TermAutomata>, String> {
+    if let Some(hit) = CACHE.lock().unwrap().entries.get(branches) {
+        return hit.clone();
+    }
+    let value = build_branches(branches).map(Arc::new);
+    let bytes = cached_bytes(&value);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some(old) = cache.entries.put(branches.to_vec(), value.clone()) {
+        cache.bytes -= cached_bytes(&old);
+    }
+    cache.bytes += bytes;
+    while cache.entries.len() > CACHE_ENTRIES
+        || (cache.bytes > CACHE_BYTES && cache.entries.len() > 1)
+    {
+        match cache.entries.pop_lru() {
+            Some((_, old)) => cache.bytes -= cached_bytes(&old),
+            None => break,
+        }
+    }
+    value
+}
+
+/// One DFA for `pattern` (no splitting), cached like [`compile_branches`].
 pub(crate) fn compile_pattern(pattern: &str) -> Result<Arc<TermDfa>, String> {
     let automata = compile_branches(std::slice::from_ref(&pattern.to_string()))?;
     Ok(automata
@@ -147,6 +204,7 @@ pub(crate) fn compile_pattern(pattern: &str) -> Result<Arc<TermDfa>, String> {
 }
 
 fn build_branches(branches: &[String]) -> Result<TermAutomata, String> {
+    BUILDS.with(|c| c.set(c.get() + 1));
     let hirs: Vec<Hir> = branches
         .iter()
         .map(|b| parse(b))
@@ -282,5 +340,21 @@ mod tests {
         assert_eq!(dfa.matched_branch("בשבת".as_bytes()), Some(1));
         assert_eq!(dfa.matched_branch("שבתו".as_bytes()), Some(2));
         assert_eq!(dfa.matched_branch("בשבתו".as_bytes()), None);
+    }
+
+    #[test]
+    fn cache_serves_repeats_and_failures() {
+        let pattern = vec!["(?:קאש|טסט)מטמון".to_string()];
+        let before = builds_on_this_thread();
+        compile_branches(&pattern).unwrap();
+        compile_branches(&pattern).unwrap();
+        compile_pattern("(?:קאש|טסט)מטמון").unwrap();
+        assert_eq!(builds_on_this_thread() - before, 1);
+
+        let bad = vec!["(?:א|ב".to_string()];
+        let before = builds_on_this_thread();
+        assert!(compile_branches(&bad).is_err());
+        assert!(compile_branches(&bad).is_err());
+        assert_eq!(builds_on_this_thread() - before, 1);
     }
 }
