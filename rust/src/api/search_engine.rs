@@ -18,7 +18,7 @@ use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
     AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, DfaWrapper, EmptyQuery, FuzzyTermQuery,
-    Occur, PhraseQuery, TermQuery, TermSetQuery,
+    Occur, TermQuery, TermSetQuery,
 };
 use tantivy::query::{Query, RegexPhraseQuery};
 use tantivy::schema::Value;
@@ -47,6 +47,7 @@ use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
+use crate::quote_expansion::{self, AutomatonQuery, QuoteTransparent};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
@@ -2773,8 +2774,8 @@ struct PhraseHighlight {
     /// Ordered gaps have length `per_word_terms.len() - 1`.
     proximity: Proximity,
     /// The analyzer that tokenizes snippet fragments for re-highlighting —
-    /// must match the field the terms came from (`"hebrew"` for `text`,
-    /// `"hebrew_vocalized"` for `textVocalized`).
+    /// must match the field the terms came from ([`DISPLAY_ANALYZER`] for `text`,
+    /// [`VOCALIZED_DISPLAY_ANALYZER`] for `textVocalized`).
     analyzer: &'static str,
     /// The search also matches the phrase across a line break (see [`cross_line`]): a
     /// hit without an in-line occurrence is shown joined with its next line.
@@ -2975,8 +2976,11 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // (`line_source::prepare_row`) needs a bump: that is what keeps `TextStatus::Ok` true,
 // the promise that the displayed text is exactly what was indexed.
 //
-// v6: disk savings. `id` and `filePath` carry no fieldnorms. A version 5 index is
-// rebuilt: nothing older than [`MIN_READABLE_SCHEMA_VERSION`] is read.
+// v6: disk savings. `id` and `filePath` carry no fieldnorms; `id` is not indexed; the
+// doc store keeps `reference`, `id` and the stored texts (see `doc_store`); the book
+// fingerprints sit on one document of a book; `sectionId`/`generationSort` are derived
+// (see `derived_columns`); and the fields no longer index a quote-free twin beside a
+// quoted word (see `quote_expansion`). A version 5 index is rebuilt.
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 6;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
@@ -4428,56 +4432,39 @@ pub struct SearchEngine {
     semantic_highlights: crate::semantic_highlight::HighlightCache,
 }
 
+/// Analyzers that keep the quote-free twin of a quoted word (`רמב"ם` → `רמבם` at the
+/// same position): what snippets and phrase highlights tokenize text with, so a query
+/// reaching `רמב"ם` through `רמבם` paints it, and what `lineEdge` terms are made with.
+pub(crate) const DISPLAY_ANALYZER: &str = "hebrew_display";
+pub(crate) const VOCALIZED_DISPLAY_ANALYZER: &str = "hebrew_vocalized_display";
+
 /// The analyzers every field and query of the index is tokenized with.
-fn register_hebrew_tokenizers(index: &Index) {
-    // אנליזטורי השדות (מצב אינדוקס): מילה עם גרש/גרשיים מוטמעת גם
-    // בצורתה הנקייה באותה עמדה — חיפוש `רמבם` מוצא `רמב"ם`.
-    // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת
-    // ספירת הטוקנים ב-PhraseQuery סוטה מהאינדקס: זבל base64 שזלג
-    // לקורפוס (נמדדו ריצות של 4,618 תווים) לא נכנס למילון הטרמים.
-    // 128 בייט ≈ 64 אותיות עבריות — פי כמה מכל מילה לגיטימית.
-    index.tokenizers().register(
-        "hebrew",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: true,
-            keep_marks: false,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
-    index.tokenizers().register(
-        "hebrew_vocalized",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: true,
-            keep_marks: true,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
-    // גרסאות צד-שאילתה: בלי הפליטה הכפולה — שאילתה מטוקננת לטוקן אחד
-    // לכל מילה (מסלול ה-exact בונה PhraseQuery לפי מספר הטוקנים).
-    index.tokenizers().register(
-        "hebrew_query",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: false,
-            keep_marks: false,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
-    index.tokenizers().register(
-        "hebrew_vocalized_query",
-        TextAnalyzer::builder(HebrewTokenizer {
-            emit_quote_free: false,
-            keep_marks: true,
-        })
-        .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
-        .filter(LowerCaser)
-        .build(),
-    );
+/// `index_twins`: the fields' analyzers emit the quote-free twin, as up to schema 5 —
+/// only for tests comparing such an index with one without.
+fn register_hebrew_tokenizers_with(index: &Index, index_twins: bool) {
+    // The fields index each word once; a query reaches its quoted spellings through
+    // `quote_expansion`, and the query analyzers never split a word in two.
+    // RemoveLongFilter על *כל* האנליזטורים — כולל צד השאילתה, אחרת ספירת הטוקנים
+    // ב-PhraseQuery סוטה מהאינדקס (זבל base64 שזלג לקורפוס לא נכנס למילון).
+    for (name, emit_quote_free, keep_marks) in [
+        ("hebrew", index_twins, false),
+        ("hebrew_vocalized", index_twins, true),
+        (DISPLAY_ANALYZER, true, false),
+        (VOCALIZED_DISPLAY_ANALYZER, true, true),
+        ("hebrew_query", false, false),
+        ("hebrew_vocalized_query", false, true),
+    ] {
+        index.tokenizers().register(
+            name,
+            TextAnalyzer::builder(HebrewTokenizer {
+                emit_quote_free,
+                keep_marks,
+            })
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_BYTES))
+            .filter(LowerCaser)
+            .build(),
+        );
+    }
 }
 
 /// Installs a stderr logger (once per process) so the engine's `info!`
@@ -4498,6 +4485,17 @@ impl SearchEngine {
     /// Deliberately **not** `#[frb(sync)]` — opening the index mmaps and reads every
     /// segment footer; a synchronous binding blocks the calling Dart isolate throughout.
     pub fn new(path: &str) -> Self {
+        Self::open_with(path, false)
+    }
+
+    /// An engine whose index holds the quote-free twins schema 5 indexed: for tests that
+    /// compare answers with and without them.
+    #[cfg(test)]
+    pub(crate) fn with_quote_free_twins(path: &str) -> Self {
+        Self::open_with(path, true)
+    }
+
+    fn open_with(path: &str, index_twins: bool) -> Self {
         init_engine_logger();
         debug!("new path={}", path);
         let directory =
@@ -4511,7 +4509,7 @@ impl SearchEngine {
             Err(err) => panic!("Failed to open index at {path}: {err}"),
         };
         let schema = index.schema();
-        register_hebrew_tokenizers(&index);
+        register_hebrew_tokenizers_with(&index, index_twins);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -4592,7 +4590,7 @@ impl SearchEngine {
     #[cfg(test)]
     pub(crate) fn from_read_only_index(index: Index, path: &Path) -> Result<Self> {
         let schema = index.schema();
-        register_hebrew_tokenizers(&index);
+        register_hebrew_tokenizers_with(&index, false);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -10198,11 +10196,12 @@ impl SearchEngine {
     }
 
     /// The `text` field's indexing analyzer (with quote-free twins).
+    /// The analyzer `lineEdge` terms are made with: twins included, as up to schema 5.
     fn text_index_analyzer(&self) -> Result<TextAnalyzer> {
         self.index
             .tokenizers()
-            .get("hebrew")
-            .context("the hebrew analyzer is not registered")
+            .get(DISPLAY_ANALYZER)
+            .context("the hebrew display analyzer is not registered")
     }
 
     fn stored_text_fields(&self) -> Result<(Field, Field)> {
@@ -10528,18 +10527,20 @@ impl SearchEngine {
             .map(hebrew_query::WordPattern::joined)
             .collect();
         let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-        let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
-        phrase_query.set_slop(slop_budget);
-        phrase_query.set_max_expansions(max_expansions);
+        let compiled = RegexPhraseQuery::new(text_field, joined);
         // The query caches the compiled DFAs; the checks below and its weight share them.
-        let joined_compiles = phrase_query.regexes().is_ok();
-        if joined_compiles
-            && !self.phrase_exceeds_max_expansions(
-                phrase_query.regexes()?,
-                text_field,
-                max_expansions,
-            )?
-        {
+        let joined_compiles = compiled.regexes().is_ok();
+        let phrase_query = joined_compiles
+            .then(|| quote_expansion::quote_transparent_phrase(&compiled, slop_budget))
+            .transpose()?;
+        if let Some(mut phrase_query) = phrase_query.filter(|phrase_query| {
+            phrase_query.automata().is_ok_and(|automata| {
+                !self
+                    .phrase_exceeds_max_expansions(automata, text_field, max_expansions)
+                    .unwrap_or(true)
+            })
+        }) {
+            phrase_query.set_max_expansions(max_expansions);
             let inline: Box<dyn Query> = if slop_budget == 0 {
                 Box::new(phrase_query)
             } else {
@@ -10659,12 +10660,16 @@ impl SearchEngine {
     /// here — disjoint vocabularies in several segments may be larger than
     /// `max_expansions` together while every segment remains valid for
     /// Tantivy's BM25 phrase scorer.
-    fn phrase_exceeds_max_expansions(
+    fn phrase_exceeds_max_expansions<A>(
         &self,
-        regexes: &[Arc<tantivy_fst::Regex>],
+        regexes: &[Arc<A>],
         text_field: Field,
         max_expansions: u32,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let searcher = self.index_reader.searcher();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
@@ -11189,7 +11194,10 @@ impl SearchEngine {
     {
         let mut terms = matched.len();
         let mut hits = Vec::new();
-        let mut stream = inverted.terms().search(automaton).into_stream()?;
+        let mut stream = inverted
+            .terms()
+            .search(QuoteTransparent::new(automaton))
+            .into_stream()?;
         while stream.advance() {
             if let Ok(term) = std::str::from_utf8(stream.key()) {
                 let doc_freq = stream.value().doc_freq;
@@ -11239,7 +11247,10 @@ impl SearchEngine {
         let mut hits = Vec::new();
         let mut distinct = 0usize;
         let mut cost = 0u64;
-        let mut stream = inverted.terms().search(automaton).into_stream()?;
+        let mut stream = inverted
+            .terms()
+            .search(QuoteTransparent::new(automaton))
+            .into_stream()?;
         while stream.advance() {
             if let Ok(term) = std::str::from_utf8(stream.key()) {
                 let doc_freq = stream.value().doc_freq;
@@ -11273,7 +11284,10 @@ impl SearchEngine {
         A: Automaton,
         A::State: Clone,
     {
-        let mut stream = inverted.terms().search(automaton).into_stream()?;
+        let mut stream = inverted
+            .terms()
+            .search(QuoteTransparent::new(automaton))
+            .into_stream()?;
         while stream.advance() {
             if let Ok(term) = std::str::from_utf8(stream.key()) {
                 *postings_cost += u64::from(stream.value().doc_freq);
@@ -11400,31 +11414,33 @@ impl SearchEngine {
             .transpose()?;
         let text_f = self.schema.get_field("text")?;
         let token_texts = self.index_token_texts(query_str)?;
-        let mut terms: Vec<Term> = token_texts
-            .iter()
-            .map(|t| Term::from_field_text(text_f, t))
-            .collect();
-        let main_query: Box<dyn Query> = match terms.len() {
+        let searcher = self.index_reader.searcher();
+        let main_query: Box<dyn Query> = match token_texts.len() {
             0 => Box::new(EmptyQuery),
-            1 => Box::new(TermQuery::new(
-                terms.pop().unwrap(),
+            1 => quote_expansion::term_query(
+                &searcher,
+                text_f,
+                &token_texts[0],
                 IndexRecordOption::Basic,
-            )),
+            )?,
             _ if cross_line => {
                 let words: Vec<cross_line::CrossLineWord> = token_texts
                     .iter()
-                    .map(|t| cross_line::CrossLineWord::Terms(vec![t.clone()]))
-                    .collect();
+                    .map(|t| {
+                        quote_expansion::spellings(&searcher, text_f, t)
+                            .map(cross_line::CrossLineWord::Terms)
+                    })
+                    .collect::<tantivy::Result<_>>()?;
                 let gaps = vec![0; words.len() - 1];
                 self.with_cross_line(
-                    Box::new(PhraseQuery::new(terms)),
+                    quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?,
                     text_f,
                     &words,
                     &gaps,
                     facets_query.as_deref(),
                 )?
             }
-            _ => Box::new(PhraseQuery::new(terms)),
+            _ => quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?,
         };
         if let Some(facets_query) = facets_query {
             Ok((
@@ -11649,24 +11665,28 @@ impl SearchEngine {
     /// relevance tier: a `ConstScoreQuery` floor (immune to BM25 `idf` collapse
     /// on near-ubiquitous terms) plus a small BM25 `TermQuery` add-on for
     /// intra-exact ordering. Only used on the ranked (`Relevance`) fuzzy path.
-    fn exact_rank_clauses(text_f: Field, token: &str) -> Vec<(Occur, Box<dyn Query>)> {
-        let term = Term::from_field_text(text_f, token);
-        vec![
+    fn exact_rank_clauses(
+        searcher: &Searcher,
+        text_f: Field,
+        token: &str,
+    ) -> Result<Vec<(Occur, Box<dyn Query>)>> {
+        let exact = |option| quote_expansion::term_query(searcher, text_f, token, option);
+        Ok(vec![
             (
                 Occur::Should,
                 Box::new(ConstScoreQuery::new(
-                    Box::new(TermQuery::new(term.clone(), IndexRecordOption::Basic)),
+                    exact(IndexRecordOption::Basic)?,
                     FUZZY_BOOST_EXACT,
                 )) as Box<dyn Query>,
             ),
             (
                 Occur::Should,
                 Box::new(BoostQuery::new(
-                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)),
+                    exact(IndexRecordOption::WithFreqs)?,
                     FUZZY_BOOST_EXACT_REL,
                 )),
             ),
-        ]
+        ])
     }
 
     /// Fuzzy mode from pre-tokenized terms: one `FuzzyTermQuery` per term, ANDed,
@@ -11693,11 +11713,11 @@ impl SearchEngine {
             return Ok(Box::new(EmptyQuery));
         }
         let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = term_texts
             .iter()
-            .map(|t| {
-                let term = Term::from_field_text(text_f, t);
-                let fuzzy = FuzzyTermQuery::new(term, max_distance, true);
+            .map(|t| -> Result<(Occur, Box<dyn Query>)> {
+                let fuzzy = AutomatonQuery::new(text_f, self.fuzzy_automaton(t, max_distance)?);
                 // Bare recall is one fuzzy automaton per token. distance 0 is
                 // exact already, and unranked paths (count/catalogue) need no
                 // scoring, so both stay the bare query — except that a
@@ -11712,18 +11732,20 @@ impl SearchEngine {
                             (Occur::Should, Box::new(fuzzy) as Box<dyn Query>),
                             (
                                 Occur::Should,
-                                Box::new(TermQuery::new(
-                                    Term::from_field_text(text_f, &clean),
+                                quote_expansion::term_query(
+                                    &searcher,
+                                    text_f,
+                                    &clean,
                                     IndexRecordOption::Basic,
-                                )),
+                                )?,
                             ),
                         ])),
                         None => Box::new(fuzzy),
                     }
                 } else {
-                    let mut should = Self::exact_rank_clauses(text_f, t);
+                    let mut should = Self::exact_rank_clauses(&searcher, text_f, t)?;
                     if let Some(clean) = Self::quoteless_variant(t) {
-                        should.extend(Self::exact_rank_clauses(text_f, &clean));
+                        should.extend(Self::exact_rank_clauses(&searcher, text_f, &clean)?);
                     }
                     should.push((
                         Occur::Should,
@@ -11731,11 +11753,11 @@ impl SearchEngine {
                     ));
                     Box::new(BooleanQuery::new(should))
                 };
-                (Occur::Must, token_query)
+                Ok((Occur::Must, token_query))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         if rank {
-            clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
+            clauses.extend(Self::exact_phrase_boost(&searcher, text_f, term_texts)?);
         }
         if !facets.is_empty() {
             clauses.push((Occur::Must, self.facet_filter_query(facets)?));
@@ -11745,27 +11767,36 @@ impl SearchEngine {
 
     /// The ranking-only `Should` that lifts hits where the typed words stand
     /// adjacent (within [`LEXICAL_FUZZY_PHRASE_SLOP`]) above scattered ones.
-    fn exact_phrase_boost(text_f: Field, term_texts: &[String]) -> Option<(Occur, Box<dyn Query>)> {
-        let phrase = Self::exact_phrase(text_f, term_texts)?;
-        Some((
+    fn exact_phrase_boost(
+        searcher: &Searcher,
+        text_f: Field,
+        term_texts: &[String],
+    ) -> Result<Option<(Occur, Box<dyn Query>)>> {
+        let Some(phrase) = Self::exact_phrase(searcher, text_f, term_texts)? else {
+            return Ok(None);
+        };
+        Ok(Some((
             Occur::Should,
-            Box::new(ConstScoreQuery::new(Box::new(phrase), FUZZY_BOOST_PHRASE)),
-        ))
+            Box::new(ConstScoreQuery::new(phrase, FUZZY_BOOST_PHRASE)),
+        )))
     }
 
     /// The typed words, exact, within [`LEXICAL_FUZZY_PHRASE_SLOP`]; `None`
     /// for a single word.
-    fn exact_phrase(text_f: Field, words: &[String]) -> Option<PhraseQuery> {
+    fn exact_phrase(
+        searcher: &Searcher,
+        text_f: Field,
+        words: &[String],
+    ) -> Result<Option<Box<dyn Query>>> {
         if words.len() < 2 {
-            return None;
+            return Ok(None);
         }
-        let terms = words
-            .iter()
-            .map(|t| Term::from_field_text(text_f, t))
-            .collect();
-        let mut phrase = PhraseQuery::new(terms);
-        phrase.set_slop(LEXICAL_FUZZY_PHRASE_SLOP);
-        Some(phrase)
+        Ok(Some(quote_expansion::phrase_query(
+            searcher,
+            text_f,
+            words,
+            LEXICAL_FUZZY_PHRASE_SLOP,
+        )?))
     }
 
     /// Whether one quotation contains every searchable word of the query. Independent
@@ -11959,6 +11990,7 @@ impl SearchEngine {
             .as_ref()
             .context("lexical fuzzy query requires a loaded magic dictionary")?;
         let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
 
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(term_texts.len() + 3);
         for phrase in phrases.iter().filter(|p| p.len() >= 2) {
@@ -11968,8 +12000,7 @@ impl SearchEngine {
             ));
             if rank {
                 clauses.extend(
-                    Self::exact_phrase(text_f, phrase)
-                        .map(|q| (Occur::Should, Box::new(q) as Box<dyn Query>)),
+                    Self::exact_phrase(&searcher, text_f, phrase)?.map(|q| (Occur::Should, q)),
                 );
             }
         }
@@ -11979,19 +12010,21 @@ impl SearchEngine {
             if phrases.iter().any(|p| p.len() >= 2 && p.contains(token)) {
                 continue;
             }
-            let exact_term = Term::from_field_text(text_f, token);
             // Wrap the fuzzy automaton in the fuzzy-tier boost only when ranking;
             // an unranked recall query (count/catalogue) carries no boost so it
-            // stays the bare `FuzzyTermQuery` it always was.
-            let fuzzy: Option<Box<dyn Query>> = (max_distance > 0).then(|| {
-                let fuzzy_q = FuzzyTermQuery::new(exact_term.clone(), max_distance, true);
-                if rank {
+            // stays the bare fuzzy automaton it always was.
+            let fuzzy: Option<Box<dyn Query>> = if max_distance > 0 {
+                let fuzzy_q =
+                    AutomatonQuery::new(text_f, self.fuzzy_automaton(token, max_distance)?);
+                Some(if rank {
                     Box::new(BoostQuery::new(Box::new(fuzzy_q), FUZZY_BOOST_FUZZY))
                         as Box<dyn Query>
                 } else {
                     Box::new(fuzzy_q)
-                }
-            });
+                })
+            } else {
+                None
+            };
             let clean = Self::quoteless_variant(token);
             let mut forms = dict.recall_forms(token, MAX_LEXICAL_FORMS);
             forms.retain(|f| f != token && Some(f.as_str()) != clean.as_deref());
@@ -12006,34 +12039,38 @@ impl SearchEngine {
             // the exact tier — clean-typography editions match at distance 0
             // and rank as exact, not as edit-distance tail.
             let mut should: Vec<(Occur, Box<dyn Query>)> = if rank {
-                Self::exact_rank_clauses(text_f, token)
+                Self::exact_rank_clauses(&searcher, text_f, token)?
             } else if fuzzy.is_none() {
                 vec![(
                     Occur::Should,
-                    Box::new(TermQuery::new(exact_term, IndexRecordOption::Basic)),
+                    quote_expansion::term_query(
+                        &searcher,
+                        text_f,
+                        token,
+                        IndexRecordOption::Basic,
+                    )?,
                 )]
             } else {
                 Vec::with_capacity(3)
             };
             if let Some(clean) = &clean {
                 if rank {
-                    should.extend(Self::exact_rank_clauses(text_f, clean));
+                    should.extend(Self::exact_rank_clauses(&searcher, text_f, clean)?);
                 } else {
                     should.push((
                         Occur::Should,
-                        Box::new(TermQuery::new(
-                            Term::from_field_text(text_f, clean),
+                        quote_expansion::term_query(
+                            &searcher,
+                            text_f,
+                            clean,
                             IndexRecordOption::Basic,
-                        )),
+                        )?,
                     ));
                 }
             }
             should.extend(fuzzy.map(|fuzzy| (Occur::Should, fuzzy)));
             if !forms.is_empty() {
-                let set_terms: Vec<Term> = forms
-                    .iter()
-                    .map(|f| Term::from_field_text(text_f, f))
-                    .collect();
+                let set_terms = quote_expansion::spelling_terms(&searcher, text_f, &forms)?;
                 let termset: Box<dyn Query> = if rank {
                     Box::new(BoostQuery::new(
                         Box::new(TermSetQuery::new(set_terms)),
@@ -12055,7 +12092,7 @@ impl SearchEngine {
             clauses.push((Occur::Must, token_query));
         }
         if rank {
-            clauses.extend(Self::exact_phrase_boost(text_f, term_texts));
+            clauses.extend(Self::exact_phrase_boost(&searcher, text_f, term_texts)?);
             if LEXICAL_FUZZY_EXPANDED_PHRASE_BOOST && term_texts.len() >= 2 {
                 let expanded = self.lexical_fuzzy_phrase_query(dict, term_texts, max_distance)?;
                 clauses.push((
@@ -12080,16 +12117,12 @@ impl SearchEngine {
         max_distance: u8,
     ) -> Result<Box<dyn Query>> {
         let text_f = self.schema.get_field("text")?;
+        let searcher = self.index_reader.searcher();
         let position_terms = self
             .lexical_fuzzy_phrase_terms(dict, term_texts, max_distance)?
             .into_iter()
-            .map(|terms| {
-                terms
-                    .iter()
-                    .map(|t| Term::from_field_text(text_f, t))
-                    .collect()
-            })
-            .collect();
+            .map(|terms| quote_expansion::spelling_terms(&searcher, text_f, &terms))
+            .collect::<tantivy::Result<_>>()?;
         let gaps = vec![LEXICAL_FUZZY_PHRASE_SLOP; term_texts.len().saturating_sub(1)];
         Ok(Box::new(TermListPhraseQuery::new(
             text_f,
@@ -13242,11 +13275,9 @@ impl SearchEngine {
         per_word_terms: &[HashSet<String>],
         text_f: Field,
     ) -> Result<Option<Box<dyn Query>>> {
-        let terms: Vec<Term> = per_word_terms
-            .iter()
-            .flat_map(|set| set.iter())
-            .map(|t| Term::from_field_text(text_f, t))
-            .collect();
+        let words: Vec<&String> = per_word_terms.iter().flatten().collect();
+        let searcher = self.index_reader.searcher();
+        let terms = quote_expansion::spelling_terms(&searcher, text_f, &words)?;
         Ok((!terms.is_empty()).then(|| Box::new(TermSetQuery::new(terms)) as Box<dyn Query>))
     }
 
@@ -13321,9 +13352,9 @@ impl SearchEngine {
         }
         let field = self.search_text_field(voc)?;
         let analyzer = if voc.any() {
-            "hebrew_vocalized"
+            VOCALIZED_DISPLAY_ANALYZER
         } else {
-            "hebrew"
+            DISPLAY_ANALYZER
         };
         let per_word_terms = self.phrase_per_word_terms(searcher, regex_terms, field)?;
         let mut all_word_sets = per_word_terms.clone();
@@ -13388,7 +13419,7 @@ impl SearchEngine {
                 phrase: Some(PhraseHighlight {
                     proximity: Proximity::adjacent(per_word_terms.len()),
                     per_word_terms,
-                    analyzer: "hebrew_vocalized",
+                    analyzer: VOCALIZED_DISPLAY_ANALYZER,
                     cross_line: false,
                     alternatives: Vec::new(),
                     allow_term_fallback: true,
@@ -13406,7 +13437,7 @@ impl SearchEngine {
             phrase: Some(PhraseHighlight {
                 proximity: Proximity::adjacent(per_word_terms.len()),
                 per_word_terms,
-                analyzer: "hebrew",
+                analyzer: DISPLAY_ANALYZER,
                 cross_line: true,
                 alternatives: Vec::new(),
                 allow_term_fallback: true,
@@ -13438,9 +13469,9 @@ impl SearchEngine {
             };
         }
         let (query_analyzer, analyzer) = if voc.any() {
-            ("hebrew_vocalized_query", "hebrew_vocalized")
+            ("hebrew_vocalized_query", VOCALIZED_DISPLAY_ANALYZER)
         } else {
-            ("hebrew_query", "hebrew")
+            ("hebrew_query", DISPLAY_ANALYZER)
         };
         let field = self.search_text_field(voc)?;
         let mut outside = self.index_token_texts_with(query_analyzer, query)?;
@@ -13563,7 +13594,7 @@ impl SearchEngine {
             Some(PhraseHighlight {
                 per_word_terms,
                 proximity: Proximity::Ordered(gaps),
-                analyzer: "hebrew",
+                analyzer: DISPLAY_ANALYZER,
                 cross_line: false,
                 alternatives: Vec::new(),
                 allow_term_fallback: true,
@@ -13692,10 +13723,8 @@ impl SearchEngine {
             }
         }
 
-        let terms: Vec<Term> = matched
-            .into_iter()
-            .map(|t| Term::from_field_text(text_f, &t))
-            .collect();
+        let matched: Vec<String> = matched.into_iter().collect();
+        let terms = quote_expansion::spelling_terms(searcher, text_f, &matched)?;
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
@@ -13779,7 +13808,10 @@ impl SearchEngine {
         let mut seen = HashSet::new();
         'segments: for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_f)?;
-            let mut stream = inverted.terms().search(automaton).into_stream()?;
+            let mut stream = inverted
+                .terms()
+                .search(QuoteTransparent::new(automaton))
+                .into_stream()?;
             while stream.advance() {
                 if let Ok(term) = std::str::from_utf8(stream.key()) {
                     // contains-before-insert: a term already seen in an
@@ -13807,9 +13839,41 @@ impl SearchEngine {
         text_field: Field,
         hl: &HighlightConfig,
     ) -> Result<SnippetGenerator> {
-        let mut snippet_generator = SnippetGenerator::create(searcher, query, text_field)?;
-        snippet_generator.set_max_num_chars(hl.max_chars as usize);
-        Ok(snippet_generator)
+        // `SnippetGenerator::create` with the display analyzer instead of the field's:
+        // a term reached through its quote-free spelling paints the quoted word.
+        let mut terms = std::collections::BTreeSet::new();
+        query.query_terms(&mut |term, _| {
+            if term.field() == text_field {
+                terms.insert(term.clone());
+            }
+        });
+        let mut terms_text = std::collections::BTreeMap::new();
+        for term in terms {
+            let Some(text) = term.value().as_str().map(str::to_string) else {
+                continue;
+            };
+            let doc_freq = searcher.doc_freq(&term)?;
+            if doc_freq > 0 {
+                terms_text.insert(text, 1.0 / (1.0 + doc_freq as Score));
+            }
+        }
+        let vocalized = text_field == searcher.schema().get_field("textVocalized")?;
+        let analyzer = if vocalized {
+            VOCALIZED_DISPLAY_ANALYZER
+        } else {
+            DISPLAY_ANALYZER
+        };
+        let tokenizer = searcher
+            .index()
+            .tokenizers()
+            .get(analyzer)
+            .with_context(|| format!("{analyzer} is not registered"))?;
+        Ok(SnippetGenerator::new(
+            terms_text,
+            tokenizer,
+            text_field,
+            hl.max_chars as usize,
+        ))
     }
 
     /// Re-derives a snippet's highlight markup so only complete phrase
@@ -15345,7 +15409,7 @@ mod tests {
                 HashSet::from(["ואהרן".into()]),
             ],
             proximity: Proximity::Ordered(vec![1000]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15370,7 +15434,7 @@ mod tests {
                 HashSet::from(["רמבם".into()]),
             ],
             proximity: Proximity::Ordered(vec![0]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15442,7 +15506,7 @@ mod tests {
                     let phrase = PhraseHighlight {
                         per_word_terms: sets.clone(),
                         proximity: Proximity::Ordered(gaps.clone()),
-                        analyzer: "hebrew",
+                        analyzer: DISPLAY_ANALYZER,
                         cross_line: false,
                         alternatives: Vec::new(),
                         allow_term_fallback: true,
@@ -15474,7 +15538,7 @@ mod tests {
                 HashSet::from(["רמב\"ם".into(), "רמבם".into()]),
             ],
             proximity: Proximity::Ordered(vec![0]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15546,7 +15610,7 @@ mod tests {
                 HashSet::from(["ואהרן".into()]),
             ],
             proximity: Proximity::Ordered(vec![0]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,
@@ -15633,7 +15697,7 @@ mod tests {
                 HashSet::from(["ואהרן".into()]),
             ],
             proximity: Proximity::Ordered(vec![1000]),
-            analyzer: "hebrew",
+            analyzer: DISPLAY_ANALYZER,
             cross_line: false,
             alternatives: Vec::new(),
             allow_term_fallback: true,

@@ -42,6 +42,7 @@ use tantivy::{
 
 use crate::gap_phrase::{end_anchored_slack, start_anchored_slack, ChainSweep, WordPositions};
 use crate::hebrew_tokenizer::{next_token_boundaries, paired_reading_after};
+use crate::quote_expansion::QuoteTransparent;
 
 /// Position of a line's first content word, plus one; absent (or 0) when no
 /// phrase may continue into the line from the one before.
@@ -298,7 +299,7 @@ pub(crate) enum CrossLineWord {
 #[derive(Clone, Debug)]
 enum WordSource {
     Terms(Vec<Term>),
-    Regex(Arc<tantivy_fst::Regex>),
+    Regex(Arc<QuoteTransparent<tantivy_fst::Regex>>),
 }
 
 impl WordSource {
@@ -383,7 +384,7 @@ impl CompiledWord {
     fn new(word: &CrossLineWord, text: Field, edge: Field) -> Result<Option<Self>, String> {
         let regex = |pattern: String| {
             tantivy_fst::Regex::new(&pattern)
-                .map(|r| WordSource::Regex(Arc::new(r)))
+                .map(|r| WordSource::Regex(Arc::new(QuoteTransparent::new(r))))
                 .map_err(|e| format!("invalid cross-line pattern {pattern:?}: {e}"))
         };
         Ok(Some(match word {
@@ -1206,7 +1207,9 @@ mod tests {
         let reader = index.reader().unwrap();
         let searcher = reader.searcher();
         let inverted = searcher.segment_reader(0).inverted_index(text).unwrap();
-        let word = WordSource::Regex(Arc::new(tantivy_fst::Regex::new("x[0-9]+").unwrap()));
+        let word = WordSource::Regex(Arc::new(QuoteTransparent::new(
+            tantivy_fst::Regex::new("x[0-9]+").unwrap(),
+        )));
         assert_eq!(
             word.doc_freq(&inverted).unwrap(),
             SCORE_TERMS_PER_SEGMENT as u64

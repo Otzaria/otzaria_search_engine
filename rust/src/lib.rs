@@ -9,6 +9,9 @@ mod doc_store;
 mod frb_generated;
 mod highlight_matcher;
 mod id_lookup;
+mod quote_expansion;
+#[cfg(test)]
+mod quote_parity_tests;
 // אכיפת מרווח פר-זוג לשאילתות ביטוי — מחוץ ל-crate::api כדי ש-FRB לא ינסה
 // לגזור לו bindings.
 mod gap_phrase;
