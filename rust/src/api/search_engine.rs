@@ -2920,6 +2920,28 @@ fn convert_highlight_matches(
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DEFAULT_WRITER_HEAP_SIZE: usize = 300_000_000;
+
+/// Threads that collect one search's segments in parallel: half the cores, to
+/// leave room for indexing and the UI; phones keep searching on one thread.
+fn search_executor_threads() -> usize {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    (cores / 2).clamp(1, 8)
+}
+
+/// Gives `index` the search thread pool of [`search_executor_threads`]. Must run
+/// before a reader is built: a searcher keeps the executor of its index.
+fn set_search_executor(index: &mut Index) {
+    let threads = search_executor_threads();
+    if threads > 1 {
+        if let Err(err) = index.set_multithread_executor(threads) {
+            warn!("search stays single-threaded: {err}");
+        }
+    }
+}
+
 // Economy indexing (see `set_economy_indexing`): the mobile budget — 3
 // threads with small arenas — applied on demand on desktop too.
 const ECONOMY_WRITER_HEAP_SIZE: usize = 50_000_000;
@@ -4452,7 +4474,7 @@ impl SearchEngine {
         debug!("new path={}", path);
         let directory =
             IndexDirectory::open(Path::new(path)).expect("unable to open mmap directory");
-        let index = match open_or_create_index(directory) {
+        let mut index = match open_or_create_index(directory) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -4462,6 +4484,7 @@ impl SearchEngine {
         };
         let schema = index.schema();
         register_hebrew_tokenizers(&index);
+        set_search_executor(&mut index);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -4525,9 +4548,10 @@ impl SearchEngine {
     /// An engine over an index opened by the caller, with no writer and no metadata written:
     /// benchmarks on an index another process owns.
     #[cfg(test)]
-    pub(crate) fn from_read_only_index(index: Index, path: &Path) -> Result<Self> {
+    pub(crate) fn from_read_only_index(mut index: Index, path: &Path) -> Result<Self> {
         let schema = index.schema();
         register_hebrew_tokenizers(&index);
+        set_search_executor(&mut index);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -19548,6 +19572,54 @@ mod tests {
         assert_eq!(counts, expected);
     }
 
+    /// Segments are collected on the engine's own pool: concurrent callers, and
+    /// callers running inside rayon's global pool, neither deadlock nor diverge.
+    #[test]
+    fn multithread_search_executor_serves_concurrent_and_nested_searches() {
+        use rayon::prelude::*;
+        let (mut engine, _dir) = make_engine();
+        let mut id = 0;
+        for segment in 0..4 {
+            for line in 0..50 {
+                id += 1;
+                let text = if line % 2 == 0 {
+                    "שלום עולם"
+                } else {
+                    "ביי"
+                };
+                add(&mut engine, id, text, &format!("/books/{segment}.txt"));
+            }
+            engine.commit().unwrap();
+        }
+        assert_eq!(
+            matches!(
+                engine.index.search_executor(),
+                tantivy::Executor::ThreadPool(_)
+            ),
+            search_executor_threads() > 1
+        );
+        let by_book = || {
+            engine
+                .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
+                .unwrap()
+        };
+        let expected = by_book();
+        assert_eq!(expected.values().sum::<u32>(), 100);
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..20 {
+                        assert_eq!(by_book(), expected);
+                    }
+                });
+            }
+        });
+        (0..64)
+            .into_par_iter()
+            .for_each(|_| assert_eq!(by_book(), expected));
+    }
+
     #[test]
     fn test_count_documents_by_file_path_empty_index() {
         let (engine, _dir) = make_engine();
@@ -27337,3 +27409,4 @@ mod tests {
         }
     }
 }
+
