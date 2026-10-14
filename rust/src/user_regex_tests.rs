@@ -1327,3 +1327,46 @@ fn a_call_waiting_for_a_running_scan_sleeps_until_it_ends() {
     );
     holder.join().unwrap();
 }
+
+#[test]
+fn cached_answers_are_keyed_by_segment_order() {
+    use tantivy::directory::Directory;
+    use tantivy::schema::{SchemaBuilder, STRING};
+    use tantivy::{doc, Index, IndexReader, ReloadPolicy};
+
+    let mut builder = SchemaBuilder::new();
+    let field = builder.add_text_field("t", STRING);
+    let index = Index::create_in_ram(builder.build());
+    let mut writer = index.writer_with_num_threads(1, 15_000_000).unwrap();
+    writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+    for word in ["a", "b"] {
+        writer.add_document(doc!(field => word)).unwrap();
+        writer.commit().unwrap();
+    }
+    let reader = |index: &Index| -> IndexReader {
+        index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .unwrap()
+    };
+    let before = reader(&index).searcher();
+    assert_eq!(before.segment_readers().len(), 2);
+
+    // Same segments, listed the other way round: every cached DocAddress now points elsewhere.
+    let meta_path = Path::new("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&index.directory().atomic_read(meta_path).unwrap()).unwrap();
+    meta["segments"].as_array_mut().unwrap().reverse();
+    index
+        .directory()
+        .atomic_write(meta_path, &serde_json::to_vec(&meta).unwrap())
+        .unwrap();
+    let after = reader(&index).searcher();
+    assert_ne!(
+        before.segment_readers()[0].segment_id(),
+        after.segment_readers()[0].segment_id()
+    );
+
+    assert_ne!(index_identity(&before), index_identity(&after));
+}

@@ -629,23 +629,15 @@ pub(crate) struct PartTerms {
     pub(crate) truncated: bool,
 }
 
-/// Which index and which of its states a cached answer belongs to: the live segments and
-/// their deletes, unique across engines and reloads.
-pub(crate) fn index_identity(searcher: &Searcher) -> String {
-    let mut out = String::new();
-    for (segment, deletes) in searcher.generation().segments() {
-        out.push_str(&segment.uuid_string());
-        if let Some(opstamp) = deletes {
-            out.push_str(&format!("@{opstamp}"));
-        }
-        out.push(',');
-    }
-    out
+/// Which index and which of its states a cached answer belongs to: the snapshot the page
+/// cache keys by, whose segment order is the one cached [`DocAddress`]es use.
+pub(crate) fn index_identity(searcher: &Searcher) -> u64 {
+    crate::page_cache::snapshot_of(searcher)
 }
 
 #[derive(Hash, PartialEq, Eq)]
 struct PartTermsKey {
-    index: String,
+    index: u64,
     field: Field,
     relaxed: String,
     exact: String,
@@ -1193,7 +1185,7 @@ impl LineOutcome {
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct LineCacheKey {
-    index: String,
+    index: u64,
     sources: Vec<u64>,
     facets: Vec<String>,
     pattern: String,
