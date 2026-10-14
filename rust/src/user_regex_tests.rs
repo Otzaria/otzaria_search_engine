@@ -870,6 +870,25 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
 }
 
 #[test]
+fn a_database_that_could_not_be_read_is_read_again_by_the_next_call() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let rows: &[&str] = &["שמע בני ישראל", "*שמע עמי ישראל"];
+    let engine = library_engine(dir.path(), &[(7, rows)]);
+    let pattern = r"/^\S+\s\S+\s\S+$/";
+
+    // A writer's exclusive lock makes every read busy.
+    let writer = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    assert!(last(&found).truncated);
+    writer.execute_batch("COMMIT").unwrap();
+    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    assert!(!last(&found).truncated);
+    assert_eq!(last(&found).total_count, Some(2));
+}
+
+#[test]
 fn a_cross_space_pattern_reads_attached_databases() {
     let _guard = crate::external_text_tests::guard();
     let dir = TempDir::new().unwrap();

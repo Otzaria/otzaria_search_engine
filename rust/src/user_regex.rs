@@ -1334,7 +1334,11 @@ pub(crate) fn run_line_search(
         truncated: state.truncated,
     });
     scan.work = None;
-    scan.outcome = Some(outcome.clone());
+    if scan.state.unavailable {
+        scan.state = Progress::new(scan.state.max_hits);
+    } else {
+        scan.outcome = Some(outcome.clone());
+    }
     emit(final_update(
         outcome.count(),
         &outcome.book_counts,
@@ -1462,6 +1466,8 @@ struct Progress {
     hits: Vec<LineHit>,
     book_counts: HashMap<String, u32>,
     truncated: bool,
+    /// Some lines could not be read: the answer is not kept for the next call.
+    unavailable: bool,
     /// Candidate lines or books read; a resumed search continues from here.
     done: u32,
     total: u32,
@@ -1474,6 +1480,7 @@ impl Progress {
             hits: Vec::new(),
             book_counts: HashMap::new(),
             truncated: false,
+            unavailable: false,
             done: 0,
             total: 0,
         }
@@ -1758,6 +1765,7 @@ fn verify_candidates(
         for ((&(id, address), (_, document)), text) in batch.iter().zip(&documents).zip(texts) {
             if text.status == TextStatus::Unavailable {
                 state.truncated = true;
+                state.unavailable = true;
                 continue;
             }
             view.fill(&text.text, false);
@@ -1806,6 +1814,7 @@ fn scan_books(
         let mut hits = Vec::new();
         for (book, scan) in books[start..end].iter().zip(scanned) {
             state.truncated |= scan.unavailable;
+            state.unavailable |= scan.unavailable;
             hits.extend(
                 scan.hits
                     .into_iter()
