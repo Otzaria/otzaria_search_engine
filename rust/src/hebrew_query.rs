@@ -1491,8 +1491,8 @@ pub(crate) fn strip_quote_chars(s: &str) -> String {
 ///   ועד כך של ו (בנפרד).
 /// * **לא משנים מילה** — אין השמטה והוספה של אותה אות באותו וריאנט (קודש
 ///   ↛ קדוש); אין השמטת י/ו שלפני ה סופית (מצוה ↛ מצה); השמטה לא משאירה
-///   פחות משלוש אותיות, ומילה בת שלוש אותיות אינה מקבלת הוספות (שבת ↛
-///   שבות/שבית/שובת).
+///   פחות משלוש אותיות, ומילה בת שלוש אותיות מקבלת רק ו אחרי האות הראשונה
+///   (כהן → כוהן; שבת ↛ שבות/שבית).
 /// * גרש/גרשיים נותרים ניתנים להשמטה בכל מיקום, ללא תקרה (התנהגות קודמת).
 ///
 /// הסדר: המילה המקורית, אחר כך וריאנטים של עריכה אחת (השמטות לפני הוספות,
@@ -1501,7 +1501,7 @@ pub(crate) fn strip_quote_chars(s: &str) -> String {
 pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<String> {
     /// השמטה לעולם לא משאירה פחות אותיות מזה.
     const MIN_SPELLING_LETTERS: usize = 3;
-    /// מילה קצרה מזה אינה מקבלת הוספות.
+    /// מילה קצרה מזה מקבלת לכל היותר ו אחרי האות הראשונה.
     const MIN_SPELLING_INSERTION_LETTERS: usize = 4;
     /// תקרת עריכות לכל אות (י בנפרד, ו בנפרד) בווריאנט אחד.
     const MAX_EDITS_PER_LETTER: usize = 3;
@@ -1550,12 +1550,15 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
             _ => {}
         }
     }
-    // במילה בת שלוש אותיות כל הוספה יוצרת מילה אחרת (שבת→שבות/שבית/שובת).
+    // במילה בת שלוש אותיות כמעט כל הוספה יוצרת מילה אחרת (שבת→שבות/שבית);
+    // רק ו אחרי האות הראשונה היא כתיב מלא שכיח (כהן→כוהן, קדש→קודש).
     if letters >= MIN_SPELLING_INSERTION_LETTERS {
         for gap in 1..n {
             edits.push(Edit::Ins(gap, 'ו'));
             edits.push(Edit::Ins(gap, 'י'));
         }
+    } else if letters == MIN_SPELLING_LETTERS && n == letters {
+        edits.push(Edit::Ins(1, 'ו'));
     }
     edits.truncate(MAX_EDIT_CANDIDATES);
     let m = edits.len();
@@ -3720,10 +3723,19 @@ mod tests {
         let has = |word: &str, variant: &str| {
             generate_spelling_variations(word, 1000).contains(&variant.to_string())
         };
-        // מילה בת שלוש אותיות — בלי הוספות ובלי השמטות.
-        for v in ["שבות", "שבית", "שובת"] {
+        // מילה בת שלוש אותיות — בלי השמטות, ומהוספות רק ו אחרי האות הראשונה
+        // (כהן→כוהן, קדש→קודש).
+        for v in ["שבות", "שבית"] {
             assert!(!has("שבת", v), "{v}");
         }
+        assert!(has("שבת", "שובת"));
+        assert!(has("כהן", "כוהן"));
+        assert!(has("קדש", "קודש"));
+        for v in ["כיהן", "כהון", "כוהון", "כויהן"] {
+            assert!(!has("כהן", v), "{v}");
+        }
+        // ארבע אותיות ומעלה — כמו קודם: שלום לא מוצא שולים.
+        assert!(!has("שלום", "שולים"));
         assert!(!has("שור", "שר"));
         // י/ו שלפני ה סופית עיצורית.
         assert!(!has("מצוה", "מצה"));
