@@ -599,6 +599,7 @@ Future<void> configureLineSource({required String dbPath}); // lazy; new path dr
 Future<void> suspendLineSource();  // closes the file; waits for a running window
 Future<void> resumeLineSource();   // undoes one suspend; the last drops all caches
 Future<LineSourceStatus> lineSourceStatus(); // ..., generation, libraryFallbacks
+Future<void> configureUserBooksLineSource({String? dbPath}); // personal books; null closes
 ```
 
 - `addTextBook` / `addTextBookBytes` take `required TextStorage textStorage`. Pass
@@ -637,6 +638,16 @@ Future<LineSourceStatus> lineSourceStatus(); // ..., generation, libraryFallback
   touch the database at all.
 - The database is opened by its plain path, read-only, so UNC paths (`\\server\share\...`)
   work.
+- Personal books (`filePath` `uid:<bookId>`) can be indexed as `libraryDb` too: their rows
+  are read from a second source, the user-books database set by
+  `configureUserBooksLineSource` (the same `line` table, `content` as TEXT or a zstd frame
+  of a `zstd_dict` dictionary). Everything above applies to it, with its own row-count
+  check and `LineSourceStatus.userBooksFallbacks`, except suspension: the app keeps
+  writing it (WAL) while the engine reads it, each window sees the last commit, and a row
+  that no longer matches its line is `stale`. `configureUserBooksLineSource(dbPath: null)`
+  closes the file (waiting for a running window) and leaves those results `unavailable`.
+  `LineSourceStatus.userBooksConfigured` / `userBooksOpen` / `userBooksGeneration`
+  report it.
 
 ---
 

@@ -1,5 +1,6 @@
 //! Line text of official books, read from the library database (`seforim.db`) at search
-//! time instead of the Tantivy doc store.
+//! time instead of the Tantivy doc store; personal books (`uid:<bookId>`) likewise from the
+//! user-books database, a second [`Source`] with the same layout rules.
 //!
 //! A document indexed with `TextStorage::LibraryDb` keeps its text in the inverted index
 //! only. Its display text is the database row it was indexed from: book `id:<bookId>`
@@ -8,8 +9,8 @@
 //! prepared it ([`prepare_row`]) and leaves verification ([`line_check`]) and
 //! normalization to the caller.
 //!
-//! Lock order: a caller takes its Tantivy searcher first and the line-source mutex second;
-//! nothing here calls back into Dart or into the engine while holding it.
+//! Lock order: a caller takes its Tantivy searcher first and one source's mutex second (never
+//! two at once); nothing here calls back into Dart or into the engine while holding it.
 
 use crate::sqlite_host;
 use anyhow::{Context, Result};
@@ -98,15 +99,24 @@ impl RowIds {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static CODEC_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Decodes `line_content` BLOBs: a zstd frame of one dictionary from `zstd_dict`, chosen by
 /// the dictionary id in the frame header (no checksum).
 struct ZstdCodec {
     dicts: HashMap<u32, zstd::zstd_safe::DDict<'static>>,
     dctx: zstd::zstd_safe::DCtx<'static>,
+    /// A frame named a dictionary this codec does not hold: reload on the next commit.
+    missed_dict: bool,
 }
 
 impl ZstdCodec {
     fn load(conn: &Connection) -> Result<Self> {
+        #[cfg(test)]
+        CODEC_LOADS.with(|n| n.set(n.get() + 1));
         let mut dicts = HashMap::new();
         let mut stmt = conn.prepare("SELECT dict FROM zstd_dict")?;
         let mut rows = stmt.query([])?;
@@ -118,7 +128,11 @@ impl ZstdCodec {
             dicts.insert(id, ddict);
         }
         let dctx = zstd::zstd_safe::DCtx::try_create().context("ZSTD_createDCtx failed")?;
-        Ok(Self { dicts, dctx })
+        Ok(Self {
+            dicts,
+            dctx,
+            missed_dict: false,
+        })
     }
 
     fn decode(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
@@ -130,10 +144,10 @@ impl ZstdCodec {
         let dict_id = unsafe {
             zstd::zstd_safe::zstd_sys::ZSTD_getDictID_fromFrame(frame.as_ptr().cast(), frame.len())
         };
-        let ddict = self
-            .dicts
-            .get(&dict_id)
-            .with_context(|| format!("dictionary {dict_id} is missing from zstd_dict"))?;
+        let Some(ddict) = self.dicts.get(&dict_id) else {
+            self.missed_dict = true;
+            anyhow::bail!("dictionary {dict_id} is missing from zstd_dict");
+        };
         let mut out: Vec<u8> = Vec::with_capacity(size);
         let written = self
             .dctx
@@ -176,10 +190,24 @@ struct Layout {
     /// `line_content` exists (schema 6); otherwise the text is `line.content`.
     split: bool,
     codec: Option<ZstdCodec>,
+    /// What `codec` was loaded from (see [`dict_signature`]).
+    dict_signature: Option<(i64, i64, i64)>,
+}
+
+/// Row count, last rowid and total size of `zstd_dict`, read without the dictionaries'
+/// pages: a commit to any other table must not rebuild megabytes of decoder tables.
+fn dict_signature(conn: &Connection) -> Result<(i64, i64, i64)> {
+    Ok(conn.query_row(
+        "SELECT count(*), coalesce(max(rowid), 0), coalesce(sum(length(dict)), 0) \
+         FROM zstd_dict",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?)
 }
 
 impl Layout {
-    fn read(conn: &Connection, path: &Path) -> Result<Self> {
+    /// Reuses `previous`'s decoder when `zstd_dict` looks unchanged.
+    fn read(conn: &Connection, path: &Path, previous: Option<Layout>) -> Result<Self> {
         let has_table = |name: &str| -> Result<bool> {
             Ok(conn
                 .query_row(
@@ -194,12 +222,27 @@ impl Layout {
             anyhow::bail!("{} has no `line` table", path.display());
         }
         let split = has_table("line_content")?;
-        let codec = if has_table("zstd_dict")? {
-            Some(ZstdCodec::load(conn)?)
-        } else {
-            None
+        if !has_table("zstd_dict")? {
+            return Ok(Self {
+                split,
+                codec: None,
+                dict_signature: None,
+            });
+        }
+        let signature = dict_signature(conn)?;
+        let codec = match previous {
+            Some(Layout {
+                codec: Some(codec),
+                dict_signature: Some(previous),
+                ..
+            }) if previous == signature && !codec.missed_dict => codec,
+            _ => ZstdCodec::load(conn)?,
         };
-        Ok(Self { split, codec })
+        Ok(Self {
+            split,
+            codec: Some(codec),
+            dict_signature: Some(signature),
+        })
     }
 
     /// The content column of every row of one book, in `lineIndex` order.
@@ -217,6 +260,8 @@ impl Layout {
 pub(crate) struct LineStore {
     conn: Connection,
     path: PathBuf,
+    /// The file this connection opened, to tell a replaced file at the same path.
+    identity: Option<FileIdentity>,
     layout: Layout,
     /// `PRAGMA data_version` the caches below were built under.
     data_version: i64,
@@ -249,10 +294,11 @@ impl LineStore {
             "PRAGMA query_only=1; PRAGMA cache_size=-{PAGE_CACHE_KIB}"
         ))?;
         let data_version = data_version(&conn)?;
-        let layout = Layout::read(&conn, path)?;
+        let layout = Layout::read(&conn, path, None)?;
         Ok(Self {
             conn,
             path: path.to_path_buf(),
+            identity: file_identity(path),
             layout,
             data_version,
             books: LruCache::unbounded(),
@@ -289,7 +335,15 @@ impl LineStore {
             self.book_bytes = 0;
             self.at_line_index.clear();
             self.data_uri_books.clear();
-            self.layout = Layout::read(&self.conn, &self.path)?;
+            let previous = std::mem::replace(
+                &mut self.layout,
+                Layout {
+                    split: false,
+                    codec: None,
+                    dict_signature: None,
+                },
+            );
+            self.layout = Layout::read(&self.conn, &self.path, Some(previous))?;
             self.data_version = version;
         }
         Ok(())
@@ -552,6 +606,24 @@ impl LineStore {
     }
 }
 
+/// Device and inode where a file can be replaced while open (POSIX); elsewhere an open
+/// database cannot be replaced, so every path is its own identity.
+#[cfg(unix)]
+type FileIdentity = (u64, u64);
+#[cfg(not(unix))]
+type FileIdentity = ();
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    path.exists().then_some(())
+}
+
 fn data_version(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("PRAGMA data_version", [], |r| r.get(0))?)
 }
@@ -609,7 +681,28 @@ pub(crate) fn strip_data_uris_for_index(text: &str) -> String {
     out
 }
 
-// ── Process-global source ──────────────────────────────────────────────────────
+// ── Process-global sources ─────────────────────────────────────────────────────
+
+/// Which database a `LibraryDb` document's text is read from, chosen by its `filePath`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum Source {
+    /// Official books (`id:<bookId>`) in the library database (`seforim.db`).
+    Library,
+    /// Personal books (`uid:<bookId>`) in the user-books database, which the app keeps
+    /// writing (WAL) while the engine reads it.
+    UserBooks,
+}
+
+impl Source {
+    pub(crate) const ALL: [Source; 2] = [Source::Library, Source::UserBooks];
+
+    fn cell(self) -> &'static Mutex<Global> {
+        match self {
+            Source::Library => &LIBRARY,
+            Source::UserBooks => &USER_BOOKS,
+        }
+    }
+}
 
 /// Why a window could not be served.
 #[derive(Debug, Clone)]
@@ -618,6 +711,8 @@ pub(crate) enum SourceUnavailable {
     Suspended,
     /// A writer holds the database; retried after [`BUSY_BACKOFF`].
     Busy,
+    /// The configured file does not exist (yet); checked again after [`BUSY_BACKOFF`].
+    Missing,
     /// Opening or reading failed; the reason has been logged.
     Failed,
 }
@@ -630,25 +725,46 @@ struct Global {
     owner_ports: Vec<i64>,
     busy_until: Option<Instant>,
     library_fallbacks: u64,
+    /// A missing file was reported (once per path or reappearance).
+    missing_logged: bool,
+    /// The file was missing: windows do not look again before this.
+    missing_until: Option<Instant>,
+    /// `PRAGMA data_version` the semantic cache key last saw on the open store.
+    seen_version: Option<i64>,
+    /// Commits the semantic cache key has seen on the open store.
+    #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
+    content_epoch: u64,
 }
 
-static GLOBAL: Mutex<Global> = Mutex::new(Global {
-    path: None,
-    store: None,
-    generation: 0,
-    suspend_depth: 0,
-    owner_ports: Vec::new(),
-    busy_until: None,
-    library_fallbacks: 0,
-});
+impl Global {
+    const fn new() -> Self {
+        Global {
+            path: None,
+            store: None,
+            generation: 0,
+            suspend_depth: 0,
+            owner_ports: Vec::new(),
+            busy_until: None,
+            library_fallbacks: 0,
+            missing_logged: false,
+            missing_until: None,
+            seen_version: None,
+            content_epoch: 0,
+        }
+    }
+}
 
-fn global() -> MutexGuard<'static, Global> {
-    let mut g = GLOBAL.lock().unwrap_or_else(|poisoned| {
+static LIBRARY: Mutex<Global> = Mutex::new(Global::new());
+static USER_BOOKS: Mutex<Global> = Mutex::new(Global::new());
+
+fn global(source: Source) -> MutexGuard<'static, Global> {
+    let cell = source.cell();
+    let mut g = cell.lock().unwrap_or_else(|poisoned| {
         // A panic inside a window can leave its read transaction open, holding the file's
         // shared lock: close the connection, and the caches with it.
         let mut g = poisoned.into_inner();
         g.drop_store();
-        GLOBAL.clear_poison();
+        cell.clear_poison();
         g
     });
     g.reap_dead_owners(owner_port_is_open);
@@ -674,6 +790,7 @@ impl Global {
     }
 
     fn drop_store(&mut self) {
+        self.seen_version = None;
         if let Some(store) = self.store.take() {
             store.close();
             // SQLite's data_version is local to a connection. A reopened connection can
@@ -682,9 +799,26 @@ impl Global {
             self.generation += 1;
         }
     }
+
+    fn set_path(&mut self, path: Option<PathBuf>) {
+        if self.path != path {
+            self.drop_store();
+            self.path = path;
+            self.generation += 1;
+            self.missing_logged = false;
+        } else if let Some(store) = &self.store {
+            // The app may have replaced the file under the same path (POSIX keeps the old
+            // inode open): reopen lazily from the new one.
+            if file_identity(&store.path) != store.identity {
+                self.drop_store();
+            }
+        }
+        self.busy_until = None;
+        self.missing_until = None;
+    }
 }
 
-/// Snapshot of the global source, for `line_source_status`.
+/// Snapshot of one source, for `line_source_status`.
 pub(crate) struct Status {
     pub configured: bool,
     pub open: bool,
@@ -697,25 +831,28 @@ pub(crate) fn configure(db_path: &str) -> Result<()> {
     if db_path.is_empty() {
         anyhow::bail!("configure_line_source needs a database path");
     }
-    let path = PathBuf::from(db_path);
-    let mut g = global();
-    if g.path.as_deref() != Some(path.as_path()) {
-        g.drop_store();
-        g.path = Some(path);
-        g.generation += 1;
-        g.busy_until = None;
+    global(Source::Library).set_path(Some(PathBuf::from(db_path)));
+    Ok(())
+}
+
+/// `None` closes the user-books database (waiting for a window reading it) and leaves its
+/// documents `Unavailable` until it is configured again.
+pub(crate) fn configure_user_books(db_path: Option<&str>) -> Result<()> {
+    if db_path == Some("") {
+        anyhow::bail!("configure_user_books_line_source needs a database path or None");
     }
+    global(Source::UserBooks).set_path(db_path.map(PathBuf::from));
     Ok(())
 }
 
 pub(crate) fn suspend() {
-    let mut g = global();
+    let mut g = global(Source::Library);
     g.suspend_depth += 1;
     g.drop_store();
 }
 
 pub(crate) fn resume() -> Result<()> {
-    let mut g = global();
+    let mut g = global(Source::Library);
     if g.suspend_depth == 0 {
         anyhow::bail!("resume_line_source without a matching suspend_line_source");
     }
@@ -731,7 +868,7 @@ pub(crate) fn resume() -> Result<()> {
 
 /// Idempotent holds tied to Dart ports: the VM closes them when their isolate exits.
 pub(crate) fn suspend_owned(owner_port: i64) -> Result<()> {
-    let mut g = global();
+    let mut g = global(Source::Library);
     if owner_port <= 0 || !owner_port_is_open(owner_port) {
         anyhow::bail!("line-source suspension needs an open Dart owner port");
     }
@@ -743,7 +880,7 @@ pub(crate) fn suspend_owned(owner_port: i64) -> Result<()> {
 }
 
 pub(crate) fn resume_owned(owner_port: i64) {
-    let mut g = global();
+    let mut g = global(Source::Library);
     let before = g.owner_ports.len();
     g.owner_ports.retain(|&port| port != owner_port);
     if before != g.owner_ports.len() && g.owner_ports.is_empty() && g.suspend_depth == 0 {
@@ -753,8 +890,8 @@ pub(crate) fn resume_owned(owner_port: i64) {
     }
 }
 
-pub(crate) fn status() -> Status {
-    let g = global();
+pub(crate) fn status(source: Source) -> Status {
+    let g = global(source);
     Status {
         configured: g.path.is_some(),
         open: g.store.is_some(),
@@ -764,14 +901,48 @@ pub(crate) fn status() -> Status {
     }
 }
 
-/// The library input to the semantic query cache, sampled before its lookup.
+/// One source's input to the semantic query cache: generation, data_version (the library)
+/// or commits seen (user books), suspended.
+#[cfg(feature = "semantic-integration")]
+pub(crate) type SourceGeneration = (u64, Option<i64>, bool);
+
+/// The input of every source to the semantic query cache, sampled before its lookup.
 ///
 /// Read the connection's current data_version, not the version of the row caches: a
 /// lexical window may already have refreshed those after an unpaused write. This reads
 /// metadata only, without opening a database or reading/decoding any book content.
 #[cfg(feature = "semantic-integration")]
-pub(crate) fn query_cache_generation() -> (u64, Option<i64>, bool) {
-    let mut g = global();
+pub(crate) fn query_cache_generation() -> [SourceGeneration; 2] {
+    [
+        source_cache_generation(Source::Library),
+        user_books_cache_generation(),
+    ]
+}
+
+/// The user-books part of the key never opens the file, and a closed or newly opened store
+/// keeps the key: only a commit seen on an open store (or a reconfigure) changes it. The
+/// app writes other tables of that file all the time, so an unused store must not count.
+#[cfg(feature = "semantic-integration")]
+fn user_books_cache_generation() -> SourceGeneration {
+    let mut g = global(Source::UserBooks);
+    if let Some(version) = g.store.as_ref().map(|store| data_version(&store.conn)) {
+        match version {
+            Ok(version) => {
+                if g.seen_version.is_some_and(|seen| seen != version) {
+                    g.content_epoch += 1;
+                }
+                g.seen_version = Some(version);
+            }
+            // As for the library: an unverifiable source admits no cached answer.
+            Err(_) => g.generation += 1,
+        }
+    }
+    (g.generation, Some(g.content_epoch as i64), false)
+}
+
+#[cfg(feature = "semantic-integration")]
+fn source_cache_generation(source: Source) -> SourceGeneration {
+    let mut g = global(source);
     let version = if g.busy_until.is_some_and(|until| Instant::now() < until) {
         g.generation += 1;
         None
@@ -804,8 +975,8 @@ pub(crate) fn query_cache_generation() -> (u64, Option<i64>, bool) {
 }
 
 /// Counts a book asked for as `LibraryDb` and stored `InIndex`.
-pub(crate) fn note_library_fallback() {
-    global().library_fallbacks += 1;
+pub(crate) fn note_library_fallback(source: Source) {
+    global(source).library_fallbacks += 1;
 }
 
 /// Whether `err` is SQLite reporting another connection's lock.
@@ -819,27 +990,30 @@ fn is_busy(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Runs `f` against the global store, opening it on first use. Holding the mutex for the
+/// Runs `f` against the source's store, opening it on first use. Holding the mutex for the
 /// window is what lets `suspend` wait for an in-flight window before closing the file.
 pub(crate) fn with_store<R>(
+    source: Source,
     f: impl FnOnce(&mut LineStore) -> Result<R>,
 ) -> std::result::Result<R, SourceUnavailable> {
-    with_store_inner(true, f)
+    with_store_inner(source, true, f)
 }
 
 /// [`with_store`] for indexing, which may wait out one busy timeout: a window's busy
 /// backoff would otherwise store whole books in the index.
 pub(crate) fn with_store_for_indexing<R>(
+    source: Source,
     f: impl FnOnce(&mut LineStore) -> Result<R>,
 ) -> std::result::Result<R, SourceUnavailable> {
-    with_store_inner(false, f)
+    with_store_inner(source, false, f)
 }
 
 fn with_store_inner<R>(
+    source: Source,
     honor_backoff: bool,
     f: impl FnOnce(&mut LineStore) -> Result<R>,
 ) -> std::result::Result<R, SourceUnavailable> {
-    let mut g = global();
+    let mut g = global(source);
     if g.suspend_depth > 0 || !g.owner_ports.is_empty() {
         return Err(SourceUnavailable::Suspended);
     }
@@ -850,19 +1024,38 @@ fn with_store_inner<R>(
         return Err(SourceUnavailable::Busy);
     }
     g.busy_until = None;
+    if g.store.is_none()
+        && honor_backoff
+        && g.missing_until.is_some_and(|until| Instant::now() < until)
+    {
+        return Err(SourceUnavailable::Missing);
+    }
+    if g.store.is_none() && matches!(path.try_exists(), Ok(false)) {
+        // Normal for user books: the app creates that file with the first personal book.
+        if !g.missing_logged {
+            log::info!("{source:?} database {} does not exist", path.display());
+            g.missing_logged = true;
+        }
+        g.missing_until = Some(Instant::now() + BUSY_BACKOFF);
+        return Err(SourceUnavailable::Missing);
+    }
     let result = match g.store.as_mut() {
         Some(store) => f(store),
-        None => LineStore::open(&path).and_then(|store| f(g.store.insert(store))),
+        None => LineStore::open(&path).and_then(|store| {
+            g.missing_logged = false;
+            g.seen_version = Some(store.data_version);
+            f(g.store.insert(store))
+        }),
     };
     result.map_err(|err| {
         if is_busy(&err) {
             // The connection is fine; only the writer has to finish.
-            log::warn!("library database is busy; skipping it for {BUSY_BACKOFF:?}: {err:#}");
+            log::warn!("{source:?} database is busy; skipping it for {BUSY_BACKOFF:?}: {err:#}");
             g.busy_until = Some(Instant::now() + BUSY_BACKOFF);
             SourceUnavailable::Busy
         } else {
             // A failed read may mean the file changed under us; reopen next time.
-            log::warn!("line source unavailable: {err:#}");
+            log::warn!("{source:?} line source unavailable: {err:#}");
             g.drop_store();
             SourceUnavailable::Failed
         }
@@ -876,19 +1069,23 @@ pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 /// Resets the global source between tests.
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
-    let mut g = global();
-    g.drop_store();
-    g.path = None;
-    g.suspend_depth = 0;
-    g.owner_ports.clear();
-    g.generation += 1;
-    g.busy_until = None;
+    for source in Source::ALL {
+        let mut g = global(source);
+        g.drop_store();
+        g.path = None;
+        g.suspend_depth = 0;
+        g.owner_ports.clear();
+        g.generation += 1;
+        g.busy_until = None;
+        g.missing_until = None;
+        g.missing_logged = false;
+    }
 }
 
 /// The books whose ordinal maps the open store holds, ascending.
 #[cfg(test)]
 pub(crate) fn mapped_books_for_tests() -> Vec<i64> {
-    let g = global();
+    let g = global(Source::Library);
     let mut ids: Vec<i64> = g
         .store
         .as_ref()
@@ -901,7 +1098,10 @@ pub(crate) fn mapped_books_for_tests() -> Vec<i64> {
 /// `(row map bytes, page cache bytes)` of the open store.
 #[cfg(test)]
 pub(crate) fn memory_for_tests() -> Option<(usize, usize)> {
-    global().store.as_ref().map(LineStore::memory)
+    global(Source::Library)
+        .store
+        .as_ref()
+        .map(LineStore::memory)
 }
 
 #[cfg(test)]
@@ -923,14 +1123,14 @@ mod tests {
              INSERT INTO line VALUES (1, 1, 0, 'before');"
         ).unwrap();
         configure(path.to_str().unwrap()).unwrap();
-        let closed = query_cache_generation();
+        let closed = source_cache_generation(Source::Library);
         assert!(closed.1.is_none());
         assert!(
-            !status().open,
+            !status(Source::Library).open,
             "the cache check must not open an unused source"
         );
         let fetch = || {
-            with_store(|store| {
+            with_store(Source::Library, |store| {
                 store.fetch_window(
                     &[LineKey {
                         book_id: 1,
@@ -942,11 +1142,11 @@ mod tests {
             .unwrap()
         };
         fetch();
-        let before = query_cache_generation();
+        let before = source_cache_generation(Source::Library);
         assert!(before.1.is_some());
         assert_eq!(
             before,
-            query_cache_generation(),
+            source_cache_generation(Source::Library),
             "unchanged queries keep their cache key"
         );
         writer
@@ -955,59 +1155,231 @@ mod tests {
         // Another window can consume the data_version change first; it must not hide
         // the commit from the query cache's later check.
         assert!(matches!(&fetch()[0], RowText::Found(text) if text == "after"));
-        let after = query_cache_generation();
+        let after = source_cache_generation(Source::Library);
         assert_ne!(before, after);
-        assert_eq!(after, query_cache_generation());
+        assert_eq!(after, source_cache_generation(Source::Library));
         writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        let busy = query_cache_generation();
+        let busy = source_cache_generation(Source::Library);
         assert!(busy.1.is_none());
         assert!(
-            global().busy_until.is_some(),
+            global(Source::Library).busy_until.is_some(),
             "the metadata check shares the window's backoff"
         );
         assert_ne!(
             busy,
-            query_cache_generation(),
+            source_cache_generation(Source::Library),
             "unverifiable answers cannot be reused"
         );
         assert!(matches!(
-            with_store(|_| Ok(())),
+            with_store(Source::Library, |_| Ok(())),
             Err(SourceUnavailable::Busy)
         ));
         writer.execute_batch("COMMIT").unwrap();
         // Advance the backoff without sleeping: a successful retry needs a new key.
-        global().busy_until = Some(Instant::now());
-        assert_ne!(busy, query_cache_generation());
-        global().drop_store();
+        global(Source::Library).busy_until = Some(Instant::now());
+        assert_ne!(busy, source_cache_generation(Source::Library));
+        global(Source::Library).drop_store();
         assert_ne!(
             closed,
-            query_cache_generation(),
+            source_cache_generation(Source::Library),
             "closed-source keys are not reused either"
         );
         fetch();
         assert_ne!(
             before,
-            query_cache_generation(),
+            source_cache_generation(Source::Library),
             "data_version restarts on a new connection"
         );
         assert_eq!(
             before.1,
-            query_cache_generation().1,
+            source_cache_generation(Source::Library).1,
             "the reopened connection reuses the old SQLite counter in this fixture"
         );
+        reset_for_tests();
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn query_cache_generation_covers_the_user_books_source() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user_books.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);
+             INSERT INTO line VALUES (1, 1, 0, 'before');",
+        ).unwrap();
+        let unconfigured = query_cache_generation();
+        configure_user_books(Some(path.to_str().unwrap())).unwrap();
+        let configured = query_cache_generation();
+        assert_eq!(
+            configured[0], unconfigured[0],
+            "the library source is untouched"
+        );
+        assert_ne!(configured[1], unconfigured[1]);
+        // Configured but never read: the key opens nothing, and the app's commits keep it.
+        writer
+            .execute("UPDATE line SET content = 'unread'", [])
+            .unwrap();
+        assert_eq!(query_cache_generation(), configured);
+        assert!(!status(Source::UserBooks).open);
+        // Opening the store for a window does not change the key either.
+        with_store(Source::UserBooks, |store| store.book_row_count(1)).unwrap();
+        let opened = query_cache_generation();
+        assert_eq!(opened, configured);
+        writer
+            .execute("UPDATE line SET content = 'after'", [])
+            .unwrap();
+        let written = query_cache_generation();
+        assert_ne!(
+            written[1], opened[1],
+            "a commit to a read store is another answer"
+        );
+        assert_eq!(written, query_cache_generation());
+        configure_user_books(None).unwrap();
+        assert_ne!(query_cache_generation()[1], written[1]);
+        assert!(!status(Source::UserBooks).configured);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn a_missing_file_is_reported_once_and_rechecked_after_a_backoff() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user_books.db");
+        configure_user_books(Some(path.to_str().unwrap())).unwrap();
+        let read = || with_store(Source::UserBooks, |store| store.book_row_count(1));
+        assert!(matches!(read(), Err(SourceUnavailable::Missing)));
+        assert!(global(Source::UserBooks).missing_logged);
+        // Inside the backoff the file is not even looked for.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER,
+                                    content TEXT);
+                 INSERT INTO line VALUES (1, 1, 0, 'x');",
+            )
+            .unwrap();
+        assert!(matches!(read(), Err(SourceUnavailable::Missing)));
+        // Indexing does not wait for the backoff, nor does a configure of the same path.
+        assert_eq!(
+            with_store_for_indexing(Source::UserBooks, |store| store.book_row_count(1)).ok(),
+            Some(1)
+        );
+        assert!(!global(Source::UserBooks).missing_logged);
+        configure_user_books(None).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        configure_user_books(Some(path.to_str().unwrap())).unwrap();
+        assert!(matches!(read(), Err(SourceUnavailable::Missing)));
+        reset_for_tests();
+    }
+
+    #[test]
+    fn a_commit_to_another_table_keeps_the_zstd_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user_books.db");
+        let dict = crate::external_text_tests::train_dictionary();
+        let frame = zstd::bulk::Compressor::with_dictionary(3, &dict)
+            .unwrap()
+            .compress("בראשית ברא".as_bytes())
+            .unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER,
+                                    content TEXT);
+                 CREATE TABLE zstd_dict (id INTEGER PRIMARY KEY, dict BLOB NOT NULL);
+                 CREATE TABLE other (x);",
+            )
+            .unwrap();
+        writer
+            .execute("INSERT INTO zstd_dict (dict) VALUES (?1)", [&dict])
+            .unwrap();
+        writer
+            .execute("INSERT INTO line VALUES (1, 1, 0, ?1)", [&frame])
+            .unwrap();
+        let mut store = LineStore::open(&path).unwrap();
+        let key = LineKey {
+            book_id: 1,
+            ordinal: 0,
+        };
+        let read = |store: &mut LineStore| match &store.fetch_window(&[key], &[None]).unwrap()[0] {
+            RowText::Found(text) => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        let loads = || CODEC_LOADS.with(|n| n.get());
+        let before = loads();
+        assert_eq!(read(&mut store), "בראשית ברא");
+        writer.execute("INSERT INTO other VALUES (1)", []).unwrap();
+        assert_eq!(read(&mut store), "בראשית ברא");
+        assert_eq!(
+            loads(),
+            before,
+            "an unrelated commit rebuilt the dictionaries"
+        );
+        writer
+            .execute("INSERT INTO zstd_dict (dict) VALUES (?1)", [&dict])
+            .unwrap();
+        assert_eq!(read(&mut store), "בראשית ברא");
+        assert_eq!(loads(), before + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configuring_the_same_path_reopens_a_replaced_file() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user_books.db");
+        let write = |at: &Path, text: &str| {
+            Connection::open(at)
+                .unwrap()
+                .execute_batch(&format!(
+                    "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER,
+                                        lineIndex INTEGER, content TEXT);
+                     INSERT INTO line VALUES (1, 1, 0, '{text}');"
+                ))
+                .unwrap();
+        };
+        write(&path, "old");
+        let read = || {
+            with_store(Source::UserBooks, |store| {
+                store.fetch_window(
+                    &[LineKey {
+                        book_id: 1,
+                        ordinal: 0,
+                    }],
+                    &[None],
+                )
+            })
+            .unwrap()
+        };
+        configure_user_books(Some(path.to_str().unwrap())).unwrap();
+        assert!(matches!(&read()[0], RowText::Found(t) if t == "old"));
+        let replacement = dir.path().join("new.db");
+        write(&replacement, "new");
+        std::fs::rename(&replacement, &path).unwrap();
+        configure_user_books(Some(path.to_str().unwrap())).unwrap();
+        assert!(matches!(&read()[0], RowText::Found(t) if t == "new"));
         reset_for_tests();
     }
 
     #[test]
     fn dead_owner_cleanup_preserves_live_and_anonymous_holds() {
         let mut g = Global {
-            path: None,
-            store: None,
-            generation: 0,
             suspend_depth: 1,
             owner_ports: vec![11, 22],
-            busy_until: None,
-            library_fallbacks: 0,
+            ..Global::new()
         };
         g.reap_dead_owners(|port| port == 22);
         assert_eq!(g.owner_ports, vec![22]);
@@ -1104,15 +1476,20 @@ mod tests {
             .unwrap();
         configure(db.to_str().unwrap()).unwrap();
         let panicked = std::panic::catch_unwind(|| {
-            with_store(|store| store.in_read_txn(|_| -> Result<()> { panic!("inside a window") }))
+            with_store(Source::Library, |store| {
+                store.in_read_txn(|_| -> Result<()> { panic!("inside a window") })
+            })
         });
         assert!(panicked.is_err());
         // Its read transaction went with the connection: a writer gets the file at once.
-        assert!(!status().open);
+        assert!(!status(Source::Library).open);
         let writer = Connection::open(&db).unwrap();
         writer.busy_timeout(Duration::ZERO).unwrap();
         writer.execute_batch("BEGIN EXCLUSIVE; COMMIT").unwrap();
-        assert_eq!(with_store(|store| store.book_row_count(1)).ok(), Some(1));
+        assert_eq!(
+            with_store(Source::Library, |store| store.book_row_count(1)).ok(),
+            Some(1)
+        );
         reset_for_tests();
     }
 

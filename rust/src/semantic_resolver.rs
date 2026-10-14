@@ -94,9 +94,9 @@ const BOOK_LINES: usize = 2_000_000;
 /// the foundational books' query, resolve many of the lines the last one did.
 const KEY_CACHE: usize = 65_536;
 
-/// The library database's state as a session is keyed by it
+/// The line-source databases' state (library, user books) as a session is keyed by it
 /// (`line_source::query_cache_generation`): the keys recomputed under one serve only it.
-pub(crate) type LibraryGeneration = (u64, Option<i64>, bool);
+pub(crate) type LibraryGeneration = [crate::line_source::SourceGeneration; 2];
 
 /// How many filters' scan plans are kept between searches, for one generation of the index.
 const PLAN_CACHE: usize = 16;
@@ -2281,7 +2281,7 @@ mod tests {
             .unwrap();
         // Keys recomputed by an earlier search and shared through the cache resolve alike.
         let mut sharing = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
-        sharing.share_keys((0, None, false));
+        sharing.share_keys(Default::default());
         for _ in 0..2 {
             let again = sharing
                 .resolve(std::slice::from_ref(&hit), None, &CancellationToken::new())

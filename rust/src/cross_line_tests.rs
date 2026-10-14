@@ -259,6 +259,29 @@ fn a_phrase_never_continues_into_another_book() {
 }
 
 #[test]
+fn the_next_line_shown_is_from_the_hit_s_own_book_when_ids_collide() {
+    let (mut e, _dir) = engine();
+    // Same catalogue position, so the two books' lines share ids.
+    add_book(
+        &mut e,
+        0,
+        "id:1",
+        &[
+            "ויבדל בין המים אשר מתחת לרקיע ובין המים",
+            "ויאמר אלהים יקוו המים",
+        ],
+    );
+    add_book(&mut e, 0, "uid:1", &["אחת", "שתיים שלוש"]);
+    e.commit().unwrap();
+    let results = exact(&e, "ובין המים ויאמר אלהים");
+    let hit = results.iter().find(|r| r.file_path == "id:1").unwrap();
+    assert!(hit.continues_to_next_line);
+    assert!(hit.text.contains("<br>"), "{}", hit.text);
+    assert!(hit.text.contains("ויאמר"), "{}", hit.text);
+    assert!(!hit.text.contains("שתיים"), "{}", hit.text);
+}
+
+#[test]
 fn a_hit_in_line_and_across_the_break_counts_once() {
     let (e, _dir) = book_engine(&["אמר רבי יוחנן דבר אמר", "רבי יוחנן אמר", "שורה אחרת"]);
     let results = exact(&e, "אמר רבי");
