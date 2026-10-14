@@ -387,8 +387,7 @@ pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
     while queries.len() < count && draws < count.saturating_mul(50).max(50) {
         draws += 1;
         let address = lines[(next() % lines.len() as u64) as usize];
-        let document: TantivyDocument = searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         if document
             .get_first(is_pdf_field)
@@ -530,8 +529,7 @@ fn plan_book(
     let mut pdf = Vec::with_capacity(book.len());
     let mut stored_keys = Vec::with_capacity(book.len());
     for &address in book {
-        let document: TantivyDocument = searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         pdf.push(
             document

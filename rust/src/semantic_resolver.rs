@@ -778,7 +778,8 @@ impl<'a> LiveResolver<'a> {
         }
         facets.sort();
         facets.dedup();
-        let document: TantivyDocument = self.searcher.doc(address).map_err(index_error)?;
+        let document: TantivyDocument =
+            crate::doc_store::load_document(&self.searcher, address).map_err(index_error)?;
         let is_pdf_field = self
             .searcher
             .schema()

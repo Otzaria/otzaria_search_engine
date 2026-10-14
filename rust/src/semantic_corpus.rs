@@ -467,9 +467,7 @@ impl TantivyCorpus {
         address: DocAddress,
         line_id: u64,
     ) -> Result<(CorpusLine, Option<LibraryLine>), String> {
-        let document: TantivyDocument = self
-            .searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(&self.searcher, address)
             .map_err(|error| format!("reading line {line_id}: {error}"))?;
         let reader = self.searcher.segment_reader(address.segment_ord);
         let doc = address.doc_id;

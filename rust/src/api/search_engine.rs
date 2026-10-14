@@ -35,6 +35,7 @@ use crate::derived_columns::{
     GENERATION_FIELD, SECTION_OFFSET_FIELD,
 };
 use crate::display_highlight;
+use crate::doc_store::{load_document, segment_to_store};
 use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
@@ -4196,6 +4197,8 @@ fn index_schema() -> Schema {
         ),
     );
     schema_builder.add_text_field("reference", STORED);
+    // `title`, `isPdf` and `filePath` are read from their columns (see `doc_store`), and
+    // `segment` is stored only where `id` does not imply it.
     schema_builder.add_text_field(
         "title",
         TextOptions::default()
@@ -4204,7 +4207,7 @@ fn index_schema() -> Schema {
                     .set_tokenizer("raw")
                     .set_fieldnorms(false),
             )
-            .set_stored(),
+            .set_fast(None),
     );
     // INDEXED is required for delete_term / upsert by id to work. No fieldnorms:
     // nothing scores `id` or `filePath`.
@@ -4216,7 +4219,7 @@ fn index_schema() -> Schema {
             .set_stored(),
     );
     schema_builder.add_u64_field("segment", STORED);
-    schema_builder.add_bool_field("isPdf", STORED);
+    schema_builder.add_bool_field("isPdf", FAST);
     schema_builder.add_text_field(
         "filePath",
         TextOptions::default()
@@ -4225,8 +4228,7 @@ fn index_schema() -> Schema {
                     .set_tokenizer("raw")
                     .set_fieldnorms(false),
             )
-            .set_fast(None)
-            .set_stored(),
+            .set_fast(None),
     );
     // Book-level content fingerprint, stamped identically on all documents of
     // a book. FAST-only: read columnar by get_book_fingerprints, never searched
@@ -7279,7 +7281,6 @@ impl SearchEngine {
             reference_f    => _reference,
             text_f         => normalized_text.as_str(),
             id_f           => _id,
-            segment_f      => _segment,
             is_pdf_f       => _is_pdf,
             file_path_f    => _file_path,
             topics_f       => topics_facet,
@@ -7289,6 +7290,9 @@ impl SearchEngine {
             ),
             line_hash_f    => line_dedup_hash(&normalized_text)
         );
+        if let Some(stored) = segment_to_store(_id, _segment) {
+            document.add_u64(segment_f, stored);
+        }
         // Not a line of a book, so no key: only `add_text_book` knows a line's neighbours.
         set_chunk_key(&mut document, self.chunk_key_field, 0);
         for facet in _extra_facets.iter().flatten() {
@@ -7353,7 +7357,6 @@ impl SearchEngine {
                 reference_f    => doc.reference,
                 text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
-                segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
@@ -7363,6 +7366,9 @@ impl SearchEngine {
                 ),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(doc.id, doc.segment) {
+                document.add_u64(segment_f, stored);
+            }
             set_chunk_key(&mut document, chunk_key_f, 0);
             let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
             if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
@@ -7657,7 +7663,6 @@ impl SearchEngine {
                 reference_f    => reference,
                 text_f         => normalized_line.as_str(),
                 id_f           => id,
-                segment_f      => segment as u64,
                 is_pdf_f       => false,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
@@ -7667,6 +7672,9 @@ impl SearchEngine {
                 generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(id, segment as u64) {
+                document.add_u64(segment_f, stored);
+            }
             let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
             set_chunk_key(&mut document, chunk_key_f, chunk_key);
             if ordinal == 0 {
@@ -7817,7 +7825,6 @@ impl SearchEngine {
                 reference_f    => page.reference.as_str(),
                 text_f         => normalized.as_str(),
                 id_f           => id,
-                segment_f      => u64::from(page.page_index),
                 is_pdf_f       => true,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
@@ -7826,6 +7833,9 @@ impl SearchEngine {
                 generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(id, u64::from(page.page_index)) {
+                document.add_u64(segment_f, stored);
+            }
             // A PDF's lines are not the library's text, so no vector is built from them.
             set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
@@ -7920,7 +7930,6 @@ impl SearchEngine {
                 reference_f    => doc.reference,
                 text_f         => normalized_text.as_str(),
                 id_f           => doc.id,
-                segment_f      => doc.segment,
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
@@ -7930,6 +7939,9 @@ impl SearchEngine {
                 ),
                 line_hash_f    => line_hash
             );
+            if let Some(stored) = segment_to_store(doc.id, doc.segment) {
+                document.add_u64(segment_f, stored);
+            }
             set_chunk_key(&mut document, chunk_key_f, 0);
             let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
             if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
@@ -8460,7 +8472,7 @@ impl SearchEngine {
         id: u64,
         with_text: bool,
     ) -> Result<SearchResult> {
-        let doc = searcher.doc::<TantivyDocument>(address)?;
+        let doc = load_document(searcher, address)?;
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
         let segment_f = self.schema.get_field("segment")?;
@@ -8513,7 +8525,7 @@ impl SearchEngine {
     ) -> Result<Vec<(String, TextStatus)>> {
         let documents = addresses
             .iter()
-            .map(|&address| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .map(|&address| Ok((address, load_document(searcher, address)?)))
             .collect::<Result<Vec<_>>>()?;
         Ok(
             Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?
@@ -8868,7 +8880,7 @@ impl SearchEngine {
 
         let documents = hits
             .iter()
-            .map(|&(_, address)| Ok((address, searcher.doc::<TantivyDocument>(address)?)))
+            .map(|&(_, address)| Ok((address, load_document(searcher, address)?)))
             .collect::<Result<Vec<_>>>()?;
         // The whole candidate window's library rows in one transaction.
         let texts = Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?;
@@ -12997,7 +13009,7 @@ impl SearchEngine {
         searcher: &Searcher,
         address: DocAddress,
     ) -> Result<Option<MergedSibling>> {
-        let doc = match searcher.doc::<TantivyDocument>(address) {
+        let doc = match load_document(searcher, address) {
             Ok(d) => d,
             Err(e) => {
                 log::error!(
@@ -14088,7 +14100,7 @@ impl SearchEngine {
 
         let mut documents = Vec::with_capacity(addresses.len());
         for doc_address in addresses {
-            match searcher.doc::<TantivyDocument>(doc_address) {
+            match load_document(searcher, doc_address) {
                 Ok(d) => documents.push((doc_address, d)),
                 Err(e) => {
                     // A hit the collectors counted but the doc store cannot
@@ -14256,7 +14268,7 @@ impl SearchEngine {
                 .first(next.doc_id)
                 .is_some_and(|v| v > 0);
             if starts_open {
-                next_documents.push((next, searcher.doc::<TantivyDocument>(next)?));
+                next_documents.push((next, load_document(searcher, next)?));
                 slots.push(slot);
             }
         }
@@ -16103,11 +16115,18 @@ mod tests {
         let mut removed = Vec::new();
         for (_, old) in released.fields() {
             match old.name() {
-                "id" | "filePath" => {
+                "id" => {
+                    let now = entry("id");
+                    assert!(!now.has_fieldnorms() && now.is_fast() && now.is_stored());
+                    assert!(now.is_indexed());
+                }
+                // Out of the doc store, read from their columns.
+                "title" | "isPdf" | "filePath" => {
                     let now = entry(old.name());
+                    assert!(old.is_stored() && !now.is_stored(), "{}", old.name());
+                    assert!(now.is_fast(), "{}", old.name());
+                    assert_eq!(now.is_indexed(), old.is_indexed(), "{}", old.name());
                     assert!(!now.has_fieldnorms(), "{}", old.name());
-                    assert_eq!(now.is_fast(), old.is_fast(), "{}", old.name());
-                    assert_eq!(now.is_stored(), old.is_stored(), "{}", old.name());
                 }
                 name if current.get_field(name).is_err() => removed.push(name),
                 name => assert_eq!(entry(name), old, "{name}"),
@@ -19952,6 +19971,105 @@ mod tests {
             .unwrap();
         engine.commit().unwrap();
         assert!(engine.count_documents_by_file_path().unwrap().is_empty());
+    }
+
+    /// The doc store keeps `reference`, `id` and the stored texts, and `segment` only where
+    /// `id` does not imply it; results still carry every field, read from the columns.
+    #[test]
+    fn the_doc_store_keeps_only_what_no_column_answers() {
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book(
+                "ספר טקסט".to_string(),
+                "/root".to_string(),
+                "id:1".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                "<h1>ספר</h1>
+שורה עם מילה ייחודית"
+                    .to_string(),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine
+            .add_pdf_book(
+                "ספר סרוק".to_string(),
+                "/root".to_string(),
+                "/pdf/a.pdf".to_string(),
+                2,
+                DEFAULT_GENERATION_ORDER,
+                vec![PdfPageInput {
+                    reference: "עמוד 5".to_string(),
+                    text: "עמוד עם מילה ייחודית".to_string(),
+                    page_index: 4,
+                }],
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+
+        let searcher = engine.index_reader.searcher();
+        for (ord, reader) in searcher.segment_readers().iter().enumerate() {
+            for doc in reader.doc_ids_alive() {
+                let stored: TantivyDocument =
+                    searcher.doc(DocAddress::new(ord as u32, doc)).unwrap();
+                let mut names: Vec<&str> = stored
+                    .field_values()
+                    .map(|(field, _)| engine.schema.get_field_name(field))
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
+                let pdf = names.contains(&"segment");
+                let mut expected = vec!["id", "reference", TEXT_STORED_FIELD];
+                if pdf {
+                    expected.push("segment");
+                }
+                expected.sort_unstable();
+                assert_eq!(names, expected);
+            }
+        }
+
+        let mut results = engine
+            .search_exact(
+                "ייחודית".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        let pdf = results.pop().unwrap();
+        let text = results.pop().unwrap();
+        assert_eq!(
+            (
+                text.title.as_str(),
+                text.is_pdf,
+                text.file_path.as_str(),
+                text.segment
+            ),
+            ("ספר טקסט", false, "id:1", 1)
+        );
+        assert_eq!(
+            (
+                pdf.title.as_str(),
+                pdf.is_pdf,
+                pdf.file_path.as_str(),
+                pdf.segment
+            ),
+            ("ספר סרוק", true, "/pdf/a.pdf", 4)
+        );
+        let by_id = engine.get_document_by_id(pdf.id).unwrap().unwrap();
+        assert_eq!(
+            (by_id.title, by_id.is_pdf, by_id.segment),
+            (pdf.title, true, 4)
+        );
     }
 
     /// One document of a book holds its fingerprints, so the columns cost nothing on the
