@@ -16,11 +16,14 @@
 
 use std::sync::Arc;
 
+use tantivy::fieldnorm::FieldNormReader;
+use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{
-    Bm25StatisticsProvider, BooleanQuery, EnableScoring, Occur, PhraseQuery, Query,
-    RegexPhraseQuery, TermQuery, Weight,
+    Bm25StatisticsProvider, Bm25Weight, BooleanQuery, EnableScoring, Explanation, Occur,
+    PhraseQuery, Query, RegexPhraseQuery, Scorer, TermQuery, Weight,
 };
 use tantivy::schema::{Field, IndexRecordOption};
+use tantivy::{DocId, DocSet, Score, SegmentReader, TERMINATED};
 use tantivy::{Searcher, Term};
 use tantivy_fst::Automaton;
 
@@ -213,7 +216,8 @@ pub(crate) fn spelling_terms<S: AsRef<str>>(
     Ok(terms)
 }
 
-/// A `TermQuery` for `word`, or the union of one per spelling when it has several.
+/// A `TermQuery` for `word`, or one [`SpellingsTermQuery`] over its spellings when it
+/// has several.
 pub(crate) fn term_query(
     searcher: &Searcher,
     field: Field,
@@ -221,23 +225,185 @@ pub(crate) fn term_query(
     option: IndexRecordOption,
 ) -> tantivy::Result<Box<dyn Query>> {
     let spellings = spellings(searcher, field, word)?;
-    let mut clauses: Vec<(Occur, Box<dyn Query>)> = spellings
+    let mut terms: Vec<Term> = spellings
         .iter()
-        .map(|spelling| {
-            (
-                Occur::Should,
-                Box::new(TermQuery::new(
-                    Term::from_field_text(field, spelling),
-                    option,
-                )) as Box<dyn Query>,
-            )
-        })
+        .map(|spelling| Term::from_field_text(field, spelling))
         .collect();
-    Ok(if clauses.len() == 1 {
-        clauses.pop().expect("one clause").1
+    Ok(if terms.len() == 1 {
+        Box::new(TermQuery::new(terms.pop().expect("one term"), option))
     } else {
-        SpellingScored::wrap(Box::new(BooleanQuery::new(clauses)), field, &[spellings])
+        Box::new(SpellingsTermQuery { terms })
     })
+}
+
+/// The spellings of one word as the one term schema 5's quote-free twin was: matched by
+/// any of them, scored by BM25 on their summed frequencies in the line and summed
+/// document frequency. A union of `TermQuery`s would give a rare spelling (`א'מ'ר`) its
+/// own high IDF, and a line mixing spellings would escape the term-frequency saturation.
+#[derive(Clone, Debug)]
+pub(crate) struct SpellingsTermQuery {
+    terms: Vec<Term>,
+}
+
+impl Query for SpellingsTermQuery {
+    fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        let bm25 = match enable_scoring {
+            EnableScoring::Enabled {
+                statistics_provider,
+                ..
+            } => {
+                let shared = SharedStatistics {
+                    inner: statistics_provider,
+                    groups: std::slice::from_ref(&self.terms),
+                };
+                Some(Bm25Weight::for_terms(&shared, &self.terms[..1])?)
+            }
+            EnableScoring::Disabled { .. } => None,
+        };
+        Ok(Box::new(SpellingsTermWeight {
+            terms: self.terms.clone(),
+            bm25,
+        }))
+    }
+
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a Term, bool)) {
+        for term in &self.terms {
+            visitor(term, false);
+        }
+    }
+}
+
+struct SpellingsTermWeight {
+    terms: Vec<Term>,
+    bm25: Option<Bm25Weight>,
+}
+
+impl SpellingsTermWeight {
+    fn spellings_scorer(&self, reader: &SegmentReader) -> tantivy::Result<SpellingsScorer> {
+        let field = self.terms[0].field();
+        let inverted = reader.inverted_index(field)?;
+        let option = if self.bm25.is_some() {
+            IndexRecordOption::WithFreqs
+        } else {
+            IndexRecordOption::Basic
+        };
+        let mut postings = Vec::with_capacity(self.terms.len());
+        for term in &self.terms {
+            if let Some(found) = inverted.read_postings(term, option)? {
+                postings.push(found);
+            }
+        }
+        let fieldnorms = match &self.bm25 {
+            Some(_) => Some(reader.get_fieldnorms_reader(field)?),
+            None => None,
+        };
+        Ok(SpellingsScorer::new(
+            postings,
+            fieldnorms,
+            self.bm25.clone(),
+        ))
+    }
+}
+
+impl Weight for SpellingsTermWeight {
+    fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        let mut scorer = self.spellings_scorer(reader)?;
+        scorer.bm25 = scorer.bm25.map(|bm25| bm25.boost_by(boost));
+        Ok(Box::new(scorer))
+    }
+
+    fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
+        let mut scorer = self.spellings_scorer(reader)?;
+        if scorer.seek(doc) != doc {
+            return Err(tantivy::TantivyError::InvalidArgument(format!(
+                "Document #({doc}) does not match"
+            )));
+        }
+        Ok(Explanation::new("SpellingsTermQuery", scorer.score()))
+    }
+}
+
+/// The union of the spellings' postings, each document once.
+struct SpellingsScorer {
+    postings: Vec<SegmentPostings>,
+    fieldnorms: Option<FieldNormReader>,
+    bm25: Option<Bm25Weight>,
+    doc: DocId,
+}
+
+impl SpellingsScorer {
+    fn new(
+        postings: Vec<SegmentPostings>,
+        fieldnorms: Option<FieldNormReader>,
+        bm25: Option<Bm25Weight>,
+    ) -> Self {
+        let mut scorer = Self {
+            postings,
+            fieldnorms,
+            bm25,
+            doc: TERMINATED,
+        };
+        scorer.doc = scorer.lowest();
+        scorer
+    }
+
+    fn lowest(&self) -> DocId {
+        self.postings
+            .iter()
+            .map(|p| p.doc())
+            .min()
+            .unwrap_or(TERMINATED)
+    }
+}
+
+impl DocSet for SpellingsScorer {
+    fn advance(&mut self) -> DocId {
+        let current = self.doc;
+        for postings in &mut self.postings {
+            if postings.doc() == current {
+                postings.advance();
+            }
+        }
+        self.doc = self.lowest();
+        self.doc
+    }
+
+    fn seek(&mut self, target: DocId) -> DocId {
+        if self.doc >= target {
+            return self.doc;
+        }
+        for postings in &mut self.postings {
+            if postings.doc() < target {
+                postings.seek(target);
+            }
+        }
+        self.doc = self.lowest();
+        self.doc
+    }
+
+    fn doc(&self) -> DocId {
+        self.doc
+    }
+
+    fn size_hint(&self) -> u32 {
+        self.postings.iter().map(|p| p.size_hint()).sum()
+    }
+}
+
+impl Scorer for SpellingsScorer {
+    fn score(&mut self) -> Score {
+        let (Some(bm25), Some(fieldnorms)) = (&self.bm25, &self.fieldnorms) else {
+            return 1.0;
+        };
+        let doc = self.doc;
+        let term_freq: u32 = self
+            .postings
+            .iter()
+            .filter(|p| p.doc() == doc)
+            .map(|p| p.term_freq())
+            .sum();
+        bm25.score(fieldnorms.fieldnorm_id(doc), term_freq)
+    }
 }
 
 /// Spelling combinations a phrase is served as a union of `PhraseQuery`s up to; past it,
@@ -389,7 +555,12 @@ impl Bm25StatisticsProvider for SharedStatistics<'_> {
 
     fn doc_freq(&self, term: &Term) -> tantivy::Result<u64> {
         match self.groups.iter().find(|group| group.contains(term)) {
-            Some(group) => group.iter().map(|t| self.inner.doc_freq(t)).sum(),
+            // A line holding two spellings counts twice; BM25 refuses more than every doc.
+            Some(group) => Ok(group
+                .iter()
+                .map(|t| self.inner.doc_freq(t))
+                .sum::<tantivy::Result<u64>>()?
+                .min(self.inner.total_num_docs()?)),
             None => self.inner.doc_freq(term),
         }
     }
@@ -630,5 +801,26 @@ mod scoring_tests {
         let found = scores(&searcher, &*phrase);
         assert_eq!(found.len(), 32);
         assert!((found[&0] - found[&1]).abs() < 1e-4, "{found:?}");
+    }
+
+    /// Occurrences of different spellings add up as occurrences of one term would, so a
+    /// line mixing them does not escape BM25's saturation.
+    #[test]
+    fn spellings_in_one_line_count_as_one_term() {
+        let mut lines = vec!["אמר אמר א'מ'ר זה", "אמר אמר אמר זה"];
+        lines.extend(std::iter::repeat_n("אמר רבי זה וזה", 30));
+        let (index, text) = index(&lines);
+        let searcher = index.reader().unwrap().searcher();
+        let word = term_query(&searcher, text, "אמר", IndexRecordOption::WithFreqs).unwrap();
+        let found = scores(&searcher, &*word);
+        assert_eq!(found.len(), 32);
+        assert!((found[&0] - found[&1]).abs() < 1e-4, "{found:?}");
+        let mut alive = Vec::new();
+        searcher
+            .search(&*word, &tantivy::collector::DocSetCollector)
+            .unwrap()
+            .into_iter()
+            .for_each(|address| alive.push(address.doc_id));
+        assert_eq!(alive.len(), 32);
     }
 }
