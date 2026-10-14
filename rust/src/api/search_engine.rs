@@ -41,6 +41,7 @@ use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
+use crate::page_cache::{self, PageCache, PageKey};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
@@ -4398,6 +4399,8 @@ pub struct SearchEngine {
     /// Passage highlights already computed: see [`Self::semantic_passage_highlights`].
     #[cfg(feature = "semantic-integration")]
     semantic_highlights: crate::semantic_highlight::HighlightCache,
+    /// Ranked hits and counts of recent searches: see [`crate::page_cache`].
+    page_cache: PageCache,
 }
 
 /// The analyzers every field and query of the index is tokenized with.
@@ -4542,6 +4545,7 @@ impl SearchEngine {
             semantic_sessions: SemanticSessionCache::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
+            page_cache: PageCache::default(),
         }
     }
 
@@ -4584,6 +4588,7 @@ impl SearchEngine {
             semantic_sessions: SemanticSessionCache::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
+            page_cache: PageCache::default(),
         })
     }
 
@@ -8028,6 +8033,7 @@ impl SearchEngine {
         let commit_elapsed = started.elapsed();
         let reload_started = Instant::now();
         self.index_reader.reload()?;
+        self.page_cache.clear();
         info!(
             "commit: {commit_elapsed:?} (reader reload {:?})",
             reload_started.elapsed()
@@ -12408,7 +12414,9 @@ impl SearchEngine {
                 &page,
             );
         }
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        let addresses = self
+            .ranked_page(&searcher, &*query, limit, offset, order, PageCounts::None)?
+            .addresses;
         if addresses.is_empty() {
             return Ok(Vec::new());
         }
@@ -12462,39 +12470,18 @@ impl SearchEngine {
         }
         if limit == 0 {
             return Ok(SearchPageResult {
-                total_count: searcher.search(&*query, &Count)? as u32,
+                total_count: self.count_on(&searcher, &*query)?,
                 results: Vec::new(),
                 truncated,
                 group_count: None,
             });
         }
-        // Tuple collector: single index pass for both count and top-docs.
-        let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
-            ResultsOrder::Catalogue => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("id", Order::Asc);
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-            ResultsOrder::Generation => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-            ResultsOrder::Relevance => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_score();
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-        };
+        // One index pass for both count and top-docs.
+        let RankedPage {
+            addresses,
+            total: total_count,
+            ..
+        } = self.ranked_page(&searcher, &*query, limit, offset, order, PageCounts::Total)?;
         // total_count is the full hit count regardless of this page; only the
         // snippet highlighting (and its dictionary scan) is page-dependent, so
         // skip it when this page is empty (e.g. offset past the last hit).
@@ -12526,13 +12513,37 @@ impl SearchEngine {
     }
 
     fn run_count(&self, query: Box<dyn Query>) -> Result<u32> {
-        let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&*query, &Count)? as u32)
+        self.count_on(&self.index_reader.searcher(), &*query)
     }
 
     fn run_count_by_book(&self, query: Box<dyn Query>) -> Result<HashMap<String, u32>> {
         let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&*query, &BookCountCollector)?)
+        let key = PageKey::new(searcher.generation().generation_id(), &*query);
+        if let Some(counts) = key
+            .as_ref()
+            .and_then(|key| self.page_cache.book_counts(key))
+        {
+            return Ok((*counts).clone());
+        }
+        let counts = searcher.search(&*query, &BookCountCollector)?;
+        if let Some(key) = key {
+            self.page_cache
+                .store_book_counts(key, Arc::new(counts.clone()));
+        }
+        Ok(counts)
+    }
+
+    /// The hit count of `query`, from the page cache when a search counted it.
+    fn count_on(&self, searcher: &Searcher, query: &dyn Query) -> Result<u32> {
+        let key = PageKey::new(searcher.generation().generation_id(), query);
+        if let Some(total) = key.as_ref().and_then(|key| self.page_cache.total(key)) {
+            return Ok(total);
+        }
+        let total = searcher.search(query, &Count)? as u32;
+        if let Some(key) = key {
+            self.page_cache.store_total(key, total);
+        }
+        Ok(total)
     }
 
     fn run_facet_counts(
@@ -12613,7 +12624,9 @@ impl SearchEngine {
             }
             return Ok(());
         }
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        let addresses = self
+            .ranked_page(&searcher, &*query, limit, offset, order, PageCounts::None)?
+            .addresses;
         if addresses.is_empty() {
             return Ok(());
         }
@@ -12710,43 +12723,25 @@ impl SearchEngine {
             return Ok(());
         }
 
-        let (addresses, total_count, book_counts): (Vec<DocAddress>, u32, HashMap<String, u32>) =
-            match order {
-                ResultsOrder::Catalogue => {
-                    let top_collector = TopDocs::with_limit(limit as usize)
-                        .and_offset(offset as usize)
-                        .order_by_fast_field::<u64>("id", Order::Asc);
-                    let (top_docs, count, by_book) =
-                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
-                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                    (addrs, count as u32, by_book)
-                }
-                ResultsOrder::Generation => {
-                    let top_collector = TopDocs::with_limit(limit as usize)
-                        .and_offset(offset as usize)
-                        .order_by_fast_field::<u64>("generationSort", Order::Asc);
-                    let (top_docs, count, by_book) =
-                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
-                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                    (addrs, count as u32, by_book)
-                }
-                ResultsOrder::Relevance => {
-                    let top_collector = TopDocs::with_limit(limit as usize)
-                        .and_offset(offset as usize)
-                        .order_by_score();
-                    let (top_docs, count, by_book) =
-                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
-                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                    (addrs, count as u32, by_book)
-                }
-            };
+        let RankedPage {
+            addresses,
+            total: total_count,
+            book_counts,
+        } = self.ranked_page(
+            &searcher,
+            &*query,
+            limit,
+            offset,
+            order,
+            PageCounts::TotalAndBooks,
+        )?;
 
         // Counts first — the page addresses may be empty (offset past the
         // end) while the totals are still meaningful.
         if sink
             .add(SearchStreamUpdate {
                 total_count: Some(total_count),
-                book_counts: Some(book_counts),
+                book_counts,
                 results: Vec::new(),
                 truncated,
                 group_count: None,
@@ -12804,48 +12799,80 @@ impl SearchEngine {
         make_highlight(searcher).unwrap_or_else(|_| HighlightPlan::none())
     }
 
-    fn collect_addresses(
+    /// The hits `offset..offset + limit` of `query` in `order`, with the counts
+    /// `counts` asks for, in one index pass. Ranks a few pages ahead into the
+    /// page cache, and serves from it when an earlier call ranked this far.
+    fn ranked_page(
+        &self,
         searcher: &Searcher,
         query: &dyn Query,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
-    ) -> Result<Vec<DocAddress>> {
-        let addresses = match order {
-            ResultsOrder::Catalogue => {
-                // and_offset is set on TopDocs before calling order_by_fast_field,
-                // which consumes self and preserves the offset configuration.
-                let collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("id", Order::Asc);
-                searcher
-                    .search(query, &collector)?
-                    .into_iter()
-                    .map(|(_, addr)| addr)
-                    .collect()
+        counts: PageCounts,
+    ) -> Result<RankedPage> {
+        let slot = match order {
+            ResultsOrder::Catalogue => 0,
+            ResultsOrder::Generation => 1,
+            ResultsOrder::Relevance => 2,
+        };
+        let key = PageKey::new(searcher.generation().generation_id(), query);
+        if let Some(page) = key
+            .as_ref()
+            .and_then(|key| self.page_cache.page(key, slot, offset, limit))
+        {
+            if (counts == PageCounts::None || page.total.is_some())
+                && (counts != PageCounts::TotalAndBooks || page.book_counts.is_some())
+            {
+                return Ok(RankedPage {
+                    addresses: page.addresses,
+                    total: page.total.unwrap_or(0),
+                    book_counts: page.book_counts.map(|counts| (*counts).clone()),
+                });
             }
-            ResultsOrder::Generation => {
-                let collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
-                searcher
-                    .search(query, &collector)?
-                    .into_iter()
-                    .map(|(_, addr)| addr)
-                    .collect()
-            }
+        }
+        let window = key.and(page_cache::ranked_window(offset, limit));
+        let (from, take) = match window {
+            Some(window) => (0, window),
+            None => (offset as usize, limit as usize),
+        };
+        let top = TopDocs::with_limit(take).and_offset(from);
+        let (mut addresses, total, book_counts) = match order {
+            ResultsOrder::Catalogue => collect_ranked(
+                searcher,
+                query,
+                top.order_by_fast_field::<u64>("id", Order::Asc),
+                counts,
+            )?,
+            ResultsOrder::Generation => collect_ranked(
+                searcher,
+                query,
+                top.order_by_fast_field::<u64>("generationSort", Order::Asc),
+                counts,
+            )?,
             ResultsOrder::Relevance => {
-                let collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_score();
-                searcher
-                    .search(query, &collector)?
-                    .into_iter()
-                    .map(|(_, addr)| addr)
-                    .collect()
+                collect_ranked(searcher, query, top.order_by_score(), counts)?
             }
         };
-        Ok(addresses)
+        if let (Some(key), Some(window)) = (key, window) {
+            if let Some(total) = total {
+                self.page_cache.store_total(key, total);
+            }
+            if let Some(counts) = &book_counts {
+                self.page_cache
+                    .store_book_counts(key, Arc::new(counts.clone()));
+            }
+            let start = (offset as usize).min(addresses.len());
+            let end = (offset as usize + limit as usize).min(addresses.len());
+            let page = addresses[start..end].to_vec();
+            self.page_cache.store_ranked(key, slot, addresses, window);
+            addresses = page;
+        }
+        Ok(RankedPage {
+            addresses,
+            total: total.unwrap_or(0),
+            book_counts,
+        })
     }
 
     /// מריץ את שאילתת החיפוש עם [`GroupCollector`] וגוזר את עמוד הקבוצות
@@ -14489,6 +14516,46 @@ impl HighlightConfig {
             max_chars: 800,
         }
     }
+}
+
+/// Which counts a ranked page is collected with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PageCounts {
+    None,
+    Total,
+    TotalAndBooks,
+}
+
+struct RankedPage {
+    addresses: Vec<DocAddress>,
+    /// 0 unless counted.
+    total: u32,
+    book_counts: Option<HashMap<String, u32>>,
+}
+
+/// `top` with the counts `counts` asks for, in one pass.
+#[allow(clippy::type_complexity)]
+fn collect_ranked<C, K>(
+    searcher: &Searcher,
+    query: &dyn Query,
+    top: C,
+    counts: PageCounts,
+) -> Result<(Vec<DocAddress>, Option<u32>, Option<HashMap<String, u32>>)>
+where
+    C: Collector<Fruit = Vec<(K, DocAddress)>>,
+{
+    let addresses = |hits: Vec<(K, DocAddress)>| hits.into_iter().map(|(_, a)| a).collect();
+    Ok(match counts {
+        PageCounts::None => (addresses(searcher.search(query, &top)?), None, None),
+        PageCounts::Total => {
+            let (hits, total) = searcher.search(query, &(top, Count))?;
+            (addresses(hits), Some(total as u32), None)
+        }
+        PageCounts::TotalAndBooks => {
+            let (hits, total, books) = searcher.search(query, &(top, Count, BookCountCollector))?;
+            (addresses(hits), Some(total as u32), Some(books))
+        }
+    })
 }
 
 // ── BookCountCollector ─────────────────────────────────────────────────────────
@@ -19618,6 +19685,65 @@ mod tests {
         (0..64)
             .into_par_iter()
             .for_each(|_| assert_eq!(by_book(), expected));
+    }
+
+    /// The first page ranks the following ones, so they and the counts are served
+    /// from the page cache; a commit drops it.
+    #[test]
+    fn later_pages_and_counts_come_from_the_page_cache() {
+        let (mut engine, _dir) = make_engine();
+        for id in 1..=30u64 {
+            let text = if id % 3 == 0 {
+                "שלום עולם"
+            } else {
+                "שלום"
+            };
+            add(&mut engine, id, text, &format!("/books/{}.txt", id % 4));
+            if id == 15 {
+                engine.commit().unwrap();
+            }
+        }
+        engine.commit().unwrap();
+        let page = |engine: &SearchEngine, offset| {
+            let page = engine
+                .search_and_count_exact(
+                    "שלום".to_string(),
+                    vec![],
+                    4,
+                    offset,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let ids: Vec<u64> = page.results.iter().map(|r| r.id).collect();
+            (page.total_count, ids)
+        };
+        let by_book = |engine: &SearchEngine| {
+            engine
+                .count_by_book_exact("שלום".to_string(), vec![], false, false)
+                .unwrap()
+        };
+
+        assert_eq!(page(&engine, 0), (30, vec![1, 2, 3, 4]));
+        assert_eq!(engine.page_cache.len(), 1);
+        let cached: Vec<_> = (1..8).map(|n| page(&engine, n * 4)).collect();
+        let books = by_book(&engine);
+        assert_eq!(by_book(&engine), books);
+        assert_eq!(engine.page_cache.len(), 1);
+        engine.page_cache.clear();
+        let fresh: Vec<_> = (1..8).map(|n| page(&engine, n * 4)).collect();
+        assert_eq!(cached, fresh);
+        assert_eq!(cached[6], (30, vec![29, 30]));
+        engine.page_cache.clear();
+        assert_eq!(by_book(&engine), books);
+        assert_eq!(books.values().sum::<u32>(), 30);
+
+        add(&mut engine, 31, "שלום", "/books/new.txt");
+        engine.commit().unwrap();
+        assert_eq!(engine.page_cache.len(), 0);
+        assert_eq!(page(&engine, 28), (31, vec![29, 30, 31]));
     }
 
     #[test]
@@ -27409,4 +27535,3 @@ mod tests {
         }
     }
 }
-
