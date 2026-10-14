@@ -560,3 +560,63 @@ fn a_batch_enqueues_in_input_order_while_searches_run() {
     }
     assert_eq!(docs, 6 * 3000 + 34 * 5);
 }
+
+#[test]
+fn a_book_that_panics_fails_alone_and_the_batch_finishes() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE book (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL);
+         CREATE TABLE line (id INTEGER PRIMARY KEY NOT NULL, bookId INTEGER NOT NULL,
+                            lineIndex INTEGER NOT NULL);
+         CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);
+         CREATE TABLE line_content (id INTEGER PRIMARY KEY NOT NULL, content TEXT);
+         BEGIN;",
+    )
+    .unwrap();
+    // Each book is larger than the tests' in-flight budget.
+    for book in 1..=8i64 {
+        conn.execute(
+            "INSERT INTO book (id, title) VALUES (?1, ?2)",
+            rusqlite::params![book, format!("ספר {book}")],
+        )
+        .unwrap();
+        for line in 0..200 {
+            let id = book * 10_000 + line;
+            conn.execute(
+                "INSERT INTO line (id, bookId, lineIndex) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, book, line],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO line_content (id, content) VALUES (?1, ?2)",
+                rusqlite::params![id, format!("שורה {line} של ספר {book} בראשית ברא")],
+            )
+            .unwrap();
+        }
+    }
+    conn.execute_batch("COMMIT").unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let engine = std::sync::Arc::new(engine);
+    crate::library_indexing::PANIC_ON_BOOK.store(1, std::sync::atomic::Ordering::Relaxed);
+    let (done, results) = std::sync::mpsc::channel();
+    let batch = engine.clone();
+    std::thread::spawn(move || {
+        let inputs: Vec<LibraryBookInput> = (1..=8)
+            .map(|book| library_input(book, &format!("ספר {book}")))
+            .collect();
+        let _ = done.send(batch.add_library_books(inputs, &IndexingCancellationToken::new()));
+    });
+    let results = results.recv_timeout(std::time::Duration::from_secs(60));
+    crate::library_indexing::PANIC_ON_BOOK.store(i64::MIN, std::sync::atomic::Ordering::Relaxed);
+    let results = results.expect("the batch finishes").unwrap();
+    assert_eq!(results[0].status, LibraryBookStatus::Failed);
+    assert!(results[1..]
+        .iter()
+        .all(|r| r.status == LibraryBookStatus::Indexed));
+}

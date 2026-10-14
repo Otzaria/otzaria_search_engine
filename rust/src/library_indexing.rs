@@ -27,7 +27,13 @@ use tantivy::IndexWriter;
 const PREPARE_WORKERS: usize = 4;
 /// Text bytes of prepared books waiting to be enqueued; their documents take a few times as
 /// much.
-const IN_FLIGHT_BYTES: usize = 64 << 20;
+/// Tests use a small budget so that a few small books fill it.
+const IN_FLIGHT_BYTES: usize = if cfg!(test) { 4 << 10 } else { 64 << 20 };
+
+/// The book whose preparation panics, for tests.
+#[cfg(test)]
+pub(crate) static PANIC_ON_BOOK: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(i64::MIN);
 
 /// The line source of a book's `source` and `attached_slug`, or why they do not name one.
 pub(crate) fn line_source_of(
@@ -85,6 +91,10 @@ fn failed(book: &LibraryBookInput, error: impl std::fmt::Display) -> LibraryBook
 
 /// Reads and prepares one book; never touches the writer.
 pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome {
+    #[cfg(test)]
+    if book.book_id == PANIC_ON_BOOK.load(Ordering::Relaxed) {
+        panic!("preparing book {} panics", book.book_id);
+    }
     let source = match line_source_of(book.source, book.attached_slug.as_deref()) {
         Ok(source) => source,
         Err(error) => return Outcome::Done(failed(book, error)),
@@ -204,7 +214,13 @@ pub(crate) fn add_library_books(
                 let outcome = if stop() {
                     Outcome::Done(result(book, LibraryBookStatus::Cancelled))
                 } else {
-                    match prepare(engine, book) {
+                    // A panic would leave its book unsent and every later one waiting
+                    // in the budget for it: it fails that book instead.
+                    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        prepare(engine, book)
+                    }))
+                    .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")));
+                    match prepared {
                         Outcome::Prepared(prepared, bytes) => {
                             if budget.admit(index, bytes, stop) {
                                 Outcome::Prepared(prepared, bytes)
