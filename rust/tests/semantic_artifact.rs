@@ -1032,8 +1032,8 @@ fn a_line_that_is_gone_or_whose_context_changed_is_not_shown() {
     engine.open_semantic_artifact(library.input()).unwrap();
     assert_eq!(
         semantic_lines(&engine, &embedded, &[]).first(),
-        Some(&("/books/short.txt".to_string(), short.to_string(), 1)),
-        "the short line is found by its text and its neighbours'"
+        Some(&("/books/short.txt".to_string(), embedded.clone(), 1)),
+        "the short line is found, and shown, by its text and its neighbours'"
     );
 
     replace_book(
@@ -1049,7 +1049,7 @@ fn a_line_that_is_gone_or_whose_context_changed_is_not_shown() {
     assert!(
         !semantic_lines(&engine, &embedded, &[])
             .iter()
-            .any(|(_, text, _)| text == short),
+            .any(|(path, _, segment)| path == "/books/short.txt" && *segment == 1),
         "the short line's text is now of other neighbours"
     );
 
