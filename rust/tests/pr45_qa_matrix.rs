@@ -257,8 +257,9 @@ fn hybrid_large_dictionary_compiles_and_scans_with_bounded_pattern() {
     let preparation = started.elapsed();
     assert!(pattern.word_patterns[0].chars().count() <= 24_128);
     let matcher = pattern.matcher.unwrap();
-    for word in ["כונטרסים", "קונטרשים", "הקונטרסיםא"] {
-        assert_eq!(matcher.find_matches(word.into(), vec![]).len(), 1);
+    // A final letter takes its medial form before a suffix (מלך → מלכים).
+    for word in ["כונטרסים", "קונטרשים", "הקונטרסימא"] {
+        assert_eq!(matcher.find_matches(word.into(), vec![]).len(), 1, "{word}");
     }
     let started = Instant::now();
     let scanned = matcher.find_matches("נאמר כאן דבר שאינו מתאים ".repeat(2_000), vec![]);
