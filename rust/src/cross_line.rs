@@ -41,7 +41,9 @@ use tantivy::{
 };
 
 use crate::gap_phrase::{end_anchored_slack, start_anchored_slack, ChainSweep, WordPositions};
-use crate::hebrew_tokenizer::{next_token_boundaries, paired_reading_after};
+use crate::hebrew_tokenizer::{
+    continues_token, is_word_char, next_token_boundaries, paired_reading_after, starts_token,
+};
 use crate::term_automaton::{self, TermDfa};
 
 /// Position of a line's first content word, plus one; absent (or 0) when no
@@ -175,13 +177,258 @@ pub(crate) struct LineEdges {
     end_terms: Vec<String>,
 }
 
+/// The tokenizer's walk over a line, keeping the first and last content words.
+struct EdgeScan<'a> {
+    plain: &'a str,
+    content: Range<usize>,
+    byte: usize,
+    count: u32,
+    /// The next token is the second reading of a `(X) [Y]` pair.
+    share: bool,
+    first: Option<(u32, Range<usize>)>,
+    last: Option<(u32, Range<usize>)>,
+}
+
+impl EdgeScan<'_> {
+    /// Advances over one token, as the tokenizer positions it; `false` at the end.
+    fn step(&mut self) -> bool {
+        let Some((start, end)) = next_token_boundaries(self.plain, self.byte) else {
+            return false;
+        };
+        let position = if self.share {
+            self.count - 1
+        } else {
+            self.count
+        };
+        if !self.share {
+            self.count += 1;
+        }
+        self.share = paired_reading_after(self.plain, start, end).is_some();
+        self.byte = end;
+        if start < self.content.start || end > self.content.end {
+            return true;
+        }
+        match &mut self.first {
+            None => self.first = Some((position, start..end)),
+            Some((p, span)) if *p == position => span.end = end,
+            _ => {}
+        }
+        match &mut self.last {
+            Some((p, span)) if *p == position => span.end = end,
+            _ => self.last = Some((position, start..end)),
+        }
+        true
+    }
+
+    fn finish(&mut self) {
+        while self.step() {}
+    }
+}
+
+/// The last byte offset in `from..to` where a word starts right after whitespace. No token
+/// spans it and no `(X) [Y]` pair straddles it, so tokenizing can resume there.
+fn resume_point(plain: &str, from: usize, to: usize) -> Option<usize> {
+    let mut chars = plain[from..to].char_indices().rev().peekable();
+    while let Some((i, c)) = chars.next() {
+        if !starts_token(c) {
+            continue;
+        }
+        if let Some(&(_, before)) = chars.peek() {
+            if before.is_whitespace() {
+                return Some(from + i);
+            }
+        }
+    }
+    None
+}
+
+/// Positions the tokenizer assigns to the tokens in `from..to` — `from` at a token
+/// boundary, `to` from [`resume_point`] — without walking every token: a run of word
+/// characters holds exactly one token, so only runs with quotes or transparent
+/// punctuation take the tokenizer's own scan.
+fn positions_between(plain: &str, from: usize, to: usize) -> u32 {
+    let bytes = plain.as_bytes();
+    let mut tokens = 0u32;
+    let mut pairs = 0u32;
+    let mut count = |start: usize, end: usize| {
+        tokens += 1;
+        if start > 0
+            && bytes[start - 1] == b'('
+            && paired_reading_after(plain, start, end).is_some()
+        {
+            pairs += 1;
+        }
+    };
+    let mut i = from;
+    while i < to {
+        let (class, len) = class_at(plain, bytes, i);
+        if class == CharClass::Separator {
+            i += len;
+            continue;
+        }
+        let run_start = i;
+        let mut simple = true;
+        let mut word_start = None;
+        while i < bytes.len() {
+            let b = bytes[i];
+            // Hebrew letters, the bulk of the text: U+05D0..=U+05EA.
+            if b == 0xD7 && matches!(bytes.get(i + 1), Some(0x90..=0xAA)) {
+                word_start.get_or_insert(i);
+                i += 2;
+                continue;
+            }
+            let (class, len) = class_at(plain, bytes, i);
+            match class {
+                CharClass::Separator => break,
+                CharClass::Special => simple = false,
+                CharClass::WordStart => {
+                    word_start.get_or_insert(i);
+                }
+                CharClass::Mark => {}
+            }
+            i += len;
+        }
+        if simple {
+            if let Some(start) = word_start {
+                count(start, i);
+            }
+        } else {
+            let mut at = run_start;
+            while let Some((start, end)) = next_token_boundaries(plain, at) {
+                if start >= i {
+                    break;
+                }
+                count(start, end);
+                at = end;
+            }
+        }
+    }
+    tokens - pairs
+}
+
+/// A character as [`next_token_boundaries`] treats it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    /// Breaks tokens.
+    Separator,
+    /// A word character that can open a token.
+    WordStart,
+    /// A word character that cannot open one (an attached mark).
+    Mark,
+    /// Continues a token without being a word character: quotes, transparent punctuation.
+    Special,
+}
+
+const ASCII_CLASSES: [CharClass; 128] = {
+    let mut classes = [CharClass::Separator; 128];
+    let mut b = 0;
+    while b < 128 {
+        let c = b as u8;
+        classes[b] = if c.is_ascii_alphanumeric() {
+            CharClass::WordStart
+        } else if matches!(
+            c,
+            b'*' | b'[' | b']' | b'^' | b'$' | b'\\' | b'+' | b'.' | b'~' | b'`' | b'\'' | b'"'
+        ) {
+            CharClass::Special
+        } else {
+            CharClass::Separator
+        };
+        b += 1;
+    }
+    classes
+};
+
+#[inline]
+fn class_at(plain: &str, bytes: &[u8], i: usize) -> (CharClass, usize) {
+    let b = bytes[i];
+    if b < 0x80 {
+        return (ASCII_CLASSES[b as usize], 1);
+    }
+    if b == 0xD7 && matches!(bytes.get(i + 1), Some(0x90..=0xAA)) {
+        return (CharClass::WordStart, 2);
+    }
+    let c = plain[i..].chars().next().expect("on a char boundary");
+    let class = if starts_token(c) {
+        CharClass::WordStart
+    } else if is_word_char(c) {
+        CharClass::Mark
+    } else if continues_token(c) {
+        CharClass::Special
+    } else {
+        CharClass::Separator
+    };
+    (class, c.len_utf8())
+}
+
 /// The edges of a normalized line, or `None` when it has no content word.
 /// `analyzer` must be the `text` field's indexing analyzer: the edge terms are
 /// the terms it indexes the first and last content words as.
 pub(crate) fn line_edges(analyzer: &mut TextAnalyzer, plain: &str) -> Option<LineEdges> {
+    let mut scan = EdgeScan {
+        plain,
+        content: content_range(plain),
+        byte: 0,
+        count: 0,
+        share: false,
+        first: None,
+        last: None,
+    };
+    // Tokens from the start up to the first content word, then from a resume point near
+    // the content's end; the middle is only counted.
+    let mut ended = false;
+    while !(scan.first.is_some() && !scan.share) {
+        if !scan.step() {
+            ended = true;
+            break;
+        }
+    }
+    if !ended {
+        let tail = (scan.byte < scan.content.end)
+            .then(|| resume_point(plain, scan.byte, scan.content.end))
+            .flatten();
+        match tail {
+            Some(resume) => {
+                let (byte, count, last) = (scan.byte, scan.count, scan.last.take());
+                scan.count += positions_between(plain, byte, resume);
+                scan.byte = resume;
+                scan.finish();
+                if scan.last.is_none() {
+                    // No content word after the resume point: walk the middle after all.
+                    scan.byte = byte;
+                    scan.count = count;
+                    scan.share = false;
+                    scan.last = last;
+                    scan.finish();
+                }
+            }
+            None => scan.finish(),
+        }
+    }
+    let (first, first_span) = scan.first?;
+    let (last, last_span) = scan.last?;
+    let mut terms = |span: Range<usize>| {
+        let mut out = Vec::new();
+        let mut stream = analyzer.token_stream(&plain[span]);
+        while stream.advance() {
+            out.push(stream.token().text.clone());
+        }
+        out
+    };
+    let start_terms = terms(first_span);
+    let end_terms = terms(last_span);
+    Some(LineEdges {
+        first,
+        last,
+        start_terms,
+        end_terms,
+    })
+}
+
+/// [`line_edges`] as one walk over every token: the reference its shortcuts must match.
+#[cfg(test)]
+pub(crate) fn line_edges_reference(analyzer: &mut TextAnalyzer, plain: &str) -> Option<LineEdges> {
     let content = content_range(plain);
-    // Positions as the tokenizer assigns them, without building token texts:
-    // only a paired reading `(X) [Y]` puts two words on one position.
     let mut byte = 0usize;
     let mut count = 0u32;
     let mut share = false;
@@ -1372,6 +1619,101 @@ mod tests {
             assert_eq!((edges.first, edges.last), (position, position), "{line}");
             assert_eq!(edges.start_terms, ["הוצא", "היצא"], "{line}");
             assert_eq!(edges.end_terms, ["הוצא", "היצא"], "{line}");
+        }
+    }
+
+    #[test]
+    fn char_classes_follow_the_tokenizer() {
+        let samples = (0u32..0x80)
+            .chain(0x0590..0x0600)
+            .chain([0x0307, 0x200F, 0xFB2A, 0x2019]);
+        for c in samples.filter_map(char::from_u32) {
+            let mut buf = [0u8; 4];
+            let text = c.encode_utf8(&mut buf);
+            let expected = if starts_token(c) {
+                CharClass::WordStart
+            } else if is_word_char(c) {
+                CharClass::Mark
+            } else if continues_token(c) {
+                CharClass::Special
+            } else {
+                CharClass::Separator
+            };
+            assert!(
+                class_at(text, text.as_bytes(), 0) == (expected, c.len_utf8()),
+                "{c:?}"
+            );
+        }
+    }
+
+    /// Random lines over the characters every shortcut of [`line_edges`] reasons about.
+    #[test]
+    fn line_edges_match_the_full_walk_on_random_lines() {
+        const PIECES: &[&str] = &[
+            "א",
+            "בר",
+            "שלום",
+            "ת",
+            " ",
+            " ",
+            "  ",
+            "(",
+            ")",
+            "[",
+            "]",
+            "{",
+            "}",
+            "'",
+            "\"",
+            "׳",
+            "״",
+            ".",
+            ",",
+            ":",
+            "׃",
+            "*",
+            "־",
+            "-",
+            "\u{05B8}",
+            "\u{0307}",
+            "1",
+            "יא",
+            "ab",
+            "<",
+            ">",
+            "&",
+            "\u{200F}",
+            "\t",
+            "(א)",
+            "(הוצא) [היצא]",
+            "(ח')[ו']",
+            "{פ}",
+            "[יב]",
+            "רמב\"ם",
+            "תוס'",
+            "''",
+            "\"\"",
+        ];
+        let mut analyzer = TextAnalyzer::builder(crate::hebrew_tokenizer::HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: false,
+        })
+        .build();
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        for _ in 0..200_000 {
+            let len = 1 + next(24);
+            let line: String = (0..len).map(|_| PIECES[next(PIECES.len())]).collect();
+            assert_eq!(
+                line_edges(&mut analyzer, &line),
+                line_edges_reference(&mut analyzer, &line),
+                "{line:?}"
+            );
         }
     }
 

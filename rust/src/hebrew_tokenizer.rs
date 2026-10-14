@@ -111,7 +111,7 @@ pub(crate) fn is_word_char(c: char) -> bool {
 
 /// תו שפותח טוקן: אות/ספרה של ממש, לא סימן צמוד (ראו [`next_token_boundaries`]).
 #[inline]
-fn starts_token(c: char) -> bool {
+pub(crate) fn starts_token(c: char) -> bool {
     if is_hebrew_letter(c) || c.is_ascii_alphanumeric() {
         return true;
     }

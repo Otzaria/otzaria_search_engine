@@ -29,6 +29,9 @@ use tantivy::{schema::*, Index};
 use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
+use crate::api::library_indexing::{
+    IndexingCancellationToken, LibraryBookInput, LibraryBookResult,
+};
 use crate::cross_line;
 use crate::display_highlight;
 use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
@@ -3661,6 +3664,44 @@ impl LineDedupHasher {
         }
         self.fnv.finish()
     }
+}
+
+/// What a text book's documents carry besides its lines.
+pub(crate) struct TextBookMeta {
+    pub title: String,
+    pub topics: String,
+    pub file_path: String,
+    pub catalogue_order: u32,
+    pub generation_order: u32,
+    pub extra_facets: Vec<String>,
+}
+
+/// A text book's documents, built by [`SearchEngine::prepare_text_book`].
+pub(crate) struct PreparedTextBook {
+    pub documents: Vec<TantivyDocument>,
+    /// The book's `contentHash` ([`book_fingerprint`]).
+    pub content_hash: u64,
+    /// The book's `textHash` ([`content_fingerprint`]).
+    pub text_hash: u64,
+    pub text_storage: TextStorage,
+    pub prepare_time: std::time::Duration,
+    pub keys_time: std::time::Duration,
+}
+
+impl PreparedTextBook {
+    /// Moves the documents into `writer`, in line order; returns how many.
+    pub(crate) fn enqueue(&mut self, writer: &IndexWriter) -> Result<u32> {
+        let count = self.documents.len() as u32;
+        for document in self.documents.drain(..) {
+            writer.add_document(document)?;
+        }
+        Ok(count)
+    }
+}
+
+/// How many lines `text.split('\n')` yields.
+fn line_count(text: &str) -> usize {
+    text.bytes().filter(|&b| b == b'\n').count() + 1
 }
 
 /// The display copies of a document whose text is kept in the index. `textStored` is
@@ -7439,12 +7480,54 @@ impl SearchEngine {
             return Ok(0);
         }
         let started = Instant::now();
-        let lines: Vec<&str> = text.split('\n').collect();
         let text_storage = match library_book {
-            Some(book) => library_storage_or_fallback(book, lines.len(), &title),
+            Some(book) => library_storage_or_fallback(book, line_count(text), &title),
             None => TextStorage::InIndex,
         };
-        let text_bytes = text.len();
+        let book = TextBookMeta {
+            title,
+            topics,
+            file_path,
+            catalogue_order,
+            generation_order,
+            extra_facets,
+        };
+        let mut prepared = self.prepare_text_book(&book, text, text_storage, &stored_lines)?;
+        let writer = self.writer_mut()?;
+        let enqueue_started = Instant::now();
+        let docs = prepared.enqueue(writer)?;
+        info!(
+            "add_text_book '{}': {docs} docs, {} bytes in {:?} \
+             (prepare {:?}, keys {:?}, enqueue {:?})",
+            book.title,
+            text.len(),
+            started.elapsed(),
+            prepared.prepare_time,
+            prepared.keys_time,
+            enqueue_started.elapsed()
+        );
+        Ok(docs)
+    }
+
+    /// The documents of a text book's lines, built without touching the writer: everything
+    /// [`Self::add_text_book`] does before it enqueues them. `text_storage` is final here.
+    pub(crate) fn prepare_text_book(
+        &self,
+        book: &TextBookMeta,
+        text: &str,
+        text_storage: TextStorage,
+        stored_lines: &[u32],
+    ) -> Result<PreparedTextBook> {
+        let TextBookMeta {
+            title,
+            topics,
+            file_path,
+            catalogue_order,
+            generation_order,
+            extra_facets,
+        } = book;
+        let (catalogue_order, generation_order) = (*catalogue_order, *generation_order);
+        let lines: Vec<&str> = text.split('\n').collect();
         let (
             title_f,
             reference_f,
@@ -7470,8 +7553,8 @@ impl SearchEngine {
             .collect::<std::result::Result<_, _>>()?;
         let content_hash = book_fingerprint(
             text,
-            &title,
-            &topics,
+            title,
+            topics,
             catalogue_order,
             generation_order,
             extra_facets.clone(),
@@ -7483,7 +7566,7 @@ impl SearchEngine {
         let mut kept_in_index = Vec::new();
         if library && !stored_lines.is_empty() {
             kept_in_index = vec![false; lines.len()];
-            for ordinal in stored_lines {
+            for &ordinal in stored_lines {
                 if let Some(kept) = kept_in_index.get_mut(ordinal as usize) {
                     *kept = true;
                 }
@@ -7494,7 +7577,6 @@ impl SearchEngine {
         let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
         let edge_analyzer = self.text_index_analyzer()?;
-        let writer = self.writer_mut()?;
 
         // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
         // writer.add_document (queue push; grows only when tantivy's indexing
@@ -7544,10 +7626,7 @@ impl SearchEngine {
             .map_init(
                 || edge_analyzer.clone(),
                 |analyzer, (segment, raw_line)| {
-                    let plain = hebrew_query::normalize_text_for_indexing(raw_line);
-                    let vocalized = hebrew_query::contains_attached_marks(raw_line)
-                        .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
-                        .filter(|v| !v.is_empty());
+                    let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw_line);
                     let line_hash = line_dedup_hash(&plain);
                     let line_check =
                         (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
@@ -7582,13 +7661,12 @@ impl SearchEngine {
         };
         let keys_time = keys_started.elapsed();
 
-        let enqueue_started = Instant::now();
-        let mut ordinal: u64 = 0;
+        let mut documents = Vec::with_capacity(lines.len());
         for (segment, (normalized_line, vocalized_line, line_hash, line_check, edges)) in
             normalized.into_iter().enumerate()
         {
             let reference = references[reference_of_line[segment] as usize].as_str();
-            let id = id_base + ordinal + 1;
+            let id = id_base + segment as u64 + 1;
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => reference,
@@ -7627,16 +7705,48 @@ impl SearchEngine {
                     vocalized_line.as_deref(),
                 );
             }
-            writer.add_document(document)?;
-            ordinal += 1;
+            documents.push(document);
         }
-        let enqueue_time = enqueue_started.elapsed();
-        info!(
-            "add_text_book '{title}': {ordinal} docs, {text_bytes} bytes in {:?} \
-             (prepare {prepare_time:?}, keys {keys_time:?}, enqueue {enqueue_time:?})",
-            started.elapsed()
-        );
-        Ok(ordinal as u32)
+        Ok(PreparedTextBook {
+            documents,
+            content_hash,
+            text_hash,
+            text_storage,
+            prepare_time,
+            keys_time,
+        })
+    }
+
+    /// Indexes books whose text the engine reads itself, from the library database
+    /// ([`configure_line_source`]) or the user-books database
+    /// ([`configure_user_books_line_source`]). Does not commit.
+    ///
+    /// Each book is indexed exactly as `add_text_book_bytes` indexes the text the app reads
+    /// for it: rows in `lineIndex` order joined with `\n`, embedded `data:` images removed
+    /// (those rows then stored in the index, as `stored_lines`), the same documents,
+    /// `contentHash` and `textHash`. Several books are read and prepared at once; they
+    /// are added in input order, each whole or not at all.
+    ///
+    /// Takes the engine by shared reference, so searches are not held up while the batch
+    /// prepares; it needs an open writer ([`Self::open_index_writer`]). `cancel` stops the
+    /// batch before its next book. One result per input book, in order. An `Err` means
+    /// the writer failed: books of this batch may be in it, as after a failed
+    /// `add_text_book_bytes`.
+    pub fn add_library_books(
+        &self,
+        books: Vec<LibraryBookInput>,
+        cancel: &IndexingCancellationToken,
+    ) -> Result<Vec<LibraryBookResult>> {
+        let writer = self.index_writer.as_ref().context(
+            "add_library_books needs an open index writer: call open_index_writer first",
+        )?;
+        crate::library_indexing::add_library_books(self, writer, books, Some(cancel))
+    }
+
+    /// Opens the index writer if it is closed (it reopens lazily after some maintenance
+    /// calls); [`Self::add_library_books`] does not open it itself.
+    pub fn open_index_writer(&mut self) -> Result<()> {
+        self.ensure_writer()
     }
 
     /// Indexes a whole PDF book in ONE FFI call. Does not commit.
