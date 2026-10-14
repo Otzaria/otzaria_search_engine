@@ -1231,12 +1231,11 @@ enum LineWork {
 /// Searches kept. Tests run in parallel on many indexes and must not evict each other's.
 const LINE_SCANS_KEPT: usize = if cfg!(test) { 256 } else { 8 };
 
-static LINE_SCANS: Lazy<Mutex<lru::LruCache<LineCacheKey, Arc<Mutex<LineScan>>>>> =
-    Lazy::new(|| {
-        Mutex::new(lru::LruCache::new(
-            std::num::NonZeroUsize::new(LINE_SCANS_KEPT).unwrap(),
-        ))
-    });
+static LINE_SCANS: Lazy<Mutex<lru::LruCache<LineCacheKey, Arc<ScanSlot>>>> = Lazy::new(|| {
+    Mutex::new(lru::LruCache::new(
+        std::num::NonZeroUsize::new(LINE_SCANS_KEPT).unwrap(),
+    ))
+});
 
 /// A book of the scope: how it is stored, and when only some of its lines can match, those
 /// (`(id, address)` of each candidate).
@@ -1291,7 +1290,7 @@ pub(crate) fn run_line_search(
         .lock()
         .unwrap()
         .get_or_insert(key.clone(), || {
-            Arc::new(Mutex::new(LineScan {
+            Arc::new(ScanSlot::new(LineScan {
                 scope: ctx.scope.as_ref().map(|scope| scope.box_clone()),
                 state: Progress::new(ctx.max_hits),
                 work: None,
@@ -1371,31 +1370,90 @@ pub(crate) fn run_line_search(
     Ok(Some(outcome))
 }
 
-/// Waits for another call's scan of the same search, unless this call is cancelled first.
-fn lock_unless_cancelled<'a>(
-    scan: &'a Mutex<LineScan>,
-    cancel: &AtomicBool,
-) -> Option<std::sync::MutexGuard<'a, LineScan>> {
-    use std::sync::TryLockError;
-    loop {
-        match scan.try_lock() {
-            Ok(scan) => return Some(scan),
-            Err(TryLockError::Poisoned(poisoned)) => {
-                // A scan that panicked may have stopped between its updates: start over,
-                // once — a mutex left poisoned would drop every later call's answer too.
-                scan.clear_poison();
-                let mut scan = poisoned.into_inner();
-                scan.state = Progress::new(scan.state.max_hits);
-                scan.work = None;
-                scan.outcome = None;
-                return Some(scan);
-            }
-            Err(TryLockError::WouldBlock) if cancel.load(Ordering::Relaxed) => return None,
-            Err(TryLockError::WouldBlock) => {
-                std::thread::sleep(std::time::Duration::from_millis(5))
-            }
+/// One search's scan, run by one call at a time; the others wait on `freed`.
+struct ScanSlot {
+    scan: Mutex<LineScan>,
+    busy: Mutex<bool>,
+    freed: std::sync::Condvar,
+}
+
+impl ScanSlot {
+    fn new(scan: LineScan) -> Self {
+        Self {
+            scan: Mutex::new(scan),
+            busy: Mutex::new(false),
+            freed: std::sync::Condvar::new(),
         }
     }
+}
+
+/// The scan of a [`ScanSlot`], held by one call; dropping it wakes the next.
+struct ScanGuard<'a> {
+    slot: &'a ScanSlot,
+    scan: Option<std::sync::MutexGuard<'a, LineScan>>,
+}
+
+impl std::ops::Deref for ScanGuard<'_> {
+    type Target = LineScan;
+    fn deref(&self) -> &LineScan {
+        self.scan.as_ref().expect("held until dropped")
+    }
+}
+
+impl std::ops::DerefMut for ScanGuard<'_> {
+    fn deref_mut(&mut self) -> &mut LineScan {
+        self.scan.as_mut().expect("held until dropped")
+    }
+}
+
+impl Drop for ScanGuard<'_> {
+    fn drop(&mut self) {
+        self.scan = None;
+        *self.slot.busy.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        self.slot.freed.notify_one();
+    }
+}
+
+/// How often a waiting call looks at its cancellation token.
+const CANCEL_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+#[cfg(test)]
+thread_local! {
+    /// Times this thread woke while waiting for another call's scan.
+    pub(crate) static WAKEUPS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Waits for another call's scan of the same search, unless this call is cancelled first.
+fn lock_unless_cancelled<'a>(slot: &'a ScanSlot, cancel: &AtomicBool) -> Option<ScanGuard<'a>> {
+    let mut busy = slot.busy.lock().unwrap_or_else(|p| p.into_inner());
+    while *busy {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        #[cfg(test)]
+        WAKEUPS.with(|w| w.set(w.get() + 1));
+        busy = slot
+            .freed
+            .wait_timeout(busy, CANCEL_CHECK)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
+    }
+    *busy = true;
+    drop(busy);
+    let scan = slot.scan.lock().unwrap_or_else(|poisoned| {
+        // A scan that panicked may have stopped between its updates: start over,
+        // once — a mutex left poisoned would drop every later call's answer too.
+        slot.scan.clear_poison();
+        let mut scan = poisoned.into_inner();
+        scan.state = Progress::new(scan.state.max_hits);
+        scan.work = None;
+        scan.outcome = None;
+        scan
+    });
+    Some(ScanGuard {
+        slot,
+        scan: Some(scan),
+    })
 }
 
 /// A complete search of a wider scope answers a narrower one without reading a line.
@@ -1406,7 +1464,7 @@ fn narrowed_outcome(
     let Some(narrow) = &ctx.scope else {
         return Ok(None);
     };
-    let others: Vec<Arc<Mutex<LineScan>>> = LINE_SCANS
+    let others: Vec<Arc<ScanSlot>> = LINE_SCANS
         .lock()
         .unwrap()
         .iter()
@@ -1415,7 +1473,7 @@ fn narrowed_outcome(
         .collect();
     for other in others {
         // A scan still running is not waited for.
-        let Ok(other) = other.try_lock() else {
+        let Ok(other) = other.scan.try_lock() else {
             continue;
         };
         let Some(outcome) = other.outcome.as_ref().filter(|o| !o.truncated) else {

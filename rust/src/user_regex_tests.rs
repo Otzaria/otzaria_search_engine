@@ -1274,7 +1274,7 @@ fn scan_step_costs() {
 
 #[test]
 fn a_scan_that_panicked_starts_over_once() {
-    let scan = Arc::new(Mutex::new(LineScan {
+    let scan = Arc::new(ScanSlot::new(LineScan {
         scope: None,
         state: Progress::new(10),
         work: None,
@@ -1282,7 +1282,7 @@ fn a_scan_that_panicked_starts_over_once() {
     }));
     let held = scan.clone();
     let _ = std::thread::spawn(move || {
-        let _guard = held.lock().unwrap();
+        let _guard = lock_unless_cancelled(&held, &AtomicBool::new(false)).unwrap();
         panic!("a scan panics");
     })
     .join();
@@ -1296,4 +1296,34 @@ fn a_scan_that_panicked_starts_over_once() {
         .unwrap()
         .outcome
         .is_some());
+}
+
+#[test]
+fn a_call_waiting_for_a_running_scan_sleeps_until_it_ends() {
+    let scan = Arc::new(ScanSlot::new(LineScan {
+        scope: None,
+        state: Progress::new(10),
+        work: None,
+        outcome: None,
+    }));
+    let (held, release) = std::sync::mpsc::channel();
+    let holder = {
+        let scan = scan.clone();
+        std::thread::spawn(move || {
+            let _guard = lock_unless_cancelled(&scan, &AtomicBool::new(false)).unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+        })
+    };
+    release.recv().unwrap();
+    WAKEUPS.with(|w| w.set(0));
+    let started = Instant::now();
+    assert!(lock_unless_cancelled(&scan, &AtomicBool::new(false)).is_some());
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(
+        WAKEUPS.with(|w| w.get()) <= 10,
+        "{}",
+        WAKEUPS.with(|w| w.get())
+    );
+    holder.join().unwrap();
 }
