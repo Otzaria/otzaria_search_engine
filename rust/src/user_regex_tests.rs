@@ -320,6 +320,30 @@ fn term_patterns_search_the_index_and_paint_their_snippets() {
 }
 
 #[test]
+fn term_patterns_sort_by_generation() {
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &sample_books());
+    let mut out = Vec::new();
+    engine
+        .user_regex_stream_into(
+            "/שמע/",
+            &[],
+            50,
+            0,
+            &ResultsOrder::Generation,
+            10,
+            &AtomicBool::new(false),
+            &mut |u| {
+                out.push(u);
+                true
+            },
+        )
+        .unwrap();
+    assert_eq!(last(&out).total_count, Some(4));
+    assert_eq!(results(&out).len(), 4);
+}
+
+#[test]
 fn a_word_sequence_continues_onto_the_next_line() {
     let dir = TempDir::new().unwrap();
     let engine = stored_engine(dir.path(), &sample_books());

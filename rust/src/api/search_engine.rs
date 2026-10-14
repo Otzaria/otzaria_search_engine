@@ -15355,7 +15355,7 @@ impl SearchEngine {
                 (docs.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), count, by_book)
             }
             ResultsOrder::Generation => {
-                let top = top.order_by_fast_field::<u64>("generationSort", Order::Asc);
+                let top = top.order_by((GenerationSort, Order::Asc));
                 let (docs, count, by_book) =
                     searcher.search(&*query, &(top, Count, BookCountCollector))?;
                 (docs.into_iter().map(|(_, a)| a).collect(), count, by_book)
