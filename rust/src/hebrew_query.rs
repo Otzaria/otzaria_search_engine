@@ -1225,12 +1225,20 @@ pub(crate) fn strip_quote_chars(s: &str) -> String {
 ///   מותרת (מצות ימצא מצוות).
 /// * **תקרה פר-אות** — לכל מילה עד [`MAX_EDITS_PER_LETTER`] עריכות של י
 ///   ועד כך של ו (בנפרד).
+/// * **לא משנים מילה** — אין השמטה והוספה של אותה אות באותו וריאנט (קודש
+///   ↛ קדוש); אין השמטת י/ו שלפני ה סופית (מצוה ↛ מצה); השמטה לא משאירה
+///   פחות משלוש אותיות, ומילה בת שלוש אותיות אינה מקבלת הוספות (שבת ↛
+///   שבות/שבית/שובת).
 /// * גרש/גרשיים נותרים ניתנים להשמטה בכל מיקום, ללא תקרה (התנהגות קודמת).
 ///
 /// הסדר: המילה המקורית, אחר כך וריאנטים של עריכה אחת (השמטות לפני הוספות,
 /// משמאל לימין), אחר כך שתי עריכות, וכן הלאה — כך שקיצוץ תקציב מהסוף משמר
 /// תמיד את הצורות הקרובות ביותר למה שהוקלד.
 pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<String> {
+    /// השמטה לעולם לא משאירה פחות אותיות מזה.
+    const MIN_SPELLING_LETTERS: usize = 3;
+    /// מילה קצרה מזה אינה מקבלת הוספות.
+    const MIN_SPELLING_INSERTION_LETTERS: usize = 4;
     /// תקרת עריכות לכל אות (י בנפרד, ו בנפרד) בווריאנט אחד.
     const MAX_EDITS_PER_LETTER: usize = 3;
     /// תקרת מועמדי-עריכה למילה — שומרת את חיפוש הקומבינציות פולינומיאלי
@@ -1253,6 +1261,7 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
     }
     let chars: Vec<char> = word.chars().collect();
     let n = chars.len();
+    let letters = chars.iter().filter(|c| !matches!(c, '\'' | '"')).count();
 
     // מועמדי עריכה בסדר דטרמיניסטי: השמטות משמאל לימין, אחר כך הוספות
     // (לכל מרווח: ו לפני י).
@@ -1260,12 +1269,14 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
     for (i, &c) in chars.iter().enumerate() {
         match c {
             'י' | 'ו' => {
-                // נציג השמטה אחד לכל רצף: האיבר הפנימי הראשון שלו.
+                // נציג השמטה אחד לכל רצף: האיבר הפנימי הראשון שלו. י/ו שלפני
+                // ה סופית עיצורית (מצוה, שתיה) — השמטתה יוצרת מילה אחרת (מצה).
                 let run_start = i == 0 || chars[i - 1] != c;
                 if run_start {
                     if let Some(del_at) = (i..n)
                         .take_while(|&j| chars[j] == c)
                         .find(|&j| j > 0 && j + 1 < n)
+                        .filter(|&j| !(j + 2 == n && chars[n - 1] == 'ה'))
                     {
                         edits.push(Edit::Del(del_at));
                     }
@@ -1275,9 +1286,12 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
             _ => {}
         }
     }
-    for gap in 1..n {
-        edits.push(Edit::Ins(gap, 'ו'));
-        edits.push(Edit::Ins(gap, 'י'));
+    // במילה בת שלוש אותיות כל הוספה יוצרת מילה אחרת (שבת→שבות/שבית/שובת).
+    if letters >= MIN_SPELLING_INSERTION_LETTERS {
+        for gap in 1..n {
+            edits.push(Edit::Ins(gap, 'ו'));
+            edits.push(Edit::Ins(gap, 'י'));
+        }
     }
     edits.truncate(MAX_EDIT_CANDIDATES);
     let m = edits.len();
@@ -1289,19 +1303,27 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
         let mut yod = 0usize;
         let mut vav = 0usize;
         let mut deleted = [false; 64];
+        let mut deleted_letters = 0usize;
         let mut gaps: Vec<usize> = Vec::new();
+        let mut removed: Vec<char> = Vec::new();
+        let mut added: Vec<char> = Vec::new();
         for &i in idx {
             match edits[i] {
                 Edit::Del(pos) => {
                     deleted[pos] = true;
+                    removed.push(chars[pos]);
                     match chars[pos] {
                         'י' => yod += 1,
                         'ו' => vav += 1,
                         _ => {}
                     }
+                    if !matches!(chars[pos], '\'' | '"') {
+                        deleted_letters += 1;
+                    }
                 }
                 Edit::Ins(gap, letter) => {
                     gaps.push(gap);
+                    added.push(letter);
                     match letter {
                         'י' => yod += 1,
                         _ => vav += 1,
@@ -1310,6 +1332,13 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
             }
         }
         if yod > MAX_EDITS_PER_LETTER || vav > MAX_EDITS_PER_LETTER {
+            return false;
+        }
+        // השמטה והוספה של אותה אות מזיזות אותה (קודש→קדוש) — מילה אחרת.
+        if removed.iter().any(|c| added.contains(c)) {
+            return false;
+        }
+        if letters - deleted_letters < MIN_SPELLING_LETTERS {
             return false;
         }
         // מועמדי ההוספה נוצרו ממוינים לפי מרווח, והקומבינציות שומרות סדר —
@@ -3251,14 +3280,14 @@ mod tests {
 
     #[test]
     fn spelling_variations_original_first_then_single_edits() {
-        let v = generate_spelling_variations("בוא", 100);
+        let v = generate_spelling_variations("שלום", 100);
         // המקורית תמיד ראשונה, ההשמטה לפני ההוספות.
-        assert_eq!(v[0], "בוא");
-        assert_eq!(v[1], "בא");
+        assert_eq!(v[0], "שלום");
+        assert_eq!(v[1], "שלם");
         // הוספות פנימיות (חסר→מלא) קיימות.
-        assert!(v.contains(&"בווא".to_string()));
+        assert!(v.contains(&"שלוום".to_string()));
         // limit==1 משאיר רק את המקורית — המנייה נעצרת מוקדם.
-        assert_eq!(generate_spelling_variations("בוא", 1), vec!["בוא"]);
+        assert_eq!(generate_spelling_variations("שלום", 1), vec!["שלום"]);
     }
 
     #[test]
@@ -3289,6 +3318,28 @@ mod tests {
         // גרשיים עדיין ניתנים להשמטה בכל מיקום.
         assert!(generate_spelling_variations("רמב\"ם", 100).contains(&"רמבם".to_string()));
         assert!(generate_spelling_variations("תוס'", 100).contains(&"תוס".to_string()));
+    }
+
+    #[test]
+    fn spelling_variations_never_make_another_word() {
+        let has = |word: &str, variant: &str| {
+            generate_spelling_variations(word, 1000).contains(&variant.to_string())
+        };
+        // מילה בת שלוש אותיות — בלי הוספות ובלי השמטות.
+        for v in ["שבות", "שבית", "שובת"] {
+            assert!(!has("שבת", v), "{v}");
+        }
+        assert!(!has("שור", "שר"));
+        // י/ו שלפני ה סופית עיצורית.
+        assert!(!has("מצוה", "מצה"));
+        assert!(!has("שתיה", "שתה"));
+        assert!(has("מצוה", "מצווה"));
+        // השמטה והוספה של אותה אות.
+        assert!(!has("קודש", "קדוש"));
+        assert!(has("קודש", "קדש"));
+        assert!(has("קדש", "קדש"));
+        assert!(has("תפלה", "תפילה"));
+        assert!(has("תפילה", "תפלה"));
     }
 
     #[test]
@@ -3590,7 +3641,7 @@ mod tests {
         };
         let p = word_to_pattern("וו", &flags);
         let w = affix_window(3, false);
-        assert_eq!(p, format!("(?:{w}וו{w}|{w}ווו{w}|{w}ויו{w})"));
+        assert_eq!(p, format!("{w}וו{w}"));
         assert!(
             !p.contains(&format!("{w}{w}")),
             "empty variant widened to wildcard: {p}"

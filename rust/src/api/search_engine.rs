@@ -18664,7 +18664,7 @@ mod tests {
     #[test]
     fn index_highlight_affix_typo_paints_found_variants_among_many_forms() {
         let (mut engine, _dir) = make_engine();
-        let line_a = "ימים אחר הזמן שייעד להביא כלומר עתה ידעתי כי מזה אשר צוה";
+        let line_a = "ימים אחר הזמן שייעד להביא כלומר עתה ידעתי כי מצוא אשר צוה";
         let line_b = "אבל כשאין עשרה לא. וכל זמן שאין שלשה מצוה להם ליחלק";
         let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
         let mut filler = Vec::new();
@@ -18717,7 +18717,7 @@ mod tests {
         };
         assert_eq!(painted(line_b), vec!["זמן", "מצוה"]);
         // Word forms paint their root, as with affixes alone; typo terms paint whole.
-        assert_eq!(painted(line_a), vec!["זמן", "מזה"]);
+        assert_eq!(painted(line_a), vec!["זמן", "מצוא"]);
     }
 
     /// A one-sided expansion must keep painting a typo variant its own
