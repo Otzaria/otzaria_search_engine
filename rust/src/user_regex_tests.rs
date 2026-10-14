@@ -480,6 +480,180 @@ fn a_cancelled_search_stops_and_says_so() {
     assert!(last(&found).cancelled);
 }
 
+fn three_hundred_books(dir: &Path) -> SearchEngine {
+    let books: Vec<TestBook<'static>> = (0..300)
+        .map(|n| TestBook {
+            title: "ספר",
+            topics: "/t",
+            path: format!("{n}.txt"),
+            order: n,
+            lines: vec!["שמע בני ישראל", "שורה שנייה"],
+        })
+        .collect();
+    stored_engine(dir, &books)
+}
+
+#[test]
+fn a_cancelled_line_search_resumes_where_it_stopped() {
+    // The kept search belongs to the line sources' generation, which other tests change.
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let engine = three_hundred_books(dir.path());
+    // Candidate lines read one by one, and books read whole: two batches each.
+    for (pattern, total) in [(r"/שמע \S+ ישראל/", 300), (r"/^\S+\s\S+$/", 600)] {
+        let cancel = AtomicBool::new(false);
+        let mut first = Vec::new();
+        engine
+            .user_regex_stream_into(
+                pattern,
+                &[],
+                50,
+                0,
+                &ResultsOrder::Catalogue,
+                10,
+                &cancel,
+                &mut |u| {
+                    if u.progress_total > 0 {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    first.push(u);
+                    true
+                },
+            )
+            .unwrap();
+        let stopped = last(&first);
+        assert!(stopped.cancelled, "{pattern}");
+        let read = stopped.progress_done;
+        assert!(
+            read > 0 && read < stopped.progress_total,
+            "{pattern}: read {read}"
+        );
+
+        let resumed = events(&engine, pattern, &[], &AtomicBool::new(false));
+        let end = last(&resumed);
+        assert!(!end.cancelled, "{pattern}");
+        assert_eq!(end.total_count, Some(total), "{pattern}");
+        let progress: Vec<u32> = resumed
+            .iter()
+            .filter(|e| !e.done && e.progress_total > 0)
+            .map(|e| e.progress_done)
+            .collect();
+        assert!(
+            !progress.is_empty() && progress.iter().all(|&done| done > read),
+            "{pattern}: read again from the start: {progress:?} after {read}"
+        );
+        let ids = |events: &[UserRegexStreamUpdate]| -> Vec<u64> {
+            results(events).iter().map(|r| r.id).collect()
+        };
+        assert_eq!(ids(&resumed).len(), 50, "{pattern}");
+        assert_eq!(
+            ids(&resumed),
+            ids(&first),
+            "{pattern}: the page keeps what was found"
+        );
+    }
+}
+
+#[test]
+fn a_concurrent_call_waits_for_the_running_scan() {
+    // The kept search belongs to the line sources' generation, which other tests change.
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let engine = three_hundred_books(dir.path());
+    let pattern = r"/^\S+\s\S+$/";
+    let (started, wait_started) = std::sync::mpsc::channel();
+    let (release, wait_release) = std::sync::mpsc::channel::<()>();
+    let cancel_third = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let engine = &engine;
+        let first = scope.spawn(move || {
+            let mut out = Vec::new();
+            let mut paused = false;
+            engine
+                .user_regex_stream_into(
+                    pattern,
+                    &[],
+                    50,
+                    0,
+                    &ResultsOrder::Catalogue,
+                    10,
+                    &AtomicBool::new(false),
+                    &mut |u| {
+                        if !paused && u.progress_total > 0 {
+                            paused = true;
+                            started.send(()).unwrap();
+                            wait_release.recv().unwrap();
+                        }
+                        out.push(u);
+                        true
+                    },
+                )
+                .unwrap();
+            out
+        });
+        wait_started.recv().unwrap();
+        let second = scope.spawn(move || events(engine, pattern, &[], &AtomicBool::new(false)));
+        let cancel = &cancel_third;
+        let third = scope.spawn(move || events(engine, pattern, &[], cancel));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!second.is_finished(), "waits for the running scan");
+        cancel.store(true, Ordering::Relaxed);
+        assert!(
+            last(&third.join().unwrap()).cancelled,
+            "a waiting call can be cancelled"
+        );
+        release.send(()).unwrap();
+        let first = first.join().unwrap();
+        let second = second.join().unwrap();
+        // Two words anywhere: every line.
+        assert_eq!(last(&second).total_count, Some(600));
+        assert_eq!(last(&first).total_count, Some(600));
+        assert!(
+            second.iter().all(|e| e.progress_total == 0),
+            "the waiting call read nothing itself"
+        );
+        assert_eq!(results(&second).len(), 50);
+    });
+}
+
+#[test]
+fn a_narrower_scope_reads_nothing_after_a_complete_wider_search() {
+    // The kept search belongs to the line sources' generation, which other tests change.
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &sample_books());
+    let none = AtomicBool::new(false);
+    let pattern = r"/^\S+\s\S+$/";
+    assert_eq!(
+        last(&events(&engine, pattern, &[], &none)).total_count,
+        Some(9)
+    );
+    let narrow = events(&engine, pattern, &["/תנך/נביאים"], &none);
+    let end = last(&narrow);
+    assert_eq!(end.total_count, Some(2));
+    assert_eq!(
+        end.book_counts.clone().unwrap(),
+        HashMap::from([("b.txt".to_string(), 2)])
+    );
+    assert!(narrow.iter().all(|e| e.progress_total == 0), "no line read");
+    let hits = results(&narrow);
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|h| h.file_path == "b.txt"));
+
+    // A finished search that does not cover the scope does not answer it.
+    let other = r"/^\S+\s+\S+$/";
+    assert_eq!(
+        last(&events(&engine, other, &["/תנך/נביאים"], &none)).total_count,
+        Some(2)
+    );
+    let outside = events(&engine, other, &["/תנך/תורה"], &none);
+    assert_eq!(last(&outside).total_count, Some(7));
+    assert!(
+        outside.iter().any(|e| e.progress_total > 0),
+        "read its own scope"
+    );
+}
+
 #[test]
 fn every_count_fails_on_a_cancelled_token_even_when_cached() {
     let dir = TempDir::new().unwrap();

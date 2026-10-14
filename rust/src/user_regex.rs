@@ -1168,7 +1168,7 @@ impl LineOutcome {
     }
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct LineCacheKey {
     index: String,
     sources: Vec<u64>,
@@ -1177,8 +1177,43 @@ struct LineCacheKey {
     max_hits: usize,
 }
 
-static LINE_CACHE: Lazy<Mutex<lru::LruCache<LineCacheKey, Arc<LineOutcome>>>> =
-    Lazy::new(|| Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap())));
+impl LineCacheKey {
+    /// The same search, whatever its scope.
+    fn same_search(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.sources == other.sources
+            && self.pattern == other.pattern
+            && self.max_hits == other.max_hits
+    }
+}
+
+/// A line search as far as it got. A later call of the same search (another page, a count,
+/// or after a cancel) resumes it, and a concurrent one waits for it instead of reading the
+/// scope again.
+struct LineScan {
+    /// The facet filter (`None`: the whole index).
+    scope: Option<Box<dyn Query>>,
+    state: Progress,
+    /// What the search reads, in catalogue order; set by the first call.
+    work: Option<LineWork>,
+    outcome: Option<Arc<LineOutcome>>,
+}
+
+enum LineWork {
+    /// Few candidate lines, read one by one.
+    Verify(Vec<(u64, DocAddress)>),
+    Scan(Vec<ScopeBook>),
+}
+
+/// Searches kept. Tests run in parallel on many indexes and must not evict each other's.
+const LINE_SCANS_KEPT: usize = if cfg!(test) { 256 } else { 8 };
+
+static LINE_SCANS: Lazy<Mutex<lru::LruCache<LineCacheKey, Arc<Mutex<LineScan>>>>> =
+    Lazy::new(|| {
+        Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(LINE_SCANS_KEPT).unwrap(),
+        ))
+    });
 
 /// A book of the scope: how it is stored, and when only some of its lines can match, those
 /// (`(id, address)` of each candidate).
@@ -1198,8 +1233,9 @@ impl ScopeBook {
 }
 
 /// Runs a line pattern over the scope, reporting through `emit` (which returns `false` once
-/// nobody listens). A finished search is cached per index generation, filter and source
-/// generation, so the counts and facets that follow a stream cost nothing.
+/// nobody listens). A search is kept per index generation, filter and source generation
+/// ([`LineScan`]), so the pages, counts and facets that follow a stream cost nothing, and a
+/// complete search of a wider scope answers a narrower one.
 pub(crate) fn run_line_search(
     ctx: &LineSearch<'_>,
     regex: &UserRegex,
@@ -1211,12 +1247,7 @@ pub(crate) fn run_line_search(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("not a line pattern"))?;
     if ctx.cancel.load(Ordering::Relaxed) {
-        let nothing = LineOutcome {
-            hits: Vec::new(),
-            book_counts: HashMap::new(),
-            truncated: false,
-        };
-        emit(final_update(&nothing, true, 0, 0));
+        emit(final_update(0, &HashMap::new(), false, true, 0, 0));
         return Ok(None);
     }
     let mut facets = ctx.facets.clone();
@@ -1231,45 +1262,178 @@ pub(crate) fn run_line_search(
         pattern: regex.pattern.clone(),
         max_hits: ctx.max_hits,
     };
-    if let Some(outcome) = LINE_CACHE.lock().unwrap().get(&key).cloned() {
+    let scan = LINE_SCANS
+        .lock()
+        .unwrap()
+        .get_or_insert(key.clone(), || {
+            Arc::new(Mutex::new(LineScan {
+                scope: ctx.scope.as_ref().map(|scope| scope.box_clone()),
+                state: Progress::new(ctx.max_hits),
+                work: None,
+                outcome: None,
+            }))
+        })
+        .clone();
+    let Some(mut scan) = lock_unless_cancelled(&scan, ctx.cancel) else {
+        emit(final_update(0, &HashMap::new(), false, true, 0, 0));
+        return Ok(None);
+    };
+    if scan.outcome.is_none() {
+        if let Some(outcome) = narrowed_outcome(ctx, &key)? {
+            scan.work = None;
+            scan.state = Progress::new(ctx.max_hits);
+            scan.outcome = Some(outcome);
+        }
+    }
+    if let Some(outcome) = scan.outcome.clone() {
         if let Some(page) = page {
             let mut reporter = Reporter::new(ctx, plan, page, emit);
             reporter.offer(&outcome.hits)?;
         }
-        emit(final_update(&outcome, false, 0, 0));
+        emit(final_update(
+            outcome.count(),
+            &outcome.book_counts,
+            outcome.truncated,
+            false,
+            0,
+            0,
+        ));
         return Ok(Some(outcome));
     }
 
-    let mut state = Progress {
-        max_hits: ctx.max_hits,
-        hits: Vec::new(),
-        book_counts: HashMap::new(),
-        truncated: false,
-        done: 0,
-        total: 0,
-    };
     let finished = {
         let mut reporter = page.map(|page| Reporter::new(ctx, plan, page, &mut *emit));
-        search_lines(ctx, plan, &mut state, &mut reporter)?
+        if let Some(reporter) = reporter.as_mut() {
+            // What the calls this one resumes found.
+            reporter.offer(&scan.state.hits)?;
+        }
+        search_lines(ctx, plan, &mut scan, &mut reporter)?
     };
-    let mut hits = state.hits;
+    let state = &mut scan.state;
+    if !finished {
+        emit(final_update(
+            state.hits.len() as u32,
+            &state.book_counts,
+            state.truncated,
+            true,
+            state.done,
+            state.total,
+        ));
+        return Ok(None);
+    }
+    let (done, total) = (state.done, state.total);
+    let mut hits = std::mem::take(&mut state.hits);
     hits.sort_unstable_by_key(|h| h.id);
     let outcome = Arc::new(LineOutcome {
         hits,
-        book_counts: state.book_counts,
+        book_counts: std::mem::take(&mut state.book_counts),
         truncated: state.truncated,
     });
-    if !finished {
-        emit(final_update(&outcome, true, state.done, state.total));
-        return Ok(None);
-    }
-    LINE_CACHE.lock().unwrap().put(key, outcome.clone());
-    emit(final_update(&outcome, false, state.done, state.total));
+    scan.work = None;
+    scan.outcome = Some(outcome.clone());
+    emit(final_update(
+        outcome.count(),
+        &outcome.book_counts,
+        outcome.truncated,
+        false,
+        done,
+        total,
+    ));
     Ok(Some(outcome))
 }
 
+/// Waits for another call's scan of the same search, unless this call is cancelled first.
+fn lock_unless_cancelled<'a>(
+    scan: &'a Mutex<LineScan>,
+    cancel: &AtomicBool,
+) -> Option<std::sync::MutexGuard<'a, LineScan>> {
+    use std::sync::TryLockError;
+    loop {
+        match scan.try_lock() {
+            Ok(scan) => return Some(scan),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                // A scan that panicked may have stopped between its updates: start over.
+                let mut scan = poisoned.into_inner();
+                scan.state = Progress::new(scan.state.max_hits);
+                scan.work = None;
+                scan.outcome = None;
+                return Some(scan);
+            }
+            Err(TryLockError::WouldBlock) if cancel.load(Ordering::Relaxed) => return None,
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(5))
+            }
+        }
+    }
+}
+
+/// A complete search of a wider scope answers a narrower one without reading a line.
+fn narrowed_outcome(
+    ctx: &LineSearch<'_>,
+    key: &LineCacheKey,
+) -> anyhow::Result<Option<Arc<LineOutcome>>> {
+    let Some(narrow) = &ctx.scope else {
+        return Ok(None);
+    };
+    let others: Vec<Arc<Mutex<LineScan>>> = LINE_SCANS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(other, _)| other.facets != key.facets && other.same_search(key))
+        .map(|(_, scan)| scan.clone())
+        .collect();
+    for other in others {
+        // A scan still running is not waited for.
+        let Ok(other) = other.try_lock() else {
+            continue;
+        };
+        let Some(outcome) = other.outcome.as_ref().filter(|o| !o.truncated) else {
+            continue;
+        };
+        if let Some(wide) = &other.scope {
+            let outside = BooleanQuery::new(vec![
+                (Occur::Must, narrow.box_clone()),
+                (Occur::MustNot, wide.box_clone()),
+            ]);
+            if ctx.searcher.search(&outside, &Count)? > 0 {
+                continue;
+            }
+        }
+        let within = BooleanQuery::new(vec![
+            (
+                Occur::Must,
+                Box::new(HitSetQuery::new(ctx.searcher, outcome)) as Box<dyn Query>,
+            ),
+            (Occur::Must, narrow.box_clone()),
+        ]);
+        let keep = ScopeBooksCollector {
+            keep_documents: true,
+        };
+        let mut hits = Vec::new();
+        let mut book_counts = HashMap::new();
+        for book in ctx.searcher.search(&within, &keep)? {
+            let documents = book.candidates.unwrap_or_default();
+            book_counts.insert(book.file_path, documents.len() as u32);
+            hits.extend(
+                documents
+                    .into_iter()
+                    .map(|(id, address)| LineHit { id, address }),
+            );
+        }
+        hits.sort_unstable_by_key(|h| h.id);
+        return Ok(Some(Arc::new(LineOutcome {
+            hits,
+            book_counts,
+            truncated: false,
+        })));
+    }
+    Ok(None)
+}
+
 fn final_update(
-    outcome: &LineOutcome,
+    count: u32,
+    book_counts: &HashMap<String, u32>,
+    truncated: bool,
     cancelled: bool,
     done: u32,
     total: u32,
@@ -1278,12 +1442,12 @@ fn final_update(
         kind: UserRegexKind::CrossSpace,
         results: Vec::new(),
         match_ranges: Vec::new(),
-        total_count: Some(outcome.count()),
-        book_counts: Some(outcome.book_counts.clone()),
-        found_so_far: outcome.count(),
+        total_count: Some(count),
+        book_counts: Some(book_counts.clone()),
+        found_so_far: count,
         progress_done: done,
         progress_total: total,
-        truncated: outcome.truncated,
+        truncated,
         done: true,
         cancelled,
     }
@@ -1294,11 +1458,23 @@ struct Progress {
     hits: Vec<LineHit>,
     book_counts: HashMap<String, u32>,
     truncated: bool,
+    /// Candidate lines or books read; a resumed search continues from here.
     done: u32,
     total: u32,
 }
 
 impl Progress {
+    fn new(max_hits: usize) -> Self {
+        Progress {
+            max_hits,
+            hits: Vec::new(),
+            book_counts: HashMap::new(),
+            truncated: false,
+            done: 0,
+            total: 0,
+        }
+    }
+
     /// Adds the hits of finished work (in catalogue order); `false` once the cap is reached.
     fn add(&mut self, mut hits: Vec<(String, LineHit)>) -> bool {
         hits.sort_unstable_by_key(|(_, h)| h.id);
@@ -1398,46 +1574,58 @@ impl<'a, 'e> Reporter<'a, 'e> {
     }
 }
 
-/// `Ok(false)` when cancelled.
+/// `Ok(false)` when cancelled; what was read stays in `scan` for the next call.
 fn search_lines(
     ctx: &LineSearch<'_>,
     plan: &LinePlan,
-    state: &mut Progress,
+    scan: &mut LineScan,
     reporter: &mut Option<Reporter<'_, '_>>,
 ) -> anyhow::Result<bool> {
-    let started = std::time::Instant::now();
-    let candidates = candidate_query(ctx, plan)?;
-    if ctx.cancel.load(Ordering::Relaxed) {
-        return Ok(false);
+    if scan.work.is_none() {
+        let started = std::time::Instant::now();
+        let candidates = candidate_query(ctx, plan)?;
+        if ctx.cancel.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        scan.work = Some(match &candidates {
+            Some(query) => {
+                let count = ctx.searcher.search(query.as_ref(), &Count)? as u32;
+                log::info!("user regex: {count} candidate lines in {:?}", started.elapsed());
+                if count <= CANDIDATE_FETCH_LIMIT {
+                    let mut docs = ctx.searcher.search(query.as_ref(), &IdAddressCollector)?;
+                    docs.sort_unstable_by_key(|(id, _)| *id);
+                    LineWork::Verify(docs)
+                } else {
+                    // Too many to read one by one: read their books, but decode only their rows.
+                    let keep = ScopeBooksCollector {
+                        keep_documents: true,
+                    };
+                    LineWork::Scan(ctx.searcher.search(query.as_ref(), &keep)?)
+                }
+            }
+            None => {
+                let all = ScopeBooksCollector {
+                    keep_documents: false,
+                };
+                LineWork::Scan(match &ctx.scope {
+                    Some(scope) => ctx.searcher.search(scope.as_ref(), &all)?,
+                    None => ctx.searcher.search(&tantivy::query::AllQuery, &all)?,
+                })
+            }
+        });
+        if let Some(LineWork::Scan(books)) = scan.work.as_mut() {
+            books.sort_unstable_by_key(|b| b.min_id);
+        }
     }
-    let mut books = match &candidates {
-        Some(query) => {
-            let count = ctx.searcher.search(query.as_ref(), &Count)? as u32;
-            log::info!("user regex: {count} candidate lines in {:?}", started.elapsed());
-            if count <= CANDIDATE_FETCH_LIMIT {
-                return verify_candidates(ctx, plan, query.as_ref(), count, state, reporter);
-            }
-            // Too many to read one by one: read their books, but decode only their rows.
-            let keep = ScopeBooksCollector {
-                keep_documents: true,
-            };
-            ctx.searcher.search(query.as_ref(), &keep)?
-        }
-        None => {
-            let all = ScopeBooksCollector {
-                keep_documents: false,
-            };
-            match &ctx.scope {
-                Some(scope) => ctx.searcher.search(scope.as_ref(), &all)?,
-                None => ctx.searcher.search(&tantivy::query::AllQuery, &all)?,
-            }
-        }
+    let LineScan { state, work, .. } = scan;
+    let books = match work.as_ref().expect("set above") {
+        LineWork::Verify(docs) => return verify_candidates(ctx, plan, docs, state, reporter),
+        LineWork::Scan(books) => books,
     };
-    books.sort_unstable_by_key(|b| b.min_id);
     let lines: u64 = books.iter().map(ScopeBook::lines).sum();
     let scan_started = std::time::Instant::now();
     FETCH_NANOS.store(0, Ordering::Relaxed);
-    let finished = scan_books(ctx, plan, &books, state, reporter)?;
+    let finished = scan_books(ctx, plan, books, state, reporter)?;
     log::info!(
         "user regex: read {} books ({lines} lines) in {:?}; readers spent {:?} in the database",
         books.len(),
@@ -1545,18 +1733,15 @@ fn contains_part(fragment: &str) -> anyhow::Result<TermPart> {
 fn verify_candidates(
     ctx: &LineSearch<'_>,
     plan: &LinePlan,
-    query: &dyn Query,
-    count: u32,
+    docs: &[(u64, DocAddress)],
     state: &mut Progress,
     reporter: &mut Option<Reporter<'_, '_>>,
 ) -> anyhow::Result<bool> {
-    let mut docs = ctx.searcher.search(query, &IdAddressCollector)?;
-    docs.sort_unstable_by_key(|(id, _)| *id);
-    state.total = count;
+    state.total = docs.len() as u32;
     let file_path_f = ctx.schema.get_field("filePath")?;
     let mut view = LineView::default();
     let mut loader = DocumentLoader::new(ctx.searcher);
-    for batch in docs.chunks(VERIFY_BATCH) {
+    for batch in docs[state.done as usize..].chunks(VERIFY_BATCH) {
         if ctx.cancel.load(Ordering::Relaxed) {
             return Ok(false);
         }
@@ -1599,7 +1784,7 @@ fn scan_books(
     reporter: &mut Option<Reporter<'_, '_>>,
 ) -> anyhow::Result<bool> {
     state.total = books.len() as u32;
-    let mut start = 0;
+    let mut start = state.done as usize;
     while start < books.len() {
         if ctx.cancel.load(Ordering::Relaxed) {
             return Ok(false);
