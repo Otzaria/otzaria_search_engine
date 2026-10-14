@@ -17,6 +17,8 @@ mod section_scope;
 mod hebrew_tokenizer;
 // The index's tantivy directory, with Windows' transient refusals to replace a file retried.
 mod index_directory;
+#[cfg(test)]
+mod indexing_parity_tests;
 // Lives at the crate root (not under `api`) so flutter_rust_bridge — which
 // scans `crate::api` — never generates bindings for the dictionary internals.
 // Only `SearchEngine::set_magic_dictionary_path`/`has_magic_dictionary` are
