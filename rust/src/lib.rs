@@ -32,6 +32,9 @@ mod lexicons;
 mod external_text_tests;
 mod line_source;
 mod sqlite_host;
+// רג'קס מהמשתמש (`/…/`): ניתוח, קמפול מוגבל-גודל וחיפוש שורות — מחוץ ל-crate::api כדי ש-FRB
+// לא ינסה לגזור לו bindings.
+mod user_regex;
 #[cfg(test)]
 mod user_books_text_tests;
 // Real-data benchmark of smart search, opened read-only; outside `api` so FRB ignores it.
