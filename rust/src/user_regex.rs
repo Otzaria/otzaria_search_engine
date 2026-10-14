@@ -1360,7 +1360,9 @@ fn lock_unless_cancelled<'a>(
         match scan.try_lock() {
             Ok(scan) => return Some(scan),
             Err(TryLockError::Poisoned(poisoned)) => {
-                // A scan that panicked may have stopped between its updates: start over.
+                // A scan that panicked may have stopped between its updates: start over,
+                // once — a mutex left poisoned would drop every later call's answer too.
+                scan.clear_poison();
                 let mut scan = poisoned.into_inner();
                 scan.state = Progress::new(scan.state.max_hits);
                 scan.work = None;

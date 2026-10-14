@@ -1204,3 +1204,26 @@ fn scan_step_costs() {
         bytes >> 20
     );
 }
+
+#[test]
+fn a_scan_that_panicked_starts_over_once() {
+    let scan = Arc::new(Mutex::new(LineScan {
+        scope: None,
+        state: Progress::new(10),
+        work: None,
+        outcome: None,
+    }));
+    let held = scan.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = held.lock().unwrap();
+        panic!("a scan panics");
+    })
+    .join();
+    let none = AtomicBool::new(false);
+    lock_unless_cancelled(&scan, &none).unwrap().outcome = Some(Arc::new(LineOutcome {
+        hits: Vec::new(),
+        book_counts: HashMap::new(),
+        truncated: false,
+    }));
+    assert!(lock_unless_cancelled(&scan, &none).unwrap().outcome.is_some());
+}
