@@ -232,7 +232,7 @@ pub(crate) fn term_query(
     Ok(if terms.len() == 1 {
         Box::new(TermQuery::new(terms.pop().expect("one term"), option))
     } else {
-        Box::new(SpellingsTermQuery { terms })
+        Box::new(SpellingsTermQuery { terms, option })
     })
 }
 
@@ -243,6 +243,8 @@ pub(crate) fn term_query(
 #[derive(Clone, Debug)]
 pub(crate) struct SpellingsTermQuery {
     terms: Vec<Term>,
+    /// Without frequencies a line scores as holding the word once, as a `TermQuery` does.
+    option: IndexRecordOption,
 }
 
 impl Query for SpellingsTermQuery {
@@ -262,6 +264,7 @@ impl Query for SpellingsTermQuery {
         };
         Ok(Box::new(SpellingsTermWeight {
             terms: self.terms.clone(),
+            freqs: self.option.has_freq(),
             bm25,
         }))
     }
@@ -275,6 +278,7 @@ impl Query for SpellingsTermQuery {
 
 struct SpellingsTermWeight {
     terms: Vec<Term>,
+    freqs: bool,
     bm25: Option<Bm25Weight>,
 }
 
@@ -282,7 +286,8 @@ impl SpellingsTermWeight {
     fn spellings_scorer(&self, reader: &SegmentReader) -> tantivy::Result<SpellingsScorer> {
         let field = self.terms[0].field();
         let inverted = reader.inverted_index(field)?;
-        let option = if self.bm25.is_some() {
+        let freqs = self.freqs && self.bm25.is_some();
+        let option = if freqs {
             IndexRecordOption::WithFreqs
         } else {
             IndexRecordOption::Basic
@@ -301,6 +306,7 @@ impl SpellingsTermWeight {
             postings,
             fieldnorms,
             self.bm25.clone(),
+            freqs,
         ))
     }
 }
@@ -328,6 +334,7 @@ struct SpellingsScorer {
     postings: Vec<SegmentPostings>,
     fieldnorms: Option<FieldNormReader>,
     bm25: Option<Bm25Weight>,
+    freqs: bool,
     doc: DocId,
 }
 
@@ -336,11 +343,13 @@ impl SpellingsScorer {
         postings: Vec<SegmentPostings>,
         fieldnorms: Option<FieldNormReader>,
         bm25: Option<Bm25Weight>,
+        freqs: bool,
     ) -> Self {
         let mut scorer = Self {
             postings,
             fieldnorms,
             bm25,
+            freqs,
             doc: TERMINATED,
         };
         scorer.doc = scorer.lowest();
@@ -396,12 +405,15 @@ impl Scorer for SpellingsScorer {
             return 1.0;
         };
         let doc = self.doc;
-        let term_freq: u32 = self
-            .postings
-            .iter()
-            .filter(|p| p.doc() == doc)
-            .map(|p| p.term_freq())
-            .sum();
+        let term_freq: u32 = if self.freqs {
+            self.postings
+                .iter()
+                .filter(|p| p.doc() == doc)
+                .map(|p| p.term_freq())
+                .sum()
+        } else {
+            1
+        };
         bm25.score(fieldnorms.fieldnorm_id(doc), term_freq)
     }
 }
@@ -822,5 +834,11 @@ mod scoring_tests {
             .into_iter()
             .for_each(|address| alive.push(address.doc_id));
         assert_eq!(alive.len(), 32);
+
+        // Without frequencies (the exact search's `Basic`) a line counts once, as a
+        // `TermQuery` does: only the line's length orders equal matches.
+        let basic = term_query(&searcher, text, "אמר", IndexRecordOption::Basic).unwrap();
+        let found = scores(&searcher, &*basic);
+        assert!((found[&0] - found[&2]).abs() < 1e-4, "{found:?}");
     }
 }
