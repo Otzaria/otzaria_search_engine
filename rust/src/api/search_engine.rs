@@ -4274,14 +4274,15 @@ struct CachedTermSet {
     truncated: bool,
 }
 
-/// Ceiling on the summed per-segment `doc_freq` a single-word term set may
-/// accumulate. This — not the term count — is the true cost guard: executing
-/// the resulting `TermSetQuery` unions one postings list per matched term per
-/// segment into a BitSet, O(Σ doc_freq). The term-count ceiling
-/// (`max_expansions`) remains only as a memory guard on the materialized
-/// `Vec<Term>`. Initial value pending empirical calibration via
-/// `benchmark_cli` (VARIATION_CEILING_RESEARCH.md §3.א).
-const SINGLE_WORD_POSTINGS_BUDGET: u64 = 1_000_000;
+/// Ceiling on the summed `doc_freq` (over all segments) of the terms a
+/// single-word term set keeps. This — not the term count — is the true cost
+/// guard: executing the resulting `TermSetQuery` unions one postings list per
+/// matched term per segment into a BitSet, O(Σ doc_freq). The term-count
+/// ceiling (`max_expansions`) remains only as a memory guard on the
+/// materialized `Vec<Term>`. On the full library 8M keeps every realistic
+/// expansion whole (אמר + affixes: 2.6M, ~60ms to count) and stops only
+/// pathological ones (ב with prefix+suffix windows: 64M).
+const SINGLE_WORD_POSTINGS_BUDGET: u64 = 8_000_000;
 
 /// Term ceiling for one *word position* of a phrase on the degrade path
 /// ([`TermListPhraseQuery`]). Unlike tantivy's `RegexPhraseQuery` ceiling —

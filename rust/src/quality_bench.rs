@@ -81,12 +81,12 @@ fn selected(
         term_automaton::COLLECT_CAP.max(max_expansions as usize),
     )
     .unwrap();
-    let (kept, truncated) = term_automaton::within_budgets(
-        ranked,
-        capped,
-        max_expansions as usize,
-        SINGLE_WORD_POSTINGS_BUDGET,
-    );
+    let budget = std::env::var("BENCH_BUDGET")
+        .ok()
+        .and_then(|b| b.parse().ok())
+        .unwrap_or(SINGLE_WORD_POSTINGS_BUDGET);
+    let (kept, truncated) =
+        term_automaton::within_budgets(ranked, capped, max_expansions as usize, budget);
     let matched: HashSet<String> = kept.into_iter().map(|t| t.term).collect();
     (matched, truncated)
 }
@@ -353,12 +353,37 @@ fn quality_bench() {
                 new_terms.len(),
                 all.len(),
             );
+            let joined = pattern.joined();
+            let t = Instant::now();
+            let old_joined = tantivy_fst::Regex::new(&joined)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            let old_joined_ms = ms(t);
+            let t = Instant::now();
+            let new_joined = term_automaton::build_uncached(std::slice::from_ref(&joined))
+                .map(|a| a.parts[0].memory_usage() / 1024);
+            let new_joined_ms = ms(t);
+            println!(
+                "  joined: tantivy-fst {:?} in {old_joined_ms:.1}ms | regex-automata {:?}KB in {new_joined_ms:.1}ms",
+                old_joined.map(|_| "ok"),
+                new_joined
+            );
             if advanced.regex_terms.len() == 1 {
                 let t = Instant::now();
                 let (kept, truncated) =
                     selected(&segments, branches, &typo, advanced.max_expansions);
+                let select_ms = ms(t);
+                let terms: Vec<Term> = kept
+                    .iter()
+                    .map(|k| Term::from_field_text(text, k))
+                    .collect();
+                let df: u64 = kept.iter().map(|k| all.get(k).copied().unwrap_or(0)).sum();
+                let t = Instant::now();
+                let docs = searcher
+                    .search(&TermSetQuery::new(terms), &tantivy::collector::Count)
+                    .unwrap();
                 println!(
-                    "  selection: kept={} truncated={truncated} in {:.1}ms",
+                    "  selection: kept={} Σdf={df} truncated={truncated} in {select_ms:.1}ms | count={docs} in {:.1}ms",
                     kept.len(),
                     ms(t)
                 );
