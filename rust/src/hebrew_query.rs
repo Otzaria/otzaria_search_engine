@@ -1874,11 +1874,17 @@ fn partial_word_window(root_len: usize) -> usize {
 /// form — never a digit, a Latin letter or another script.
 const AFFIX_LETTER: &str = "[א-תװ-ײ\"']";
 
+/// Digits a window before the root also admits: a footnote number glued to the word
+/// (`28שבת`, `154רמב"ם`).
+const NOTE_DIGITS: &str = "[0-9]*";
+
 /// A branch's length against the char budget: [`AFFIX_LETTER`] costs as the one `.` it
-/// narrows, so narrowing a window does not crowd typo branches out of a phrase word.
+/// narrows, so narrowing a window does not crowd typo branches out of a phrase word, and
+/// [`NOTE_DIGITS`] costs nothing.
 fn budget_chars(branch: &str) -> usize {
     branch.chars().count()
         - branch.matches(AFFIX_LETTER).count() * (AFFIX_LETTER.chars().count() - 1)
+        - branch.matches(NOTE_DIGITS).count() * NOTE_DIGITS.chars().count()
 }
 
 /// Up to `n` letters before or after the root.
@@ -1950,11 +1956,17 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
     let mut leads = Vec::new();
     let mut trail_window = None;
     if both_windows {
-        leads.push(affix_window(partial_word_window(letters), voc));
+        leads.push(format!(
+            "{NOTE_DIGITS}{}",
+            affix_window(partial_word_window(letters), voc)
+        ));
         trail_window = Some(partial_word_window(letters));
     } else {
         if flags.prefix {
-            leads.push(affix_window(user_prefix_window(letters), voc));
+            leads.push(format!(
+                "{NOTE_DIGITS}{}",
+                affix_window(user_prefix_window(letters), voc)
+            ));
         }
         if flags.suffix {
             trail_window = Some(user_suffix_window(letters));
@@ -3909,9 +3921,11 @@ mod tests {
         ] {
             let p = word_to_pattern("שבת", &flags);
             assert!(accepts(&p, "בשבת") || accepts(&p, "שבתו"), "{p}");
-            for foreign in ["1שבת", "aשבת", "שבת1", "שבתx", "\u{0301}שבת"] {
+            for foreign in ["aשבת", "שבת1", "שבתx", "\u{0301}שבת", "a1שבת"] {
                 assert!(!accepts(&p, foreign), "{p} accepted {foreign:?}");
             }
+            // מספר הערה צמוד לפני המילה (28שבת) — רק בחלון שלפני השורש.
+            assert_eq!(accepts(&p, "28שבת"), !flags.suffix, "{p}");
         }
         let partial = WordFlags {
             partial: true,
@@ -3919,10 +3933,24 @@ mod tests {
         };
         assert!(word_accepts("רמב", &partial, "הרמב\"ם"));
         assert!(word_accepts("שבת", &partial, "מחשבתו"));
+        assert!(word_accepts("ברכ", &partial, "448ברכות"));
+        let prefixes = WordFlags {
+            prefix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("אמר", &prefixes, "70ואמר"));
+        assert!(!word_accepts("אמר", &prefixes, "7a0אמר"));
+        // ספרות לא נוספות לקידומות הדקדוקיות.
+        let gram = WordFlags {
+            gram_prefix: true,
+            ..Default::default()
+        };
+        assert!(!word_accepts("שבת", &gram, "28שבת"));
         // אותו כלל במסלול המנוקד: אות + ריצת סימנים, לא תו כלשהו.
         let voc = word_to_pattern_vocalized("שבת", &VocalizedFlags::default(), &partial);
         assert!(accepts(&voc, "בְּשַׁבָּת"));
-        assert!(!accepts(&voc, "1שַׁבָּת"));
+        assert!(accepts(&voc, "1שַׁבָּת"));
+        assert!(!accepts(&voc, "aשַׁבָּת"));
     }
 
     #[test]
@@ -4095,7 +4123,7 @@ mod tests {
         };
         let p = word_to_pattern("וו", &flags);
         let w = affix_window(3, false);
-        assert_eq!(p, format!("{w}וו{w}"));
+        assert_eq!(p, format!("{NOTE_DIGITS}{w}וו{w}"));
         assert!(
             !p.contains(&format!("{w}{w}")),
             "empty variant widened to wildcard: {p}"

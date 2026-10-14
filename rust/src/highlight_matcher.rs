@@ -616,6 +616,9 @@ mod tests {
         // Part of a word paints the root inside the word, as the search finds it.
         let partial = matcher("שבת", &["חלק ממילה"], 0);
         assert_eq!(partial.find_matches("מחשבתו", &[]).len(), 1);
+        // A footnote number glued before the word, as the search finds it.
+        assert_eq!(prefixes.find_matches("עיין 28שבת שם", &[]).len(), 1);
+        assert_eq!(partial.find_matches("עיין 448שבתות", &[]).len(), 1);
         // The outer words of a phrase obey the same bounds.
         let phrase = matcher("שבת קודש", &["קידומות"], 0);
         assert_eq!(phrase.find_matches("בשבת קודש", &[]).len(), 1);
