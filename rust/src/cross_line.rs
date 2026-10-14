@@ -251,14 +251,17 @@ fn positions_between(plain: &str, from: usize, to: usize) -> u32 {
     let mut pairs = 0u32;
     let mut count = |start: usize, end: usize| {
         tokens += 1;
-        if paired_reading_after(plain, start, end).is_some() {
+        if start > 0
+            && bytes[start - 1] == b'('
+            && paired_reading_after(plain, start, end).is_some()
+        {
             pairs += 1;
         }
     };
     let mut i = from;
     while i < to {
-        let (c, len) = char_at(plain, bytes, i);
-        if !continues_token(c) {
+        let (class, len) = class_at(plain, bytes, i);
+        if class == CharClass::Separator {
             i += len;
             continue;
         }
@@ -266,15 +269,21 @@ fn positions_between(plain: &str, from: usize, to: usize) -> u32 {
         let mut simple = true;
         let mut word_start = None;
         while i < bytes.len() {
-            let (c, len) = char_at(plain, bytes, i);
-            if is_word_char(c) {
-                if word_start.is_none() && starts_token(c) {
-                    word_start = Some(i);
+            let b = bytes[i];
+            // Hebrew letters, the bulk of the text: U+05D0..=U+05EA.
+            if b == 0xD7 && matches!(bytes.get(i + 1), Some(0x90..=0xAA)) {
+                word_start.get_or_insert(i);
+                i += 2;
+                continue;
+            }
+            let (class, len) = class_at(plain, bytes, i);
+            match class {
+                CharClass::Separator => break,
+                CharClass::Special => simple = false,
+                CharClass::WordStart => {
+                    word_start.get_or_insert(i);
                 }
-            } else if continues_token(c) {
-                simple = false;
-            } else {
-                break;
+                CharClass::Mark => {}
             }
             i += len;
         }
@@ -296,14 +305,59 @@ fn positions_between(plain: &str, from: usize, to: usize) -> u32 {
     tokens - pairs
 }
 
+/// A character as [`next_token_boundaries`] treats it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    /// Breaks tokens.
+    Separator,
+    /// A word character that can open a token.
+    WordStart,
+    /// A word character that cannot open one (an attached mark).
+    Mark,
+    /// Continues a token without being a word character: quotes, transparent punctuation.
+    Special,
+}
+
+const ASCII_CLASSES: [CharClass; 128] = {
+    let mut classes = [CharClass::Separator; 128];
+    let mut b = 0;
+    while b < 128 {
+        let c = b as u8;
+        classes[b] = if c.is_ascii_alphanumeric() {
+            CharClass::WordStart
+        } else if matches!(
+            c,
+            b'*' | b'[' | b']' | b'^' | b'$' | b'\\' | b'+' | b'.' | b'~' | b'`' | b'\'' | b'"'
+        ) {
+            CharClass::Special
+        } else {
+            CharClass::Separator
+        };
+        b += 1;
+    }
+    classes
+};
+
 #[inline]
-fn char_at(plain: &str, bytes: &[u8], i: usize) -> (char, usize) {
+fn class_at(plain: &str, bytes: &[u8], i: usize) -> (CharClass, usize) {
     let b = bytes[i];
     if b < 0x80 {
-        return (b as char, 1);
+        return (ASCII_CLASSES[b as usize], 1);
+    }
+    if b == 0xD7 && matches!(bytes.get(i + 1), Some(0x90..=0xAA)) {
+        return (CharClass::WordStart, 2);
     }
     let c = plain[i..].chars().next().expect("on a char boundary");
-    (c, c.len_utf8())
+    let class = if starts_token(c) {
+        CharClass::WordStart
+    } else if is_word_char(c) {
+        CharClass::Mark
+    } else if continues_token(c) {
+        CharClass::Special
+    } else {
+        CharClass::Separator
+    };
+    (class, c.len_utf8())
 }
 
 /// The edges of a normalized line, or `None` when it has no content word.
@@ -1564,6 +1618,30 @@ mod tests {
             assert_eq!((edges.first, edges.last), (position, position), "{line}");
             assert_eq!(edges.start_terms, ["הוצא", "היצא"], "{line}");
             assert_eq!(edges.end_terms, ["הוצא", "היצא"], "{line}");
+        }
+    }
+
+    #[test]
+    fn char_classes_follow_the_tokenizer() {
+        let samples = (0u32..0x80)
+            .chain(0x0590..0x0600)
+            .chain([0x0307, 0x200F, 0xFB2A, 0x2019]);
+        for c in samples.filter_map(char::from_u32) {
+            let mut buf = [0u8; 4];
+            let text = c.encode_utf8(&mut buf);
+            let expected = if starts_token(c) {
+                CharClass::WordStart
+            } else if is_word_char(c) {
+                CharClass::Mark
+            } else if continues_token(c) {
+                CharClass::Special
+            } else {
+                CharClass::Separator
+            };
+            assert!(
+                class_at(text, text.as_bytes(), 0) == (expected, c.len_utf8()),
+                "{c:?}"
+            );
         }
     }
 

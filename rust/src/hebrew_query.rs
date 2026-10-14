@@ -988,68 +988,66 @@ fn space_entity_len(at: &[u8]) -> Option<usize> {
         .map(|entity| entity.len())
 }
 
-/// Feeds `f` the characters of [`strip_html_for_indexing`]'s output, without building it.
-fn for_each_html_stripped_char(text: &str, mut f: impl FnMut(char)) {
+/// Feeds `f` [`strip_html_for_indexing`]'s output piece by piece, without building it.
+fn for_each_html_stripped_piece(text: &str, mut f: impl FnMut(&str)) {
     if !text.contains(['<', '&']) {
-        text.chars().for_each(f);
+        f(text);
         return;
     }
     let bytes = text.as_bytes();
+    let mut copied = 0;
     let mut i = 0;
     while i < bytes.len() {
-        match bytes[i] {
+        let (replacement, next) = match bytes[i] {
             b'<' => match bytes[i + 1..].iter().position(|&b| b == b'>') {
                 Some(close) => {
-                    if is_breaking_tag_str(&text[i + 1..i + 1 + close]) {
-                        f(' ');
-                    }
-                    i += close + 2;
+                    let breaking = is_breaking_tag_str(&text[i + 1..i + 1 + close]);
+                    (if breaking { " " } else { "" }, i + close + 2)
                 }
+                None => ("<", i + 1),
+            },
+            b'&' => match space_entity_len(&bytes[i..]) {
+                Some(len) => (" ", i + len),
                 None => {
-                    f('<');
-                    i += 1;
+                    // A space entity inside the span is one character, and its `;` is gone.
+                    let mut j = i + 1;
+                    let mut semi = None;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b';' => {
+                                semi = Some(j);
+                                break;
+                            }
+                            b'&' => j += space_entity_len(&bytes[j..]).unwrap_or(1),
+                            _ => j += 1,
+                        }
+                    }
+                    match semi {
+                        Some(semi) if semi > i + 1 => ("", semi + 1),
+                        _ => ("&", i + 1),
+                    }
                 }
             },
-            b'&' => {
-                if let Some(len) = space_entity_len(&bytes[i..]) {
-                    f(' ');
-                    i += len;
-                    continue;
-                }
-                // A space entity inside the span is one character, and its `;` is gone.
-                let mut j = i + 1;
-                let mut semi = None;
-                while j < bytes.len() {
-                    match bytes[j] {
-                        b';' => {
-                            semi = Some(j);
-                            break;
-                        }
-                        b'&' => j += space_entity_len(&bytes[j..]).unwrap_or(1),
-                        _ => j += 1,
-                    }
-                }
-                match semi {
-                    Some(semi) if semi > i + 1 => i = semi + 1,
-                    _ => {
-                        f('&');
-                        i += 1;
-                    }
-                }
-            }
-            b if b < 0x80 => {
-                f(b as char);
-                i += 1;
-            }
             _ => {
-                let c = text[i..].chars().next().expect("on a char boundary");
-                f(c);
-                i += c.len_utf8();
+                i += 1;
+                continue;
             }
+        };
+        if copied < i {
+            f(&text[copied..i]);
         }
+        if !replacement.is_empty() {
+            f(replacement);
+        }
+        i = next;
+        copied = next;
+    }
+    if copied < bytes.len() {
+        f(&text[copied..]);
     }
 }
 
+/// Strips HTML tags and entities like the Dart `stripHtmlIfNeeded`, with one
 /// deliberate divergence: breaking tags ([`BREAKING_TAG_NAMES`]) become a
 /// space, so words the reader sees on separate lines stay separate tokens.
 /// The whitespace entities become a space first (so adjacent words are not
@@ -1059,11 +1057,8 @@ fn for_each_html_stripped_char(text: &str, mut f: impl FnMut(char)) {
 /// through the next `>` (kept verbatim if unterminated); an `&` is dropped
 /// through the next `;` only if at least one non-`;` char precedes it.
 pub fn strip_html_for_indexing(text: &str) -> String {
-    if !text.contains(['<', '&']) {
-        return text.to_string();
-    }
     let mut out = String::with_capacity(text.len());
-    for_each_html_stripped_char(text, |c| out.push(c));
+    for_each_html_stripped_piece(text, |piece| out.push_str(piece));
     out
 }
 
@@ -1152,6 +1147,51 @@ impl Collapsed {
             self.out.push(c);
         }
     }
+
+    /// [`Self::push`] of each char of `run`, a run [`plain_run_len`] vouched for.
+    #[inline]
+    fn push_plain(&mut self, run: &str) {
+        if self.pending_space {
+            self.out.push(' ');
+            self.pending_space = false;
+        }
+        self.out.push_str(run);
+    }
+}
+
+/// Bytes at the start of `bytes` that every normalization copies unchanged: printable
+/// ASCII and the Hebrew block from U+05C8 on (letters, geresh, gershayim) — no whitespace,
+/// attached mark, presentation form or invisible among them.
+#[inline]
+fn plain_run_len(bytes: &[u8]) -> usize {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x21..=0x7E => i += 1,
+            0xD7 if matches!(bytes.get(i + 1), Some(0x88..=0xBF)) => i += 2,
+            _ => break,
+        }
+    }
+    i
+}
+
+/// Calls `run` with the runs [`plain_run_len`] finds in `piece`, and `other` with every
+/// other char.
+#[inline]
+fn for_each_run(piece: &str, mut run: impl FnMut(&str), mut other: impl FnMut(char)) {
+    let bytes = piece.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let len = plain_run_len(&bytes[i..]);
+        if len > 0 {
+            run(&piece[i..i + len]);
+            i += len;
+            continue;
+        }
+        let c = piece[i..].chars().next().expect("on a char boundary");
+        other(c);
+        i += c.len_utf8();
+    }
 }
 
 /// Feeds `f` `c` with its presentation form decomposed.
@@ -1167,18 +1207,24 @@ fn for_each_folded(c: char, mut f: impl FnMut(char)) {
 /// whitespace, in one pass. `drop` filters characters before folding (the PDF path drops
 /// invisibles).
 fn normalize_one_pass(input: &str, strip_marks: bool, drop: impl Fn(char) -> bool) -> String {
-    let mut out = Collapsed::with_capacity(input.len());
-    for_each_html_stripped_char(input, |c| {
-        if drop(c) {
-            return;
-        }
-        for_each_folded(c, |c| {
-            if !(strip_marks && is_attached_mark(c)) {
-                out.push(c);
-            }
-        });
+    let out = std::cell::RefCell::new(Collapsed::with_capacity(input.len()));
+    for_each_html_stripped_piece(input, |piece| {
+        for_each_run(
+            piece,
+            |run| out.borrow_mut().push_plain(run),
+            |c| {
+                if drop(c) {
+                    return;
+                }
+                for_each_folded(c, |c| {
+                    if !(strip_marks && is_attached_mark(c)) {
+                        out.borrow_mut().push(c);
+                    }
+                });
+            },
+        );
     });
-    out.out
+    out.into_inner().out
 }
 
 /// Both texts a line is indexed as, in one pass: [`normalize_text_for_indexing`], and
@@ -1188,30 +1234,38 @@ pub fn normalize_line_for_indexing(input: &str) -> (String, Option<String>) {
     if !contains_attached_marks(input) {
         return (normalize_one_pass(input, true, |_| false), None);
     }
-    let mut plain = Collapsed::with_capacity(input.len());
-    let mut vocalized = Collapsed::with_capacity(input.len());
-    for_each_html_stripped_char(input, |c| {
-        for_each_folded(c, |c| {
-            if !is_attached_mark(c) {
-                plain.push(c);
-            }
-            vocalized.push(c);
-        });
+    let out = std::cell::RefCell::new((
+        Collapsed::with_capacity(input.len()),
+        Collapsed::with_capacity(input.len()),
+    ));
+    for_each_html_stripped_piece(input, |piece| {
+        for_each_run(
+            piece,
+            |run| {
+                let (plain, vocalized) = &mut *out.borrow_mut();
+                plain.push_plain(run);
+                vocalized.push_plain(run);
+            },
+            |c| {
+                let (plain, vocalized) = &mut *out.borrow_mut();
+                for_each_folded(c, |c| {
+                    if !is_attached_mark(c) {
+                        plain.push(c);
+                    }
+                    vocalized.push(c);
+                });
+            },
+        );
     });
+    let (plain, vocalized) = out.into_inner();
     let vocalized = (!vocalized.out.is_empty()).then_some(vocalized.out);
     (plain.out, vocalized)
 }
 
-/// The normalizations as separate passes over [`strip_html_for_indexing_reference`]: what
-/// [`normalize_one_pass`] and [`normalize_line_for_indexing`] must produce.
+/// Fold presentation forms → strip attached marks → collapse whitespace, char by char,
+/// over text already stripped of HTML: what [`normalize_one_pass`] and
+/// [`normalize_line_for_indexing`] must produce after [`strip_html_for_indexing_reference`].
 #[cfg(test)]
-/// Fused fold(presentation forms) → strip(attached marks) → collapse
-/// whitespace, in a single pass with one output allocation. Semantically
-/// identical to `collapse_whitespace(&strip_attached_marks(
-/// &fold_presentation_forms(s)))` (verified by the ingestion parity tests) —
-/// fusing matters because this runs on every line of the corpus. `drop`
-/// filters extra characters before folding (the PDF path drops invisibles);
-/// `strip_marks: false` keeps nikud/cantillation (the vocalized field).
 pub(crate) fn fold_strip_collapse(
     s: &str,
     strip_marks: bool,
