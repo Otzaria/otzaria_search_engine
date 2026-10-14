@@ -237,30 +237,50 @@ pub(crate) fn term_query(
     })
 }
 
+/// Spelling combinations a phrase is served as a union of `PhraseQuery`s up to; past it,
+/// one `RegexPhraseQuery` over every word's spellings.
+const MAX_SPELLING_PHRASES: usize = 16;
+
 /// The adjacent (within `slop`) phrase of `words`: a `PhraseQuery` when no word has
-/// another spelling, else the same phrase over each word's spellings.
+/// another spelling, else the same phrase over each word's spellings. A few combinations
+/// stay `PhraseQuery`s: the written one costs as before, the quoted ones are rare.
 pub(crate) fn phrase_query(
     searcher: &Searcher,
     field: Field,
     words: &[String],
     slop: u32,
 ) -> tantivy::Result<Box<dyn Query>> {
-    let mut plain = true;
-    for word in words {
-        plain &= spellings(searcher, field, word)?.len() == 1;
-        if !plain {
-            break;
-        }
-    }
-    if plain {
-        let mut phrase = PhraseQuery::new(
-            words
+    let spellings = words
+        .iter()
+        .map(|word| spellings(searcher, field, word))
+        .collect::<tantivy::Result<Vec<_>>>()?;
+    let combinations = spellings
+        .iter()
+        .try_fold(1usize, |n, s| n.checked_mul(s.len()))
+        .filter(|&n| n <= MAX_SPELLING_PHRASES);
+    if let Some(combinations) = combinations {
+        let phrase = |pick: usize| {
+            let mut rest = pick;
+            let terms = spellings
                 .iter()
-                .map(|word| Term::from_field_text(field, word))
+                .map(|options| {
+                    let term = Term::from_field_text(field, &options[rest % options.len()]);
+                    rest /= options.len();
+                    term
+                })
+                .collect();
+            let mut phrase = PhraseQuery::new(terms);
+            phrase.set_slop(slop);
+            Box::new(phrase) as Box<dyn Query>
+        };
+        if combinations == 1 {
+            return Ok(phrase(0));
+        }
+        return Ok(Box::new(BooleanQuery::new(
+            (0..combinations)
+                .map(|pick| (Occur::Should, phrase(pick)))
                 .collect(),
-        );
-        phrase.set_slop(slop);
-        return Ok(Box::new(phrase));
+        )));
     }
     let automata = words
         .iter()
@@ -401,5 +421,57 @@ mod tests {
         );
         let empty = tantivy_fst::Regex::new("").unwrap();
         assert!(matches(empty, DICTIONARY).is_empty());
+    }
+
+    #[test]
+    fn a_phrase_with_few_spellings_is_a_union_of_phrases() {
+        use tantivy::collector::Count;
+        use tantivy::schema::{Schema, TextFieldIndexing, TextOptions};
+        use tantivy::tokenizer::{TextAnalyzer, WhitespaceTokenizer};
+
+        let mut builder = Schema::builder();
+        let indexing = TextFieldIndexing::default()
+            .set_tokenizer("ws")
+            .set_index_option(IndexRecordOption::WithFreqsAndPositions);
+        let text = builder.add_text_field(
+            "text",
+            TextOptions::default().set_indexing_options(indexing),
+        );
+        let index = tantivy::Index::create_in_ram(builder.build());
+        index.tokenizers().register(
+            "ws",
+            TextAnalyzer::builder(WhitespaceTokenizer::default()).build(),
+        );
+        let mut writer: tantivy::IndexWriter = index.writer(15_000_000).unwrap();
+        for line in ["אמר רבי", "אמ\"ר רבי", "אמר ר\"בי", "שלום עולם"] {
+            writer.add_document(tantivy::doc!(text => line)).unwrap();
+        }
+        let mut wide = String::new();
+        for i in 1..=4 {
+            let (head, tail) = "מלכים".split_at(i * 2);
+            wide.push_str(&format!("{head}\"{tail} "));
+        }
+        writer.add_document(tantivy::doc!(text => wide)).unwrap();
+        writer.commit().unwrap();
+        let searcher = index.reader().unwrap().searcher();
+
+        let words = ["אמר".to_string(), "רבי".to_string()];
+        let query = phrase_query(&searcher, text, &words, 0).unwrap();
+        let debug = format!("{query:?}");
+        assert!(
+            debug.starts_with("BooleanQuery") && !debug.contains("RegexPhraseQuery"),
+            "{debug}"
+        );
+        assert_eq!(searcher.search(&query, &Count).unwrap(), 3);
+
+        let plain = ["שלום".to_string(), "עולם".to_string()];
+        let plain = phrase_query(&searcher, text, &plain, 0).unwrap();
+        assert!(format!("{plain:?}").starts_with("PhraseQuery"));
+
+        // 5 × 5 spellings: past the union's cap, one regex phrase.
+        let many = ["מלכים".to_string(), "מלכים".to_string()];
+        let query = phrase_query(&searcher, text, &many, 0).unwrap();
+        assert!(format!("{query:?}").starts_with("RegexPhraseQuery"));
+        assert_eq!(searcher.search(&query, &Count).unwrap(), 1);
     }
 }
