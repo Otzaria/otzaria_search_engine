@@ -256,6 +256,17 @@ impl Layout {
     }
 }
 
+/// A book read by [`LineStore::read_book_for_indexing`].
+#[derive(Debug, Default)]
+pub(crate) struct IndexingText {
+    pub text: String,
+    pub rows: u64,
+    /// A row holds `\n`, so the text has more lines than the book has rows.
+    pub row_has_newline: bool,
+    /// The rows whose embedded `data:` images were removed.
+    pub data_uri_rows: Vec<u32>,
+}
+
 /// A read-only connection to one library database, with the per-book caches valid for it.
 pub(crate) struct LineStore {
     conn: Connection,
@@ -530,6 +541,68 @@ impl LineStore {
                 rows[0] = RowText::Found(prepare_row(&bytes, has_data_uri));
             }
             Ok(Some(rows))
+        })
+    }
+
+    /// The book's text exactly as the app hands it to the indexing path: its rows in order,
+    /// each decoded and cleaned like [`prepare_row`], joined with `\n`. `None` when the book
+    /// has no rows, or its title is not `title` (when given): the app's read guards a book id
+    /// the same way.
+    pub fn read_book_for_indexing(
+        &mut self,
+        book_id: i64,
+        title: Option<&str>,
+    ) -> Result<Option<IndexingText>> {
+        self.in_read_txn(|store| {
+            let Self { conn, layout, .. } = &mut *store;
+            if let Some(title) = title {
+                let matches = conn
+                    .prepare_cached("SELECT 1 FROM book WHERE id = ?1 AND title = ?2")?
+                    .query_row(rusqlite::params![book_id, title], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                if !matches {
+                    return Ok(None);
+                }
+            }
+            let mut stmt = conn.prepare_cached(layout.book_sql())?;
+            let mut query = stmt.query([book_id])?;
+            let mut book = IndexingText::default();
+            let mut first_row: Option<Vec<u8>> = None;
+            let mut has_data_uri = false;
+            while let Some(row) = query.next()? {
+                let bytes = row_bytes(row.get_ref(0)?, &mut layout.codec).map_err(|reason| {
+                    anyhow::anyhow!(
+                        "book {book_id} row {} cannot be decoded: {reason}",
+                        book.rows
+                    )
+                })?;
+                if book.rows > 0 {
+                    book.text.push('\n');
+                }
+                book.row_has_newline |= bytes.contains(&b'\n');
+                if contains_data_scheme(&bytes) {
+                    has_data_uri = true;
+                    let raw = String::from_utf8_lossy(&bytes);
+                    if strip_data_uris_for_index(&raw).len() != raw.len() {
+                        book.data_uri_rows.push(book.rows as u32);
+                    }
+                }
+                if book.rows == 0 && bytes.starts_with(BOM) {
+                    // Whether the BOM stays depends on the rest of the book.
+                    first_row = Some(bytes.into_owned());
+                } else {
+                    book.text.push_str(&prepare_row(&bytes, false));
+                }
+                book.rows += 1;
+            }
+            if book.rows == 0 {
+                return Ok(None);
+            }
+            if let Some(bytes) = first_row {
+                book.text.insert_str(0, &prepare_row(&bytes, has_data_uri));
+            }
+            Ok(Some(book))
         })
     }
 

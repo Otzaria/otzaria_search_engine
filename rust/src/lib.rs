@@ -33,6 +33,10 @@ mod lexicons;
 #[cfg(test)]
 mod external_text_tests;
 mod line_source;
+// The batch behind `SearchEngine::add_library_books`; its types are in `crate::api`.
+mod library_indexing;
+#[cfg(test)]
+mod library_indexing_tests;
 mod sqlite_host;
 #[cfg(test)]
 mod user_books_text_tests;
