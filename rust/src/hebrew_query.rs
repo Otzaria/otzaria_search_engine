@@ -2078,6 +2078,60 @@ pub(crate) fn normalize_for_index_vocalized(text: &str) -> String {
     fold_presentation_forms(text).to_lowercase()
 }
 
+// ── Relevance tiers ────────────────────────────────────────────────────────
+
+/// How closely a matched index term reproduces what was typed, for ranking
+/// an advanced search by relevance: 0 the typed form (or an alternative
+/// word) itself, 1 that form inside a longer word (prefixes/suffixes, a final
+/// letter in its base form, ה→ת), 2 a כתיב מלא/חסר variant of it (ו/י and
+/// quotes aside, affixed or not), 3 anything else the options matched
+/// (typos, Aramaic final-letter swaps).
+pub(crate) fn match_tier(term: &str, roots: &[String]) -> u8 {
+    fn unquoted(s: &str) -> String {
+        s.chars().filter(|c| !matches!(c, '\'' | '"')).collect()
+    }
+    fn skeleton(s: &str) -> String {
+        s.chars()
+            .filter(|c| !matches!(c, '\'' | '"' | 'ו' | 'י'))
+            .map(|c| base_form_of_final(c).unwrap_or(c))
+            .collect()
+    }
+    let roots: Vec<String> = roots
+        .iter()
+        .map(|r| unquoted(r))
+        .filter(|r| !r.is_empty())
+        .collect();
+    let term = unquoted(term);
+    if roots.iter().any(|r| *r == term) {
+        return 0;
+    }
+    // The suffixed forms of a root: final letter in its base form (מלכ־),
+    // final ה turned to ת/ות (תורת־, תורות).
+    let inside = |root: &str| {
+        let Some(last) = root.chars().last() else {
+            return false;
+        };
+        let head = &root[..root.len() - last.len_utf8()];
+        let stems: Vec<String> = match (base_form_of_final(last), last) {
+            (Some(base), _) => vec![format!("{head}{base}")],
+            (None, 'ה') => vec![format!("{head}ת"), format!("{head}ות")],
+            _ => Vec::new(),
+        };
+        term.contains(root) || stems.iter().any(|stem| term.contains(stem.as_str()))
+    };
+    if roots.iter().any(|r| inside(r)) {
+        return 1;
+    }
+    let term_skeleton = skeleton(&term);
+    if roots.iter().any(|r| {
+        let root = skeleton(r);
+        !root.is_empty() && term_skeleton.contains(&root)
+    }) {
+        return 2;
+    }
+    3
+}
+
 // ── Per-word regex assembly ────────────────────────────────────────────────
 
 /// Builds the final tantivy-fst regex term for one query word, taking into
@@ -3365,6 +3419,30 @@ mod tests {
         assert!(v.contains(&"בע".to_string()));
         assert!(v.contains(&"בה".to_string()));
         assert!(v.contains(&"אב".to_string()));
+    }
+
+    #[test]
+    fn match_tiers_order_exact_affix_spelling_typo() {
+        let roots = vec!["תורה".to_string(), "ספר".to_string()];
+        for (term, tier) in [
+            ("תורה", 0),
+            ("ספר", 0),
+            ("ובתורה", 1),
+            ("תורתו", 1),
+            ("תורות", 1),
+            ("ספרים", 1),
+            ("תוריה", 2),
+            ("ובתוריה", 2),
+            ("סופר", 2),
+            ("תודה", 3),
+            ("ספט", 3),
+        ] {
+            assert_eq!(match_tier(term, &roots), tier, "{term}");
+        }
+        let roots = vec!["רמב\"ם".to_string(), "מלך".to_string()];
+        assert_eq!(match_tier("רמבם", &roots), 0);
+        assert_eq!(match_tier("להרמב\"ם", &roots), 1);
+        assert_eq!(match_tier("מלכים", &roots), 1);
     }
 
     #[test]

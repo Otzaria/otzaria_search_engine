@@ -3030,6 +3030,11 @@ const LEXICAL_FUZZY_PHRASE_SLOP: u32 = 1;
 // ranking they never use. Recall is unchanged either way (the exact term is a
 // subset of the fuzzy automaton match), and exact/advanced never use these.
 const FUZZY_BOOST_EXACT: Score = 1000.0;
+/// Relevance tiers of an advanced single-word search ranked by relevance:
+/// the typed form, then affixed forms, then spelling variants, then the rest
+/// (see `hebrew_query::match_tier`). Only the order matters; a document's
+/// clauses sum, so each tier outweighs every lower one combined.
+const ADVANCED_TIER_BOOSTS: [Score; 4] = [1000.0, 100.0, 10.0, 1.0];
 const FUZZY_BOOST_EXACT_REL: Score = 1.0;
 const FUZZY_BOOST_LEXICAL: Score = 30.0;
 const FUZZY_BOOST_FUZZY: Score = 1.0;
@@ -9095,19 +9100,21 @@ impl SearchEngine {
         // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
         // בתוך בניית השאילתה.
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-            &query,
-            distance,
-            &custom_spacing,
-            any_order.unwrap_or(false),
-            &alternative_words,
-            &search_options,
-            facets,
-            &voc,
-            &scope,
-            &match_mode,
-            true,
-        )?;
+        let (q, regex_terms, proximity, truncated, acronym_alts) = self
+            .build_advanced_query_ranked(
+                &query,
+                distance,
+                &custom_spacing,
+                any_order.unwrap_or(false),
+                &alternative_words,
+                &search_options,
+                facets,
+                &voc,
+                &scope,
+                &match_mode,
+                true,
+                matches!(order, ResultsOrder::Relevance),
+            )?;
         let (q, _) = self.apply_advanced_negative_query(
             q,
             truncated,
@@ -9170,19 +9177,21 @@ impl SearchEngine {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-            &query,
-            distance,
-            &custom_spacing,
-            any_order.unwrap_or(false),
-            &alternative_words,
-            &search_options,
-            facets,
-            &voc,
-            &scope,
-            &match_mode,
-            true,
-        )?;
+        let (q, regex_terms, proximity, truncated, acronym_alts) = self
+            .build_advanced_query_ranked(
+                &query,
+                distance,
+                &custom_spacing,
+                any_order.unwrap_or(false),
+                &alternative_words,
+                &search_options,
+                facets,
+                &voc,
+                &scope,
+                &match_mode,
+                true,
+                matches!(order, ResultsOrder::Relevance),
+            )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
             truncated,
@@ -9253,19 +9262,21 @@ impl SearchEngine {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-                &query,
-                distance,
-                &custom_spacing,
-                any_order.unwrap_or(false),
-                &alternative_words,
-                &search_options,
-                facets,
-                &voc,
-                &scope,
-                &match_mode,
-                true,
-            )?;
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self
+                .build_advanced_query_ranked(
+                    &query,
+                    distance,
+                    &custom_spacing,
+                    any_order.unwrap_or(false),
+                    &alternative_words,
+                    &search_options,
+                    facets,
+                    &voc,
+                    &scope,
+                    &match_mode,
+                    true,
+                    matches!(order, ResultsOrder::Relevance),
+                )?;
             let (q, _) = self.apply_advanced_negative_query(
                 q,
                 truncated,
@@ -9340,19 +9351,21 @@ impl SearchEngine {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-                &query,
-                distance,
-                &custom_spacing,
-                any_order.unwrap_or(false),
-                &alternative_words,
-                &search_options,
-                facets,
-                &voc,
-                &scope,
-                &match_mode,
-                true,
-            )?;
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self
+                .build_advanced_query_ranked(
+                    &query,
+                    distance,
+                    &custom_spacing,
+                    any_order.unwrap_or(false),
+                    &alternative_words,
+                    &search_options,
+                    facets,
+                    &voc,
+                    &scope,
+                    &match_mode,
+                    true,
+                    matches!(order, ResultsOrder::Relevance),
+                )?;
             let (q, truncated) = self.apply_advanced_negative_query(
                 q,
                 truncated,
@@ -10244,6 +10257,7 @@ impl SearchEngine {
             &SearchScope::WordDistance,
             &WordMatch::All,
             true,
+            None,
         )
     }
 
@@ -10337,6 +10351,7 @@ impl SearchEngine {
         scope: &SearchScope,
         match_mode: &WordMatch,
         cross_line: bool,
+        ranking_roots: Option<&[String]>,
     ) -> Result<(Box<dyn Query>, bool)> {
         // Resolved up front: the same facet filter both narrows the section
         // pre-pass (fewer candidate sections to intersect) and gates the
@@ -10354,12 +10369,21 @@ impl SearchEngine {
         // nothing and reports none.
         let (main_query, truncated): (Box<dyn Query>, bool) = match regex_terms.len() {
             0 => (Box::new(EmptyQuery), false),
-            1 => self.single_regex_term_query(
-                regex_terms[0].branches(),
-                typo_tokens,
-                text_field,
-                max_expansions,
-            )?,
+            1 => match ranking_roots {
+                Some(roots) => self.ranked_term_query(
+                    regex_terms[0].branches(),
+                    typo_tokens,
+                    text_field,
+                    max_expansions,
+                    roots,
+                )?,
+                None => self.single_regex_term_query(
+                    regex_terms[0].branches(),
+                    typo_tokens,
+                    text_field,
+                    max_expansions,
+                )?,
+            },
             _ => match (scope, match_mode) {
                 // הטווחים "פסקה"/"כותרת" מוותרים על סדר ומרווח, וכך גם כל
                 // מצב התאמה שאינו "כל המילים" (מילים עשויות לחסור) — כל
@@ -10800,6 +10824,55 @@ impl SearchEngine {
             Box::new(TermSetQuery::new(entry.terms.iter().cloned())),
             entry.truncated,
         ))
+    }
+
+    /// [`Self::single_regex_term_query`] scored in relevance tiers: the same
+    /// terms (the result set is unchanged), split by
+    /// [`hebrew_query::match_tier`] against the typed `roots` into
+    /// constant-score clauses whose scores sum.
+    fn ranked_term_query(
+        &self,
+        branches: &[String],
+        typo_tokens: &[String],
+        text_field: Field,
+        max_expansions: u32,
+        roots: &[String],
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let entry = self.materialize_term_set(
+            branches,
+            typo_tokens,
+            text_field,
+            max_expansions,
+            SINGLE_WORD_POSTINGS_BUDGET,
+        )?;
+        let mut tiers: [Vec<Term>; 4] = Default::default();
+        for term in entry.terms.iter() {
+            let tier = term
+                .value()
+                .as_str()
+                .map_or(3, |text| hebrew_query::match_tier(text, roots));
+            tiers[usize::from(tier)].push(term.clone());
+        }
+        let clauses: Vec<(Occur, Box<dyn Query>)> = tiers
+            .into_iter()
+            .zip(ADVANCED_TIER_BOOSTS)
+            .filter(|(terms, _)| !terms.is_empty())
+            .map(|(terms, boost)| {
+                (
+                    Occur::Should,
+                    Box::new(ConstScoreQuery::new(
+                        Box::new(TermSetQuery::new(terms)),
+                        boost,
+                    )) as Box<dyn Query>,
+                )
+            })
+            .collect();
+        let query: Box<dyn Query> = if clauses.is_empty() {
+            Box::new(EmptyQuery)
+        } else {
+            Box::new(BooleanQuery::new(clauses))
+        };
+        Ok((query, entry.truncated))
     }
 
     /// The materialization behind [`Self::single_regex_term_query`] and the
@@ -11774,6 +11847,7 @@ impl SearchEngine {
     /// regex patterns so callers can materialize concrete terms for highlighting.
     /// `any_order` applies as [`hebrew_query::resolve_proximity`] says; acronym
     /// expansions stay ordered.
+    #[allow(clippy::too_many_arguments)]
     fn build_advanced_query(
         &self,
         query: &str,
@@ -11787,6 +11861,40 @@ impl SearchEngine {
         scope: &SearchScope,
         match_mode: &WordMatch,
         cross_line: bool,
+    ) -> Result<AdvancedQueryBuild> {
+        self.build_advanced_query_ranked(
+            query,
+            distance,
+            custom_spacing,
+            any_order,
+            alternative_words,
+            search_options,
+            facets,
+            voc,
+            scope,
+            match_mode,
+            cross_line,
+            false,
+        )
+    }
+
+    /// [`Self::build_advanced_query`]; `rank` (a relevance-ordered search)
+    /// scores a single word's matches in tiers — see [`ADVANCED_TIER_BOOSTS`].
+    #[allow(clippy::too_many_arguments)]
+    fn build_advanced_query_ranked(
+        &self,
+        query: &str,
+        distance: u32,
+        custom_spacing: &HashMap<String, String>,
+        any_order: bool,
+        alternative_words: &HashMap<u32, Vec<String>>,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        facets: Vec<String>,
+        voc: &VocalizedFlags,
+        scope: &SearchScope,
+        match_mode: &WordMatch,
+        cross_line: bool,
+        rank: bool,
     ) -> Result<AdvancedQueryBuild> {
         // The vocalized mode is requested either by the global API flags or
         // by a per-word "ניקוד"/"טעמים" option; the per-word requirement
@@ -11865,6 +11973,31 @@ impl SearchEngine {
             scope,
             cross_line,
         )?;
+        // Tiers compare mark-free text, so the vocalized field stays unranked.
+        let ranking_roots: Option<Vec<String>> = (rank && !voc_mode.any())
+            .then(|| {
+                let word = source_words.first()?;
+                let ignore_quotes =
+                    hebrew_query::word_flags_at(&source_words, 0, search_options).ignore_quotes;
+                let roots = std::iter::once(word.clone())
+                    .chain(
+                        alternative_words
+                            .get(&0)
+                            .into_iter()
+                            .flatten()
+                            .map(|a| hebrew_query::normalize_for_index(a)),
+                    )
+                    .map(|r| {
+                        if ignore_quotes {
+                            hebrew_query::strip_quote_chars(&r)
+                        } else {
+                            r
+                        }
+                    })
+                    .collect();
+                Some(roots)
+            })
+            .flatten();
         let (main_query, main_truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
             &source_words,
@@ -11876,6 +12009,7 @@ impl SearchEngine {
             scope,
             match_mode,
             cross_line,
+            ranking_roots.as_deref(),
         )?;
         let (query, truncated, acronym_patterns) = if acronym_alts.is_empty() {
             (main_query, main_truncated, Vec::new())
@@ -11988,6 +12122,7 @@ impl SearchEngine {
                 scope,
                 &WordMatch::All,
                 cross_line,
+                None,
             )?;
             out.push((alt_query, truncated, literal_patterns));
         }

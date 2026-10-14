@@ -183,3 +183,14 @@ fn ranking_does_not_depend_on_segments() {
     assert_eq!(terms, ["אמר", "ואמר", "שאמר"]);
     assert!(truncated);
 }
+
+#[test]
+fn relevance_ranks_exact_then_affixed_then_spelling_then_typo() {
+    // Catalogue order is the reverse of the tiers.
+    let (engine, _dir) = engine_with(&["ברקה", "בריכה", "ובברכה", "ברכה"]);
+    let flags = ["קידומות דקדוקיות", "כתיב מלא/חסר", "שגיאות כתיב"];
+    let catalogue = advanced_ids(&engine, "ברכה", &flags, ResultsOrder::Catalogue);
+    let relevance = advanced_ids(&engine, "ברכה", &flags, ResultsOrder::Relevance);
+    assert_eq!(catalogue, [0, 1, 2, 3]);
+    assert_eq!(relevance, [3, 2, 1, 0]);
+}
