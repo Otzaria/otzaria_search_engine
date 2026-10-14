@@ -14475,7 +14475,8 @@ struct BookCountCollector;
 
 struct BookCountSegmentCollector {
     str_col: Option<tantivy::columnar::StrColumn>,
-    counts: HashMap<u64, u32>,
+    /// Indexed by term ordinal: a segment holds only thousands of paths.
+    counts: Vec<u32>,
 }
 
 impl Collector for BookCountCollector {
@@ -14488,9 +14489,10 @@ impl Collector for BookCountCollector {
         reader: &SegmentReader,
     ) -> tantivy::Result<BookCountSegmentCollector> {
         let str_col = reader.fast_fields().str("filePath")?;
+        let num_terms = str_col.as_ref().map_or(0, |col| col.num_terms());
         Ok(BookCountSegmentCollector {
             str_col,
-            counts: HashMap::new(),
+            counts: vec![0; num_terms],
         })
     }
 
@@ -14517,8 +14519,8 @@ impl SegmentCollector for BookCountSegmentCollector {
 
     fn collect(&mut self, doc_id: DocId, _score: Score) {
         if let Some(col) = &self.str_col {
-            if let Some(term_ord) = col.term_ords(doc_id).next() {
-                *self.counts.entry(term_ord).or_insert(0) += 1;
+            if let Some(term_ord) = col.ords().first(doc_id) {
+                self.counts[term_ord as usize] += 1;
             }
         }
     }
@@ -14527,14 +14529,24 @@ impl SegmentCollector for BookCountSegmentCollector {
         let Some(col) = self.str_col else {
             return Ok(HashMap::new());
         };
-        let mut result = HashMap::with_capacity(self.counts.len());
-        let mut buf = String::new();
-        for (term_ord, count) in self.counts {
-            buf.clear();
-            if col.ord_to_str(term_ord, &mut buf)? {
-                result.insert(buf.clone(), count);
-            }
-        }
+        let hits: Vec<(u64, u32)> = (0u64..)
+            .zip(self.counts)
+            .filter(|&(_, count)| count > 0)
+            .collect();
+        let mut result = HashMap::with_capacity(hits.len());
+        let mut counts = hits.iter().map(|&(_, count)| count);
+        // One sequential pass over the dictionary: `ord_to_str` per ordinal
+        // re-seeks the sstable and dominated the whole count.
+        col.dictionary().sorted_ords_to_term_cb(
+            hits.iter().map(|&(term_ord, _)| term_ord),
+            |bytes| {
+                let path = std::str::from_utf8(bytes).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Not valid utf-8")
+                })?;
+                result.insert(path.to_owned(), counts.next().unwrap_or(0));
+                Ok(())
+            },
+        )?;
         Ok(result)
     }
 }
@@ -19499,6 +19511,41 @@ mod tests {
         assert_eq!(counts.get("/books/a.txt").copied(), Some(2));
         assert_eq!(counts.get("/books/b.txt").copied(), Some(1));
         assert_eq!(counts.len(), 2);
+    }
+
+    /// Thousands of paths span many dictionary blocks, and only some of them match:
+    /// the batched ordinal-to-path pass must pair every path with its own count.
+    #[test]
+    fn test_count_by_book_many_paths_sparse_hits() {
+        let (mut engine, _dir) = make_engine();
+        let mut expected: HashMap<String, u32> = HashMap::new();
+        let mut id = 0;
+        for book in 0..3_000u32 {
+            let path = format!("/books/{:04}/ספר מספר {book} בספרייה.txt", book * 7 % 3_000);
+            for line in 0..(book % 4) {
+                id += 1;
+                let text = if (book + line) % 3 == 0 {
+                    "שלום עולם"
+                } else {
+                    "ביי"
+                };
+                add(&mut engine, id, text, &path);
+                if text.starts_with("שלום") {
+                    *expected.entry(path.clone()).or_insert(0) += 1;
+                }
+            }
+            if book == 1_500 {
+                engine.commit().unwrap();
+            }
+        }
+        engine.commit().unwrap();
+
+        let counts = engine
+            .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
+            .unwrap();
+
+        assert!(expected.len() > 1_000);
+        assert_eq!(counts, expected);
     }
 
     #[test]
