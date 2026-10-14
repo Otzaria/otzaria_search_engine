@@ -14,7 +14,8 @@ use crate::hebrew_query::{fold_presentation_form, is_breaking_tag, is_word_mark}
 use crate::hebrew_tokenizer::{is_geresh, is_gershayim, is_transparent, HebrewTokenizer};
 
 pub(crate) struct PreparedHighlightMatcher {
-    // Mode bits waive the token boundary on the outer left/right, respectively.
+    // Mode bits let the outer left/right word carry its own affixes (otherwise
+    // it must be the whole token).
     words: Vec<[Arc<Regex>; 4]>,
     independent_words: Vec<[Arc<Regex>; 2]>,
     proximity: Proximity,
@@ -62,30 +63,28 @@ impl PreparedHighlightMatcher {
                 .map(|(_, root, _)| format!("({root})"))
                 .collect();
             let roots = roots.join("|");
+            let affixed: Vec<String> = branches
+                .iter()
+                .map(|(lead, root, trail)| format!("(?:{lead})({root})(?:{trail})"))
+                .collect();
+            // A waived boundary admits the word's own affixes, never any
+            // letters: "שבת" with prefixes alone does not paint "מחשבתו".
             independent_words.push([
                 compile(format!("\\A(?:{roots})\\z"))?,
-                compile(format!("(?:{roots})"))?,
+                compile(format!("\\A(?:{})\\z", affixed.join("|")))?,
             ]);
             let mut modes = Vec::with_capacity(4);
             for mode in 0..4 {
                 let alternatives: Vec<String> = branches
                     .iter()
                     .map(|(lead, root, trail)| {
-                        let lead = if edges && i == 0 {
-                            if mode & 1 != 0 {
-                                ".*?"
-                            } else {
-                                ""
-                            }
+                        let lead = if edges && i == 0 && mode & 1 == 0 {
+                            ""
                         } else {
                             lead.as_str()
                         };
-                        let trail = if edges && i + 1 == word_count {
-                            if mode & 2 != 0 {
-                                ".*"
-                            } else {
-                                ""
-                            }
+                        let trail = if edges && i + 1 == word_count && mode & 2 == 0 {
+                            ""
                         } else {
                             trail.as_str()
                         };
@@ -177,21 +176,14 @@ impl PreparedHighlightMatcher {
                     .copied()
                     .unwrap_or(self.boundary_eligible[i]);
                 let pattern = &patterns[usize::from(!boundary)];
-                for captures in pattern.captures_iter(&mapped.text) {
-                    let Some(root) = captures.iter().skip(1).flatten().next() else {
-                        break;
-                    };
-                    if root.is_empty() {
-                        break;
-                    }
-                    let root_start = root.start();
-                    let root_end = root.end();
-                    ranges.push(Range {
-                        start: mapped.starts[root_start],
-                        end: mapped.ends[root_end - 1],
-                    });
-                    if boundary {
-                        break;
+                if let Some(captures) = pattern.captures(&mapped.text) {
+                    if let Some(root) = captures.iter().skip(1).flatten().next() {
+                        if !root.is_empty() {
+                            ranges.push(Range {
+                                start: mapped.starts[root.start()],
+                                end: mapped.ends[root.end() - 1],
+                            });
+                        }
                     }
                 }
             }
@@ -559,19 +551,34 @@ mod tests {
     }
 
     #[test]
-    fn single_word_partial_finds_repeated_roots_without_overlap() {
+    fn single_word_partial_paints_tokens_within_its_windows() {
         let plan = matcher("א", &["חלק ממילה"], 0);
-        let found = plan.find_matches("אאא", &[]);
+        // One root per token the search could match, without overlap.
+        let found = plan.find_matches("אאא בא אב", &[]);
         assert_eq!(found.len(), 3);
-        assert_eq!(
-            found.iter().map(|m| m.start).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
         assert!(plan.find_matches("אאא", &[true]).is_empty());
-        assert_eq!(
-            plan.find_word_matches(&"א".repeat(10_000), &[]).len(),
-            10_000
-        );
+        // A token longer than root + windows is no match; scanning stays linear.
+        assert!(plan.find_word_matches(&"א".repeat(10_000), &[]).is_empty());
+    }
+
+    #[test]
+    fn single_word_affixes_bound_the_painted_token() {
+        // Prefixes alone: the root may not sit inside a longer word.
+        let prefixes = matcher("שבת", &["קידומות"], 0);
+        assert_eq!(prefixes.find_matches("בשבת", &[]).len(), 1);
+        assert!(prefixes.find_matches("מחשבתו", &[]).is_empty());
+        assert!(prefixes.find_matches("שבתות", &[]).is_empty());
+        let gram = matcher("שבת", &["קידומות דקדוקיות"], 0);
+        assert_eq!(gram.find_matches("ובשבת", &[]).len(), 1);
+        assert!(gram.find_matches("מחשבת", &[]).is_empty());
+        // Part of a word paints the root inside the word, as the search finds it.
+        let partial = matcher("שבת", &["חלק ממילה"], 0);
+        assert_eq!(partial.find_matches("מחשבתו", &[]).len(), 1);
+        // The outer words of a phrase obey the same bounds.
+        let phrase = matcher("שבת קודש", &["קידומות"], 0);
+        assert_eq!(phrase.find_matches("בשבת קודש", &[]).len(), 1);
+        assert!(phrase.find_matches("שבתו קודש", &[]).is_empty());
+        assert!(phrase.find_matches("שבת קודשו", &[]).is_empty());
     }
 
     #[test]
@@ -708,13 +715,10 @@ mod tests {
         assert!(plan
             .find_matches("אבגדחייב להחזיר", &[false, false])
             .is_empty());
-        // The ordered phrase waives its outer edges; any order has none.
-        assert_eq!(
-            matcher("חייב להחזיר", &["קידומות"], 0)
-                .find_matches("אבגדחייב להחזיר", &[])
-                .len(),
-            1
-        );
+        // The ordered phrase's outer words keep their own window too.
+        let ordered = matcher("חייב להחזיר", &["קידומות"], 0);
+        assert!(ordered.find_matches("אבגדחייב להחזיר", &[]).is_empty());
+        assert_eq!(ordered.find_matches("בגדחייב להחזיר", &[]).len(), 1);
     }
 
     #[test]

@@ -8,8 +8,8 @@
 //! `combined_pattern` remains compatible for a single word. For multiple words
 //! it is the ECMAScript never-match sentinel `(?!)`; callers must use `matcher`.
 //! Morphological bounds belong to each normalized spelling/alternative branch,
-//! rather than the typed word's length. Boundary waiver only applies to the
-//! outer endpoints, preserving the historical root-highlight behavior.
+//! rather than the typed word's length. A waived boundary lets a word carry
+//! its own affixes — at the phrase's outer endpoints as inside it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -1781,7 +1781,7 @@ mod tests {
                 "lost prior typo: {term}"
             );
         }
-        for text in ["הקונטרסים", "הקונטרסיםא", "כונטרסים", "קונטרשים"]
+        for text in ["הקונטרסים", "הקונטרסימא", "כונטרסים", "קונטרשים"]
         {
             assert!(
                 !hl.matcher.find_matches(text, &[]).is_empty(),
