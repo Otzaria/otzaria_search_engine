@@ -34,7 +34,7 @@ pub(crate) fn snapshot_of(searcher: &Searcher) -> u64 {
     let mut hasher = DefaultHasher::new();
     for reader in searcher.segment_readers() {
         hasher.write(reader.segment_id().uuid_string().as_bytes());
-        hasher.write_u64(reader.delete_opstamp().map_or(u64::MAX, |opstamp| opstamp));
+        hasher.write_u64(reader.delete_opstamp().unwrap_or(u64::MAX));
     }
     hasher.finish()
 }

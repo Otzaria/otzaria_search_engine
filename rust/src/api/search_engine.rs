@@ -12753,7 +12753,7 @@ impl SearchEngine {
 
     /// The hit count of `query`, from the page cache when a search counted it.
     fn count_on(&self, searcher: &Searcher, query: &dyn Query) -> Result<u32> {
-        let key = PageKey::new(page_cache::snapshot_of(&searcher), query);
+        let key = PageKey::new(page_cache::snapshot_of(searcher), query);
         if let Some(total) = key.as_ref().and_then(|key| self.page_cache.total(key)) {
             return Ok(total);
         }
@@ -13057,7 +13057,7 @@ impl SearchEngine {
             ResultsOrder::Generation => 1,
             ResultsOrder::Relevance => 2,
         };
-        let key = PageKey::new(page_cache::snapshot_of(&searcher), query);
+        let key = PageKey::new(page_cache::snapshot_of(searcher), query);
         if let Some(page) = key
             .as_ref()
             .and_then(|key| self.page_cache.page(key, slot, offset, limit))
