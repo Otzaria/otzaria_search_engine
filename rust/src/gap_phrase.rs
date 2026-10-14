@@ -52,6 +52,8 @@ use tantivy::query::{
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{DocId, DocSet, InvertedIndexReader, Score, SegmentReader, Term, TERMINATED};
 
+use crate::term_automaton::TermDfa;
+
 /// Positional postings for every materialized term that exists in this
 /// segment — one `Vec` per word position. Returns `None` when some position
 /// has no term in the segment: the phrase can never match there, so the
@@ -85,7 +87,7 @@ fn positional_postings(
 #[derive(Clone, Debug)]
 pub(crate) struct GapVerifiedPhraseQuery {
     /// The recall-superset phrase query (slop = sum of `gaps`).
-    inner: RegexPhraseQuery,
+    inner: RegexPhraseQuery<TermDfa>,
     /// The field whose positional postings verify candidates — must be the
     /// same field `inner` runs against.
     field: Field,
@@ -94,7 +96,7 @@ pub(crate) struct GapVerifiedPhraseQuery {
 }
 
 impl GapVerifiedPhraseQuery {
-    pub(crate) fn new(inner: RegexPhraseQuery, field: Field, gaps: Vec<u32>) -> Self {
+    pub(crate) fn new(inner: RegexPhraseQuery<TermDfa>, field: Field, gaps: Vec<u32>) -> Self {
         debug_assert_eq!(gaps.len() + 1, inner.phrase_terms().len());
         Self { inner, field, gaps }
     }
@@ -103,8 +105,8 @@ impl GapVerifiedPhraseQuery {
 impl Query for GapVerifiedPhraseQuery {
     fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
         let inner = self.inner.weight(enable_scoring)?;
-        // Word regexes: the same automata `inner` compiled, one per word position.
-        let regexes = self.inner.regexes()?.to_vec();
+        // Word automata: the same ones `inner` runs, one per word position.
+        let regexes = self.inner.automata()?.to_vec();
         Ok(Box::new(GapVerifiedWeight {
             inner,
             field: self.field,
@@ -117,7 +119,7 @@ impl Query for GapVerifiedPhraseQuery {
 struct GapVerifiedWeight {
     inner: Box<dyn Weight>,
     field: Field,
-    regexes: Vec<Arc<tantivy_fst::Regex>>,
+    regexes: Vec<Arc<TermDfa>>,
     gaps: Vec<u32>,
 }
 

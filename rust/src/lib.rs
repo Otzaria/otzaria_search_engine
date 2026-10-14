@@ -10,6 +10,10 @@ mod highlight_matcher;
 // לגזור לו bindings.
 mod gap_phrase;
 mod hebrew_query;
+// DFAs over the term dictionary, cached process-wide — outside `api` so FRB ignores it.
+mod term_automaton;
+#[cfg(test)]
+mod term_automaton_equivalence_tests;
 // סינון "תחת אותה כותרת" (חיתוך sectionId) — מחוץ ל-crate::api כדי ש-FRB
 // לא ינסה לגזור לו bindings.
 mod section_scope;

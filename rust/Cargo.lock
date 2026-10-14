@@ -1729,6 +1729,8 @@ dependencies = [
  "otzaria-semantic-search",
  "rayon",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "rusqlite",
  "serde",
  "serde_json",

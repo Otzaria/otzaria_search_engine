@@ -44,6 +44,7 @@ use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
+use crate::term_automaton::{self, TermDfa};
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
 
 #[cfg(feature = "semantic-integration")]
@@ -10441,18 +10442,27 @@ impl SearchEngine {
             .map(hebrew_query::WordPattern::joined)
             .collect();
         let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-        let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
-        phrase_query.set_slop(slop_budget);
-        phrase_query.set_max_expansions(max_expansions);
-        // The query caches the compiled DFAs; the checks below and its weight share them.
-        let joined_compiles = phrase_query.regexes().is_ok();
-        if joined_compiles
-            && !self.phrase_exceeds_max_expansions(
-                phrase_query.regexes()?,
-                text_field,
-                max_expansions,
-            )?
-        {
+        // One DFA per word; the checks below and the query's weight share them.
+        let automata: Option<Vec<Arc<TermDfa>>> = joined
+            .iter()
+            .map(|pattern| term_automaton::compile_pattern(pattern).ok())
+            .collect();
+        let joined_compiles = automata.is_some();
+        let exceeds = match &automata {
+            Some(automata) => {
+                self.phrase_exceeds_max_expansions(automata, text_field, max_expansions)?
+            }
+            None => false,
+        };
+        if let (Some(automata), false) = (automata, exceeds) {
+            let terms = joined
+                .into_iter()
+                .zip(automata)
+                .enumerate()
+                .map(|(offset, (pattern, automaton))| (offset, pattern, automaton))
+                .collect();
+            let mut phrase_query = RegexPhraseQuery::from_automata(text_field, terms, slop_budget);
+            phrase_query.set_max_expansions(max_expansions);
             let inline: Box<dyn Query> = if slop_budget == 0 {
                 Box::new(phrase_query)
             } else {
@@ -10572,12 +10582,16 @@ impl SearchEngine {
     /// here — disjoint vocabularies in several segments may be larger than
     /// `max_expansions` together while every segment remains valid for
     /// Tantivy's BM25 phrase scorer.
-    fn phrase_exceeds_max_expansions(
+    fn phrase_exceeds_max_expansions<A>(
         &self,
-        regexes: &[Arc<tantivy_fst::Regex>],
+        regexes: &[Arc<A>],
         text_field: Field,
         max_expansions: u32,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let searcher = self.index_reader.searcher();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
@@ -10820,10 +10834,10 @@ impl SearchEngine {
             return Ok(entry.clone());
         }
 
-        let regexes: Vec<tantivy_fst::Regex> = branches
+        let regexes: Vec<Arc<TermDfa>> = branches
             .iter()
             .map(|branch| {
-                tantivy_fst::Regex::new(branch).map_err(|e| {
+                term_automaton::compile_pattern(branch).map_err(|e| {
                     // Surface the failing branch loudly: the historical
                     // failure mode here was a compile error silently becoming
                     // "0 results" in the UI.
@@ -10858,6 +10872,7 @@ impl SearchEngine {
         // before the next starts, so when a budget runs out mid-collection
         // the query degrades to the highest-priority automaton prefix rather
         // than over-serving whichever segment happened to be scanned first.
+        let regexes: Vec<&TermDfa> = regexes.iter().map(Arc::as_ref).collect();
         if Self::collect_automatons_terms(
             &inverted_indexes,
             &regexes,
@@ -13002,10 +13017,10 @@ impl SearchEngine {
         // first branch; the display char budget bounds the final pattern size.
         let mut per_word_terms: Vec<Vec<String>> = Vec::with_capacity(advanced.regex_terms.len());
         for word_pattern in &advanced.regex_terms {
-            let automatons: Vec<tantivy_fst::Regex> = word_pattern
+            let automatons: Vec<Arc<TermDfa>> = word_pattern
                 .branches()
                 .iter()
-                .filter_map(|branch| match tantivy_fst::Regex::new(branch) {
+                .filter_map(|branch| match term_automaton::compile_pattern(branch) {
                     Ok(re) => Some(re),
                     Err(e) => {
                         // A branch the search itself would reject: skip it for
@@ -13022,6 +13037,7 @@ impl SearchEngine {
             let mut matched: HashSet<String> = if automatons.is_empty() {
                 HashSet::new()
             } else {
+                let automatons: Vec<&TermDfa> = automatons.iter().map(Arc::as_ref).collect();
                 self.automaton_highlight_terms(&searcher, &automatons)?
             };
             // Single-word typo path: the search expands typo coverage through
@@ -13136,10 +13152,10 @@ impl SearchEngine {
         regex_terms
             .iter()
             .map(|pattern| {
-                let re = tantivy_fst::Regex::new(pattern)
+                let re = term_automaton::compile_pattern(pattern)
                     .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
                 Ok(self
-                    .automaton_terms_in_field(searcher, field, &re, cap)?
+                    .automaton_terms_in_field(searcher, field, re.as_ref(), cap)?
                     .into_iter()
                     .collect())
             })
