@@ -147,10 +147,9 @@ fancy-regex = "0.14"
 # RegexPhraseQuery compiles against the raised cap too.
 [patch.crates-io]
 tantivy-fst = { path = "vendor/tantivy-fst" }
-# TODO: return to crates.io once a tantivy release includes quickwit-oss/tantivy#3134,
-# #3135, #3136 and #3137. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
-# Local round only: replace with a git rev of Otzaria/tantivy once otzaria-0.26-search-round is pushed.
-tantivy = { path = "C:/wt/tantivy-otz" }
+# TODO: return to crates.io once a tantivy release includes quickwit-oss/tantivy#3059,
+# #3134-#3138 and #3189-#3191. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
+tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "8b8832069b871e11fe0fd0da1c4c2de8c270596f" }
 
 # Applies to cargokit's `--release` builds as well: it passes no profile overrides.
 [profile.release]
