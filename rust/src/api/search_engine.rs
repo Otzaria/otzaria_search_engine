@@ -4087,7 +4087,10 @@ pub(crate) fn live_chunk_key_field(schema: &Schema, index_path: &Path) -> Option
 /// older version in turn. A schema none of them is stays refused, as the `SchemaError`
 /// `open_or_create` returns.
 fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
-    let mut opened = Index::open_or_create(directory.clone(), current_schema());
+    let mut opened = Index::builder()
+        .schema(current_schema())
+        .settings(new_index_settings())
+        .open_or_create(directory.clone());
     for version in (MIN_READABLE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).rev() {
         if !matches!(opened, Err(tantivy::TantivyError::SchemaError(_))) {
             break;
@@ -4097,6 +4100,21 @@ fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
     }
     opened
 }
+
+/// Doc-store settings of a new index; an existing index keeps those it was created with.
+/// Measured on the full library: zstd over 64K blocks is about half the size of lz4 over 16K.
+fn new_index_settings() -> tantivy::IndexSettings {
+    tantivy::IndexSettings {
+        docstore_compression: tantivy::store::Compressor::Zstd(tantivy::store::ZstdCompressor {
+            compression_level: Some(DOCSTORE_ZSTD_LEVEL),
+        }),
+        docstore_blocksize: DOCSTORE_BLOCK_SIZE,
+        ..tantivy::IndexSettings::default()
+    }
+}
+
+const DOCSTORE_ZSTD_LEVEL: i32 = 3;
+const DOCSTORE_BLOCK_SIZE: usize = 65_536;
 
 fn index_metadata_path(index_path: &Path) -> PathBuf {
     index_path.join(INDEX_METADATA_FILE_NAME)
@@ -16065,6 +16083,49 @@ mod tests {
         for version in [5, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
             assert_eq!(schema_of_version(version), None, "{version}");
         }
+    }
+
+    /// A new index compresses its doc store with zstd over 64K blocks; one created with
+    /// other settings is opened with its own.
+    #[test]
+    fn a_new_index_compresses_its_store_with_zstd() {
+        let (mut engine, dir) = make_engine();
+        let settings = engine.index.settings();
+        assert_eq!(
+            settings.docstore_compression,
+            tantivy::store::Compressor::Zstd(tantivy::store::ZstdCompressor {
+                compression_level: Some(DOCSTORE_ZSTD_LEVEL)
+            })
+        );
+        assert_eq!(settings.docstore_blocksize, DOCSTORE_BLOCK_SIZE);
+        add(&mut engine, 7, "שורה ראשונה", "/a.txt");
+        engine.commit().unwrap();
+        drop(engine);
+        let engine = SearchEngine::new(dir.path().to_str().unwrap());
+        let found = engine.get_document_by_id(7).unwrap().unwrap();
+        assert_eq!(found.text, "שורה ראשונה");
+
+        let lz4 = TempDir::new().unwrap();
+        Index::builder()
+            .schema(current_schema())
+            .settings(tantivy::IndexSettings {
+                docstore_compression: tantivy::store::Compressor::Lz4,
+                ..tantivy::IndexSettings::default()
+            })
+            .create_in_dir(lz4.path())
+            .unwrap();
+        let mut engine = SearchEngine::new(lz4.path().to_str().unwrap());
+        assert_eq!(
+            engine.index.settings().docstore_compression,
+            tantivy::store::Compressor::Lz4
+        );
+        add(&mut engine, 8, "שורה שנייה", "/b.txt");
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+        assert_eq!(
+            engine.get_document_by_id(8).unwrap().unwrap().text,
+            "שורה שנייה"
+        );
     }
 
     /// A version 5 index is rebuilt, with its metadata or without.
