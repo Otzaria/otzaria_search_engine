@@ -13,7 +13,6 @@ import 'dart:convert';
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -8962,8 +8961,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_Map_String_Map_String_bool_None_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_string_map_string_bool_none(raw)
-          .map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_string_map_string_bool_none(
+        raw,
+      ).map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 
@@ -8971,8 +8971,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Map<String, String> dco_decode_Map_String_String_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_string_string(raw)
-          .map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_string_string(
+        raw,
+      ).map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 
@@ -9004,8 +9005,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_u_32_list_string(raw)
-          .map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_u_32_list_string(
+        raw,
+      ).map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 

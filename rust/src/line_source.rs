@@ -1541,8 +1541,7 @@ impl ScanSession {
     ) -> std::result::Result<R, SourceUnavailable> {
         {
             let g = global(self.source);
-            if g.suspend_depth > 0 || !g.owner_ports.is_empty() || g.generation != self.generation
-            {
+            if g.suspend_depth > 0 || !g.owner_ports.is_empty() || g.generation != self.generation {
                 return Err(SourceUnavailable::Suspended);
             }
         }
