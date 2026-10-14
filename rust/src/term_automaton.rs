@@ -42,6 +42,8 @@ pub(crate) struct TermDfa {
     start: StateID,
     /// Global index of this DFA's pattern 0.
     first_branch: usize,
+    /// The branches it was built from, for `Debug`: the page cache keys queries by it.
+    branches: String,
 }
 
 impl std::fmt::Debug for TermDfa {
@@ -49,12 +51,17 @@ impl std::fmt::Debug for TermDfa {
         f.debug_struct("TermDfa")
             .field("patterns", &self.dfa.pattern_len())
             .field("first_branch", &self.first_branch)
+            .field("branches", &self.branches)
             .finish()
     }
 }
 
 impl TermDfa {
-    fn new(dfa: dense::DFA<Vec<u32>>, first_branch: usize) -> Result<Self, String> {
+    fn new(
+        dfa: dense::DFA<Vec<u32>>,
+        first_branch: usize,
+        branches: &[String],
+    ) -> Result<Self, String> {
         let start = dfa
             .start_state(&start::Config::new().anchored(Anchored::Yes))
             .map_err(|e| format!("DFA start state: {e}"))?;
@@ -62,11 +69,12 @@ impl TermDfa {
             dfa,
             start,
             first_branch,
+            branches: format!("{branches:?}"),
         })
     }
 
     pub(crate) fn memory_usage(&self) -> usize {
-        self.dfa.memory_usage()
+        self.dfa.memory_usage() + self.branches.len()
     }
 
     /// The lowest global branch index that accepts `term` in full.
@@ -218,15 +226,20 @@ fn build_branches(branches: &[String]) -> Result<TermAutomata, String> {
         .map(|b| parse(b))
         .collect::<Result<_, _>>()?;
     let mut parts = Vec::new();
-    build_range(&hirs, 0, &mut parts)?;
+    build_range(&hirs, branches, 0, &mut parts)?;
     Ok(TermAutomata { parts })
 }
 
 /// Builds `hirs` as one DFA, halving the range while the union is too big.
-fn build_range(hirs: &[Hir], first: usize, parts: &mut Vec<Arc<TermDfa>>) -> Result<(), String> {
+fn build_range(
+    hirs: &[Hir],
+    branches: &[String],
+    first: usize,
+    parts: &mut Vec<Arc<TermDfa>>,
+) -> Result<(), String> {
     match build_dfa(hirs) {
         Ok(dfa) => {
-            parts.push(Arc::new(TermDfa::new(dfa, first)?));
+            parts.push(Arc::new(TermDfa::new(dfa, first, branches)?));
             Ok(())
         }
         Err(e) if hirs.len() > 1 => {
@@ -235,8 +248,8 @@ fn build_range(hirs: &[Hir], first: usize, parts: &mut Vec<Arc<TermDfa>>) -> Res
                 hirs.len()
             );
             let mid = hirs.len() / 2;
-            build_range(&hirs[..mid], first, parts)?;
-            build_range(&hirs[mid..], first + mid, parts)
+            build_range(&hirs[..mid], &branches[..mid], first, parts)?;
+            build_range(&hirs[mid..], &branches[mid..], first + mid, parts)
         }
         Err(e) => Err(e),
     }
@@ -458,6 +471,14 @@ pub(crate) fn within_budgets(
 
 #[cfg(test)]
 mod tests {
+    /// The page cache keys a search by its query's `Debug` text.
+    #[test]
+    fn different_patterns_print_differently() {
+        let one = super::compile_pattern("א.ב").unwrap();
+        let other = super::compile_pattern("ג.ד").unwrap();
+        assert_ne!(format!("{one:?}"), format!("{other:?}"));
+    }
+
     use super::*;
     use tantivy_fst::Automaton;
 

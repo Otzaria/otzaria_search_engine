@@ -83,10 +83,21 @@ impl SegmentCollector for SectionIdsSegmentCollector {
 
 /// Wraps a query and admits only documents whose `sectionId` fast-field
 /// value is in `allowed`. See the module docs.
-#[derive(Debug)]
 pub(crate) struct SectionFilteredQuery {
     inner: Box<dyn Query>,
     allowed: Arc<HashSet<u64>>,
+}
+
+// Sorted: the page cache keys a search by this text, and a set's order is random.
+impl std::fmt::Debug for SectionFilteredQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut allowed: Vec<&u64> = self.allowed.iter().collect();
+        allowed.sort_unstable();
+        f.debug_struct("SectionFilteredQuery")
+            .field("inner", &self.inner)
+            .field("allowed", &allowed)
+            .finish()
+    }
 }
 
 // `Query` requires `Clone`, but `Box<dyn Query>` only clones via `box_clone`.
@@ -201,5 +212,25 @@ impl DocSet for SectionFilteredScorer {
 impl Scorer for SectionFilteredScorer {
     fn score(&mut self) -> Score {
         self.inner.score()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tantivy::query::AllQuery;
+
+    /// The page cache keys a search by its query's `Debug` text.
+    #[test]
+    fn equal_filters_print_the_same() {
+        let forward: HashSet<u64> = (0..64).collect();
+        let backward: HashSet<u64> = (0..64).rev().collect();
+        let print = |allowed| {
+            format!(
+                "{:?}",
+                SectionFilteredQuery::new(Box::new(AllQuery), Arc::new(allowed))
+            )
+        };
+        assert_eq!(print(forward), print(backward));
     }
 }

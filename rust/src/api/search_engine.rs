@@ -12736,7 +12736,7 @@ impl SearchEngine {
 
     fn run_count_by_book(&self, query: Box<dyn Query>) -> Result<HashMap<String, u32>> {
         let searcher = self.index_reader.searcher();
-        let key = PageKey::new(searcher.generation().generation_id(), &*query);
+        let key = PageKey::new(page_cache::snapshot_of(&searcher), &*query);
         if let Some(counts) = key
             .as_ref()
             .and_then(|key| self.page_cache.book_counts(key))
@@ -12753,7 +12753,7 @@ impl SearchEngine {
 
     /// The hit count of `query`, from the page cache when a search counted it.
     fn count_on(&self, searcher: &Searcher, query: &dyn Query) -> Result<u32> {
-        let key = PageKey::new(searcher.generation().generation_id(), query);
+        let key = PageKey::new(page_cache::snapshot_of(&searcher), query);
         if let Some(total) = key.as_ref().and_then(|key| self.page_cache.total(key)) {
             return Ok(total);
         }
@@ -13057,7 +13057,7 @@ impl SearchEngine {
             ResultsOrder::Generation => 1,
             ResultsOrder::Relevance => 2,
         };
-        let key = PageKey::new(searcher.generation().generation_id(), query);
+        let key = PageKey::new(page_cache::snapshot_of(&searcher), query);
         if let Some(page) = key
             .as_ref()
             .and_then(|key| self.page_cache.page(key, slot, offset, limit))
@@ -20350,6 +20350,36 @@ mod tests {
         engine.commit().unwrap();
         assert_eq!(engine.page_cache.len(), 0);
         assert_eq!(page(&engine, 28), (31, vec![29, 30, 31]));
+    }
+
+    /// A reload that changed no segment (the reader's own watcher reloads after every
+    /// commit) keeps the cached pages.
+    #[test]
+    fn a_reload_without_changes_keeps_the_page_cache() {
+        let (mut engine, _dir) = make_engine();
+        for id in 1..=5u64 {
+            add(&mut engine, id, "שלום", "/books/a.txt");
+        }
+        engine.commit().unwrap();
+        let search = |engine: &SearchEngine| {
+            engine
+                .search_and_count_exact(
+                    "שלום".to_string(),
+                    vec![],
+                    2,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap()
+                .total_count
+        };
+        assert_eq!(search(&engine), 5);
+        engine.index_reader.reload().unwrap();
+        assert_eq!(search(&engine), 5);
+        assert_eq!(engine.page_cache.len(), 1);
     }
 
     /// A loader that keeps each segment's columns reads every document as one read alone.

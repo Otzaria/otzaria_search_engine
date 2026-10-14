@@ -1,11 +1,12 @@
 //! The ranked hits of recent searches, so that the next page of a search, or its
 //! count, does not run the search again.
 //!
-//! A search is known by its built query and the searcher generation it ran on: the
+//! A search is known by its built query and the index snapshot it ran on: the
 //! query's `Debug` text is hashed as it is written, so equal queries share an entry
-//! however their parameters were spelled, and a commit (a new generation) can never
-//! be served an older snapshot. A query whose `Debug` text is too large to hash
-//! quickly is not cached.
+//! however their parameters were spelled, and a snapshot is its segments, in order,
+//! with their deletes — a commit that changed the index can never be served an older
+//! one, and a reload that changed nothing keeps the entries. A query whose `Debug`
+//! text is too large to hash quickly is not cached.
 
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 use tantivy::query::Query;
-use tantivy::DocAddress;
+use tantivy::{DocAddress, Searcher};
 
 /// Searches remembered at once.
 const ENTRIES: usize = 16;
@@ -26,16 +27,28 @@ const MAX_RANKED: usize = 20_000;
 /// Beyond this much `Debug` text a query is not worth fingerprinting.
 const MAX_FINGERPRINT_BYTES: usize = 4 << 20;
 
-/// One search: the searcher generation it ran on and its query's fingerprint.
+/// The index snapshot `searcher` reads: its segments in the order its addresses use them,
+/// and their deletes. The reader's generation id changes on every reload, even one that
+/// found nothing new.
+pub(crate) fn snapshot_of(searcher: &Searcher) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for reader in searcher.segment_readers() {
+        hasher.write(reader.segment_id().uuid_string().as_bytes());
+        hasher.write_u64(reader.delete_opstamp().map_or(u64::MAX, |opstamp| opstamp));
+    }
+    hasher.finish()
+}
+
+/// One search: the index snapshot it ran on and its query's fingerprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PageKey {
-    generation: u64,
+    snapshot: u64,
     query: u128,
 }
 
 impl PageKey {
     /// `None` when the query is too large to fingerprint.
-    pub(crate) fn new(generation: u64, query: &dyn Query) -> Option<Self> {
+    pub(crate) fn new(snapshot: u64, query: &dyn Query) -> Option<Self> {
         let mut writer = FingerprintWriter {
             low: DefaultHasher::new(),
             high: DefaultHasher::new(),
@@ -44,7 +57,7 @@ impl PageKey {
         writer.high.write_u8(0xA5);
         write!(writer, "{query:?}").ok()?;
         Some(Self {
-            generation,
+            snapshot,
             query: (u128::from(writer.high.finish()) << 64) | u128::from(writer.low.finish()),
         })
     }
