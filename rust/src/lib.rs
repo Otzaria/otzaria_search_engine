@@ -5,6 +5,7 @@ mod cross_line;
 mod cross_line_tests;
 mod display_highlight;
 mod frb_generated;
+mod highlight_cache;
 mod highlight_matcher;
 // אכיפת מרווח פר-זוג לשאילתות ביטוי — מחוץ ל-crate::api כדי ש-FRB לא ינסה
 // לגזור לו bindings.

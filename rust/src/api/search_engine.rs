@@ -5,7 +5,7 @@ use log::{debug, error, info, warn};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -35,6 +35,7 @@ use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, 
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
+use crate::highlight_cache::{DisplayPattern, HighlightCache};
 use crate::highlight_matcher as display_highlight_matcher;
 use crate::index_directory::{atomic_replace, IndexDirectory};
 use crate::lexicons::{
@@ -2859,7 +2860,7 @@ pub struct HighlightMatch {
 /// times query word count, including near misses and arbitrary phrase gaps.
 #[frb(opaque)]
 pub struct HighlightMatcher {
-    plan: display_highlight_matcher::PreparedHighlightMatcher,
+    plan: Arc<display_highlight_matcher::PreparedHighlightMatcher>,
 }
 
 impl HighlightMatcher {
@@ -2882,6 +2883,30 @@ impl HighlightMatcher {
             self.plan
                 .find_word_matches(&data, &require_token_boundaries),
         )
+    }
+}
+
+impl From<display_highlight::DisplayHighlight> for DisplayPattern {
+    fn from(hl: display_highlight::DisplayHighlight) -> Self {
+        Self {
+            combined_pattern: hl.combined_pattern,
+            word_patterns: hl.word_patterns,
+            word_boundary_eligible: hl.word_boundary_eligible,
+            matcher: Arc::new(hl.matcher),
+        }
+    }
+}
+
+impl DisplayPattern {
+    fn to_api(&self) -> HighlightPattern {
+        HighlightPattern {
+            combined_pattern: self.combined_pattern.clone(),
+            word_patterns: self.word_patterns.clone(),
+            word_boundary_eligible: self.word_boundary_eligible.clone(),
+            matcher: Some(HighlightMatcher {
+                plan: Arc::clone(&self.matcher),
+            }),
+        }
     }
 }
 
@@ -3285,7 +3310,9 @@ pub fn generate_highlight_pattern(
         combined_pattern: hl.combined_pattern,
         word_patterns: hl.word_patterns,
         word_boundary_eligible: hl.word_boundary_eligible,
-        matcher: Some(HighlightMatcher { plan: hl.matcher }),
+        matcher: Some(HighlightMatcher {
+            plan: Arc::new(hl.matcher),
+        }),
     })
 }
 
@@ -4401,6 +4428,8 @@ pub struct SearchEngine {
     semantic_highlights: crate::semantic_highlight::HighlightCache,
     /// Ranked hits and counts of recent searches: see [`crate::page_cache`].
     page_cache: PageCache,
+    /// Highlight term sets and display patterns: see [`crate::highlight_cache`].
+    highlight_cache: HighlightCache,
 }
 
 /// The analyzers every field and query of the index is tokenized with.
@@ -4546,6 +4575,7 @@ impl SearchEngine {
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
             page_cache: PageCache::default(),
+            highlight_cache: HighlightCache::default(),
         }
     }
 
@@ -4589,6 +4619,7 @@ impl SearchEngine {
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
             page_cache: PageCache::default(),
+            highlight_cache: HighlightCache::default(),
         })
     }
 
@@ -4702,6 +4733,8 @@ impl SearchEngine {
     /// advanced search.
     #[frb(sync)]
     pub fn set_magic_dictionary_path(&mut self, path: String) -> bool {
+        // The fuzzy display pattern paints the dictionary's forms.
+        self.highlight_cache.clear();
         #[cfg(feature = "semantic-integration")]
         let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
         match MagicDictionary::open(Path::new(&path)) {
@@ -8034,6 +8067,7 @@ impl SearchEngine {
         let reload_started = Instant::now();
         self.index_reader.reload()?;
         self.page_cache.clear();
+        self.highlight_cache.clear();
         info!(
             "commit: {commit_elapsed:?} (reader reload {:?})",
             reload_started.elapsed()
@@ -13037,14 +13071,50 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         any_order: Option<bool>,
     ) -> Result<Option<HighlightPattern>> {
-        let advanced = hebrew_query::prepare_advanced_query(
-            &query,
-            distance,
-            &custom_spacing,
-            &alternative_words,
-            &search_options,
-        );
         let searcher = self.index_reader.searcher();
+        let key = format!(
+            "advanced {query:?} {distance} {:?} {:?} {:?} {any_order:?}",
+            custom_spacing.iter().collect::<BTreeMap<_, _>>(),
+            alternative_words.iter().collect::<BTreeMap<_, _>>(),
+            search_options
+                .iter()
+                .map(|(word, options)| (word, options.iter().collect::<BTreeMap<_, _>>()))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let pattern =
+            self.highlight_cache
+                .pattern(searcher.generation().generation_id(), key, || {
+                    self.compute_index_highlight_pattern(
+                        &searcher,
+                        &query,
+                        distance,
+                        &custom_spacing,
+                        &alternative_words,
+                        &search_options,
+                        any_order,
+                    )
+                })?;
+        Ok(pattern.map(|pattern| pattern.to_api()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_index_highlight_pattern(
+        &self,
+        searcher: &Searcher,
+        query: &str,
+        distance: u32,
+        custom_spacing: &HashMap<String, String>,
+        alternative_words: &HashMap<u32, Vec<String>>,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        any_order: Option<bool>,
+    ) -> Result<Option<DisplayPattern>> {
+        let advanced = hebrew_query::prepare_advanced_query(
+            query,
+            distance,
+            custom_spacing,
+            alternative_words,
+            search_options,
+        );
 
         // Per word: compile the word's branches and collect the index terms
         // they match. `automaton_highlight_terms` splits its budget across the
@@ -13073,7 +13143,7 @@ impl SearchEngine {
             let mut matched: HashSet<String> = if automatons.is_empty() {
                 HashSet::new()
             } else {
-                self.automaton_highlight_terms(&searcher, &automatons)?
+                self.automaton_highlight_terms(searcher, &automatons)?
             };
             // Single-word typo path: the search expands typo coverage through
             // Levenshtein-1 automatons, not regex branches — run the same
@@ -13085,26 +13155,21 @@ impl SearchEngine {
                     .iter()
                     .map(|t| self.fuzzy_automaton(t, 1))
                     .collect::<Result<Vec<_>>>()?;
-                matched.extend(self.automaton_highlight_terms(&searcher, &typo_automatons)?);
+                matched.extend(self.automaton_highlight_terms(searcher, &typo_automatons)?);
             }
             per_word_terms.push(matched.into_iter().collect());
         }
 
         Ok(display_highlight::build_display_highlight_from_terms(
-            &query,
+            query,
             distance,
-            &custom_spacing,
-            &alternative_words,
-            &search_options,
+            custom_spacing,
+            alternative_words,
+            search_options,
             &per_word_terms,
             any_order.unwrap_or(false),
         )
-        .map(|hl| HighlightPattern {
-            combined_pattern: hl.combined_pattern,
-            word_patterns: hl.word_patterns,
-            word_boundary_eligible: hl.word_boundary_eligible,
-            matcher: Some(HighlightMatcher { plan: hl.matcher }),
-        }))
+        .map(DisplayPattern::from))
     }
 
     /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
@@ -13121,23 +13186,37 @@ impl SearchEngine {
             max_distance <= 2,
             "fuzzy highlight distance is limited to 2, got {max_distance}"
         );
-        let tokens = self.index_token_texts(&query)?;
+        let searcher = self.index_reader.searcher();
+        let pattern = self.highlight_cache.pattern(
+            searcher.generation().generation_id(),
+            format!("fuzzy {query:?} {max_distance}"),
+            || self.compute_index_fuzzy_highlight_pattern(&searcher, &query, max_distance),
+        )?;
+        Ok(pattern.map(|pattern| pattern.to_api()))
+    }
+
+    fn compute_index_fuzzy_highlight_pattern(
+        &self,
+        searcher: &Searcher,
+        query: &str,
+        max_distance: u8,
+    ) -> Result<Option<DisplayPattern>> {
+        let tokens = self.index_token_texts(query)?;
         // `build_display_highlight_from_terms` walks `split_query_words`;
         // the analyzer tokens are aligned with it by design, but if they ever
         // diverge, feeding misaligned terms would paint the wrong word — fall
         // back to the query-shape pattern instead.
-        let words = hebrew_query::split_query_words(&hebrew_query::normalize_for_index(&query));
+        let words = hebrew_query::split_query_words(&hebrew_query::normalize_for_index(query));
         let per_word_terms: Vec<Vec<String>> = if tokens.len() != words.len() {
             Vec::new()
         } else {
-            let searcher = self.index_reader.searcher();
             let mut collected = Vec::with_capacity(tokens.len());
             for token in &tokens {
                 let mut matched = if max_distance == 0 {
                     HashSet::new()
                 } else {
                     self.automaton_highlight_terms(
-                        &searcher,
+                        searcher,
                         &[self.fuzzy_automaton(token, max_distance)?],
                     )?
                 };
@@ -13154,7 +13233,7 @@ impl SearchEngine {
         };
 
         Ok(display_highlight::build_display_highlight_from_terms(
-            &query,
+            query,
             0,
             &HashMap::new(),
             &HashMap::new(),
@@ -13162,12 +13241,7 @@ impl SearchEngine {
             &per_word_terms,
             false,
         )
-        .map(|hl| HighlightPattern {
-            combined_pattern: hl.combined_pattern,
-            word_patterns: hl.word_patterns,
-            word_boundary_eligible: hl.word_boundary_eligible,
-            matcher: Some(HighlightMatcher { plan: hl.matcher }),
-        }))
+        .map(DisplayPattern::from))
     }
 
     /// One index-term set per query word (in phrase order), each materialized by
@@ -13184,15 +13258,19 @@ impl SearchEngine {
         field: Field,
     ) -> Result<Vec<HashSet<String>>> {
         let cap = (MAX_HIGHLIGHT_TERMS / regex_terms.len().max(1)).max(1);
+        let generation = searcher.generation().generation_id();
         regex_terms
             .iter()
             .map(|pattern| {
-                let re = tantivy_fst::Regex::new(pattern)
-                    .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
-                Ok(self
-                    .automaton_terms_in_field(searcher, field, &re, cap)?
-                    .into_iter()
-                    .collect())
+                let terms =
+                    self.highlight_cache
+                        .term_set(generation, field, pattern, cap, || {
+                            let re = tantivy_fst::Regex::new(pattern).map_err(|e| {
+                                anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}")
+                            })?;
+                            self.automaton_terms_in_field(searcher, field, &re, cap)
+                        })?;
+                Ok(terms.iter().cloned().collect())
             })
             .collect()
     }
@@ -19744,6 +19822,43 @@ mod tests {
         engine.commit().unwrap();
         assert_eq!(engine.page_cache.len(), 0);
         assert_eq!(page(&engine, 28), (31, vec![29, 30, 31]));
+    }
+
+    /// The index-based display pattern is computed once per index snapshot: equal
+    /// requests share it, and a commit brings in the variants it added.
+    #[test]
+    fn index_highlight_pattern_is_cached_per_snapshot() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ירושלים עיר הקודש", "/books/a.txt");
+        engine.commit().unwrap();
+        let typo: HashMap<String, HashMap<String, bool>> = [(
+            "ירושלים_0".to_string(),
+            [("שגיאות כתיב".to_string(), true)].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect();
+        let pattern = |engine: &SearchEngine| {
+            engine
+                .generate_index_highlight_pattern(
+                    "ירושלים".to_string(),
+                    0,
+                    HashMap::new(),
+                    HashMap::new(),
+                    typo.clone(),
+                    None,
+                )
+                .unwrap()
+                .expect("pattern")
+                .word_patterns
+        };
+        let first = pattern(&engine);
+        assert_eq!(pattern(&engine), first);
+        engine.highlight_cache.clear();
+        assert_eq!(pattern(&engine), first);
+
+        add(&mut engine, 2, "ירושלם עיר הקודש", "/books/a.txt");
+        engine.commit().unwrap();
+        assert_ne!(pattern(&engine), first);
     }
 
     #[test]
