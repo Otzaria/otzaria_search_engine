@@ -16,7 +16,10 @@
 
 use std::sync::Arc;
 
-use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, RegexPhraseQuery, TermQuery};
+use tantivy::query::{
+    Bm25StatisticsProvider, BooleanQuery, EnableScoring, Occur, PhraseQuery, Query,
+    RegexPhraseQuery, TermQuery, Weight,
+};
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Searcher, Term};
 use tantivy_fst::Automaton;
@@ -233,7 +236,7 @@ pub(crate) fn term_query(
     Ok(if clauses.len() == 1 {
         clauses.pop().expect("one clause").1
     } else {
-        Box::new(BooleanQuery::new(clauses))
+        SpellingScored::wrap(Box::new(BooleanQuery::new(clauses)), field, &[spellings])
     })
 }
 
@@ -276,11 +279,12 @@ pub(crate) fn phrase_query(
         if combinations == 1 {
             return Ok(phrase(0));
         }
-        return Ok(Box::new(BooleanQuery::new(
+        let union = Box::new(BooleanQuery::new(
             (0..combinations)
                 .map(|pick| (Occur::Should, phrase(pick)))
                 .collect(),
-        )));
+        ));
+        return Ok(SpellingScored::wrap(union, field, &spellings));
     }
     let automata = words
         .iter()
@@ -293,9 +297,102 @@ pub(crate) fn phrase_query(
             )
         })
         .collect();
-    Ok(Box::new(RegexPhraseQuery::from_automata(
-        field, automata, slop,
-    )))
+    let phrase = Box::new(RegexPhraseQuery::from_automata(field, automata, slop));
+    Ok(SpellingScored::wrap(phrase, field, &spellings))
+}
+
+/// Scores every spelling of a word as the word itself, as schema 5's quote-free twin
+/// did: they share one document frequency, the sum of theirs. Without it a rare quoted
+/// spelling (`א'מ'ר`) gets a far higher IDF and tops a relevance ranking.
+pub(crate) struct SpellingScored {
+    inner: Box<dyn Query>,
+    groups: Arc<Vec<Vec<Term>>>,
+}
+
+impl Clone for SpellingScored {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.box_clone(),
+            groups: Arc::clone(&self.groups),
+        }
+    }
+}
+
+impl SpellingScored {
+    /// `inner`, scored with the spellings of each word of `words` sharing their statistics.
+    fn wrap(inner: Box<dyn Query>, field: Field, words: &[Vec<String>]) -> Box<dyn Query> {
+        let groups: Vec<Vec<Term>> = words
+            .iter()
+            .filter(|spellings| spellings.len() > 1)
+            .map(|spellings| {
+                spellings
+                    .iter()
+                    .map(|s| Term::from_field_text(field, s))
+                    .collect()
+            })
+            .collect();
+        if groups.is_empty() {
+            return inner;
+        }
+        Box::new(Self {
+            inner,
+            groups: Arc::new(groups),
+        })
+    }
+}
+
+impl std::fmt::Debug for SpellingScored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The groups follow from the inner query's terms: the page cache keys by this text.
+        std::fmt::Debug::fmt(&self.inner, f)
+    }
+}
+
+impl Query for SpellingScored {
+    fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        match enable_scoring {
+            EnableScoring::Enabled {
+                searcher,
+                statistics_provider,
+            } => {
+                let shared = SharedStatistics {
+                    inner: statistics_provider,
+                    groups: &self.groups,
+                };
+                self.inner
+                    .weight(EnableScoring::enabled_from_statistics_provider(
+                        &shared, searcher,
+                    ))
+            }
+            disabled => self.inner.weight(disabled),
+        }
+    }
+
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a Term, bool)) {
+        self.inner.query_terms(visitor);
+    }
+}
+
+struct SharedStatistics<'a> {
+    inner: &'a dyn Bm25StatisticsProvider,
+    groups: &'a [Vec<Term>],
+}
+
+impl Bm25StatisticsProvider for SharedStatistics<'_> {
+    fn total_num_tokens(&self, field: Field) -> tantivy::Result<u64> {
+        self.inner.total_num_tokens(field)
+    }
+
+    fn total_num_docs(&self) -> tantivy::Result<u64> {
+        self.inner.total_num_docs()
+    }
+
+    fn doc_freq(&self, term: &Term) -> tantivy::Result<u64> {
+        match self.groups.iter().find(|group| group.contains(term)) {
+            Some(group) => group.iter().map(|t| self.inner.doc_freq(t)).sum(),
+            None => self.inner.doc_freq(term),
+        }
+    }
 }
 
 /// The documents holding a term `automaton` accepts written or without its quotes,
@@ -473,5 +570,65 @@ mod tests {
         let query = phrase_query(&searcher, text, &many, 0).unwrap();
         assert!(format!("{query:?}").starts_with("RegexPhraseQuery"));
         assert_eq!(searcher.search(&query, &Count).unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod scoring_tests {
+    use super::*;
+    use tantivy::collector::TopDocs;
+    use tantivy::schema::{Schema, TextFieldIndexing, TextOptions};
+    use tantivy::tokenizer::{TextAnalyzer, WhitespaceTokenizer};
+
+    fn index(lines: &[&str]) -> (tantivy::Index, Field) {
+        let mut builder = Schema::builder();
+        let indexing = TextFieldIndexing::default()
+            .set_tokenizer("ws")
+            .set_index_option(IndexRecordOption::WithFreqsAndPositions);
+        let text = builder.add_text_field(
+            "text",
+            TextOptions::default().set_indexing_options(indexing),
+        );
+        let index = tantivy::Index::create_in_ram(builder.build());
+        index.tokenizers().register(
+            "ws",
+            TextAnalyzer::builder(WhitespaceTokenizer::default()).build(),
+        );
+        let mut writer: tantivy::IndexWriter = index.writer(15_000_000).unwrap();
+        for line in lines {
+            writer.add_document(tantivy::doc!(text => *line)).unwrap();
+        }
+        writer.commit().unwrap();
+        (index, text)
+    }
+
+    /// Scores of the documents `query` ranks, by document id.
+    fn scores(searcher: &Searcher, query: &dyn Query) -> std::collections::HashMap<u32, f32> {
+        searcher
+            .search(query, &TopDocs::with_limit(100).order_by_score())
+            .unwrap()
+            .into_iter()
+            .map(|(score, address)| (address.doc_id, score))
+            .collect()
+    }
+
+    /// A rare quoted spelling ranks as the word itself, as the schema-5 twin token did.
+    #[test]
+    fn every_spelling_of_a_word_scores_as_the_word() {
+        let mut lines = vec!["א'מ'ר רבי", "אמר רבי"];
+        lines.extend(std::iter::repeat_n("אמר רבי זה וזה", 30));
+        let (index, text) = index(&lines);
+        let searcher = index.reader().unwrap().searcher();
+
+        let word = term_query(&searcher, text, "אמר", IndexRecordOption::WithFreqs).unwrap();
+        let found = scores(&searcher, &*word);
+        assert_eq!(found.len(), 32);
+        assert!((found[&0] - found[&1]).abs() < 1e-4, "{found:?}");
+
+        let words = ["אמר".to_string(), "רבי".to_string()];
+        let phrase = phrase_query(&searcher, text, &words, 0).unwrap();
+        let found = scores(&searcher, &*phrase);
+        assert_eq!(found.len(), 32);
+        assert!((found[&0] - found[&1]).abs() < 1e-4, "{found:?}");
     }
 }
