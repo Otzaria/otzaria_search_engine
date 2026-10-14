@@ -529,7 +529,7 @@ fn plan_book(
     let mut pdf = Vec::with_capacity(book.len());
     let mut stored_keys = Vec::with_capacity(book.len());
     for &address in book {
-        let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
+        let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         pdf.push(
             document

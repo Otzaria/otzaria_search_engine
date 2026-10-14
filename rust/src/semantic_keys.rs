@@ -129,7 +129,7 @@ pub fn recompute_chunk_keys(
     // instead of five.
     if lines.len() == 1 {
         let address = book[lines.start];
-        let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
+        let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         if document
             .get_first(is_pdf_field)
@@ -162,7 +162,7 @@ pub fn recompute_chunk_keys(
     let mut section_columns: Vec<Option<crate::derived_columns::SectionIdColumn>> =
         vec![None; searcher.segment_readers().len()];
     for &address in &book[start..=end] {
-        let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
+        let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         pdf.push(
             document
@@ -227,7 +227,7 @@ pub(crate) fn line_texts(searcher: &Searcher, addresses: &[DocAddress]) -> Resul
     let documents = addresses
         .iter()
         .map(|&address| {
-            let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
+            let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
                 .with_context(|| format!("reading the document at {address:?}"))?;
             Ok((address, document))
         })
@@ -262,7 +262,7 @@ pub(crate) fn recompute_chunk_keys_at(
             .into_par_iter()
             .with_min_len(8)
             .map(|address| {
-                let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
+                let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
                     .with_context(|| format!("reading the document at {address:?}"))?;
                 Ok((address, document))
             })
