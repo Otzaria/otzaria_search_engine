@@ -143,7 +143,7 @@ fn index_without_column(dir: &Path) {
         dir.join("otzaria_index_meta.json"),
         serde_json::json!({
             "format": "otzaria-search-index",
-            "schema_version": 5,
+            "schema_version": 6,
             "engine_version": "0.9.0",
             "tantivy_version": "0.26.2",
             "created_at_unix_seconds": 0
@@ -2333,7 +2333,7 @@ fn a_release_that_requires_schema_5_serves_an_index_without_the_column() {
         &std::fs::read_to_string(library.index.join("otzaria_index_meta.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(metadata["schema_version"], 5);
+    assert_eq!(metadata["schema_version"], 6);
     assert!(
         metadata.get("chunk_key_version").is_none(),
         "the index stayed without a recipe for its column"
