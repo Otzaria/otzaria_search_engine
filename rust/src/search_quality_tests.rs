@@ -110,3 +110,76 @@ fn search_and_highlight_share_compiled_automata() {
         "the highlight must reuse the search's DFA"
     );
 }
+
+fn kept_terms(engine: &SearchEngine, branches: &[&str], max_terms: u32) -> (Vec<String>, bool) {
+    let field = engine.schema.get_field("text").unwrap();
+    let branches: Vec<String> = branches.iter().map(|b| b.to_string()).collect();
+    let entry = engine
+        .materialize_term_set(&branches, &[], field, max_terms, u64::MAX)
+        .unwrap();
+    let mut terms: Vec<String> = entry
+        .terms
+        .iter()
+        .map(|t| t.value().as_str().unwrap().to_string())
+        .collect();
+    terms.sort();
+    (terms, entry.truncated)
+}
+
+#[test]
+fn budget_keeps_the_closest_and_most_frequent_forms() {
+    // Dictionary order reaches באמר/האמר first; the frequent ואמר/שאמר must
+    // win the budget instead.
+    let mut lines = vec!["אמר", "באמר", "האמר"];
+    lines.extend(["ואמר"; 5]);
+    lines.extend(["שאמר"; 4]);
+    let (engine, _dir) = engine_with(&lines);
+    let (terms, truncated) = kept_terms(&engine, &["(?:ו|ב|ה|ש)?אמר"], 3);
+    assert_eq!(terms, ["אמר", "ואמר", "שאמר"]);
+    assert!(truncated);
+}
+
+#[test]
+fn budget_ranks_by_branch_before_frequency() {
+    let mut lines = vec!["אמרו"];
+    lines.extend(["ואמר"; 9]);
+    let (engine, _dir) = engine_with(&lines);
+    let (terms, truncated) = kept_terms(&engine, &["אמר.", ".אמר"], 1);
+    assert_eq!(terms, ["אמרו"]);
+    assert!(truncated);
+    let (terms, truncated) = kept_terms(&engine, &["אמר.", ".אמר"], 5);
+    assert_eq!(terms, ["אמרו", "ואמר"]);
+    assert!(!truncated);
+}
+
+#[test]
+fn ranking_does_not_depend_on_segments() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+    engine.set_bulk_indexing(true).unwrap();
+    for (id, text) in ["שאמר", "שאמר באמר", "ואמר שאמר", "ואמר האמר", "אמר"]
+        .iter()
+        .enumerate()
+    {
+        engine
+            .add_document(
+                id as u64,
+                "title",
+                "ref",
+                "/root",
+                text,
+                0,
+                false,
+                "/books/a.txt",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+    }
+    assert!(engine.get_segment_count().unwrap() > 1);
+    let (terms, truncated) = kept_terms(&engine, &["(?:ו|ב|ה|ש)?אמר"], 3);
+    assert_eq!(terms, ["אמר", "ואמר", "שאמר"]);
+    assert!(truncated);
+}

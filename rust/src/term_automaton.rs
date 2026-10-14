@@ -20,6 +20,7 @@ use regex_automata::util::primitives::StateID;
 use regex_automata::util::start;
 use regex_automata::{Anchored, MatchKind};
 use regex_syntax::hir::{Class, Hir, HirKind};
+use tantivy::InvertedIndexReader;
 
 /// Size of the compiled NFA — the instruction budget `tantivy_fst::Regex`
 /// enforced (10 MiB).
@@ -203,6 +204,12 @@ pub(crate) fn compile_pattern(pattern: &str) -> Result<Arc<TermDfa>, String> {
         .clone())
 }
 
+/// [`compile_branches`] without the cache (cost measurements).
+#[cfg(test)]
+pub(crate) fn build_uncached(branches: &[String]) -> Result<TermAutomata, String> {
+    build_branches(branches)
+}
+
 fn build_branches(branches: &[String]) -> Result<TermAutomata, String> {
     BUILDS.with(|c| c.set(c.get() + 1));
     let hirs: Vec<Hir> = branches
@@ -282,6 +289,147 @@ fn check_supported(hir: &Hir) -> Result<(), String> {
         }
         HirKind::Empty | HirKind::Literal(_) | HirKind::Class(_) => Ok(()),
     }
+}
+
+/// A dictionary term matched for one query word: the lowest branch that
+/// accepts it (extra automata rank after every branch) and its document
+/// frequency summed over the segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RankedTerm {
+    pub(crate) term: String,
+    pub(crate) branch: usize,
+    pub(crate) doc_freq: u64,
+}
+
+/// Distinct terms gathered before ranking — a memory cap, far above any
+/// collection budget a word is served with.
+pub(crate) const COLLECT_CAP: usize = 50_000;
+
+/// Every term `automata` (then each of `extra`) matches in `segments`,
+/// ranked by branch, then length — the affix letters around the typed root
+/// — then document frequency (descending). Scans run in parallel; at most
+/// `cap` distinct terms are gathered, in automaton order, and the flag
+/// reports whether the cap cut the scan.
+pub(crate) fn collect_ranked<T>(
+    segments: &[Arc<InvertedIndexReader>],
+    automata: &TermAutomata,
+    extra: &[T],
+    cap: usize,
+) -> tantivy::Result<(Vec<RankedTerm>, bool)>
+where
+    T: tantivy_fst::Automaton + Sync,
+    T::State: Clone,
+{
+    use rayon::prelude::*;
+
+    let branches: usize = automata.parts.iter().map(|p| p.branch_count()).sum();
+    let sources = automata.parts.len() + extra.len();
+    let pairs: Vec<(usize, usize)> = (0..sources)
+        .flat_map(|a| (0..segments.len()).map(move |s| (a, s)))
+        .collect();
+    let scans: Vec<(Vec<(String, usize, u32)>, bool)> = pairs
+        .par_iter()
+        .map(|&(source, segment)| {
+            let inverted = &segments[segment];
+            if let Some(part) = automata.parts.get(source) {
+                let single = (part.branch_count() == 1).then_some(part.first_branch);
+                scan(inverted, part.as_ref(), cap, |term| {
+                    single.or_else(|| part.matched_branch(term))
+                })
+            } else {
+                let branch = branches + (source - automata.parts.len());
+                scan(inverted, &extra[source - automata.parts.len()], cap, |_| {
+                    Some(branch)
+                })
+            }
+        })
+        .collect::<tantivy::Result<_>>()?;
+
+    let mut capped = false;
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut ranked: Vec<RankedTerm> = Vec::new();
+    for (hits, scan_capped) in scans {
+        capped |= scan_capped;
+        for (term, branch, doc_freq) in hits {
+            match index.get(&term) {
+                Some(&i) => {
+                    let entry = &mut ranked[i];
+                    entry.doc_freq += u64::from(doc_freq);
+                    entry.branch = entry.branch.min(branch);
+                }
+                None if ranked.len() >= cap => capped = true,
+                None => {
+                    index.insert(term.clone(), ranked.len());
+                    ranked.push(RankedTerm {
+                        term,
+                        branch,
+                        doc_freq: u64::from(doc_freq),
+                    });
+                }
+            }
+        }
+    }
+    let mut keyed: Vec<(usize, RankedTerm)> = ranked
+        .into_iter()
+        .map(|t| (t.term.chars().count(), t))
+        .collect();
+    keyed.sort_unstable_by(|(a_len, a), (b_len, b)| {
+        (a.branch, a_len, std::cmp::Reverse(a.doc_freq), &a.term).cmp(&(
+            b.branch,
+            b_len,
+            std::cmp::Reverse(b.doc_freq),
+            &b.term,
+        ))
+    });
+    Ok((keyed.into_iter().map(|(_, t)| t).collect(), capped))
+}
+
+fn scan<A>(
+    inverted: &InvertedIndexReader,
+    automaton: &A,
+    cap: usize,
+    branch_of: impl Fn(&[u8]) -> Option<usize>,
+) -> tantivy::Result<(Vec<(String, usize, u32)>, bool)>
+where
+    A: tantivy_fst::Automaton,
+    A::State: Clone,
+{
+    let mut hits = Vec::new();
+    let mut stream = inverted.terms().search(automaton).into_stream()?;
+    while stream.advance() {
+        if hits.len() >= cap {
+            return Ok((hits, true));
+        }
+        let key = stream.key();
+        if let (Ok(term), Some(branch)) = (std::str::from_utf8(key), branch_of(key)) {
+            hits.push((term.to_string(), branch, stream.value().doc_freq));
+        }
+    }
+    Ok((hits, false))
+}
+
+/// The ranked prefix a word is served with: terms are taken in rank order
+/// until `max_terms` terms or `postings_budget` summed document frequency
+/// is reached (the term that reaches a budget is kept). `truncated` when a
+/// budget or the collection cap dropped any matching term.
+pub(crate) fn within_budgets(
+    ranked: Vec<RankedTerm>,
+    capped: bool,
+    max_terms: usize,
+    postings_budget: u64,
+) -> (Vec<RankedTerm>, bool) {
+    let total = ranked.len();
+    let mut kept = Vec::with_capacity(total.min(max_terms.max(1)));
+    let mut cost = 0u64;
+    for term in ranked {
+        cost = cost.saturating_add(term.doc_freq);
+        kept.push(term);
+        if kept.len() >= max_terms || cost >= postings_budget {
+            break;
+        }
+    }
+    let truncated = capped || kept.len() < total;
+    (kept, truncated)
 }
 
 #[cfg(test)]
