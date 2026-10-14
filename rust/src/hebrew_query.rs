@@ -85,9 +85,15 @@ pub const OPT_ACRONYM: &str = "ראשי תיבות";
 // groups by [`optional_alts_group`] — mark-free for the plain dictionary,
 // with free-mark runs interleaved for the vocalized one. No anchors.
 
-/// First slot of the grammatical prefix group (קידומות דקדוקיות); דא, א and
-/// כש let Aramaic דא־ / bare א־ / כש־ prefixed forms match.
-const GRAM_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "א", "כש", "כ", "ב", "ש", "ל", "ה", "ד"];
+/// First slot of the grammatical prefix group (קידומות דקדוקיות); דא and כש
+/// let Aramaic דא־ / כש־ prefixed forms match. No bare א: it is a root letter
+/// far more often than a prefix (אשבת, אמר→אאמר).
+const GRAM_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "כש", "כ", "ב", "ש", "ל", "ה", "ד"];
+/// A grammatical prefix never leaves fewer root letters than this, or a
+/// short word would match inside unrelated words (ית→בית) — the
+/// `MIN_STEM_LETTERS` of the dictionary path. Abbreviations (ר', רמב"ם)
+/// are exempt: their letters stand for whole words.
+const MIN_GRAM_PREFIX_ROOT_LETTERS: usize = 3;
 /// Second slot, after the first prefix (ו+ב, ש+ל…).
 const GRAM_PREFIX_ALTS_B: &[&str] = &["כ", "ב", "ש", "ל", "ה", "ד"];
 /// The definite article, last before the root.
@@ -1598,7 +1604,8 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
             trails.push(affix_window(user_suffix_window(letters), voc));
         }
     }
-    if flags.gram_prefix {
+    let abbreviation = root.contains(['\'', '"']);
+    if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
         leads.push(prefix_group(GRAM_PREFIX_ALTS_A, voc));
     }
     if flags.gram_suffix {
@@ -3218,7 +3225,7 @@ mod tests {
             ..Default::default()
         };
         let p = word_to_pattern("ספר", &flags);
-        assert_eq!(p, "(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר");
+        assert_eq!(p, "(?:ו|מ|דא|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר");
     }
 
     #[test]
@@ -3266,6 +3273,32 @@ mod tests {
         let voc = word_to_pattern_vocalized("שבת", &VocalizedFlags::default(), &partial);
         assert!(accepts(&voc, "בְּשַׁבָּת"));
         assert!(!accepts(&voc, "1שַׁבָּת"));
+    }
+
+    #[test]
+    fn grammatical_prefixes_need_a_root_and_skip_bare_alef() {
+        let gram = WordFlags {
+            gram_prefix: true,
+            ..Default::default()
+        };
+        // שורש קצר משתי אותיות אינו מקבל קידומות דקדוקיות.
+        assert!(!word_accepts("ית", &gram, "בית"));
+        assert!(word_accepts("ית", &gram, "ית"));
+        // ראשי תיבות פטורים: ור' / להרמב"ם.
+        assert!(word_accepts("ר'", &gram, "ור'"));
+        assert!(word_accepts("רמב\"ם", &gram, "להרמב\"ם"));
+        // א אינה קידומת; ד/דא/ש/כש כן.
+        assert!(!word_accepts("שבת", &gram, "אשבת"));
+        assert!(!word_accepts("אמר", &gram, "אאמר"));
+        for form in ["דאמר", "שאמר", "כשאמר", "ואמר"] {
+            assert!(word_accepts("אמר", &gram, form), "{form}");
+        }
+        // הקידומות הארמיות שומרות את א.
+        let aramaic = WordFlags {
+            aramaic_prefix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("שבתא", &aramaic, "אשבתא"));
     }
 
     #[test]
@@ -3766,7 +3799,7 @@ mod tests {
         let q = prepare_advanced_query("ספר", 0, &HashMap::new(), &HashMap::new(), &so);
         assert_eq!(
             joined_terms(&q),
-            vec!["(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"]
+            vec!["(?:ו|מ|דא|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"]
         );
     }
 
@@ -3782,7 +3815,7 @@ mod tests {
         };
         let p = word_to_pattern("בוא", &flags);
         // Every branch carries the rich group; דא must be present.
-        assert!(p.contains("(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?"), "{p}");
+        assert!(p.contains("(?:ו|מ|דא|כש|כ|ב|ש|ל|ה|ד)?"), "{p}");
     }
 
     // ── compute_max_expansions ───────────────────────────────────────────
