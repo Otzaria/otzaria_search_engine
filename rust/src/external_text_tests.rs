@@ -982,8 +982,11 @@ pub(crate) fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option
     for (ord, reader) in searcher.segment_readers().iter().enumerate() {
         let checks = reader.fast_fields().u64("lineCheck").unwrap();
         for doc_id in reader.doc_ids_alive() {
-            let doc: tantivy::TantivyDocument = crate::doc_store::load_document(&searcher, tantivy::DocAddress::new(ord as u32, doc_id))
-                .unwrap();
+            let doc: tantivy::TantivyDocument = crate::doc_store::load_document(
+                &searcher,
+                tantivy::DocAddress::new(ord as u32, doc_id),
+            )
+            .unwrap();
             let path = doc
                 .get_first(path_f)
                 .and_then(|v| v.as_str())
@@ -1307,8 +1310,11 @@ fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
         let mut out = std::collections::BTreeMap::new();
         for (ord, reader) in searcher.segment_readers().iter().enumerate() {
             for doc_id in reader.doc_ids_alive() {
-                let doc: tantivy::TantivyDocument = crate::doc_store::load_document(&searcher, tantivy::DocAddress::new(ord as u32, doc_id))
-                    .unwrap();
+                let doc: tantivy::TantivyDocument = crate::doc_store::load_document(
+                    &searcher,
+                    tantivy::DocAddress::new(ord as u32, doc_id),
+                )
+                .unwrap();
                 let path = doc.get_first(path_f).and_then(|v| v.as_str()).unwrap();
                 let text = doc.get_first(text_f).and_then(|v| v.as_str());
                 if let (true, Some(text)) = (path.starts_with("id:"), text) {

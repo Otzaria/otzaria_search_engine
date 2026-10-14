@@ -41,6 +41,7 @@ use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
 use crate::highlight_matcher as display_highlight_matcher;
+use crate::id_lookup::IdSetQuery;
 use crate::index_directory::{atomic_replace, IndexDirectory};
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
@@ -4209,15 +4210,8 @@ fn index_schema() -> Schema {
             )
             .set_fast(None),
     );
-    // INDEXED is required for delete_term / upsert by id to work. No fieldnorms:
-    // nothing scores `id` or `filePath`.
-    schema_builder.add_u64_field(
-        "id",
-        NumericOptions::default()
-            .set_indexed()
-            .set_fast()
-            .set_stored(),
-    );
+    // Not indexed: a lookup by id scans the column instead (see `id_lookup`).
+    schema_builder.add_u64_field("id", FAST | STORED);
     schema_builder.add_u64_field("segment", STORED);
     schema_builder.add_bool_field("isPdf", FAST);
     schema_builder.add_text_field(
@@ -7919,9 +7913,20 @@ impl SearchEngine {
         refuse_library_storage(&docs)?;
         let hash_fields = (content_hash_f, text_hash_f);
         let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
+        // One deletion for the batch, which scans the `id` column once; of two documents
+        // with one id the later wins, as when each deleted its own id.
+        let mut seen = HashSet::new();
+        let mut docs: Vec<DocumentInput> = docs
+            .into_iter()
+            .rev()
+            .filter(|doc| seen.insert(doc.id))
+            .collect();
+        docs.reverse();
         let writer = self.writer_mut()?;
+        if !seen.is_empty() {
+            writer.delete_query(Box::new(IdSetQuery::new(seen)))?;
+        }
         for doc in docs {
-            writer.delete_term(Term::from_field_u64(id_f, doc.id));
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
             let line_hash = line_dedup_hash(&normalized_text);
@@ -7994,9 +7999,8 @@ impl SearchEngine {
 
     /// Delete a document by its numeric id. Does not commit.
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
-        let id_f = self.schema.get_field("id").unwrap();
         self.writer_mut()?
-            .delete_term(Term::from_field_u64(id_f, id));
+            .delete_query(Box::new(IdSetQuery::new([id])))?;
         Ok(())
     }
 
@@ -8422,9 +8426,7 @@ impl SearchEngine {
     /// The `text` field contains the raw text (no snippet/highlight) — for a
     /// [`TextStorage::LibraryDb`] document, the library row; see `text_status`.
     pub fn get_document_by_id(&self, id: u64) -> Result<Option<SearchResult>> {
-        let id_f = self.schema.get_field("id")?;
-        let term = Term::from_field_u64(id_f, id);
-        let query = TermQuery::new(term, IndexRecordOption::Basic);
+        let query = IdSetQuery::new([id]);
         let searcher = self.index_reader.searcher();
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
@@ -8449,10 +8451,7 @@ impl SearchEngine {
             Term::from_field_text(self.schema.get_field("filePath")?, file_path),
             IndexRecordOption::Basic,
         );
-        let line = TermQuery::new(
-            Term::from_field_u64(self.schema.get_field("id")?, id),
-            IndexRecordOption::Basic,
-        );
+        let line = IdSetQuery::new([id]);
         let query = BooleanQuery::new(vec![
             (Occur::Must, Box::new(book) as Box<dyn Query>),
             (Occur::Must, Box::new(line) as Box<dyn Query>),
@@ -14238,28 +14237,39 @@ impl SearchEngine {
                 .get_first(file_path_field)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let next_query = BooleanQuery::new(vec![
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(file_path_field, file_path),
-                        IndexRecordOption::Basic,
-                    )) as Box<dyn Query>,
-                ),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_u64(id_field, id + 1),
-                        IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            let Some((_, next)) = searcher
-                .search(&next_query, &TopDocs::with_limit(1).order_by_score())?
-                .into_iter()
-                .next()
-            else {
-                continue;
+            let reader = searcher.segment_reader(address.segment_ord);
+            let paths = reader.fast_fields().str("filePath")?;
+            let book_of = |doc| paths.as_ref().and_then(|p| p.term_ords(doc).next());
+            let beside = crate::id_lookup::neighbour(
+                reader,
+                &reader.fast_fields().u64("id")?,
+                address.doc_id,
+                id + 1,
+            )
+            .filter(|&doc| book_of(doc) == book_of(address.doc_id))
+            .map(|doc| DocAddress::new(address.segment_ord, doc));
+            let next = match beside {
+                Some(next) => next,
+                None => {
+                    let next_query = BooleanQuery::new(vec![
+                        (
+                            Occur::Must,
+                            Box::new(TermQuery::new(
+                                Term::from_field_text(file_path_field, file_path),
+                                IndexRecordOption::Basic,
+                            )) as Box<dyn Query>,
+                        ),
+                        (Occur::Must, Box::new(IdSetQuery::new([id + 1]))),
+                    ]);
+                    let Some((_, next)) = searcher
+                        .search(&next_query, &TopDocs::with_limit(1).order_by_score())?
+                        .into_iter()
+                        .next()
+                    else {
+                        continue;
+                    };
+                    next
+                }
             };
             let starts_open = searcher
                 .segment_reader(next.segment_ord)
@@ -16117,8 +16127,7 @@ mod tests {
             match old.name() {
                 "id" => {
                     let now = entry("id");
-                    assert!(!now.has_fieldnorms() && now.is_fast() && now.is_stored());
-                    assert!(now.is_indexed());
+                    assert!(now.is_fast() && now.is_stored() && !now.is_indexed());
                 }
                 // Out of the doc store, read from their columns.
                 "title" | "isPdf" | "filePath" => {
@@ -20070,6 +20079,49 @@ mod tests {
             (by_id.title, by_id.is_pdf, by_id.segment),
             (pdf.title, true, 4)
         );
+    }
+
+    /// `id` has no term index: deleting, replacing and fetching by id scan its column.
+    #[test]
+    fn lookups_by_id_need_no_id_index() {
+        let (mut engine, _dir) = make_engine();
+        assert!(!engine
+            .schema
+            .get_field_entry(engine.schema.get_field("id").unwrap())
+            .is_indexed());
+        for id in 1..=4 {
+            engine
+                .add_documents_batch(vec![fingerprint_doc(
+                    id,
+                    &format!("שורה {id}"),
+                    "id:1",
+                    None,
+                )])
+                .unwrap();
+            engine.commit().unwrap();
+        }
+        engine.delete_document_by_id(2).unwrap();
+        engine
+            .upsert_documents_batch(vec![
+                fingerprint_doc(3, "ראשונה", "id:1", None),
+                fingerprint_doc(3, "אחרונה", "id:1", None),
+                fingerprint_doc(5, "חדשה", "id:1", None),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+
+        assert!(engine.get_document_by_id(2).unwrap().is_none());
+        assert_eq!(
+            engine.get_document_by_id(1).unwrap().unwrap().text,
+            "שורה 1"
+        );
+        assert_eq!(
+            engine.get_document_by_id(3).unwrap().unwrap().text,
+            "אחרונה"
+        );
+        assert_eq!(engine.get_document_by_id(5).unwrap().unwrap().text, "חדשה");
+        assert_eq!(engine.get_document_count(), 4);
     }
 
     /// One document of a book holds its fingerprints, so the columns cost nothing on the
@@ -26514,7 +26566,9 @@ mod tests {
             );
             document.add_u64(field(CHUNK_KEY_FIELD), column);
             let writer = engine.writer_mut().unwrap();
-            writer.delete_term(Term::from_field_u64(field("id"), id));
+            writer
+                .delete_query(Box::new(IdSetQuery::new([id])))
+                .unwrap();
             writer.add_document(document).unwrap();
             engine.commit().unwrap();
         }

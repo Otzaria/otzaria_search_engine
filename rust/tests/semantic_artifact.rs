@@ -1576,7 +1576,14 @@ fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
         );
         forged.add_u64(field("chunkKey"), column("chunkKey"));
         let mut writer = index.writer(15_000_000).unwrap();
-        writer.delete_term(Term::from_field_u64(field("id"), id));
+        // `id` is not indexed: a range over its column.
+        let id_term = Term::from_field_u64(field("id"), id);
+        writer
+            .delete_query(Box::new(tantivy::query::RangeQuery::new(
+                std::ops::Bound::Included(id_term.clone()),
+                std::ops::Bound::Included(id_term),
+            )))
+            .unwrap();
         writer.add_document(forged).unwrap();
         writer.commit().unwrap();
         id

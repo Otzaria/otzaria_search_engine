@@ -423,7 +423,6 @@ impl CompiledWord {
 pub(crate) struct CrossLineQuery {
     text: Field,
     edge: Field,
-    id: Field,
     words: Vec<CompiledWord>,
     /// `gaps[i]` = allowed intermediate words between words `i` and `i + 1`;
     /// across the line break the words of both lines count.
@@ -444,7 +443,6 @@ impl CrossLineQuery {
             return Ok(None);
         }
         let edge = schema.get_field(LINE_EDGE_FIELD)?;
-        let id = schema.get_field("id")?;
         let mut compiled = Vec::with_capacity(words.len());
         for word in words {
             match CompiledWord::new(word, text, edge).map_err(anyhow::Error::msg)? {
@@ -455,7 +453,6 @@ impl CrossLineQuery {
         Ok(Some(Self {
             text,
             edge,
-            id,
             words: compiled,
             gaps: gaps.to_vec(),
             filter: None,
@@ -587,9 +584,19 @@ impl CrossLineQuery {
         }
         let second_matches = if first_matches.len() <= LOOKUP_LIMIT {
             let mut per_segment: Vec<Vec<DocId>> = vec![Vec::new(); segments.len()];
+            let mut elsewhere = Vec::new();
             for m in &first_matches {
                 let id = m.id.wrapping_add_signed(neighbour);
-                if let Some((segment, doc)) = self.find_line(segments, id)? {
+                let segment = &segments[m.segment];
+                match crate::id_lookup::neighbour(segment.reader, &segment.id, m.doc, id) {
+                    Some(doc) => per_segment[m.segment].push(doc),
+                    None => elsewhere.push(id),
+                }
+            }
+            if !elsewhere.is_empty() {
+                let readers = segments.iter().map(|segment| segment.reader);
+                for (segment, doc) in crate::id_lookup::find_ids(readers, &elsewhere)?.into_values()
+                {
                     per_segment[segment].push(doc);
                 }
             }
@@ -915,25 +922,6 @@ impl CrossLineQuery {
         }
     }
 
-    /// The live document with `id`, as segment ordinal and doc.
-    fn find_line(&self, segments: &[Segment], id: u64) -> tantivy::Result<Option<(usize, DocId)>> {
-        let term = Term::from_field_u64(self.id, id);
-        for segment in segments {
-            let Some(mut postings) = segment.ids.read_postings(&term, IndexRecordOption::Basic)?
-            else {
-                continue;
-            };
-            let mut doc = postings.doc();
-            while doc != TERMINATED {
-                if segment.is_alive(doc) {
-                    return Ok(Some((segment.ordinal, doc)));
-                }
-                doc = postings.advance();
-            }
-        }
-        Ok(None)
-    }
-
     /// Half the BM25 score of one in-line occurrence on a line of average
     /// length: the sum of the words' idf.
     fn score(&self, searcher: &Searcher) -> tantivy::Result<Score> {
@@ -1056,7 +1044,6 @@ struct Segment<'a> {
     reader: &'a SegmentReader,
     text: Arc<InvertedIndexReader>,
     edge: Arc<InvertedIndexReader>,
-    ids: Arc<InvertedIndexReader>,
     id: Column<u64>,
     first: Column<u64>,
     last: Column<u64>,
@@ -1074,7 +1061,6 @@ impl<'a> Segment<'a> {
             reader,
             text: reader.inverted_index(query.text)?,
             edge: reader.inverted_index(query.edge)?,
-            ids: reader.inverted_index(query.id)?,
             id: fast.u64("id")?,
             first: fast.u64(LINE_FIRST_FIELD)?,
             last: fast.u64(LINE_LAST_FIELD)?,

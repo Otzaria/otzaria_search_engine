@@ -8,6 +8,7 @@ mod display_highlight;
 mod doc_store;
 mod frb_generated;
 mod highlight_matcher;
+mod id_lookup;
 // אכיפת מרווח פר-זוג לשאילתות ביטוי — מחוץ ל-crate::api כדי ש-FRB לא ינסה
 // לגזור לו bindings.
 mod gap_phrase;
