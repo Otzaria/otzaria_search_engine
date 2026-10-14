@@ -5,7 +5,7 @@ use log::{debug, error, info, warn};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -38,12 +38,15 @@ use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, 
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
 use crate::hebrew_tokenizer::HebrewTokenizer;
+use crate::highlight_cache::{DisplayPattern, HighlightCache};
 use crate::highlight_matcher as display_highlight_matcher;
 use crate::index_directory::{atomic_replace, IndexDirectory};
+use crate::lexical_cancellation::{LexicalCancellations, LexicalRequest, LexicalSearchCancelled};
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
 use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
+use crate::page_cache::{self, PageCache, PageKey};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
@@ -2862,7 +2865,7 @@ pub struct HighlightMatch {
 /// times query word count, including near misses and arbitrary phrase gaps.
 #[frb(opaque)]
 pub struct HighlightMatcher {
-    plan: display_highlight_matcher::PreparedHighlightMatcher,
+    plan: Arc<display_highlight_matcher::PreparedHighlightMatcher>,
 }
 
 impl HighlightMatcher {
@@ -2885,6 +2888,30 @@ impl HighlightMatcher {
             self.plan
                 .find_word_matches(&data, &require_token_boundaries),
         )
+    }
+}
+
+impl From<display_highlight::DisplayHighlight> for DisplayPattern {
+    fn from(hl: display_highlight::DisplayHighlight) -> Self {
+        Self {
+            combined_pattern: hl.combined_pattern,
+            word_patterns: hl.word_patterns,
+            word_boundary_eligible: hl.word_boundary_eligible,
+            matcher: Arc::new(hl.matcher),
+        }
+    }
+}
+
+impl DisplayPattern {
+    fn to_api(&self) -> HighlightPattern {
+        HighlightPattern {
+            combined_pattern: self.combined_pattern.clone(),
+            word_patterns: self.word_patterns.clone(),
+            word_boundary_eligible: self.word_boundary_eligible.clone(),
+            matcher: Some(HighlightMatcher {
+                plan: Arc::clone(&self.matcher),
+            }),
+        }
     }
 }
 
@@ -2924,6 +2951,28 @@ fn convert_highlight_matches(
 const DEFAULT_WRITER_HEAP_SIZE: usize = 50_000_000;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DEFAULT_WRITER_HEAP_SIZE: usize = 300_000_000;
+
+/// Threads that collect one search's segments in parallel: half the cores, to
+/// leave room for indexing and the UI; phones keep searching on one thread.
+fn search_executor_threads() -> usize {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    (cores / 2).clamp(1, 8)
+}
+
+/// Gives `index` the search thread pool of [`search_executor_threads`]. Must run
+/// before a reader is built: a searcher keeps the executor of its index.
+fn set_search_executor(index: &mut Index) {
+    let threads = search_executor_threads();
+    if threads > 1 {
+        if let Err(err) = index.set_multithread_executor(threads) {
+            warn!("search stays single-threaded: {err}");
+        }
+    }
+}
+
 // Economy indexing (see `set_economy_indexing`): the mobile budget — 3
 // threads with small arenas — applied on demand on desktop too.
 const ECONOMY_WRITER_HEAP_SIZE: usize = 50_000_000;
@@ -3271,7 +3320,9 @@ pub fn generate_highlight_pattern(
         combined_pattern: hl.combined_pattern,
         word_patterns: hl.word_patterns,
         word_boundary_eligible: hl.word_boundary_eligible,
-        matcher: Some(HighlightMatcher { plan: hl.matcher }),
+        matcher: Some(HighlightMatcher {
+            plan: Arc::new(hl.matcher),
+        }),
     })
 }
 
@@ -4424,6 +4475,12 @@ pub struct SearchEngine {
     /// Passage highlights already computed: see [`Self::semantic_passage_highlights`].
     #[cfg(feature = "semantic-integration")]
     semantic_highlights: crate::semantic_highlight::HighlightCache,
+    /// Ranked hits and counts of recent searches: see [`crate::page_cache`].
+    page_cache: PageCache,
+    /// Highlight term sets and display patterns: see [`crate::highlight_cache`].
+    highlight_cache: HighlightCache,
+    /// Request ids of running lexical searches: see [`crate::lexical_cancellation`].
+    lexical_cancellations: LexicalCancellations,
 }
 
 /// The analyzers every field and query of the index is tokenized with.
@@ -4500,7 +4557,7 @@ impl SearchEngine {
         debug!("new path={}", path);
         let directory =
             IndexDirectory::open(Path::new(path)).expect("unable to open mmap directory");
-        let index = match open_or_create_index(directory) {
+        let mut index = match open_or_create_index(directory) {
             Ok(index) => index,
             Err(tantivy::TantivyError::SchemaError(err)) => panic!(
                 "index at {path} was built with an incompatible schema ({err}); \
@@ -4510,6 +4567,7 @@ impl SearchEngine {
         };
         let schema = index.schema();
         register_hebrew_tokenizers(&index);
+        set_search_executor(&mut index);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -4567,15 +4625,19 @@ impl SearchEngine {
             semantic_sessions: SemanticSessionCache::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
+            page_cache: PageCache::default(),
+            highlight_cache: HighlightCache::default(),
+            lexical_cancellations: LexicalCancellations::default(),
         }
     }
 
     /// An engine over an index opened by the caller, with no writer and no metadata written:
     /// benchmarks on an index another process owns.
     #[cfg(test)]
-    pub(crate) fn from_read_only_index(index: Index, path: &Path) -> Result<Self> {
+    pub(crate) fn from_read_only_index(mut index: Index, path: &Path) -> Result<Self> {
         let schema = index.schema();
         register_hebrew_tokenizers(&index);
+        set_search_executor(&mut index);
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -4608,6 +4670,9 @@ impl SearchEngine {
             semantic_sessions: SemanticSessionCache::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
+            page_cache: PageCache::default(),
+            highlight_cache: HighlightCache::default(),
+            lexical_cancellations: LexicalCancellations::default(),
         })
     }
 
@@ -4721,6 +4786,8 @@ impl SearchEngine {
     /// advanced search.
     #[frb(sync)]
     pub fn set_magic_dictionary_path(&mut self, path: String) -> bool {
+        // The fuzzy display pattern paints the dictionary's forms.
+        self.highlight_cache.clear();
         #[cfg(feature = "semantic-integration")]
         let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
         match MagicDictionary::open(Path::new(&path)) {
@@ -6892,6 +6959,7 @@ impl SearchEngine {
                         request.facets.to_vec(),
                         request.match_nikud,
                         request.match_taamim,
+                        None,
                     )?,
                     SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
                         request.query,
@@ -7087,6 +7155,7 @@ impl SearchEngine {
                     facets.to_vec(),
                     match_nikud,
                     match_taamim,
+                    None,
                 )?,
                 SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
                     query,
@@ -8121,6 +8190,8 @@ impl SearchEngine {
         let commit_elapsed = started.elapsed();
         let reload_started = Instant::now();
         self.index_reader.reload()?;
+        self.page_cache.clear();
+        self.highlight_cache.clear();
         info!(
             "commit: {commit_elapsed:?} (reader reload {:?})",
             reload_started.elapsed()
@@ -8697,6 +8768,7 @@ impl SearchEngine {
                 &hl,
                 chunk_size,
                 None,
+                &self.lexical_cancellations.begin(None),
                 &sink,
             )
         })();
@@ -9012,9 +9084,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
             self.run_search_stream(
@@ -9027,10 +9102,11 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -9049,9 +9125,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             // The mark-free exact path never degrades under a collection
             // budget; the vocalized single-word path can (its term set is
@@ -9068,10 +9147,11 @@ impl SearchEngine {
                 chunk_size,
                 truncated,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Exact-mode hit count. Drops the truncation flag: the mark-free path
@@ -9084,9 +9164,10 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<u32> {
         Ok(self
-            .count_exact_with_status(query, facets, match_nikud, match_taamim)?
+            .count_exact_with_status(query, facets, match_nikud, match_taamim, cancel_request_id)?
             .count)
     }
 
@@ -9098,11 +9179,14 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
         Ok(CountResult {
-            count: self.run_count(q)?,
+            count: request.finish(self.run_count(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9115,9 +9199,16 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
-            .count_by_book_exact_with_status(query, facets, match_nikud, match_taamim)?
+            .count_by_book_exact_with_status(
+                query,
+                facets,
+                match_nikud,
+                match_taamim,
+                cancel_request_id,
+            )?
             .counts)
     }
 
@@ -9129,11 +9220,14 @@ impl SearchEngine {
         facets: Vec<String>,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
         Ok(BookCountResult {
-            counts: self.run_count_by_book(q)?,
+            counts: request.finish(self.run_count_by_book(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9367,9 +9461,12 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
@@ -9420,10 +9517,11 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -9456,9 +9554,12 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
@@ -9510,10 +9611,11 @@ impl SearchEngine {
                 chunk_size,
                 truncated,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Advanced-query hit count. Drops the single-word truncation flag — see
@@ -9539,6 +9641,7 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<u32> {
         Ok(self
             .count_advanced_with_status(
@@ -9560,6 +9663,7 @@ impl SearchEngine {
                 word_match_mode,
                 word_match_count,
                 any_order,
+                cancel_request_id,
             )?
             .count)
     }
@@ -9586,7 +9690,10 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
@@ -9614,7 +9721,7 @@ impl SearchEngine {
             any_order.unwrap_or(false),
         )?;
         Ok(CountResult {
-            count: self.run_count(q)?,
+            count: request.finish(self.run_count(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9642,6 +9749,7 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_advanced_with_status(
@@ -9663,6 +9771,7 @@ impl SearchEngine {
                 word_match_mode,
                 word_match_count,
                 any_order,
+                cancel_request_id,
             )?
             .counts)
     }
@@ -9689,7 +9798,10 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
             &query,
@@ -9717,7 +9829,7 @@ impl SearchEngine {
             any_order.unwrap_or(false),
         )?;
         Ok(BookCountResult {
-            counts: self.run_count_by_book(q)?,
+            counts: request.finish(self.run_count_by_book(request.wrap(q)))?,
             truncated,
         })
     }
@@ -9937,9 +10049,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             if voc.any() {
                 let (q, _) =
@@ -9954,6 +10069,7 @@ impl SearchEngine {
                     &HighlightConfig::default(),
                     chunk_size,
                     grouping.as_ref(),
+                    &request,
                     &sink,
                 );
             }
@@ -9972,10 +10088,11 @@ impl SearchEngine {
                 &HighlightConfig::default(),
                 chunk_size,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -9995,9 +10112,12 @@ impl SearchEngine {
         match_taamim: bool,
         chunk_size: u32,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
         let result = (|| {
+            request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             if voc.any() {
                 let (q, truncated) =
@@ -10013,6 +10133,7 @@ impl SearchEngine {
                     chunk_size,
                     truncated,
                     grouping.as_ref(),
+                    &request,
                     &sink,
                 );
             }
@@ -10034,10 +10155,11 @@ impl SearchEngine {
                 // single-word degrade mechanism.
                 false,
                 grouping.as_ref(),
+                &request,
                 &sink,
             )
         })();
-        Self::surface_stream_error(&sink, result)
+        Self::surface_stream_error(&sink, request.finish(result))
     }
 
     /// Builds the fuzzy-mode query for the count family: the vocalized path
@@ -10068,9 +10190,17 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<u32> {
         Ok(self
-            .count_fuzzy_with_status(query, facets, max_distance, match_nikud, match_taamim)?
+            .count_fuzzy_with_status(
+                query,
+                facets,
+                max_distance,
+                match_nikud,
+                match_taamim,
+                cancel_request_id,
+            )?
             .count)
     }
 
@@ -10083,11 +10213,14 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
         Ok(CountResult {
-            count: self.run_count(q)?,
+            count: request.finish(self.run_count(request.wrap(q)))?,
             truncated,
         })
     }
@@ -10101,6 +10234,7 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<HashMap<String, u32>> {
         Ok(self
             .count_by_book_fuzzy_with_status(
@@ -10109,6 +10243,7 @@ impl SearchEngine {
                 max_distance,
                 match_nikud,
                 match_taamim,
+                cancel_request_id,
             )?
             .counts)
     }
@@ -10122,11 +10257,14 @@ impl SearchEngine {
         max_distance: u8,
         match_nikud: bool,
         match_taamim: bool,
+        cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
         Ok(BookCountResult {
-            counts: self.run_count_by_book(q)?,
+            counts: request.finish(self.run_count_by_book(request.wrap(q)))?,
             truncated,
         })
     }
@@ -12319,7 +12457,9 @@ impl SearchEngine {
                 &page,
             );
         }
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        let addresses = self
+            .ranked_page(&searcher, &*query, limit, offset, order, PageCounts::None)?
+            .addresses;
         if addresses.is_empty() {
             return Ok(Vec::new());
         }
@@ -12373,39 +12513,18 @@ impl SearchEngine {
         }
         if limit == 0 {
             return Ok(SearchPageResult {
-                total_count: searcher.search(&*query, &Count)? as u32,
+                total_count: self.count_on(&searcher, &*query)?,
                 results: Vec::new(),
                 truncated,
                 group_count: None,
             });
         }
-        // Tuple collector: single index pass for both count and top-docs.
-        let (addresses, total_count): (Vec<DocAddress>, u32) = match order {
-            ResultsOrder::Catalogue => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("id", Order::Asc);
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-            ResultsOrder::Generation => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-            ResultsOrder::Relevance => {
-                let top_collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_score();
-                let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
-                let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                (addrs, count as u32)
-            }
-        };
+        // One index pass for both count and top-docs.
+        let RankedPage {
+            addresses,
+            total: total_count,
+            ..
+        } = self.ranked_page(&searcher, &*query, limit, offset, order, PageCounts::Total)?;
         // total_count is the full hit count regardless of this page; only the
         // snippet highlighting (and its dictionary scan) is page-dependent, so
         // skip it when this page is empty (e.g. offset past the last hit).
@@ -12437,13 +12556,37 @@ impl SearchEngine {
     }
 
     fn run_count(&self, query: Box<dyn Query>) -> Result<u32> {
-        let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&*query, &Count)? as u32)
+        self.count_on(&self.index_reader.searcher(), &*query)
     }
 
     fn run_count_by_book(&self, query: Box<dyn Query>) -> Result<HashMap<String, u32>> {
         let searcher = self.index_reader.searcher();
-        Ok(searcher.search(&*query, &BookCountCollector)?)
+        let key = PageKey::new(searcher.generation().generation_id(), &*query);
+        if let Some(counts) = key
+            .as_ref()
+            .and_then(|key| self.page_cache.book_counts(key))
+        {
+            return Ok((*counts).clone());
+        }
+        let counts = searcher.search(&*query, &BookCountCollector)?;
+        if let Some(key) = key {
+            self.page_cache
+                .store_book_counts(key, Arc::new(counts.clone()));
+        }
+        Ok(counts)
+    }
+
+    /// The hit count of `query`, from the page cache when a search counted it.
+    fn count_on(&self, searcher: &Searcher, query: &dyn Query) -> Result<u32> {
+        let key = PageKey::new(searcher.generation().generation_id(), query);
+        if let Some(total) = key.as_ref().and_then(|key| self.page_cache.total(key)) {
+            return Ok(total);
+        }
+        let total = searcher.search(query, &Count)? as u32;
+        if let Some(key) = key {
+            self.page_cache.store_total(key, total);
+        }
+        Ok(total)
     }
 
     fn run_facet_counts(
@@ -12466,6 +12609,15 @@ impl SearchEngine {
         Ok(results)
     }
 
+    /// Stops every lexical call tagged with `request_id` (the streams, counts and
+    /// per-book counts that take `cancel_request_id`), running or still to come.
+    /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
+    /// cancelled stream closes without another event. Returns at once.
+    #[frb(sync)]
+    pub fn cancel_lexical_search(&self, request_id: u32) {
+        self.lexical_cancellations.cancel(request_id);
+    }
+
     /// Routes a stream-search failure into the stream itself, where the Dart
     /// side receives it as an `onError` event.
     ///
@@ -12481,6 +12633,10 @@ impl SearchEngine {
         result: Result<()>,
     ) -> Result<()> {
         if let Err(err) = result {
+            if LexicalSearchCancelled::is(&err) {
+                debug!("stream search cancelled");
+                return Ok(());
+            }
             error!("stream search failed: {err:#}");
             let _ = sink.add_error(err);
         }
@@ -12499,12 +12655,14 @@ impl SearchEngine {
         hl: &HighlightConfig,
         chunk_size: u32,
         grouping: Option<&ResultGrouping>,
+        request: &LexicalRequest<'_>,
         sink: &StreamSink<Vec<SearchResult>>,
     ) -> Result<()>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
+        let query = request.wrap(query);
         let chunk_size = (chunk_size.max(1)) as usize;
         if let Some(grouping) = grouping {
             let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
@@ -12518,13 +12676,16 @@ impl SearchEngine {
                 &page,
             )?;
             for chunk in results.chunks(chunk_size) {
+                request.check()?;
                 if sink.add(chunk.to_vec()).is_err() {
                     break;
                 }
             }
             return Ok(());
         }
-        let addresses = Self::collect_addresses(&searcher, &*query, limit, offset, order)?;
+        let addresses = self
+            .ranked_page(&searcher, &*query, limit, offset, order, PageCounts::None)?
+            .addresses;
         if addresses.is_empty() {
             return Ok(());
         }
@@ -12545,6 +12706,7 @@ impl SearchEngine {
                 phrase,
             )?;
             // If the Dart side cancelled the stream, stop early.
+            request.check()?;
             if sink.add(results).is_err() {
                 break;
             }
@@ -12570,12 +12732,14 @@ impl SearchEngine {
         chunk_size: u32,
         truncated: bool,
         grouping: Option<&ResultGrouping>,
+        request: &LexicalRequest<'_>,
         sink: &StreamSink<SearchStreamUpdate>,
     ) -> Result<()>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
         let searcher = self.index_reader.searcher();
+        let query = request.wrap(query);
         let chunk_size = (chunk_size.max(1)) as usize;
 
         if let Some(grouping) = grouping {
@@ -12583,6 +12747,7 @@ impl SearchEngine {
             let collectors = (GroupCollector::new(grouping, order), BookCountCollector);
             let ((), book_counts) = searcher.search(&*query, &collectors)?;
             let page = Self::finalize_grouped(collectors.0.take_hits(), limit, offset);
+            request.check()?;
             if sink
                 .add(SearchStreamUpdate {
                     total_count: Some(page.raw_total),
@@ -12605,6 +12770,7 @@ impl SearchEngine {
                 &page,
             )?;
             for chunk in results.chunks(chunk_size) {
+                request.check()?;
                 if sink
                     .add(SearchStreamUpdate {
                         total_count: None,
@@ -12621,43 +12787,26 @@ impl SearchEngine {
             return Ok(());
         }
 
-        let (addresses, total_count, book_counts): (Vec<DocAddress>, u32, HashMap<String, u32>) =
-            match order {
-                ResultsOrder::Catalogue => {
-                    let top_collector = TopDocs::with_limit(limit as usize)
-                        .and_offset(offset as usize)
-                        .order_by_fast_field::<u64>("id", Order::Asc);
-                    let (top_docs, count, by_book) =
-                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
-                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                    (addrs, count as u32, by_book)
-                }
-                ResultsOrder::Generation => {
-                    let top_collector = TopDocs::with_limit(limit as usize)
-                        .and_offset(offset as usize)
-                        .order_by_fast_field::<u64>("generationSort", Order::Asc);
-                    let (top_docs, count, by_book) =
-                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
-                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                    (addrs, count as u32, by_book)
-                }
-                ResultsOrder::Relevance => {
-                    let top_collector = TopDocs::with_limit(limit as usize)
-                        .and_offset(offset as usize)
-                        .order_by_score();
-                    let (top_docs, count, by_book) =
-                        searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
-                    let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
-                    (addrs, count as u32, by_book)
-                }
-            };
+        let RankedPage {
+            addresses,
+            total: total_count,
+            book_counts,
+        } = self.ranked_page(
+            &searcher,
+            &*query,
+            limit,
+            offset,
+            order,
+            PageCounts::TotalAndBooks,
+        )?;
 
         // Counts first — the page addresses may be empty (offset past the
         // end) while the totals are still meaningful.
+        request.check()?;
         if sink
             .add(SearchStreamUpdate {
                 total_count: Some(total_count),
-                book_counts: Some(book_counts),
+                book_counts,
                 results: Vec::new(),
                 truncated,
                 group_count: None,
@@ -12687,6 +12836,7 @@ impl SearchEngine {
                 phrase,
             )?;
             // If the Dart side cancelled the stream, stop early.
+            request.check()?;
             if sink
                 .add(SearchStreamUpdate {
                     total_count: None,
@@ -12715,48 +12865,80 @@ impl SearchEngine {
         make_highlight(searcher).unwrap_or_else(|_| HighlightPlan::none())
     }
 
-    fn collect_addresses(
+    /// The hits `offset..offset + limit` of `query` in `order`, with the counts
+    /// `counts` asks for, in one index pass. Ranks a few pages ahead into the
+    /// page cache, and serves from it when an earlier call ranked this far.
+    fn ranked_page(
+        &self,
         searcher: &Searcher,
         query: &dyn Query,
         limit: u32,
         offset: u32,
         order: &ResultsOrder,
-    ) -> Result<Vec<DocAddress>> {
-        let addresses = match order {
-            ResultsOrder::Catalogue => {
-                // and_offset is set on TopDocs before calling order_by_fast_field,
-                // which consumes self and preserves the offset configuration.
-                let collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("id", Order::Asc);
-                searcher
-                    .search(query, &collector)?
-                    .into_iter()
-                    .map(|(_, addr)| addr)
-                    .collect()
+        counts: PageCounts,
+    ) -> Result<RankedPage> {
+        let slot = match order {
+            ResultsOrder::Catalogue => 0,
+            ResultsOrder::Generation => 1,
+            ResultsOrder::Relevance => 2,
+        };
+        let key = PageKey::new(searcher.generation().generation_id(), query);
+        if let Some(page) = key
+            .as_ref()
+            .and_then(|key| self.page_cache.page(key, slot, offset, limit))
+        {
+            if (counts == PageCounts::None || page.total.is_some())
+                && (counts != PageCounts::TotalAndBooks || page.book_counts.is_some())
+            {
+                return Ok(RankedPage {
+                    addresses: page.addresses,
+                    total: page.total.unwrap_or(0),
+                    book_counts: page.book_counts.map(|counts| (*counts).clone()),
+                });
             }
-            ResultsOrder::Generation => {
-                let collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
-                searcher
-                    .search(query, &collector)?
-                    .into_iter()
-                    .map(|(_, addr)| addr)
-                    .collect()
-            }
+        }
+        let window = key.and(page_cache::ranked_window(offset, limit));
+        let (from, take) = match window {
+            Some(window) => (0, window),
+            None => (offset as usize, limit as usize),
+        };
+        let top = TopDocs::with_limit(take).and_offset(from);
+        let (mut addresses, total, book_counts) = match order {
+            ResultsOrder::Catalogue => collect_ranked(
+                searcher,
+                query,
+                top.order_by_fast_field::<u64>("id", Order::Asc),
+                counts,
+            )?,
+            ResultsOrder::Generation => collect_ranked(
+                searcher,
+                query,
+                top.order_by_fast_field::<u64>("generationSort", Order::Asc),
+                counts,
+            )?,
             ResultsOrder::Relevance => {
-                let collector = TopDocs::with_limit(limit as usize)
-                    .and_offset(offset as usize)
-                    .order_by_score();
-                searcher
-                    .search(query, &collector)?
-                    .into_iter()
-                    .map(|(_, addr)| addr)
-                    .collect()
+                collect_ranked(searcher, query, top.order_by_score(), counts)?
             }
         };
-        Ok(addresses)
+        if let (Some(key), Some(window)) = (key, window) {
+            if let Some(total) = total {
+                self.page_cache.store_total(key, total);
+            }
+            if let Some(counts) = &book_counts {
+                self.page_cache
+                    .store_book_counts(key, Arc::new(counts.clone()));
+            }
+            let start = (offset as usize).min(addresses.len());
+            let end = (offset as usize + limit as usize).min(addresses.len());
+            let page = addresses[start..end].to_vec();
+            self.page_cache.store_ranked(key, slot, addresses, window);
+            addresses = page;
+        }
+        Ok(RankedPage {
+            addresses,
+            total: total.unwrap_or(0),
+            book_counts,
+        })
     }
 
     /// מריץ את שאילתת החיפוש עם [`GroupCollector`] וגוזר את עמוד הקבוצות
@@ -12921,12 +13103,49 @@ impl SearchEngine {
         search_options: HashMap<String, HashMap<String, bool>>,
         any_order: Option<bool>,
     ) -> Result<Option<HighlightPattern>> {
+        let searcher = self.index_reader.searcher();
+        let key = format!(
+            "advanced {query:?} {distance} {:?} {:?} {:?} {any_order:?}",
+            custom_spacing.iter().collect::<BTreeMap<_, _>>(),
+            alternative_words.iter().collect::<BTreeMap<_, _>>(),
+            search_options
+                .iter()
+                .map(|(word, options)| (word, options.iter().collect::<BTreeMap<_, _>>()))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let pattern =
+            self.highlight_cache
+                .pattern(searcher.generation().generation_id(), key, || {
+                    self.compute_index_highlight_pattern(
+                        &searcher,
+                        &query,
+                        distance,
+                        &custom_spacing,
+                        &alternative_words,
+                        &search_options,
+                        any_order,
+                    )
+                })?;
+        Ok(pattern.map(|pattern| pattern.to_api()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_index_highlight_pattern(
+        &self,
+        _searcher: &Searcher,
+        query: &str,
+        distance: u32,
+        custom_spacing: &HashMap<String, String>,
+        alternative_words: &HashMap<u32, Vec<String>>,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        any_order: Option<bool>,
+    ) -> Result<Option<DisplayPattern>> {
         let advanced = hebrew_query::prepare_advanced_query(
-            &query,
+            query,
             distance,
-            &custom_spacing,
-            &alternative_words,
-            &search_options,
+            custom_spacing,
+            alternative_words,
+            search_options,
         );
 
         // Per word: the very term set the search serves — same automata, same
@@ -12968,20 +13187,15 @@ impl SearchEngine {
         }
 
         Ok(display_highlight::build_display_highlight_from_terms(
-            &query,
+            query,
             distance,
-            &custom_spacing,
-            &alternative_words,
-            &search_options,
+            custom_spacing,
+            alternative_words,
+            search_options,
             &per_word_terms,
             any_order.unwrap_or(false),
         )
-        .map(|hl| HighlightPattern {
-            combined_pattern: hl.combined_pattern,
-            word_patterns: hl.word_patterns,
-            word_boundary_eligible: hl.word_boundary_eligible,
-            matcher: Some(HighlightMatcher { plan: hl.matcher }),
-        }))
+        .map(DisplayPattern::from))
     }
 
     /// Fuzzy-mode counterpart of [`Self::generate_index_highlight_pattern`]:
@@ -12998,23 +13212,37 @@ impl SearchEngine {
             max_distance <= 2,
             "fuzzy highlight distance is limited to 2, got {max_distance}"
         );
-        let tokens = self.index_token_texts(&query)?;
+        let searcher = self.index_reader.searcher();
+        let pattern = self.highlight_cache.pattern(
+            searcher.generation().generation_id(),
+            format!("fuzzy {query:?} {max_distance}"),
+            || self.compute_index_fuzzy_highlight_pattern(&searcher, &query, max_distance),
+        )?;
+        Ok(pattern.map(|pattern| pattern.to_api()))
+    }
+
+    fn compute_index_fuzzy_highlight_pattern(
+        &self,
+        searcher: &Searcher,
+        query: &str,
+        max_distance: u8,
+    ) -> Result<Option<DisplayPattern>> {
+        let tokens = self.index_token_texts(query)?;
         // `build_display_highlight_from_terms` walks `split_query_words`;
         // the analyzer tokens are aligned with it by design, but if they ever
         // diverge, feeding misaligned terms would paint the wrong word — fall
         // back to the query-shape pattern instead.
-        let words = hebrew_query::split_query_words(&hebrew_query::normalize_for_index(&query));
+        let words = hebrew_query::split_query_words(&hebrew_query::normalize_for_index(query));
         let per_word_terms: Vec<Vec<String>> = if tokens.len() != words.len() {
             Vec::new()
         } else {
-            let searcher = self.index_reader.searcher();
             let mut collected = Vec::with_capacity(tokens.len());
             for token in &tokens {
                 let mut matched = if max_distance == 0 {
                     HashSet::new()
                 } else {
                     self.automaton_highlight_terms(
-                        &searcher,
+                        searcher,
                         &[self.fuzzy_automaton(token, max_distance)?],
                     )?
                 };
@@ -13031,7 +13259,7 @@ impl SearchEngine {
         };
 
         Ok(display_highlight::build_display_highlight_from_terms(
-            &query,
+            query,
             0,
             &HashMap::new(),
             &HashMap::new(),
@@ -13039,12 +13267,7 @@ impl SearchEngine {
             &per_word_terms,
             false,
         )
-        .map(|hl| HighlightPattern {
-            combined_pattern: hl.combined_pattern,
-            word_patterns: hl.word_patterns,
-            word_boundary_eligible: hl.word_boundary_eligible,
-            matcher: Some(HighlightMatcher { plan: hl.matcher }),
-        }))
+        .map(DisplayPattern::from))
     }
 
     /// One index-term set per query word (in phrase order), materialized like
@@ -13055,28 +13278,36 @@ impl SearchEngine {
     /// highest-ranked forms fill its share first.
     fn phrase_per_word_terms(
         &self,
-        _searcher: &Searcher,
+        searcher: &Searcher,
         regex_terms: &[String],
         field: Field,
     ) -> Result<Vec<HashSet<String>>> {
         let cap = (MAX_HIGHLIGHT_TERMS / regex_terms.len().max(1)).max(1);
+        let generation = searcher.generation().generation_id();
         regex_terms
             .iter()
             .map(|pattern| {
-                let entry = self
-                    .materialize_term_set(
-                        hebrew_query::WordPattern::parse(pattern).branches(),
-                        &[],
-                        field,
-                        cap as u32,
-                        u64::MAX,
-                    )
-                    .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
-                Ok(entry
-                    .terms
-                    .iter()
-                    .filter_map(|t| t.value().as_str().map(str::to_string))
-                    .collect())
+                let terms =
+                    self.highlight_cache
+                        .term_set(generation, field, pattern, cap, || {
+                            let entry = self
+                                .materialize_term_set(
+                                    hebrew_query::WordPattern::parse(pattern).branches(),
+                                    &[],
+                                    field,
+                                    cap as u32,
+                                    u64::MAX,
+                                )
+                                .map_err(|e| {
+                                    anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}")
+                                })?;
+                            Ok(entry
+                                .terms
+                                .iter()
+                                .filter_map(|t| t.value().as_str().map(str::to_string))
+                                .collect())
+                        })?;
+                Ok(terms.iter().cloned().collect())
             })
             .collect()
     }
@@ -14402,6 +14633,46 @@ impl HighlightConfig {
     }
 }
 
+/// Which counts a ranked page is collected with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PageCounts {
+    None,
+    Total,
+    TotalAndBooks,
+}
+
+struct RankedPage {
+    addresses: Vec<DocAddress>,
+    /// 0 unless counted.
+    total: u32,
+    book_counts: Option<HashMap<String, u32>>,
+}
+
+/// `top` with the counts `counts` asks for, in one pass.
+#[allow(clippy::type_complexity)]
+fn collect_ranked<C, K>(
+    searcher: &Searcher,
+    query: &dyn Query,
+    top: C,
+    counts: PageCounts,
+) -> Result<(Vec<DocAddress>, Option<u32>, Option<HashMap<String, u32>>)>
+where
+    C: Collector<Fruit = Vec<(K, DocAddress)>>,
+{
+    let addresses = |hits: Vec<(K, DocAddress)>| hits.into_iter().map(|(_, a)| a).collect();
+    Ok(match counts {
+        PageCounts::None => (addresses(searcher.search(query, &top)?), None, None),
+        PageCounts::Total => {
+            let (hits, total) = searcher.search(query, &(top, Count))?;
+            (addresses(hits), Some(total as u32), None)
+        }
+        PageCounts::TotalAndBooks => {
+            let (hits, total, books) = searcher.search(query, &(top, Count, BookCountCollector))?;
+            (addresses(hits), Some(total as u32), Some(books))
+        }
+    })
+}
+
 // ── BookCountCollector ─────────────────────────────────────────────────────────
 
 /// Counts matching documents grouped by `filePath` fast field.
@@ -14410,7 +14681,8 @@ struct BookCountCollector;
 
 struct BookCountSegmentCollector {
     str_col: Option<tantivy::columnar::StrColumn>,
-    counts: HashMap<u64, u32>,
+    /// Indexed by term ordinal: a segment holds only thousands of paths.
+    counts: Vec<u32>,
 }
 
 impl Collector for BookCountCollector {
@@ -14423,9 +14695,10 @@ impl Collector for BookCountCollector {
         reader: &SegmentReader,
     ) -> tantivy::Result<BookCountSegmentCollector> {
         let str_col = reader.fast_fields().str("filePath")?;
+        let num_terms = str_col.as_ref().map_or(0, |col| col.num_terms());
         Ok(BookCountSegmentCollector {
             str_col,
-            counts: HashMap::new(),
+            counts: vec![0; num_terms],
         })
     }
 
@@ -14452,8 +14725,8 @@ impl SegmentCollector for BookCountSegmentCollector {
 
     fn collect(&mut self, doc_id: DocId, _score: Score) {
         if let Some(col) = &self.str_col {
-            if let Some(term_ord) = col.term_ords(doc_id).next() {
-                *self.counts.entry(term_ord).or_insert(0) += 1;
+            if let Some(term_ord) = col.ords().first(doc_id) {
+                self.counts[term_ord as usize] += 1;
             }
         }
     }
@@ -14462,14 +14735,24 @@ impl SegmentCollector for BookCountSegmentCollector {
         let Some(col) = self.str_col else {
             return Ok(HashMap::new());
         };
-        let mut result = HashMap::with_capacity(self.counts.len());
-        let mut buf = String::new();
-        for (term_ord, count) in self.counts {
-            buf.clear();
-            if col.ord_to_str(term_ord, &mut buf)? {
-                result.insert(buf.clone(), count);
-            }
-        }
+        let hits: Vec<(u64, u32)> = (0u64..)
+            .zip(self.counts)
+            .filter(|&(_, count)| count > 0)
+            .collect();
+        let mut result = HashMap::with_capacity(hits.len());
+        let mut counts = hits.iter().map(|&(_, count)| count);
+        // One sequential pass over the dictionary: `ord_to_str` per ordinal
+        // re-seeks the sstable and dominated the whole count.
+        col.dictionary().sorted_ords_to_term_cb(
+            hits.iter().map(|&(term_ord, _)| term_ord),
+            |bytes| {
+                let path = std::str::from_utf8(bytes).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Not valid utf-8")
+                })?;
+                result.insert(path.to_owned(), counts.next().unwrap_or(0));
+                Ok(())
+            },
+        )?;
         Ok(result)
     }
 }
@@ -15626,6 +15909,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -15658,6 +15942,7 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
             None,
             None,
             None,
@@ -19063,6 +19348,217 @@ mod tests {
         assert_eq!(counts.len(), 2);
     }
 
+    /// Thousands of paths span many dictionary blocks, and only some of them match:
+    /// the batched ordinal-to-path pass must pair every path with its own count.
+    #[test]
+    fn test_count_by_book_many_paths_sparse_hits() {
+        let (mut engine, _dir) = make_engine();
+        let mut expected: HashMap<String, u32> = HashMap::new();
+        let mut id = 0;
+        for book in 0..3_000u32 {
+            let path = format!("/books/{:04}/ספר מספר {book} בספרייה.txt", book * 7 % 3_000);
+            for line in 0..(book % 4) {
+                id += 1;
+                let text = if (book + line) % 3 == 0 {
+                    "שלום עולם"
+                } else {
+                    "ביי"
+                };
+                add(&mut engine, id, text, &path);
+                if text.starts_with("שלום") {
+                    *expected.entry(path.clone()).or_insert(0) += 1;
+                }
+            }
+            if book == 1_500 {
+                engine.commit().unwrap();
+            }
+        }
+        engine.commit().unwrap();
+
+        let counts = engine
+            .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
+            .unwrap();
+
+        assert!(expected.len() > 1_000);
+        assert_eq!(counts, expected);
+    }
+
+    /// Segments are collected on the engine's own pool: concurrent callers, and
+    /// callers running inside rayon's global pool, neither deadlock nor diverge.
+    #[test]
+    fn multithread_search_executor_serves_concurrent_and_nested_searches() {
+        use rayon::prelude::*;
+        let (mut engine, _dir) = make_engine();
+        let mut id = 0;
+        for segment in 0..4 {
+            for line in 0..50 {
+                id += 1;
+                let text = if line % 2 == 0 {
+                    "שלום עולם"
+                } else {
+                    "ביי"
+                };
+                add(&mut engine, id, text, &format!("/books/{segment}.txt"));
+            }
+            engine.commit().unwrap();
+        }
+        assert_eq!(
+            matches!(
+                engine.index.search_executor(),
+                tantivy::Executor::ThreadPool(_)
+            ),
+            search_executor_threads() > 1
+        );
+        let by_book = || {
+            engine
+                .count_by_book(vec!["שלום".to_string()], vec!["/root".to_string()], 0, 100)
+                .unwrap()
+        };
+        let expected = by_book();
+        assert_eq!(expected.values().sum::<u32>(), 100);
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..20 {
+                        assert_eq!(by_book(), expected);
+                    }
+                });
+            }
+        });
+        (0..64)
+            .into_par_iter()
+            .for_each(|_| assert_eq!(by_book(), expected));
+    }
+
+    /// The first page ranks the following ones, so they and the counts are served
+    /// from the page cache; a commit drops it.
+    #[test]
+    fn later_pages_and_counts_come_from_the_page_cache() {
+        let (mut engine, _dir) = make_engine();
+        for id in 1..=30u64 {
+            let text = if id % 3 == 0 {
+                "שלום עולם"
+            } else {
+                "שלום"
+            };
+            add(&mut engine, id, text, &format!("/books/{}.txt", id % 4));
+            if id == 15 {
+                engine.commit().unwrap();
+            }
+        }
+        engine.commit().unwrap();
+        let page = |engine: &SearchEngine, offset| {
+            let page = engine
+                .search_and_count_exact(
+                    "שלום".to_string(),
+                    vec![],
+                    4,
+                    offset,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let ids: Vec<u64> = page.results.iter().map(|r| r.id).collect();
+            (page.total_count, ids)
+        };
+        let by_book = |engine: &SearchEngine| {
+            engine
+                .count_by_book_exact("שלום".to_string(), vec![], false, false, None)
+                .unwrap()
+        };
+
+        assert_eq!(page(&engine, 0), (30, vec![1, 2, 3, 4]));
+        assert_eq!(engine.page_cache.len(), 1);
+        let cached: Vec<_> = (1..8).map(|n| page(&engine, n * 4)).collect();
+        let books = by_book(&engine);
+        assert_eq!(by_book(&engine), books);
+        assert_eq!(engine.page_cache.len(), 1);
+        engine.page_cache.clear();
+        let fresh: Vec<_> = (1..8).map(|n| page(&engine, n * 4)).collect();
+        assert_eq!(cached, fresh);
+        assert_eq!(cached[6], (30, vec![29, 30]));
+        engine.page_cache.clear();
+        assert_eq!(by_book(&engine), books);
+        assert_eq!(books.values().sum::<u32>(), 30);
+
+        add(&mut engine, 31, "שלום", "/books/new.txt");
+        engine.commit().unwrap();
+        assert_eq!(engine.page_cache.len(), 0);
+        assert_eq!(page(&engine, 28), (31, vec![29, 30, 31]));
+    }
+
+    /// The index-based display pattern is computed once per index snapshot: equal
+    /// requests share it, and a commit brings in the variants it added.
+    #[test]
+    fn index_highlight_pattern_is_cached_per_snapshot() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "ירושלים עיר הקודש", "/books/a.txt");
+        engine.commit().unwrap();
+        let typo: HashMap<String, HashMap<String, bool>> = [(
+            "ירושלים_0".to_string(),
+            [("שגיאות כתיב".to_string(), true)].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect();
+        let pattern = |engine: &SearchEngine| {
+            engine
+                .generate_index_highlight_pattern(
+                    "ירושלים".to_string(),
+                    0,
+                    HashMap::new(),
+                    HashMap::new(),
+                    typo.clone(),
+                    None,
+                )
+                .unwrap()
+                .expect("pattern")
+                .word_patterns
+        };
+        let first = pattern(&engine);
+        assert_eq!(pattern(&engine), first);
+        engine.highlight_cache.clear();
+        assert_eq!(pattern(&engine), first);
+
+        add(&mut engine, 2, "ירושלם עיר הקודש", "/books/a.txt");
+        engine.commit().unwrap();
+        assert_ne!(pattern(&engine), first);
+    }
+
+    /// A cancelled request id stops its counts, and leaves nothing behind for
+    /// the same search without it; other ids and untagged calls run.
+    #[test]
+    fn cancelled_lexical_request_fails_its_counts_only() {
+        let (mut engine, _dir) = make_engine();
+        for id in 1..=20u64 {
+            add(
+                &mut engine,
+                id,
+                "שלום עולם",
+                &format!("/books/{}.txt", id % 3),
+            );
+        }
+        engine.commit().unwrap();
+        let by_book = |id: Option<u32>| {
+            engine.count_by_book_exact("שלום".to_string(), vec![], false, false, id)
+        };
+        let count =
+            |id: Option<u32>| engine.count_exact("שלום".to_string(), vec![], false, false, id);
+
+        engine.cancel_lexical_search(9);
+        for err in [by_book(Some(9)).unwrap_err(), count(Some(9)).unwrap_err()] {
+            assert!(LexicalSearchCancelled::is(&err));
+            assert_eq!(err.to_string(), LexicalSearchCancelled::MESSAGE);
+        }
+        let expected = by_book(None).unwrap();
+        assert_eq!(expected.values().sum::<u32>(), 20);
+        assert_eq!(by_book(Some(10)).unwrap(), expected);
+        assert_eq!(count(Some(10)).unwrap(), 20);
+        assert_eq!(count(None).unwrap(), 20);
+    }
+
     #[test]
     fn test_count_documents_by_file_path_empty_index() {
         let (engine, _dir) = make_engine();
@@ -19677,6 +20173,7 @@ mod tests {
                 2,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(count, 1);
@@ -19707,6 +20204,7 @@ mod tests {
                 0,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(count, 2);
@@ -19805,6 +20303,7 @@ mod tests {
                 2,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(count, 3, "ranking boosts must not change the recall set");
@@ -19926,6 +20425,7 @@ mod tests {
                 max_distance,
                 false,
                 false,
+                None,
             )
             .unwrap()
     }
@@ -21024,6 +21524,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(
@@ -21048,6 +21549,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
                 None,
@@ -21105,6 +21607,7 @@ mod tests {
                 false,
                 SearchScope::WordDistance,
                 SearchScope::WordDistance,
+                None,
                 None,
                 None,
                 None,
@@ -21940,6 +22443,7 @@ mod tests {
             3,
             false,
             false,
+            None,
         );
         assert!(count.is_err(), "distance > 2 should error, not panic");
     }
@@ -22006,13 +22510,25 @@ mod tests {
 
         assert_eq!(
             engine
-                .count_exact("שלום".to_string(), vec!["/root".to_string()], false, false)
+                .count_exact(
+                    "שלום".to_string(),
+                    vec!["/root".to_string()],
+                    false,
+                    false,
+                    None
+                )
                 .unwrap(),
             2
         );
 
         let by_book = engine
-            .count_by_book_exact("שלום".to_string(), vec!["/root".to_string()], false, false)
+            .count_by_book_exact(
+                "שלום".to_string(),
+                vec!["/root".to_string()],
+                false,
+                false,
+                None,
+            )
             .unwrap();
         assert_eq!(by_book.get("/books/a.txt").copied(), Some(2));
 
@@ -22196,7 +22712,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
 
         let by_book = engine
-            .count_by_book_exact("בָּרָא".to_string(), vec![], true, false)
+            .count_by_book_exact("בָּרָא".to_string(), vec![], true, false, None)
             .unwrap();
         assert_eq!(by_book.get("/books/b.txt"), Some(&1));
     }
@@ -22988,6 +23504,7 @@ mod tests {
                     None,
                     None,
                     self.any_order,
+                    None,
                 )
                 .unwrap()
         }
@@ -23013,6 +23530,7 @@ mod tests {
                     None,
                     None,
                     self.any_order,
+                    None,
                 )
                 .unwrap()
                 .values()
@@ -23320,6 +23838,7 @@ mod tests {
                 Some(WordMatchMode::AnyWord),
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(count, 3);
@@ -23472,6 +23991,7 @@ mod tests {
                 facets.iter().map(|s| s.to_string()).collect(),
                 false,
                 false,
+                None,
             )
             .unwrap()
     }
@@ -25244,7 +25764,7 @@ mod tests {
             let first = page(&engine, 5, 0);
             let second = page(&engine, 5, 5);
             let lexical = engine
-                .count_exact_with_status("שבת".to_string(), Vec::new(), false, false)
+                .count_exact_with_status("שבת".to_string(), Vec::new(), false, false, None)
                 .unwrap();
             for response in [&first, &second] {
                 assert_eq!(response.lexical_total_count, lexical.count);

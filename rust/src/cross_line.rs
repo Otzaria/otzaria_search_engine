@@ -27,11 +27,11 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tantivy::columnar::Column;
 use tantivy::index::SegmentId;
-use tantivy::postings::SegmentPostings;
+use tantivy::postings::{SegmentPostings, TermInfo};
 use tantivy::query::{ConstScorer, EmptyScorer, EnableScoring, Explanation, Query, Scorer, Weight};
 use tantivy::schema::{Field, IndexRecordOption, Schema};
 use tantivy::tokenizer::TextAnalyzer;
@@ -550,28 +550,49 @@ enum WordSource {
 }
 
 impl WordSource {
-    fn postings(
-        &self,
-        inverted: &InvertedIndexReader,
-        option: IndexRecordOption,
-    ) -> tantivy::Result<Vec<SegmentPostings>> {
+    /// The word's terms in this dictionary, in dictionary order.
+    fn term_infos(&self, inverted: &InvertedIndexReader) -> tantivy::Result<Vec<TermInfo>> {
         let mut out = Vec::new();
         match self {
             WordSource::Terms(terms) => {
                 for term in terms {
-                    if let Some(info) = inverted.get_term_info(term)? {
-                        out.push(inverted.read_postings_from_terminfo(&info, option)?);
-                    }
+                    out.extend(inverted.get_term_info(term)?);
                 }
             }
             WordSource::Regex(regex) => {
                 let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
                 while stream.advance() {
-                    out.push(inverted.read_postings_from_terminfo(stream.value(), option)?);
+                    out.push(stream.value().clone());
                 }
             }
         }
         Ok(out)
+    }
+
+    /// [`Self::doc_freq`] over already resolved term infos.
+    fn doc_freq_of(&self, infos: &[TermInfo]) -> u64 {
+        let counted = match self {
+            WordSource::Terms(_) => infos.len(),
+            WordSource::Regex(_) => infos.len().min(SCORE_TERMS_PER_SEGMENT),
+        };
+        infos[..counted]
+            .iter()
+            .map(|info| info.doc_freq as u64)
+            .sum()
+    }
+
+    /// Upper-bounded frequency for deciding whether a global scan is small.
+    /// Unlike the scoring estimate, a broad regex cannot stop after the first
+    /// 256 terms and incorrectly look rare when its remaining terms are common.
+    fn bounded_doc_freq_of(infos: &[TermInfo], limit: u64) -> u64 {
+        let mut total = 0u64;
+        for info in infos {
+            if total > limit {
+                break;
+            }
+            total += info.doc_freq as u64;
+        }
+        total.min(limit.saturating_add(1))
     }
 
     /// Documents that hold the word, summed over its terms (capped for patterns).
@@ -595,28 +616,12 @@ impl WordSource {
         Ok(total)
     }
 
-    /// Upper-bounded frequency for deciding whether a global scan is small.
-    /// Unlike the scoring estimate, a broad regex cannot stop after the first
-    /// 256 terms and incorrectly look rare when its remaining terms are common.
+    #[cfg(test)]
     fn bounded_doc_freq(&self, inverted: &InvertedIndexReader, limit: u64) -> tantivy::Result<u64> {
-        let mut total = 0u64;
-        match self {
-            WordSource::Terms(terms) => {
-                for term in terms {
-                    total += inverted.doc_freq(term)? as u64;
-                    if total > limit {
-                        break;
-                    }
-                }
-            }
-            WordSource::Regex(regex) => {
-                let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
-                while total <= limit && stream.advance() {
-                    total += stream.value().doc_freq as u64;
-                }
-            }
-        }
-        Ok(total.min(limit.saturating_add(1)))
+        Ok(Self::bounded_doc_freq_of(
+            &self.term_infos(inverted)?,
+            limit,
+        ))
     }
 }
 
@@ -863,12 +868,10 @@ impl CrossLineQuery {
             }
             matches
         } else {
-            let neighbour_ids: Option<HashSet<u64>> = filter.map(|_| {
-                first_matches
-                    .iter()
-                    .map(|m| m.id.wrapping_add_signed(neighbour))
-                    .collect()
-            });
+            let neighbour_ids: HashSet<u64> = first_matches
+                .iter()
+                .map(|m| m.id.wrapping_add_signed(neighbour))
+                .collect();
             self.scan(
                 segments,
                 second,
@@ -876,7 +879,7 @@ impl CrossLineQuery {
                 candidates,
                 Restriction {
                     filter: if neighbour == -1 { filter } else { None },
-                    neighbour_ids: neighbour_ids.as_ref(),
+                    neighbour_ids: Some(&neighbour_ids),
                 },
             )?
         };
@@ -951,7 +954,7 @@ impl CrossLineQuery {
         for word in part.words {
             let mut freq = 0u64;
             for segment in segments {
-                freq += word.text.doc_freq(&segment.text)?;
+                freq += segment.doc_freq(&word.text)?;
             }
             rarest = rarest.min(freq);
         }
@@ -968,7 +971,7 @@ impl CrossLineQuery {
         for word in part.words {
             let mut freq = 0u64;
             for segment in segments {
-                freq += word.text.bounded_doc_freq(&segment.text, limit - freq)?;
+                freq += segment.bounded_doc_freq(&word.text, limit - freq)?;
                 if freq > limit {
                     break;
                 }
@@ -1018,7 +1021,7 @@ impl CrossLineQuery {
                     Side::EndsLine => &boundary.ends,
                     Side::StartsLine => &boundary.starts,
                 };
-                let postings = source.postings(&segment.edge, IndexRecordOption::Basic)?;
+                let postings = segment.postings(source, &segment.edge, IndexRecordOption::Basic)?;
                 if selected.is_some() {
                     self.candidate_docs(postings, range.start, selected)?
                 } else {
@@ -1039,15 +1042,14 @@ impl CrossLineQuery {
             Candidates::Driver => {
                 let mut rarest: Option<(u64, &CompiledWord)> = None;
                 for word in part.words {
-                    let freq = word.text.doc_freq(&segment.text)?;
+                    let freq = segment.doc_freq(&word.text)?;
                     if rarest.is_none_or(|(best, _)| freq < best) {
                         rarest = Some((freq, word));
                     }
                 }
                 let (_, word) = rarest.expect("a part has at least one word");
-                let mut postings = word
-                    .text
-                    .postings(&segment.text, IndexRecordOption::Basic)?;
+                let mut postings =
+                    segment.postings(&word.text, &segment.text, IndexRecordOption::Basic)?;
                 for posting in &mut postings {
                     if posting.doc() < range.start {
                         posting.seek(range.start);
@@ -1072,9 +1074,11 @@ impl CrossLineQuery {
         let mut words: Vec<WordPositions> = Vec::new();
         if needs_positions {
             for word in part.words {
-                let postings = word
-                    .text
-                    .postings(&segment.text, IndexRecordOption::WithFreqsAndPositions)?;
+                let postings = segment.postings(
+                    &word.text,
+                    &segment.text,
+                    IndexRecordOption::WithFreqsAndPositions,
+                )?;
                 if postings.is_empty() {
                     return Ok(out);
                 }
@@ -1302,6 +1306,9 @@ struct Scratch {
 struct Segment<'a> {
     ordinal: usize,
     reader: &'a SegmentReader,
+    /// Each word source's term infos, keyed by its address, resolved on first
+    /// use: a pattern re-streams the dictionary, and a scan asks hundreds of times.
+    resolved: Mutex<HashMap<usize, Arc<Vec<TermInfo>>>>,
     text: Arc<InvertedIndexReader>,
     edge: Arc<InvertedIndexReader>,
     ids: Arc<InvertedIndexReader>,
@@ -1320,6 +1327,7 @@ impl<'a> Segment<'a> {
         Ok(Self {
             ordinal,
             reader,
+            resolved: Mutex::default(),
             text: reader.inverted_index(query.text)?,
             edge: reader.inverted_index(query.edge)?,
             ids: reader.inverted_index(query.id)?,
@@ -1327,6 +1335,46 @@ impl<'a> Segment<'a> {
             first: fast.u64(LINE_FIRST_FIELD)?,
             last: fast.u64(LINE_LAST_FIELD)?,
         })
+    }
+
+    /// The source's term infos in `inverted`, which must be the dictionary the
+    /// source always runs against here (`text` for words, `edge` for edges).
+    fn term_infos(
+        &self,
+        source: &WordSource,
+        inverted: &InvertedIndexReader,
+    ) -> tantivy::Result<Arc<Vec<TermInfo>>> {
+        let mut resolved = self.resolved.lock().unwrap();
+        let key = std::ptr::from_ref(source) as usize;
+        if let Some(infos) = resolved.get(&key) {
+            return Ok(Arc::clone(infos));
+        }
+        let infos = Arc::new(source.term_infos(inverted)?);
+        resolved.insert(key, Arc::clone(&infos));
+        Ok(infos)
+    }
+
+    fn postings(
+        &self,
+        source: &WordSource,
+        inverted: &InvertedIndexReader,
+        option: IndexRecordOption,
+    ) -> tantivy::Result<Vec<SegmentPostings>> {
+        self.term_infos(source, inverted)?
+            .iter()
+            .map(|info| Ok(inverted.read_postings_from_terminfo(info, option)?))
+            .collect()
+    }
+
+    fn doc_freq(&self, source: &WordSource) -> tantivy::Result<u64> {
+        Ok(source.doc_freq_of(&self.term_infos(source, &self.text)?))
+    }
+
+    fn bounded_doc_freq(&self, source: &WordSource, limit: u64) -> tantivy::Result<u64> {
+        Ok(WordSource::bounded_doc_freq_of(
+            &self.term_infos(source, &self.text)?,
+            limit,
+        ))
     }
 
     fn is_alive(&self, doc: DocId) -> bool {
@@ -1473,6 +1521,10 @@ mod tests {
             word.doc_freq(&inverted).unwrap(),
             SCORE_TERMS_PER_SEGMENT as u64
         );
+        // A scan reads the cached term infos; they must estimate the same.
+        let infos = word.term_infos(&inverted).unwrap();
+        assert_eq!(infos.len(), 301);
+        assert_eq!(word.doc_freq_of(&infos), SCORE_TERMS_PER_SEGMENT as u64);
         assert_eq!(
             word.bounded_doc_freq(&inverted, LOOKUP_LIMIT as u64)
                 .unwrap(),

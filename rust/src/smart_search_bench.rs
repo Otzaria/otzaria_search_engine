@@ -327,8 +327,14 @@ fn run_once(
             Ok(page_outcome(results.len()))
         }
         Mode::ApiFuzzyCount(d) => {
-            let count =
-                engine.count_fuzzy_with_status(query.to_string(), Vec::new(), d, false, false)?;
+            let count = engine.count_fuzzy_with_status(
+                query.to_string(),
+                Vec::new(),
+                d,
+                false,
+                false,
+                None,
+            )?;
             Ok(Outcome {
                 hits: count.count as u64,
                 total: Some(count.count as u64),
@@ -1765,7 +1771,7 @@ fn acronym_modes() -> Result<()> {
     for query in queries {
         let normalized = HebrewNormalizer::new().normalize(query);
         let features = analyze_query(&normalized);
-        let exact_count = engine.count_exact(query.to_string(), Vec::new(), false, false)?;
+        let exact_count = engine.count_exact(query.to_string(), Vec::new(), false, false, None)?;
         for &(label, mode) in SEMANTIC_LEXICAL_MODES {
             engine.invalidate_semantic_sessions_for_bench();
             let r = semantic_page(&engine, query, config.limit, 1, mode, None)?;
