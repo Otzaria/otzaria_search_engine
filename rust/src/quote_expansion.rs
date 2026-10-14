@@ -19,11 +19,11 @@ use std::sync::Arc;
 use tantivy::fieldnorm::FieldNormReader;
 use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{
-    Bm25StatisticsProvider, Bm25Weight, BooleanQuery, EnableScoring, Explanation, Occur,
-    PhraseQuery, Query, RegexPhraseQuery, Scorer, TermQuery, Weight,
+    Bm25StatisticsProvider, Bm25Weight, BooleanQuery, EmptyScorer, EnableScoring, Explanation,
+    Occur, PhraseQuery, Query, RegexPhraseQuery, Scorer, TermQuery, Weight,
 };
 use tantivy::schema::{Field, IndexRecordOption};
-use tantivy::{DocId, DocSet, Score, SegmentReader, TERMINATED};
+use tantivy::{DocId, DocSet, Score, SegmentReader};
 use tantivy::{Searcher, Term};
 use tantivy_fst::Automaton;
 
@@ -262,9 +262,25 @@ impl Query for SpellingsTermQuery {
             }
             EnableScoring::Disabled { .. } => None,
         };
+        let freqs = self.option.has_freq() && bm25.is_some();
+        // tantivy's union of the spellings, each scoring its frequency in the line: the
+        // union's sum is the word's frequency.
+        let union = BooleanQuery::new(
+            self.terms
+                .iter()
+                .map(|term| {
+                    let frequency = TermFrequencyQuery {
+                        term: term.clone(),
+                        freqs,
+                    };
+                    (Occur::Should, Box::new(frequency) as Box<dyn Query>)
+                })
+                .collect(),
+        );
         Ok(Box::new(SpellingsTermWeight {
-            terms: self.terms.clone(),
-            freqs: self.option.has_freq(),
+            union: union.weight(enable_scoring)?,
+            field: self.terms[0].field(),
+            freqs,
             bm25,
         }))
     }
@@ -277,49 +293,32 @@ impl Query for SpellingsTermQuery {
 }
 
 struct SpellingsTermWeight {
-    terms: Vec<Term>,
+    union: Box<dyn Weight>,
+    field: Field,
     freqs: bool,
     bm25: Option<Bm25Weight>,
 }
 
-impl SpellingsTermWeight {
-    fn spellings_scorer(&self, reader: &SegmentReader) -> tantivy::Result<SpellingsScorer> {
-        let field = self.terms[0].field();
-        let inverted = reader.inverted_index(field)?;
-        let freqs = self.freqs && self.bm25.is_some();
-        let option = if freqs {
-            IndexRecordOption::WithFreqs
-        } else {
-            IndexRecordOption::Basic
-        };
-        let mut postings = Vec::with_capacity(self.terms.len());
-        for term in &self.terms {
-            if let Some(found) = inverted.read_postings(term, option)? {
-                postings.push(found);
-            }
-        }
-        let fieldnorms = match &self.bm25 {
-            Some(_) => Some(reader.get_fieldnorms_reader(field)?),
-            None => None,
-        };
-        Ok(SpellingsScorer::new(
-            postings,
-            fieldnorms,
-            self.bm25.clone(),
-            freqs,
-        ))
-    }
-}
-
 impl Weight for SpellingsTermWeight {
     fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
-        let mut scorer = self.spellings_scorer(reader)?;
-        scorer.bm25 = scorer.bm25.map(|bm25| bm25.boost_by(boost));
-        Ok(Box::new(scorer))
+        let union = self.union.scorer(reader, 1.0)?;
+        let Some(bm25) = &self.bm25 else {
+            return Ok(union);
+        };
+        Ok(Box::new(SpellingsScorer {
+            union,
+            fieldnorms: reader.get_fieldnorms_reader(self.field)?,
+            bm25: bm25.boost_by(boost),
+            freqs: self.freqs,
+        }))
+    }
+
+    fn count(&self, reader: &SegmentReader) -> tantivy::Result<u32> {
+        self.union.count(reader)
     }
 
     fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
-        let mut scorer = self.spellings_scorer(reader)?;
+        let mut scorer = self.scorer(reader, 1.0)?;
         if scorer.seek(doc) != doc {
             return Err(tantivy::TantivyError::InvalidArgument(format!(
                 "Document #({doc}) does not match"
@@ -329,92 +328,119 @@ impl Weight for SpellingsTermWeight {
     }
 }
 
-/// The union of the spellings' postings, each document once.
+/// BM25 of the line's length and the union's summed frequency.
 struct SpellingsScorer {
-    postings: Vec<SegmentPostings>,
-    fieldnorms: Option<FieldNormReader>,
-    bm25: Option<Bm25Weight>,
+    union: Box<dyn Scorer>,
+    fieldnorms: FieldNormReader,
+    bm25: Bm25Weight,
     freqs: bool,
-    doc: DocId,
-}
-
-impl SpellingsScorer {
-    fn new(
-        postings: Vec<SegmentPostings>,
-        fieldnorms: Option<FieldNormReader>,
-        bm25: Option<Bm25Weight>,
-        freqs: bool,
-    ) -> Self {
-        let mut scorer = Self {
-            postings,
-            fieldnorms,
-            bm25,
-            freqs,
-            doc: TERMINATED,
-        };
-        scorer.doc = scorer.lowest();
-        scorer
-    }
-
-    fn lowest(&self) -> DocId {
-        self.postings
-            .iter()
-            .map(|p| p.doc())
-            .min()
-            .unwrap_or(TERMINATED)
-    }
 }
 
 impl DocSet for SpellingsScorer {
     fn advance(&mut self) -> DocId {
-        let current = self.doc;
-        for postings in &mut self.postings {
-            if postings.doc() == current {
-                postings.advance();
-            }
-        }
-        self.doc = self.lowest();
-        self.doc
+        self.union.advance()
     }
 
     fn seek(&mut self, target: DocId) -> DocId {
-        if self.doc >= target {
-            return self.doc;
-        }
-        for postings in &mut self.postings {
-            if postings.doc() < target {
-                postings.seek(target);
-            }
-        }
-        self.doc = self.lowest();
-        self.doc
+        self.union.seek(target)
     }
 
     fn doc(&self) -> DocId {
-        self.doc
+        self.union.doc()
     }
 
     fn size_hint(&self) -> u32 {
-        self.postings.iter().map(|p| p.size_hint()).sum()
+        self.union.size_hint()
     }
 }
 
 impl Scorer for SpellingsScorer {
     fn score(&mut self) -> Score {
-        let (Some(bm25), Some(fieldnorms)) = (&self.bm25, &self.fieldnorms) else {
-            return 1.0;
-        };
-        let doc = self.doc;
-        let term_freq: u32 = if self.freqs {
-            self.postings
-                .iter()
-                .filter(|p| p.doc() == doc)
-                .map(|p| p.term_freq())
-                .sum()
+        let term_freq = if self.freqs {
+            self.union.score().round() as u32
         } else {
             1
         };
-        bm25.score(fieldnorms.fieldnorm_id(doc), term_freq)
+        let fieldnorm_id = self.fieldnorms.fieldnorm_id(self.union.doc());
+        self.bm25.score(fieldnorm_id, term_freq.max(1))
+    }
+}
+
+/// One spelling, scoring its frequency in the line (1 without frequencies).
+#[derive(Clone, Debug)]
+struct TermFrequencyQuery {
+    term: Term,
+    freqs: bool,
+}
+
+impl Query for TermFrequencyQuery {
+    fn weight(&self, _: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+impl Weight for TermFrequencyQuery {
+    fn scorer(&self, reader: &SegmentReader, _: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        let option = if self.freqs {
+            IndexRecordOption::WithFreqs
+        } else {
+            IndexRecordOption::Basic
+        };
+        let inverted = reader.inverted_index(self.term.field())?;
+        Ok(match inverted.read_postings(&self.term, option)? {
+            Some(postings) => Box::new(TermFrequencyScorer {
+                postings,
+                freqs: self.freqs,
+            }),
+            None => Box::new(EmptyScorer),
+        })
+    }
+
+    fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
+        let mut scorer = self.scorer(reader, 1.0)?;
+        if scorer.seek(doc) != doc {
+            return Err(tantivy::TantivyError::InvalidArgument(format!(
+                "Document #({doc}) does not match"
+            )));
+        }
+        Ok(Explanation::new("TermFrequency", scorer.score()))
+    }
+}
+
+struct TermFrequencyScorer {
+    postings: SegmentPostings,
+    freqs: bool,
+}
+
+impl DocSet for TermFrequencyScorer {
+    fn advance(&mut self) -> DocId {
+        self.postings.advance()
+    }
+
+    fn seek(&mut self, target: DocId) -> DocId {
+        self.postings.seek(target)
+    }
+
+    fn fill_buffer(&mut self, buffer: &mut [DocId; tantivy::COLLECT_BLOCK_BUFFER_LEN]) -> usize {
+        self.postings.fill_buffer(buffer)
+    }
+
+    fn doc(&self) -> DocId {
+        self.postings.doc()
+    }
+
+    fn size_hint(&self) -> u32 {
+        self.postings.size_hint()
+    }
+}
+
+impl Scorer for TermFrequencyScorer {
+    fn score(&mut self) -> Score {
+        if self.freqs {
+            self.postings.term_freq() as Score
+        } else {
+            1.0
+        }
     }
 }
 
