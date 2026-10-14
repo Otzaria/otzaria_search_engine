@@ -476,3 +476,85 @@ fn real_library_books_prepare_like_the_bytes_the_app_reads() {
         books.len()
     );
 }
+
+/// Books prepared on several threads still land in input order, and searches run while a
+/// batch is in flight: the batch holds the engine by shared reference.
+#[test]
+fn a_batch_enqueues_in_input_order_while_searches_run() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE book (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL);
+         CREATE TABLE line (id INTEGER PRIMARY KEY NOT NULL, bookId INTEGER NOT NULL,
+                            lineIndex INTEGER NOT NULL);
+         CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);
+         CREATE TABLE line_content (id INTEGER PRIMARY KEY NOT NULL, content TEXT);",
+    )
+    .unwrap();
+    // Sizes vary so that later books finish preparing before earlier ones.
+    conn.execute_batch("BEGIN").unwrap();
+    for book in 1..=40i64 {
+        conn.execute(
+            "INSERT INTO book (id, title) VALUES (?1, ?2)",
+            rusqlite::params![book, format!("ספר {book}")],
+        )
+        .unwrap();
+        let lines = if book % 7 == 1 { 3000 } else { 5 };
+        for line in 0..lines {
+            let id = book * 10_000 + line;
+            conn.execute(
+                "INSERT INTO line (id, bookId, lineIndex) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, book, line],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO line_content (id, content) VALUES (?1, ?2)",
+                rusqlite::params![id, format!("שורה {line} של ספר {book} בראשית ברא")],
+            )
+            .unwrap();
+        }
+    }
+    conn.execute_batch("COMMIT").unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let inputs: Vec<LibraryBookInput> = (1..=40)
+        .map(|book| library_input(book, &format!("ספר {book}")))
+        .collect();
+    let engine_ref = &engine;
+    let results = std::thread::scope(|scope| {
+        let batch = scope.spawn(move || {
+            engine_ref
+                .add_library_books(inputs, &IndexingCancellationToken::new())
+                .unwrap()
+        });
+        while !batch.is_finished() {
+            engine_ref.get_book_fingerprints().unwrap();
+        }
+        batch.join().unwrap()
+    });
+    assert!(results
+        .iter()
+        .enumerate()
+        .all(|(n, r)| r.book_id == n as i64 + 1 && r.status == LibraryBookStatus::Indexed));
+    engine.commit().unwrap();
+    let searcher = engine.searcher_for_tests();
+    let mut docs = 0;
+    for reader in searcher.segment_readers() {
+        let column = reader.fast_fields().u64("id").unwrap();
+        let ids: Vec<u64> = reader
+            .doc_ids_alive()
+            .filter_map(|doc| column.first(doc))
+            .collect();
+        // Each indexing thread keeps the order documents were added in.
+        assert!(
+            ids.windows(2).all(|pair| pair[0] < pair[1]),
+            "out of input order"
+        );
+        docs += ids.len();
+    }
+    assert_eq!(docs, 6 * 3000 + 34 * 5);
+}

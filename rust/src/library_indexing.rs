@@ -27,7 +27,7 @@ use tantivy::IndexWriter;
 const PREPARE_WORKERS: usize = 4;
 /// Text bytes of prepared books waiting to be enqueued; their documents take a few times as
 /// much.
-const IN_FLIGHT_BYTES: usize = 128 << 20;
+const IN_FLIGHT_BYTES: usize = 64 << 20;
 
 impl From<LibraryBookSource> for Source {
     fn from(source: LibraryBookSource) -> Self {
