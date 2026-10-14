@@ -45,7 +45,7 @@ use crate::hebrew_query::{
 };
 use crate::highlight_matcher::{Match, PreparedHighlightMatcher, Range};
 use crate::gap_phrase::Proximity;
-use crate::doc_store::load_document;
+use crate::doc_store::DocumentLoader;
 use crate::line_source::{self, FrameDecoder, RawRow, Source};
 use crate::quote_expansion::{is_quote, QuoteTransparent};
 use crate::term_automaton::{self, TermDfa};
@@ -1542,13 +1542,14 @@ fn verify_candidates(
     state.total = count;
     let file_path_f = ctx.schema.get_field("filePath")?;
     let mut view = LineView::default();
+    let mut loader = DocumentLoader::new(ctx.searcher);
     for batch in docs.chunks(VERIFY_BATCH) {
         if ctx.cancel.load(Ordering::Relaxed) {
             return Ok(false);
         }
         let documents = batch
             .iter()
-            .map(|&(_, address)| Ok((address, load_document(ctx.searcher, address)?)))
+            .map(|&(_, address)| Ok((address, loader.load(address)?)))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let texts = indexed_texts(ctx.searcher, &documents)?;
         let mut hits = Vec::new();
@@ -1858,9 +1859,10 @@ fn scan_stored_book(
             if ctx.cancel.load(Ordering::Relaxed) {
                 return Ok(scan);
             }
+            let mut loader = DocumentLoader::new(ctx.searcher);
             let documents = batch
                 .iter()
-                .map(|&(_, address)| Ok((address, load_document(ctx.searcher, address)?)))
+                .map(|&(_, address)| Ok((address, loader.load(address)?)))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let mut view = LineView::default();
             for (&(id, address), text) in batch.iter().zip(indexed_texts(ctx.searcher, &documents)?)
@@ -1915,9 +1917,10 @@ fn hydrate(
     let segment_f = schema.get_field("segment")?;
     let is_pdf_f = schema.get_field("isPdf")?;
     let file_path_f = schema.get_field("filePath")?;
+    let mut loader = DocumentLoader::new(ctx.searcher);
     let documents = hits
         .iter()
-        .map(|hit| Ok((hit.address, load_document(ctx.searcher, hit.address)?)))
+        .map(|hit| Ok((hit.address, loader.load(hit.address)?)))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let texts = indexed_texts(ctx.searcher, &documents)?;
     let mut out = Vec::with_capacity(hits.len());

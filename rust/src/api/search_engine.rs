@@ -38,7 +38,7 @@ use crate::derived_columns::{
     GENERATION_FIELD, SECTION_OFFSET_FIELD,
 };
 use crate::display_highlight;
-use crate::doc_store::{load_document, segment_to_store};
+use crate::doc_store::{load_document, segment_to_store, DocumentLoader};
 use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
 use crate::hebrew_query;
 use crate::hebrew_query::VocalizedFlags;
@@ -4221,7 +4221,7 @@ fn open_or_create_index(directory: IndexDirectory) -> tantivy::Result<Index> {
 }
 
 /// Doc-store settings of a new index; an existing index keeps those it was created with.
-/// Measured on the full library: zstd over 64K blocks is about half the size of lz4 over 16K.
+/// zstd over 16K blocks: a cold random read is ~45µs against ~108µs at 64K, for ~7% more store.
 fn new_index_settings() -> tantivy::IndexSettings {
     tantivy::IndexSettings {
         docstore_compression: tantivy::store::Compressor::Zstd(tantivy::store::ZstdCompressor {
@@ -4233,7 +4233,7 @@ fn new_index_settings() -> tantivy::IndexSettings {
 }
 
 const DOCSTORE_ZSTD_LEVEL: i32 = 3;
-const DOCSTORE_BLOCK_SIZE: usize = 65_536;
+const DOCSTORE_BLOCK_SIZE: usize = 16_384;
 
 fn index_metadata_path(index_path: &Path) -> PathBuf {
     index_path.join(INDEX_METADATA_FILE_NAME)
@@ -8709,9 +8709,10 @@ impl SearchEngine {
         searcher: &Searcher,
         addresses: &[DocAddress],
     ) -> Result<Vec<(String, TextStatus)>> {
+        let mut loader = DocumentLoader::new(searcher);
         let documents = addresses
             .iter()
-            .map(|&address| Ok((address, load_document(searcher, address)?)))
+            .map(|&address| Ok((address, loader.load(address)?)))
             .collect::<Result<Vec<_>>>()?;
         Ok(
             Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?
@@ -9065,9 +9066,10 @@ impl SearchEngine {
         let is_pdf_f = self.schema.get_field("isPdf")?;
         let file_path_f = self.schema.get_field("filePath")?;
 
+        let mut loader = DocumentLoader::new(searcher);
         let documents = hits
             .iter()
-            .map(|&(_, address)| Ok((address, load_document(searcher, address)?)))
+            .map(|&(_, address)| Ok((address, loader.load(address)?)))
             .collect::<Result<Vec<_>>>()?;
         // The whole candidate window's library rows in one transaction.
         let texts = Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?;
@@ -13134,6 +13136,7 @@ impl SearchEngine {
         )?;
         let rep_by_id: HashMap<u64, &GroupedRep> = page.reps.iter().map(|r| (r.id, r)).collect();
         let fields = SiblingFields::resolve(schema)?;
+        let mut loader = DocumentLoader::new(searcher);
         for result in &mut results {
             let Some(rep) = rep_by_id.get(&result.id) else {
                 continue;
@@ -13142,7 +13145,9 @@ impl SearchEngine {
             result.merged = rep
                 .siblings
                 .iter()
-                .filter_map(|addr| Self::fetch_merged_sibling(&fields, searcher, *addr).transpose())
+                .filter_map(|addr| {
+                    Self::fetch_merged_sibling(&fields, &mut loader, *addr).transpose()
+                })
                 .collect::<Result<Vec<_>>>()?;
         }
         Ok(results)
@@ -13152,10 +13157,10 @@ impl SearchEngine {
     /// מסמך שאינו ניתן לקריאה נשמט בשקט מהרשימה (המונה כבר ספר אותו).
     fn fetch_merged_sibling(
         fields: &SiblingFields,
-        searcher: &Searcher,
+        loader: &mut DocumentLoader<'_>,
         address: DocAddress,
     ) -> Result<Option<MergedSibling>> {
-        let doc = match load_document(searcher, address) {
+        let doc = match loader.load(address) {
             Ok(d) => d,
             Err(e) => {
                 log::error!(
@@ -14325,8 +14330,9 @@ impl SearchEngine {
         let file_path_field = schema.get_field("filePath")?;
 
         let mut documents = Vec::with_capacity(addresses.len());
+        let mut loader = DocumentLoader::new(searcher);
         for doc_address in addresses {
-            match load_document(searcher, doc_address) {
+            match loader.load(doc_address) {
                 Ok(d) => documents.push((doc_address, d)),
                 Err(e) => {
                     // A hit the collectors counted but the doc store cannot
@@ -14438,6 +14444,7 @@ impl SearchEngine {
         let file_path_field = schema.get_field("filePath")?;
         let mut out = vec![None; documents.len()];
         let mut next_documents = Vec::new();
+        let mut loader = DocumentLoader::new(searcher);
         let mut slots = Vec::new();
         for (slot, ((address, document), text)) in documents.iter().zip(texts).enumerate() {
             if text.status != TextStatus::Ok
@@ -14505,7 +14512,7 @@ impl SearchEngine {
                 .first(next.doc_id)
                 .is_some_and(|v| v > 0);
             if starts_open {
-                next_documents.push((next, load_document(searcher, next)?));
+                next_documents.push((next, loader.load(next)?));
                 slots.push(slot);
             }
         }
@@ -16967,7 +16974,7 @@ mod tests {
         }
     }
 
-    /// A new index compresses its doc store with zstd over 64K blocks; one created with
+    /// A new index compresses its doc store with zstd over 16K blocks; one created with
     /// other settings is opened with its own.
     #[test]
     fn a_new_index_compresses_its_store_with_zstd() {
@@ -20255,6 +20262,40 @@ mod tests {
         engine.commit().unwrap();
         assert_eq!(engine.page_cache.len(), 0);
         assert_eq!(page(&engine, 28), (31, vec![29, 30, 31]));
+    }
+
+    /// A loader that keeps each segment's columns reads every document as one read alone.
+    #[test]
+    fn a_document_loader_reads_each_document_as_a_single_read_does() {
+        let (mut engine, _dir) = make_engine();
+        for id in 1..=6u64 {
+            add(&mut engine, id, "שלום", &format!("/books/{}.txt", id % 2));
+            if id == 3 {
+                engine.commit().unwrap();
+            }
+        }
+        add(&mut engine, 7, "סרוק", "/books/scan.pdf");
+        engine.commit().unwrap();
+        let searcher = engine.index_reader.searcher();
+        let addresses: Vec<DocAddress> = searcher
+            .segment_readers()
+            .iter()
+            .enumerate()
+            .flat_map(|(ord, reader)| {
+                (0..reader.max_doc()).map(move |doc| DocAddress::new(ord as u32, doc))
+            })
+            .collect();
+        assert!(searcher.segment_readers().len() > 1);
+        let mut loader = DocumentLoader::new(&searcher);
+        for &address in addresses.iter().chain(addresses.iter().rev()) {
+            let alone = load_document(&searcher, address).unwrap();
+            let loaded = loader.load(address).unwrap();
+            assert_eq!(
+                loaded.to_json(&engine.schema),
+                alone.to_json(&engine.schema)
+            );
+            assert!(loaded.get_first(engine.schema.get_field("title").unwrap()).is_some());
+        }
     }
 
     /// A fuzzy query's cache key names its word: two fuzzy searches never share a page.

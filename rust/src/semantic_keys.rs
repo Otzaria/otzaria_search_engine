@@ -250,8 +250,10 @@ pub fn recompute_chunk_keys(
     // Opened once per segment: opening a column reads its whole block index.
     let mut section_columns: Vec<Option<crate::derived_columns::SectionIdColumn>> =
         vec![None; searcher.segment_readers().len()];
+    let mut loader = crate::doc_store::DocumentLoader::new(searcher);
     for &address in &book[start..=end] {
-        let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
+        let document: TantivyDocument = loader
+            .load(address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         pdf.push(
             document
@@ -313,10 +315,12 @@ fn key_texts(
 /// The text of the lines at `addresses`, as a key is computed from it.
 #[cfg(feature = "semantic-integration")]
 pub(crate) fn line_texts(searcher: &Searcher, addresses: &[DocAddress]) -> Result<Vec<String>> {
+    let mut loader = crate::doc_store::DocumentLoader::new(searcher);
     let documents = addresses
         .iter()
         .map(|&address| {
-            let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
+            let document: TantivyDocument = loader
+                .load(address)
                 .with_context(|| format!("reading the document at {address:?}"))?;
             Ok((address, document))
         })
@@ -350,11 +354,15 @@ pub(crate) fn recompute_chunk_keys_at(
         let documents = addresses
             .into_par_iter()
             .with_min_len(8)
-            .map(|address| {
-                let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
-                    .with_context(|| format!("reading the document at {address:?}"))?;
-                Ok((address, document))
-            })
+            .map_init(
+                || crate::doc_store::DocumentLoader::new(searcher),
+                |loader, address| {
+                    let document: TantivyDocument = loader
+                        .load(address)
+                        .with_context(|| format!("reading the document at {address:?}"))?;
+                    Ok((address, document))
+                },
+            )
             .collect::<Result<Vec<_>>>()?;
         let texts = indexed_texts(searcher, &documents)?;
         for ((address, document), line) in documents.iter().zip(texts) {
