@@ -256,7 +256,7 @@ impl Directory for ReadOnlyDirectory {
 }
 
 /// The engine over `path`, opened without writing anything there.
-fn open_read_only(path: &Path) -> Result<SearchEngine> {
+pub(crate) fn open_read_only(path: &Path) -> Result<SearchEngine> {
     let directory = ReadOnlyDirectory::open(path)
         .with_context(|| format!("opening {} read-only", path.display()))?;
     let index = Index::open(directory).context("reading the index")?;

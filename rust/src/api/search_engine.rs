@@ -3751,6 +3751,7 @@ pub(crate) struct TextBookMeta {
 }
 
 /// A text book's documents, built by [`SearchEngine::prepare_text_book`].
+#[frb(ignore)]
 pub(crate) struct PreparedTextBook {
     pub documents: Vec<TantivyDocument>,
     /// The book's `contentHash` ([`book_fingerprint`]).
@@ -14829,6 +14830,525 @@ where
             (addresses(hits), Some(total as u32), Some(books))
         }
     })
+}
+
+// ── User regex (`/…/`) ─────────────────────────────────────────────────────────
+//
+// The engine side of a regular expression the user types wrapped in slashes; the work is in
+// `crate::user_regex`. The application calls [`parse_user_regex`] on every query that is
+// wrapped in `/…/`: `Invalid` means "search the text as ordinary words", any other kind is
+// searched with the `*_user_regex*` family below, each call taking a
+// [`UserRegexCancellationToken`]. A cross-space pattern may read whole books, so its counts
+// arrive with the stream's last event, and the count/facet calls after a finished stream are
+// answered from its cached result.
+
+/// How a `/…/` pattern is searched (see [`parse_user_regex`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserRegexKind {
+    /// Not usable as a regex (not wrapped, syntax, too complex): search it as plain text.
+    Invalid,
+    /// No whitespace: matched against whole index terms (`/מש.ה/`, `/[א-ת]+ים/`).
+    SingleWord,
+    /// Words separated by a space or `\s+`: an adjacent phrase of term patterns, which may
+    /// continue onto the next line (`/(משה|אהרן) רבנו/`).
+    WordSequence,
+    /// Anything else that spans a space: matched against each line's text (`/שמע .* ישראל/`).
+    CrossSpace,
+}
+
+/// What [`parse_user_regex`] made of a query.
+pub struct UserRegexPlan {
+    pub kind: UserRegexKind,
+    /// The pattern as searched: without `/…/` and edge anchors, folded like the index text
+    /// (no nikud, ASCII quotes, maqaf as a space). Empty when `Invalid`.
+    pub pattern: String,
+    /// The pattern of each word, for `SingleWord` (one) and `WordSequence`; empty otherwise.
+    pub words: Vec<String>,
+    /// Why the query is `Invalid`.
+    pub reason: Option<String>,
+}
+
+/// Classifies a query typed as `/pattern/`. Cheap and synchronous: parsing plus a
+/// size-limited compile, never more than a few milliseconds whatever the pattern.
+///
+/// Rules: the outer `/…/` and `^`, `$`, `\b` at the pattern's edges are dropped (a term
+/// pattern matches whole terms, a cross-space one starts and ends on a word boundary when
+/// its edge is a letter). `.` and negated classes never cross a space by themselves; only
+/// explicit whitespace (a space, `\s`, `\W`, a class of spaces) makes a pattern
+/// cross-space — as do an inner anchor, and a sequence word that names no letter (`.*`).
+/// Matching ignores case and nikud; geresh/gershayim match their ASCII forms.
+#[frb(sync)]
+pub fn parse_user_regex(raw: String) -> UserRegexPlan {
+    match crate::user_regex::parse(&raw) {
+        Ok(regex) => UserRegexPlan {
+            kind: regex.kind.api(),
+            words: regex.parts.iter().map(|p| p.pattern.clone()).collect(),
+            pattern: regex.pattern,
+            reason: None,
+        },
+        Err(reason) => UserRegexPlan {
+            kind: UserRegexKind::Invalid,
+            pattern: String::new(),
+            words: Vec::new(),
+            reason: Some(reason),
+        },
+    }
+}
+
+/// Finds a `/…/` pattern in displayed book text (markup and nikud included); see
+/// [`prepare_user_regex_matcher`].
+#[frb(opaque)]
+pub struct UserRegexMatcher {
+    inner: crate::user_regex::DisplayMatcher,
+}
+
+impl UserRegexMatcher {
+    /// Every match in `data` (one line of the book, HTML as shown), in UTF-16 units, with
+    /// one word range per word of a `WordSequence`.
+    #[frb(sync)]
+    pub fn find_matches(&self, data: String) -> Vec<HighlightMatch> {
+        convert_highlight_matches(self.inner.find(&data))
+    }
+}
+
+/// The book-view matcher of a `/…/` query, compiled once; `None` when it is `Invalid`.
+#[frb(sync)]
+pub fn prepare_user_regex_matcher(raw: String) -> Option<UserRegexMatcher> {
+    let regex = crate::user_regex::parse(&raw).ok()?;
+    crate::user_regex::DisplayMatcher::new(&regex).map(|inner| UserRegexMatcher { inner })
+}
+
+/// Stops a `*_user_regex*` call. Opaque and borrowed, like [`SemanticCancellationToken`]:
+/// Dart keeps the object and [`Self::cancel`] reaches the running search, which looks at it
+/// while collecting terms, between verified batches and between the books it reads. One
+/// token per search; a cancelled one stays cancelled.
+#[frb(opaque)]
+pub struct UserRegexCancellationToken {
+    flag: std::sync::atomic::AtomicBool,
+}
+
+impl UserRegexCancellationToken {
+    #[frb(sync)]
+    pub fn new() -> Self {
+        Self {
+            flag: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Returns at once; the search stops at its next look.
+    #[frb(sync)]
+    pub fn cancel(&self) {
+        self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[frb(sync, getter)]
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Default for UserRegexCancellationToken {
+    #[frb(ignore)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The match ranges of one result of a cross-space search.
+pub struct UserRegexLineMatches {
+    /// UTF-16 ranges in the result's whole line as [`SearchEngine::get_document_by_id`]
+    /// returns its `text` (the snippet is already painted). Empty for term kinds: their
+    /// snippets are painted, and [`UserRegexMatcher`] finds them in the book.
+    pub ranges: Vec<HighlightRange>,
+}
+
+/// One event of [`SearchEngine::search_user_regex_stream`].
+///
+/// The last event has `done` set and carries the final `total_count`/`book_counts` and
+/// `truncated` (and `cancelled` when the token stopped it). Term kinds also send their counts
+/// first, before the results, as the other streams do; a cross-space search reports
+/// `progress_done`/`progress_total` (candidate lines, or books read) and `found_so_far`
+/// while it runs, and the page's results as soon as they are found.
+pub struct UserRegexStreamUpdate {
+    pub kind: UserRegexKind,
+    pub results: Vec<SearchResult>,
+    /// One entry per result, in order.
+    pub match_ranges: Vec<UserRegexLineMatches>,
+    pub total_count: Option<u32>,
+    pub book_counts: Option<HashMap<String, u32>>,
+    pub found_so_far: u32,
+    pub progress_done: u32,
+    pub progress_total: u32,
+    /// Partial: a term budget ran out, more than `MAX_LINE_HITS` lines matched, or some lines
+    /// could not be read (the library database suspended or busy).
+    pub truncated: bool,
+    pub done: bool,
+    pub cancelled: bool,
+}
+
+/// A term pattern's query, whether a budget truncated it, and each word's terms.
+type UserRegexTermQuery = (Box<dyn Query>, bool, Vec<Arc<Vec<String>>>);
+
+/// Terms one word of a `SingleWord` pattern may expand to before it is truncated.
+const USER_REGEX_WORD_MAX_TERMS: u32 = 10_000;
+
+impl SearchEngine {
+    /// Results of a `/…/` query in the order asked for (a cross-space pattern is always in
+    /// catalogue order), `limit` from `offset`, in chunks of `chunk_size`, as
+    /// [`UserRegexStreamUpdate`] events. Grouping is not offered. An invalid pattern is an
+    /// error event; check [`parse_user_regex`] first.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_user_regex_stream(
+        &self,
+        raw: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        order: ResultsOrder,
+        chunk_size: u32,
+        cancellation: &UserRegexCancellationToken,
+        sink: StreamSink<UserRegexStreamUpdate>,
+    ) -> Result<()> {
+        let mut emit = |update: UserRegexStreamUpdate| sink.add(update).is_ok();
+        let result = self.user_regex_stream_into(
+            &raw,
+            &facets,
+            limit,
+            offset,
+            &order,
+            chunk_size,
+            &cancellation.flag,
+            &mut emit,
+        );
+        Self::surface_stream_error(&sink, result)
+    }
+
+    /// [`Self::search_user_regex_stream`] into `emit`, which returns `false` once nobody
+    /// listens.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn user_regex_stream_into(
+        &self,
+        raw: &str,
+        facets: &[String],
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+        chunk_size: u32,
+        cancel: &std::sync::atomic::AtomicBool,
+        emit: &mut dyn FnMut(UserRegexStreamUpdate) -> bool,
+    ) -> Result<()> {
+        let regex = Self::user_regex(raw)?;
+        let searcher = self.index_reader.searcher();
+        if regex.kind == crate::user_regex::RegexKind::Line {
+            let ctx = self.user_regex_line_search(&searcher, facets, cancel)?;
+            let hl = HighlightConfig::default();
+            let page = crate::user_regex::Page {
+                offset,
+                limit,
+                chunk_size,
+                highlight_prefix: hl.highlight_prefix,
+                highlight_postfix: hl.highlight_postfix,
+                max_chars: hl.max_chars,
+            };
+            crate::user_regex::run_line_search(&ctx, &regex, Some(&page), emit)?;
+            return Ok(());
+        }
+        self.user_regex_term_stream(
+            &searcher, &regex, facets, limit, offset, order, chunk_size, cancel, emit,
+        )
+    }
+
+    /// Lines a `/…/` query matches. A cancelled call is an error.
+    pub fn count_user_regex(
+        &self,
+        raw: String,
+        facets: Vec<String>,
+        cancellation: &UserRegexCancellationToken,
+    ) -> Result<CountResult> {
+        let regex = Self::user_regex(&raw)?;
+        let searcher = self.index_reader.searcher();
+        if regex.kind == crate::user_regex::RegexKind::Line {
+            let outcome = self.user_regex_line_outcome(&searcher, &regex, &facets, cancellation)?;
+            return Ok(CountResult {
+                count: outcome.count(),
+                truncated: outcome.truncated,
+            });
+        }
+        let (query, truncated, _) =
+            self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
+        Ok(CountResult {
+            count: searcher.search(&*query, &Count)? as u32,
+            truncated,
+        })
+    }
+
+    /// Lines a `/…/` query matches per `filePath`. A cancelled call is an error.
+    pub fn count_by_book_user_regex(
+        &self,
+        raw: String,
+        facets: Vec<String>,
+        cancellation: &UserRegexCancellationToken,
+    ) -> Result<BookCountResult> {
+        let regex = Self::user_regex(&raw)?;
+        let searcher = self.index_reader.searcher();
+        if regex.kind == crate::user_regex::RegexKind::Line {
+            let outcome = self.user_regex_line_outcome(&searcher, &regex, &facets, cancellation)?;
+            return Ok(BookCountResult {
+                counts: outcome.book_counts.clone(),
+                truncated: outcome.truncated,
+            });
+        }
+        let (query, truncated, _) =
+            self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
+        Ok(BookCountResult {
+            counts: searcher.search(&*query, &BookCountCollector)?,
+            truncated,
+        })
+    }
+
+    /// Per-child facet counts under `facet_prefix` of a `/…/` query (see
+    /// [`Self::get_facet_counts`] on the dimension roots). `facets` filters, as everywhere:
+    /// one book's path is a search in that book. A cancelled call is an error.
+    pub fn get_facet_counts_user_regex(
+        &self,
+        raw: String,
+        facets: Vec<String>,
+        facet_prefix: String,
+        cancellation: &UserRegexCancellationToken,
+    ) -> Result<FacetCountsResult> {
+        let regex = Self::user_regex(&raw)?;
+        let searcher = self.index_reader.searcher();
+        let (query, truncated): (Box<dyn Query>, bool) =
+            if regex.kind == crate::user_regex::RegexKind::Line {
+                let outcome =
+                    self.user_regex_line_outcome(&searcher, &regex, &facets, cancellation)?;
+                (
+                    Box::new(crate::user_regex::HitSetQuery::new(&searcher, &outcome)),
+                    outcome.truncated,
+                )
+            } else {
+                let (query, truncated, _) =
+                    self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
+                (query, truncated)
+            };
+        let mut collector = FacetCollector::for_field("topics");
+        collector.add_facet(&facet_prefix);
+        let counts = searcher.search(&*query, &collector)?;
+        Ok(FacetCountsResult {
+            counts: counts
+                .get(facet_prefix.as_str())
+                .map(|(f, count)| FacetCount {
+                    path: f.to_string(),
+                    count,
+                })
+                .collect(),
+            truncated,
+        })
+    }
+
+    fn user_regex(raw: &str) -> Result<crate::user_regex::UserRegex> {
+        crate::user_regex::parse(raw).map_err(|reason| anyhow::anyhow!("invalid user regex: {reason}"))
+    }
+
+    fn user_regex_line_search<'a>(
+        &'a self,
+        searcher: &'a Searcher,
+        facets: &[String],
+        cancel: &'a std::sync::atomic::AtomicBool,
+    ) -> Result<crate::user_regex::LineSearch<'a>> {
+        Ok(crate::user_regex::LineSearch {
+            searcher,
+            schema: &self.schema,
+            scope: (!facets.is_empty())
+                .then(|| self.facet_filter_query(facets))
+                .transpose()?,
+            facets: facets.to_vec(),
+            cancel,
+            max_hits: crate::user_regex::MAX_LINE_HITS,
+        })
+    }
+
+    fn user_regex_line_outcome(
+        &self,
+        searcher: &Searcher,
+        regex: &crate::user_regex::UserRegex,
+        facets: &[String],
+        cancellation: &UserRegexCancellationToken,
+    ) -> Result<Arc<crate::user_regex::LineOutcome>> {
+        let ctx = self.user_regex_line_search(searcher, facets, &cancellation.flag)?;
+        crate::user_regex::run_line_search(&ctx, regex, None, &mut |_| true)?
+            .ok_or_else(|| anyhow::anyhow!(crate::user_regex::CANCELLED))
+    }
+
+    /// The query of a term pattern: one word as its term set, a sequence as an adjacent
+    /// phrase of term sets that may continue onto the next line. Also returns whether a
+    /// budget truncated a term set, and the sets (for highlighting).
+    fn user_regex_term_query(
+        &self,
+        searcher: &Searcher,
+        regex: &crate::user_regex::UserRegex,
+        facets: &[String],
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<UserRegexTermQuery> {
+        let text_field = self.schema.get_field("text")?;
+        let single = regex.parts.len() == 1;
+        let (max_terms, budget) = if single {
+            (USER_REGEX_WORD_MAX_TERMS, SINGLE_WORD_POSTINGS_BUDGET)
+        } else {
+            (PHRASE_POSITION_MAX_EXPANSIONS, PHRASE_POSITION_POSTINGS_BUDGET)
+        };
+        let mut truncated = false;
+        let mut sets = Vec::with_capacity(regex.parts.len());
+        for part in &regex.parts {
+            let found = crate::user_regex::collect_part_terms(
+                searcher, text_field, part, max_terms, budget, cancel,
+            )?;
+            truncated |= found.truncated;
+            sets.push(found.terms);
+        }
+        let facets_query = (!facets.is_empty())
+            .then(|| self.facet_filter_query(facets))
+            .transpose()?;
+        let terms_of = |set: &Vec<String>| -> Vec<Term> {
+            set.iter()
+                .map(|t| Term::from_field_text(text_field, t))
+                .collect()
+        };
+        let main: Box<dyn Query> = if sets.iter().any(|s| s.is_empty()) {
+            Box::new(EmptyQuery)
+        } else if single {
+            Box::new(TermSetQuery::new(terms_of(&sets[0])))
+        } else {
+            let n = sets.len();
+            let inline: Box<dyn Query> = Box::new(TermListPhraseQuery::new(
+                text_field,
+                sets.iter().map(|s| terms_of(s)).collect(),
+                Proximity::adjacent(n),
+            ));
+            let words: Vec<cross_line::CrossLineWord> = sets
+                .iter()
+                .map(|s| cross_line::CrossLineWord::Terms(s.as_ref().clone()))
+                .collect();
+            self.with_cross_line(inline, text_field, &words, &vec![0; n - 1], facets_query.as_deref())?
+        };
+        let query: Box<dyn Query> = match facets_query {
+            Some(facets_query) => Box::new(BooleanQuery::new(vec![
+                (Occur::Must, main),
+                (Occur::Must, facets_query),
+            ])),
+            None => main,
+        };
+        Ok((query, truncated, sets))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn user_regex_term_stream(
+        &self,
+        searcher: &Searcher,
+        regex: &crate::user_regex::UserRegex,
+        facets: &[String],
+        limit: u32,
+        offset: u32,
+        order: &ResultsOrder,
+        chunk_size: u32,
+        cancel: &std::sync::atomic::AtomicBool,
+        emit: &mut dyn FnMut(UserRegexStreamUpdate) -> bool,
+    ) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let kind = regex.kind.api();
+        let event = |results: Vec<SearchResult>,
+                     counts: Option<(u32, &HashMap<String, u32>)>,
+                     truncated: bool,
+                     done: bool,
+                     cancelled: bool| UserRegexStreamUpdate {
+            kind,
+            match_ranges: results
+                .iter()
+                .map(|_| UserRegexLineMatches { ranges: Vec::new() })
+                .collect(),
+            results,
+            total_count: counts.map(|(total, _)| total),
+            book_counts: counts.map(|(_, by_book)| by_book.clone()),
+            found_so_far: counts.map_or(0, |(total, _)| total),
+            progress_done: 0,
+            progress_total: 0,
+            truncated,
+            done,
+            cancelled,
+        };
+        let built = self.user_regex_term_query(searcher, regex, facets, cancel);
+        if cancel.load(Ordering::Relaxed) {
+            emit(event(Vec::new(), None, false, true, true));
+            return Ok(());
+        }
+        let (query, truncated, sets) = built?;
+        let text_field = self.schema.get_field("text")?;
+        let top = TopDocs::with_limit(limit.max(1) as usize).and_offset(offset as usize);
+        let collected = match order {
+            ResultsOrder::Catalogue => {
+                let top = top.order_by_fast_field::<u64>("id", Order::Asc);
+                let (docs, count, by_book) =
+                    searcher.search(&*query, &(top, Count, BookCountCollector))?;
+                (docs.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), count, by_book)
+            }
+            ResultsOrder::Generation => {
+                let top = top.order_by_fast_field::<u64>("generationSort", Order::Asc);
+                let (docs, count, by_book) =
+                    searcher.search(&*query, &(top, Count, BookCountCollector))?;
+                (docs.into_iter().map(|(_, a)| a).collect(), count, by_book)
+            }
+            ResultsOrder::Relevance => {
+                let top = top.order_by_score();
+                let (docs, count, by_book) =
+                    searcher.search(&*query, &(top, Count, BookCountCollector))?;
+                (docs.into_iter().map(|(_, a)| a).collect(), count, by_book)
+            }
+        };
+        let (addresses, total, by_book) = collected;
+        let addresses = if limit == 0 { Vec::new() } else { addresses };
+        let total = total as u32;
+        if !emit(event(Vec::new(), Some((total, &by_book)), truncated, false, false)) {
+            return Ok(());
+        }
+        if !addresses.is_empty() {
+            let per_word: Vec<HashSet<String>> =
+                sets.iter().map(|s| s.iter().cloned().collect()).collect();
+            let plan = HighlightPlan {
+                query: self.terms_query_from_word_sets(&per_word, text_field)?,
+                phrase: (per_word.len() > 1).then(|| PhraseHighlight {
+                    proximity: Proximity::adjacent(per_word.len()),
+                    per_word_terms: per_word,
+                    analyzer: "hebrew",
+                    cross_line: true,
+                    alternatives: Vec::new(),
+                    allow_term_fallback: true,
+                }),
+            };
+            let hl = HighlightConfig::default();
+            let hl_query: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
+            let generator = Self::make_snippet_generator(searcher, hl_query, text_field, &hl)?;
+            for chunk in addresses.chunks(chunk_size.max(1) as usize) {
+                if cancel.load(Ordering::Relaxed) {
+                    emit(event(Vec::new(), Some((total, &by_book)), truncated, true, true));
+                    return Ok(());
+                }
+                let results = Self::build_results_with_generator(
+                    &self.schema,
+                    searcher,
+                    &generator,
+                    text_field,
+                    chunk.to_vec(),
+                    &hl,
+                    plan.phrase.as_ref(),
+                )?;
+                if !emit(event(results, None, false, false, false)) {
+                    return Ok(());
+                }
+            }
+        }
+        emit(event(Vec::new(), Some((total, &by_book)), truncated, true, false));
+        Ok(())
+    }
 }
 
 // ── BookCountCollector ─────────────────────────────────────────────────────────

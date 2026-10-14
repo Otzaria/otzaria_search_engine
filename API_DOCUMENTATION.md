@@ -6,6 +6,7 @@ This document describes the API exposed by the Otzaria Search Engine through Flu
 
 1. [Classes](#classes)
    - [SearchEngine](#searchengine)
+     - [User regex (`/…/`)](#user-regex-)
      - [Semantic search](#semantic-search)
 2. [Top-Level Functions](#top-level-functions)
   - [checkIndexCompatibility](#checkindexcompatibility)
@@ -168,6 +169,78 @@ queries return no results. Advanced-mode highlighting wraps every
 morphological variant that actually matched, not just the literal words;
 fuzzy-mode highlighting likewise wraps every term within the requested edit
 distance, not just exact occurrences of the query words.
+
+---
+
+##### User regex (`/…/`)
+
+A query the user wraps in slashes is a regular expression (Rust `regex` syntax). The
+application classifies it first, synchronously, and falls back to its ordinary search when
+the result is `invalid`:
+
+```dart
+UserRegexPlan parseUserRegex({required String raw});          // sync, a few ms at most
+UserRegexMatcher? prepareUserRegexMatcher({required String raw}); // sync; book view
+List<HighlightMatch> UserRegexMatcher.findMatches({required String data}); // sync
+
+final token = UserRegexCancellationToken();                    // token.cancel(), token.isCancelled
+Stream<UserRegexStreamUpdate> searchUserRegexStream({raw, facets, limit, offset, order,
+    chunkSize, required UserRegexCancellationToken cancellation});
+Future<CountResult> countUserRegex({raw, facets, cancellation});
+Future<BookCountResult> countByBookUserRegex({raw, facets, cancellation});
+Future<FacetCountsResult> getFacetCountsUserRegex({raw, facets, facetPrefix, cancellation});
+```
+
+`UserRegexPlan.kind`:
+
+| Kind | When | How it is searched |
+|------|------|--------------------|
+| `invalid` | not wrapped, empty, bad syntax, longer than 300 characters, or too complex (`reason`) | search the text as ordinary words |
+| `singleWord` | no explicit whitespace (`/מש.ה/`, `/[א-ת]+ים/`, `/ספר.*/`) | against whole index terms, like an advanced regex word |
+| `wordSequence` | words split at the top level by a space or `\s+` (`/(משה\|אהרן) רבנו/`) | an adjacent phrase of term patterns; continues onto the next line like any phrase |
+| `crossSpace` | anything else that spans a space (`/שמע .* ישראל/`, `/(\S+\s){2}ישראל/`, an inner `\b`) | against each line's text |
+
+Rules shared by all kinds: the outer slashes and `^`, `$`, `\b` at the pattern's edges are
+dropped; case and nikud are ignored; geresh/gershayim (`׳ ״ ‘ ’ “ ”`) match their ASCII
+forms; maqaf is a space. Final letters stay distinct. `.` and negated classes never cross a
+space on their own — only explicit whitespace (a space, `\s`, `\W`, a class of spaces) makes
+a pattern `crossSpace`, as does a sequence word that names no letter (`/שמע .* ישראל/`). Term
+patterns match whole terms; in term patterns, wildcards cover Hebrew letters, Latin `a-z`,
+digits and quotes. A `crossSpace` match starts and ends on a word boundary when that edge
+of the pattern is a letter, and is matched against the line as the app's
+`cleanLineForSearch` sees it (tags removed, a breaking tag as a space; nikud removed;
+maqaf/paseq/`|` as a space; whitespace collapsed), lowercased, quotes as ASCII. Footnote
+text stays in the line, as it does in the index. It never continues onto the
+next line.
+
+**Cost.** Term kinds cost what an advanced search costs; a pattern whose automaton would be
+large is relaxed (repetitions above 7 become unbounded, the exact pattern verifies every
+term) or refused at parse time. A `crossSpace` pattern reads candidate lines: when its fixed
+words (`שמע`, `ישראל`) narrow the scope to 5,000 lines or fewer they are read one by one;
+otherwise the books holding candidates are read, decoding only the candidate rows; a pattern
+with no selective fixed word reads every book in scope (the whole library takes on the
+order of 10–30 s). Results and progress stream as books are read, and the token stops it.
+
+**Stream events (`UserRegexStreamUpdate`).** Term kinds send their counts first
+(`totalCount`, `bookCounts`, `truncated`), then results in chunks. A `crossSpace` search
+sends progress (`progressDone`/`progressTotal` — candidate lines, or books read;
+`foundSoFar`) and the requested page's results as soon as they are found, in catalogue
+order. The last event always has `done: true` and carries the final counts and `truncated`
+(and `cancelled: true` when the token stopped it). `matchRanges[i]` belongs to `results[i]`:
+for `crossSpace`, the UTF-16 ranges of the matches in the line's whole text (as
+`getDocumentById` returns it); empty for term kinds, whose snippets are painted and whose
+matches `UserRegexMatcher` finds in the book. `truncated` means partial: a term budget ran
+out, more than 100,000 lines matched, or lines could not be read (the library database
+suspended or busy). `order` applies to term kinds only; grouping is not offered.
+
+**Counts and facets** of a `crossSpace` pattern run the same search; after a finished
+stream with the same pattern and facets they are answered from its cached result. A
+cancelled count or facet call fails with an error. `facets` filters as everywhere — the
+book's own topics path is a search in that book.
+
+**Book view.** `prepareUserRegexMatcher(raw).findMatches(line)` finds every match in one
+displayed line (HTML and nikud included), in UTF-16 units, one word range per word of a
+sequence.
 
 ---
 

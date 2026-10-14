@@ -21,7 +21,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Same ceiling as the app's `LineContentCodec.maxLineBytes`.
@@ -107,7 +107,7 @@ thread_local! {
 /// Decodes `line_content` BLOBs: a zstd frame of one dictionary from `zstd_dict`, chosen by
 /// the dictionary id in the frame header (no checksum).
 struct ZstdCodec {
-    dicts: HashMap<u32, zstd::zstd_safe::DDict<'static>>,
+    dicts: Arc<HashMap<u32, zstd::zstd_safe::DDict<'static>>>,
     dctx: zstd::zstd_safe::DCtx<'static>,
     /// A frame named a dictionary this codec does not hold: reload on the next commit.
     missed_dict: bool,
@@ -129,39 +129,99 @@ impl ZstdCodec {
         }
         let dctx = zstd::zstd_safe::DCtx::try_create().context("ZSTD_createDCtx failed")?;
         Ok(Self {
-            dicts,
+            dicts: Arc::new(dicts),
             dctx,
             missed_dict: false,
         })
     }
 
     fn decode(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
-        let size = match zstd::zstd_safe::get_frame_content_size(frame) {
-            Ok(Some(size)) if size <= MAX_LINE_BYTES => size as usize,
-            other => anyhow::bail!("invalid zstd frame (content size {other:?})"),
-        };
-        // SAFETY: reads at most `frame.len()` bytes of a valid slice.
-        let dict_id = unsafe {
-            zstd::zstd_safe::zstd_sys::ZSTD_getDictID_fromFrame(frame.as_ptr().cast(), frame.len())
-        };
-        let Some(ddict) = self.dicts.get(&dict_id) else {
+        let result = decode_frame(&self.dicts, &mut self.dctx, frame);
+        if matches!(result, Err(FrameError::MissingDict(_))) {
             self.missed_dict = true;
-            anyhow::bail!("dictionary {dict_id} is missing from zstd_dict");
-        };
-        let mut out: Vec<u8> = Vec::with_capacity(size);
-        let written = self
-            .dctx
-            .decompress_using_ddict(&mut out, frame, ddict)
-            .map_err(|code| {
-                anyhow::anyhow!(
-                    "zstd decode failed: {}",
-                    zstd::zstd_safe::get_error_name(code)
-                )
-            })?;
-        if written != size {
-            anyhow::bail!("zstd frame declared {size} bytes and produced {written}");
         }
-        Ok(out)
+        result.map_err(anyhow::Error::from)
+    }
+}
+
+#[derive(Debug)]
+enum FrameError {
+    MissingDict(u32),
+    Invalid(String),
+}
+
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FrameError::MissingDict(id) => write!(f, "dictionary {id} is missing from zstd_dict"),
+            FrameError::Invalid(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {}
+
+fn decode_frame(
+    dicts: &HashMap<u32, zstd::zstd_safe::DDict<'static>>,
+    dctx: &mut zstd::zstd_safe::DCtx<'static>,
+    frame: &[u8],
+) -> std::result::Result<Vec<u8>, FrameError> {
+    let size = match zstd::zstd_safe::get_frame_content_size(frame) {
+        Ok(Some(size)) if size <= MAX_LINE_BYTES => size as usize,
+        other => {
+            return Err(FrameError::Invalid(format!(
+                "invalid zstd frame (content size {other:?})"
+            )))
+        }
+    };
+    // SAFETY: reads at most `frame.len()` bytes of a valid slice.
+    let dict_id = unsafe {
+        zstd::zstd_safe::zstd_sys::ZSTD_getDictID_fromFrame(frame.as_ptr().cast(), frame.len())
+    };
+    let Some(ddict) = dicts.get(&dict_id) else {
+        return Err(FrameError::MissingDict(dict_id));
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(size);
+    let written = dctx
+        .decompress_using_ddict(&mut out, frame, ddict)
+        .map_err(|code| {
+            FrameError::Invalid(format!(
+                "zstd decode failed: {}",
+                zstd::zstd_safe::get_error_name(code)
+            ))
+        })?;
+    if written != size {
+        return Err(FrameError::Invalid(format!(
+            "zstd frame declared {size} bytes and produced {written}"
+        )));
+    }
+    Ok(out)
+}
+
+/// One row of [`LineStore::fetch_book_raw`], still encoded as stored.
+pub(crate) enum RawRow {
+    Text(Vec<u8>),
+    Frame(Vec<u8>),
+}
+
+/// Decodes [`RawRow::Frame`] rows on any thread, outside the source's lock: the dictionaries
+/// are shared with the store that read them, each caller brings its own context.
+#[derive(Clone)]
+pub(crate) struct FrameDecoder {
+    dicts: Arc<HashMap<u32, zstd::zstd_safe::DDict<'static>>>,
+}
+
+impl FrameDecoder {
+    pub(crate) fn context() -> Result<zstd::zstd_safe::DCtx<'static>> {
+        zstd::zstd_safe::DCtx::try_create().context("ZSTD_createDCtx failed")
+    }
+
+    pub(crate) fn decode(
+        &self,
+        dctx: &mut zstd::zstd_safe::DCtx<'static>,
+        frame: &[u8],
+    ) -> Result<Vec<u8>> {
+        Ok(decode_frame(&self.dicts, dctx, frame)?)
     }
 }
 
@@ -606,6 +666,77 @@ impl LineStore {
         })
     }
 
+    /// Every row of `book_id` in `lineIndex` order, undecoded, with the decoder of its frames:
+    /// a whole-book scan decodes in parallel after the lock is released. `None` when the book
+    /// does not exist.
+    pub fn fetch_book_raw(
+        &mut self,
+        book_id: i64,
+    ) -> Result<Option<(Vec<RawRow>, Option<FrameDecoder>)>> {
+        self.in_read_txn(|store| {
+            let Self { conn, layout, .. } = &mut *store;
+            let mut stmt = conn.prepare_cached(layout.book_sql())?;
+            let mut query = stmt.query([book_id])?;
+            let mut rows = Vec::new();
+            while let Some(row) = query.next()? {
+                rows.push(match row.get_ref(0)? {
+                    ValueRef::Blob(frame) => RawRow::Frame(frame.to_vec()),
+                    ValueRef::Text(bytes) => RawRow::Text(bytes.to_vec()),
+                    _ => RawRow::Text(Vec::new()),
+                });
+            }
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            let decoder = layout.codec.as_ref().map(|codec| FrameDecoder {
+                dicts: codec.dicts.clone(),
+            });
+            Ok(Some((rows, decoder)))
+        })
+    }
+
+    /// The rows at `ordinals` of `book_id` (positions in `lineIndex` order), undecoded, in the
+    /// order given; `None` for an ordinal past the book's end. Unlike [`Self::fetch_window`],
+    /// no row is checked against its `lineCheck`: a scan reads candidates, not results.
+    pub fn fetch_rows_raw(
+        &mut self,
+        book_id: i64,
+        ordinals: &[u64],
+    ) -> Result<(Vec<Option<RawRow>>, Option<FrameDecoder>)> {
+        self.in_read_txn(|store| {
+            let ids: Vec<Option<i64>> = {
+                let map = store.row_ids(book_id)?;
+                ordinals.iter().map(|&o| map.get(o)).collect()
+            };
+            let Self { conn, layout, .. } = &mut *store;
+            let mut stmt = conn.prepare_cached(if layout.split {
+                "SELECT content FROM line_content WHERE id = ?1"
+            } else {
+                "SELECT content FROM line WHERE id = ?1"
+            })?;
+            let mut rows = Vec::with_capacity(ids.len());
+            for id in ids {
+                let Some(id) = id else {
+                    rows.push(None);
+                    continue;
+                };
+                let mut query = stmt.query([id])?;
+                rows.push(Some(match query.next()? {
+                    Some(row) => match row.get_ref(0)? {
+                        ValueRef::Blob(frame) => RawRow::Frame(frame.to_vec()),
+                        ValueRef::Text(bytes) => RawRow::Text(bytes.to_vec()),
+                        _ => RawRow::Text(Vec::new()),
+                    },
+                    None => RawRow::Text(Vec::new()),
+                }));
+            }
+            let decoder = layout.codec.as_ref().map(|codec| FrameDecoder {
+                dicts: codec.dicts.clone(),
+            });
+            Ok((rows, decoder))
+        })
+    }
+
     /// The book's current row count (0 when it does not exist).
     pub fn book_row_count(&mut self, book_id: i64) -> Result<u64> {
         let count: i64 = self
@@ -775,6 +906,13 @@ impl Source {
             Source::UserBooks => &USER_BOOKS,
         }
     }
+
+    fn scans_done(self) -> &'static Condvar {
+        match self {
+            Source::Library => &LIBRARY_SCANS_DONE,
+            Source::UserBooks => &USER_BOOKS_SCANS_DONE,
+        }
+    }
 }
 
 /// Why a window could not be served.
@@ -807,6 +945,8 @@ struct Global {
     /// Commits the semantic cache key has seen on the open store.
     #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
     content_epoch: u64,
+    /// Open [`ScanSession`]s: suspending or moving the source waits for them to close.
+    scans: u32,
 }
 
 impl Global {
@@ -823,12 +963,15 @@ impl Global {
             missing_until: None,
             seen_version: None,
             content_epoch: 0,
+            scans: 0,
         }
     }
 }
 
 static LIBRARY: Mutex<Global> = Mutex::new(Global::new());
 static USER_BOOKS: Mutex<Global> = Mutex::new(Global::new());
+static LIBRARY_SCANS_DONE: Condvar = Condvar::new();
+static USER_BOOKS_SCANS_DONE: Condvar = Condvar::new();
 
 fn global(source: Source) -> MutexGuard<'static, Global> {
     let cell = source.cell();
@@ -904,7 +1047,12 @@ pub(crate) fn configure(db_path: &str) -> Result<()> {
     if db_path.is_empty() {
         anyhow::bail!("configure_line_source needs a database path");
     }
-    global(Source::Library).set_path(Some(PathBuf::from(db_path)));
+    let mut g = global(Source::Library);
+    let generation = g.generation;
+    g.set_path(Some(PathBuf::from(db_path)));
+    if g.generation != generation {
+        wait_for_scans(g, Source::Library);
+    }
     Ok(())
 }
 
@@ -914,7 +1062,12 @@ pub(crate) fn configure_user_books(db_path: Option<&str>) -> Result<()> {
     if db_path == Some("") {
         anyhow::bail!("configure_user_books_line_source needs a database path or None");
     }
-    global(Source::UserBooks).set_path(db_path.map(PathBuf::from));
+    let mut g = global(Source::UserBooks);
+    let generation = g.generation;
+    g.set_path(db_path.map(PathBuf::from));
+    if g.generation != generation {
+        wait_for_scans(g, Source::UserBooks);
+    }
     Ok(())
 }
 
@@ -922,6 +1075,7 @@ pub(crate) fn suspend() {
     let mut g = global(Source::Library);
     g.suspend_depth += 1;
     g.drop_store();
+    wait_for_scans(g, Source::Library);
 }
 
 pub(crate) fn resume() -> Result<()> {
@@ -949,6 +1103,7 @@ pub(crate) fn suspend_owned(owner_port: i64) -> Result<()> {
         g.owner_ports.push(owner_port);
     }
     g.drop_store();
+    wait_for_scans(g, Source::Library);
     Ok(())
 }
 
@@ -1133,6 +1288,103 @@ fn with_store_inner<R>(
             SourceUnavailable::Failed
         }
     })
+}
+
+/// Returns once no [`ScanSession`] of `source` is open. A session looks at the source before
+/// each book it reads, so it closes within one book of a suspension or a new path.
+fn wait_for_scans(mut g: MutexGuard<'static, Global>, source: Source) {
+    while g.scans > 0 {
+        g = source
+            .scans_done()
+            .wait(g)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+}
+
+/// Read-only connections of their own for a whole-book scan, which reads many books in
+/// parallel, outside the source's lock and its single connection. The source's state is
+/// looked at before every read: once it is suspended or moved, reads fail
+/// [`SourceUnavailable::Suspended`], and suspending waits for the session to be dropped.
+pub(crate) struct ScanSession {
+    source: Source,
+    path: PathBuf,
+    generation: u64,
+    idle: Mutex<Vec<LineStore>>,
+}
+
+/// Opens a scan session of `source`, refused like a window when the source cannot be read.
+pub(crate) fn begin_scan(source: Source) -> std::result::Result<ScanSession, SourceUnavailable> {
+    let mut g = global(source);
+    if g.suspend_depth > 0 || !g.owner_ports.is_empty() {
+        return Err(SourceUnavailable::Suspended);
+    }
+    let Some(path) = g.path.clone() else {
+        return Err(SourceUnavailable::Unconfigured);
+    };
+    if matches!(path.try_exists(), Ok(false)) {
+        return Err(SourceUnavailable::Missing);
+    }
+    g.scans += 1;
+    Ok(ScanSession {
+        source,
+        path,
+        generation: g.generation,
+        idle: Mutex::new(Vec::new()),
+    })
+}
+
+impl ScanSession {
+    /// Runs `f` on one of the session's connections, opening one when all are busy.
+    pub(crate) fn read<R>(
+        &self,
+        f: impl FnOnce(&mut LineStore) -> Result<R>,
+    ) -> std::result::Result<R, SourceUnavailable> {
+        {
+            let g = global(self.source);
+            if g.suspend_depth > 0 || !g.owner_ports.is_empty() || g.generation != self.generation
+            {
+                return Err(SourceUnavailable::Suspended);
+            }
+        }
+        let idle = self.idle.lock().unwrap_or_else(|p| p.into_inner()).pop();
+        let mut store = match idle {
+            Some(store) => store,
+            None => LineStore::open(&self.path).map_err(|err| {
+                log::warn!("{:?} scan connection failed: {err:#}", self.source);
+                SourceUnavailable::Failed
+            })?,
+        };
+        let result = f(&mut store);
+        self.idle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(store);
+        result.map_err(|err| {
+            if is_busy(&err) {
+                SourceUnavailable::Busy
+            } else {
+                log::warn!("{:?} scan read failed: {err:#}", self.source);
+                SourceUnavailable::Failed
+            }
+        })
+    }
+}
+
+impl Drop for ScanSession {
+    fn drop(&mut self) {
+        for store in self
+            .idle
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain(..)
+        {
+            store.close();
+        }
+        let mut g = global(self.source);
+        g.scans -= 1;
+        drop(g);
+        self.source.scans_done().notify_all();
+    }
 }
 
 /// Serializes tests that touch the process-global source.

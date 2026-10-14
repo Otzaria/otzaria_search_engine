@@ -91,6 +91,7 @@ regex = "1.13.1"
 # Term-dictionary DFAs (see src/term_automaton.rs): byte classes, multi-pattern
 # unions and size limits in bytes instead of tantivy-fst's fixed state cap.
 regex-automata = { version = "0.4.16", default-features = false, features = ["std", "syntax", "unicode", "dfa-build", "dfa-search"] }
+# רג'קס מהמשתמש (user_regex): ניתוח ה-HIR, סיווג והקלה לפני הקמפול.
 regex-syntax = "0.8.11"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
