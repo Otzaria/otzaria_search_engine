@@ -1523,12 +1523,17 @@ fn partial_word_window(root_len: usize) -> usize {
     }
 }
 
-/// `n` letters of any kind before or after the root.
+/// What a prefix/suffix window may add around the root: a Hebrew letter
+/// (Yiddish digraphs included) or a geresh/gershayim, in the index's ASCII
+/// form — never a digit, a Latin letter or another script.
+const AFFIX_LETTER: &str = "[א-תװ-ײ\"']";
+
+/// Up to `n` letters before or after the root.
 fn affix_window(n: usize, voc: bool) -> String {
     if voc {
         voc_window(n)
     } else {
-        format!(".{{0,{n}}}")
+        format!("{AFFIX_LETTER}{{0,{n}}}")
     }
 }
 
@@ -1725,12 +1730,10 @@ pub(crate) fn vocalized_free_pattern(base: &str) -> String {
 }
 
 /// Bounded window of `n` letter-units on the vocalized dictionary. Each unit
-/// is one char plus its attached marks — a bare `.{{0,n}}` would spend the
-/// window on marks (three vocalized letters are 6–9 chars). The unit's `.`
-/// can itself consume a mark, over-accepting slightly; the term dictionary
-/// constrains what actually matches.
+/// is one letter plus its attached marks — a bare `{{0,n}}` over chars would
+/// spend the window on marks (three vocalized letters are 6–9 chars).
 fn voc_window(n: usize) -> String {
-    format!("(?:.{VOC_FREE_MARKS}){{0,{n}}}")
+    format!("(?:{AFFIX_LETTER}{VOC_FREE_MARKS}){{0,{n}}}")
 }
 
 /// `(?:a|b|…)?` over the alternatives; `voc` interleaves free-mark runs so a
@@ -3232,6 +3235,40 @@ mod tests {
     }
 
     #[test]
+    fn affix_windows_add_only_hebrew_letters_and_quotes() {
+        for flags in [
+            WordFlags {
+                prefix: true,
+                ..Default::default()
+            },
+            WordFlags {
+                suffix: true,
+                ..Default::default()
+            },
+            WordFlags {
+                partial: true,
+                ..Default::default()
+            },
+        ] {
+            let p = word_to_pattern("שבת", &flags);
+            assert!(accepts(&p, "בשבת") || accepts(&p, "שבתו"), "{p}");
+            for foreign in ["1שבת", "aשבת", "שבת1", "שבתx", "\u{0301}שבת"] {
+                assert!(!accepts(&p, foreign), "{p} accepted {foreign:?}");
+            }
+        }
+        let partial = WordFlags {
+            partial: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("רמב", &partial, "הרמב\"ם"));
+        assert!(word_accepts("שבת", &partial, "מחשבתו"));
+        // אותו כלל במסלול המנוקד: אות + ריצת סימנים, לא תו כלשהו.
+        let voc = word_to_pattern_vocalized("שבת", &VocalizedFlags::default(), &partial);
+        assert!(accepts(&voc, "בְּשַׁבָּת"));
+        assert!(!accepts(&voc, "1שַׁבָּת"));
+    }
+
+    #[test]
     fn prefix_and_suffix_options_compose() {
         // קידומות (חלון) + סיומות דקדוקיות: אף צד לא נבלע.
         let window_and_gram = WordFlags {
@@ -3289,14 +3326,15 @@ mod tests {
             ..Default::default()
         };
         let p = word_to_pattern("וו", &flags);
-        assert_eq!(p, "(?:.{0,3}וו.{0,3}|.{0,3}ווו.{0,3}|.{0,3}ויו.{0,3})");
+        let w = affix_window(3, false);
+        assert_eq!(p, format!("(?:{w}וו{w}|{w}ווו{w}|{w}ויו{w})"));
         assert!(
-            !p.contains(".{0,3}.{0,3}"),
+            !p.contains(&format!("{w}{w}")),
             "empty variant widened to wildcard: {p}"
         );
         let q = word_to_pattern("''", &flags);
         assert!(
-            !q.contains(".{0,3}.{0,3}"),
+            !q.contains(&format!("{w}{w}")),
             "empty variant widened to wildcard: {q}"
         );
     }
