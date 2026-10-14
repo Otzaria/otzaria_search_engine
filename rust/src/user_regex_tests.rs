@@ -481,6 +481,44 @@ fn a_cancelled_search_stops_and_says_so() {
 }
 
 #[test]
+fn every_count_fails_on_a_cancelled_token_even_when_cached() {
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &sample_books());
+    let cancelled = UserRegexCancellationToken::new();
+    cancelled.cancel();
+    let fresh = UserRegexCancellationToken::new;
+    // A term pattern, a cross-space one with fixed words, and one read whole.
+    for pattern in ["/שמע/", r"/שמע \S+ ישראל/", r"/^\S+\s\S+$/"] {
+        for warm in [false, true] {
+            let label = format!("{pattern} warm={warm}");
+            if warm {
+                engine
+                    .count_user_regex(pattern.into(), vec![], &fresh())
+                    .unwrap();
+            }
+            let failures = [
+                engine
+                    .count_user_regex(pattern.into(), vec![], &cancelled)
+                    .err(),
+                engine
+                    .count_by_book_user_regex(pattern.into(), vec![], &cancelled)
+                    .err(),
+                engine
+                    .get_facet_counts_user_regex(pattern.into(), vec![], "/תנך".into(), &cancelled)
+                    .err(),
+            ];
+            for err in failures {
+                let err = err.unwrap_or_else(|| panic!("{label}: a cancelled count fails"));
+                assert!(err.to_string().contains(CANCELLED), "{label}: {err}");
+            }
+            let found = events(&engine, pattern, &[], &AtomicBool::new(true));
+            assert!(last(&found).cancelled, "{label}");
+            assert!(results(&found).is_empty(), "{label}");
+        }
+    }
+}
+
+#[test]
 fn the_book_view_matcher_finds_matches_in_displayed_html() {
     let data = "<b>שְׁמַע</b> בְּנִי יִשְׂרָאֵל וְעוֹד";
     let units: Vec<u16> = data.encode_utf16().collect();

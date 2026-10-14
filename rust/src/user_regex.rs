@@ -656,6 +656,10 @@ pub(crate) fn collect_part_terms(
     postings_budget: u64,
     cancel: &AtomicBool,
 ) -> anyhow::Result<PartTerms> {
+    // A cached set must not let a cancelled call through.
+    if cancel.load(Ordering::Relaxed) {
+        anyhow::bail!(CANCELLED);
+    }
     let key = PartTermsKey {
         index: index_identity(searcher),
         field,
@@ -1206,6 +1210,15 @@ pub(crate) fn run_line_search(
         .line
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("not a line pattern"))?;
+    if ctx.cancel.load(Ordering::Relaxed) {
+        let nothing = LineOutcome {
+            hits: Vec::new(),
+            book_counts: HashMap::new(),
+            truncated: false,
+        };
+        emit(final_update(&nothing, true, 0, 0));
+        return Ok(None);
+    }
     let mut facets = ctx.facets.clone();
     facets.sort();
     let key = LineCacheKey {
