@@ -1570,8 +1570,8 @@ fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
             field("topics") => Facet::from_text("/מקרא/תורה").unwrap(),
             field("contentHash") => 0u64,
             field("textHash") => 0u64,
-            field("sectionId") => column("sectionId"),
-            field("generationSort") => 0u64,
+            field("sectionOffset") => column("sectionOffset"),
+            field("generation") => 0u64,
             field("lineHash") => column("lineHash"),
         );
         forged.add_u64(field("chunkKey"), column("chunkKey"));

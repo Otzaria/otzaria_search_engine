@@ -588,7 +588,11 @@ impl TantivyCorpus {
                 source_book_key,
                 title: text_field("title")?,
                 reference: text_field("reference")?,
-                section_id: column_u64("sectionId")?,
+                section_id: {
+                    let column = crate::derived_columns::SectionIdColumn::open(reader)
+                        .map_err(|error| format!("reading the sectionId columns: {error}"))?;
+                    exactly_one(column.values_for_doc(doc), "sectionId", line_id)?
+                },
                 segment,
                 is_pdf: stored_bool("isPdf")?,
                 line_hash: column_u64("lineHash")?,
@@ -1105,7 +1109,7 @@ mod tests {
         maimed.add_u64(field("segment"), 1);
         // Everything else present, so the refusal below can only be about the one field
         // that is not — otherwise this would pass for the wrong reason.
-        for name in ["sectionId", "lineHash", "contentHash", "generationSort"] {
+        for name in ["sectionOffset", "lineHash", "contentHash", "generation"] {
             maimed.add_u64(field(name), 1);
         }
         // `isPdf` deliberately absent. Defaulted it would read as `false` — a filterable
@@ -1140,7 +1144,7 @@ mod tests {
     fn a_document_with_two_values_in_a_single_valued_field_is_refused() {
         use tantivy::{Index, TantivyDocument};
 
-        for (field_name, expected) in [("id", "id"), ("sectionId", "sectionId")] {
+        for (field_name, expected) in [("id", "id"), ("sectionOffset", "sectionId")] {
             let dir = TempDir::new().unwrap();
             let engine = engine_with_books(&dir);
             let next_id = corpus(&engine).book_line_ids(BERACHOT).unwrap()[0] + 1;
@@ -1168,7 +1172,7 @@ mod tests {
             doubled.add_bool(field("isPdf"), false);
             doubled.add_u64(field("id"), next_id);
             doubled.add_u64(field("segment"), 1);
-            for name in ["sectionId", "lineHash", "contentHash", "generationSort"] {
+            for name in ["sectionOffset", "lineHash", "contentHash", "generation"] {
                 doubled.add_u64(field(name), 1);
             }
             // The second value, on the field under test.

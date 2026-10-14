@@ -30,6 +30,10 @@ use tantivy::{DocId, SegmentOrdinal, SegmentReader};
 use tantivy_fst::Automaton;
 
 use crate::cross_line;
+use crate::derived_columns::{
+    generation_value, section_offset, GenerationSort, GenerationSortColumn, SectionIdColumn,
+    GENERATION_FIELD, SECTION_OFFSET_FIELD,
+};
 use crate::display_highlight;
 use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
 use crate::hebrew_query;
@@ -2998,8 +3002,6 @@ pub(crate) const LINE_TEXT_VERSION: u32 = 1;
 /// גרשיים וניקוד), ומתחת לכל ריצת-זבל אמיתית (base64 שזלג לקורפוס).
 const MAX_TOKEN_BYTES: usize = 128;
 const DEFAULT_GENERATION_ORDER: u32 = 5;
-const GENERATION_SORT_SHIFT: u32 = 56;
-const GENERATION_SORT_ID_MASK: u64 = (1u64 << GENERATION_SORT_SHIFT) - 1;
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
@@ -3079,10 +3081,6 @@ fn catalogue_id_base(catalogue_order: u32) -> Result<u64> {
         );
     }
     Ok((u64::from(catalogue_order) + 1) << 32)
-}
-
-fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
-    (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
 }
 
 /// Records a book's `(contentHash, textHash)` on one of its documents, the columns' only
@@ -4242,8 +4240,10 @@ fn index_schema() -> Schema {
     // (ב-PDF: מספר העמוד). FAST בלבד: מסלול "תחת אותה כותרת"
     // (SearchScope::SameSection) קורא אותו עמודתית לחיתוך סעיפים; אינו
     // מאוחסן ואינו מחופש ישירות.
-    schema_builder.add_u64_field("sectionId", FAST);
-    schema_builder.add_u64_field("generationSort", FAST);
+    // `sectionId` and `generationSort` are derived from `id` and these (see
+    // `derived_columns`): a value relative to the book compresses to a few bits.
+    schema_builder.add_u64_field(SECTION_OFFSET_FIELD, FAST);
+    schema_builder.add_u64_field(GENERATION_FIELD, FAST);
     // חתימת דה-דופליקציה של גוף השורה (ראו line_dedup_hash). FAST בלבד:
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
@@ -7283,10 +7283,9 @@ impl SearchEngine {
             is_pdf_f       => _is_pdf,
             file_path_f    => _file_path,
             topics_f       => topics_facet,
-            section_id_f   => _section_id.unwrap_or(_id),
-            generation_sort_f => generation_sort_key(
-                _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
-                _id
+            section_id_f   => section_offset(_id, _section_id.unwrap_or(_id)),
+            generation_sort_f => generation_value(
+                _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
             ),
             line_hash_f    => line_dedup_hash(&normalized_text)
         );
@@ -7358,10 +7357,9 @@ impl SearchEngine {
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                section_id_f   => doc.section_id.unwrap_or(doc.id),
-                generation_sort_f => generation_sort_key(
-                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
-                    doc.id
+                section_id_f   => section_offset(doc.id, doc.section_id.unwrap_or(doc.id)),
+                generation_sort_f => generation_value(
+                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
                 ),
                 line_hash_f    => line_hash
             );
@@ -7664,9 +7662,9 @@ impl SearchEngine {
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
                 // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
-                // בין ספרים, אז המזהה ייחודי גלובלית.
-                section_id_f   => id_base + u64::from(reference_of_line[segment]),
-                generation_sort_f => generation_sort_key(generation_order, id),
+                // בין ספרים, אז sectionId הנגזר ייחודי גלובלית.
+                section_id_f   => u64::from(reference_of_line[segment]),
+                generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
             let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
@@ -7824,8 +7822,8 @@ impl SearchEngine {
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
                 // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
-                section_id_f   => id_base + u64::from(page.page_index),
-                generation_sort_f => generation_sort_key(generation_order, id),
+                section_id_f   => u64::from(page.page_index),
+                generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
             // A PDF's lines are not the library's text, so no vector is built from them.
@@ -7926,10 +7924,9 @@ impl SearchEngine {
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                section_id_f   => doc.section_id.unwrap_or(doc.id),
-                generation_sort_f => generation_sort_key(
-                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
-                    doc.id
+                section_id_f   => section_offset(doc.id, doc.section_id.unwrap_or(doc.id)),
+                generation_sort_f => generation_value(
+                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
                 ),
                 line_hash_f    => line_hash
             );
@@ -8885,8 +8882,7 @@ impl SearchEngine {
         for (((score, _), (address, document)), text) in hits.iter().zip(&documents).zip(texts) {
             let reader = searcher.segment_reader(address.segment_ord);
             let fast = reader.fast_fields();
-            let section_id = fast
-                .u64("sectionId")?
+            let section_id = SectionIdColumn::open(reader)?
                 .first(address.doc_id)
                 .unwrap_or_default();
             let line_hash = fast
@@ -10218,8 +10214,8 @@ impl SearchEngine {
             self.schema.get_field("contentHash")?,
             self.schema.get_field("textHash")?,
             self.schema.get_field("textVocalized")?,
-            self.schema.get_field("sectionId")?,
-            self.schema.get_field("generationSort")?,
+            self.schema.get_field(SECTION_OFFSET_FIELD)?,
+            self.schema.get_field(GENERATION_FIELD)?,
             self.schema.get_field("lineHash")?,
         ))
     }
@@ -12537,7 +12533,7 @@ impl SearchEngine {
             ResultsOrder::Generation => {
                 let top_collector = TopDocs::with_limit(limit as usize)
                     .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
+                    .order_by((GenerationSort, Order::Asc));
                 let (top_docs, count) = searcher.search(&*query, &(top_collector, Count))?;
                 let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
                 (addrs, count as u32)
@@ -12780,7 +12776,7 @@ impl SearchEngine {
                 ResultsOrder::Generation => {
                     let top_collector = TopDocs::with_limit(limit as usize)
                         .and_offset(offset as usize)
-                        .order_by_fast_field::<u64>("generationSort", Order::Asc);
+                        .order_by((GenerationSort, Order::Asc));
                     let (top_docs, count, by_book) =
                         searcher.search(&*query, &(top_collector, Count, BookCountCollector))?;
                     let addrs = top_docs.into_iter().map(|(_, addr)| addr).collect();
@@ -12883,7 +12879,7 @@ impl SearchEngine {
             ResultsOrder::Generation => {
                 let collector = TopDocs::with_limit(limit as usize)
                     .and_offset(offset as usize)
-                    .order_by_fast_field::<u64>("generationSort", Order::Asc);
+                    .order_by((GenerationSort, Order::Asc));
                 searcher
                     .search(query, &collector)?
                     .into_iter()
@@ -14832,15 +14828,29 @@ impl GroupCollector {
     }
 }
 
+enum GroupKeyColumn {
+    Section(SectionIdColumn),
+    LineHash(tantivy::columnar::Column<u64>),
+}
+
+impl GroupKeyColumn {
+    fn first(&self, doc: DocId) -> Option<u64> {
+        match self {
+            Self::Section(column) => column.first(doc),
+            Self::LineHash(column) => column.first(doc),
+        }
+    }
+}
+
 struct GroupSegmentCollector {
     seg_ord: SegmentOrdinal,
     mode: ResultGrouping,
     sort: GroupSort,
     id_col: tantivy::columnar::Column<u64>,
-    /// עמודת המיון (`id`/`generationSort`); `None` במיון לפי ציון.
-    sort_col: Option<tantivy::columnar::Column<u64>>,
+    /// עמודת המיון (`generationSort`); `None` במיון לפי id או ציון.
+    sort_col: Option<GenerationSortColumn>,
     /// עמודת מפתח הקבוצה: `sectionId` או `lineHash` לפי המצב.
-    key_col: tantivy::columnar::Column<u64>,
+    key_col: GroupKeyColumn,
     shared: Arc<Mutex<SharedGroupedAcc>>,
     buffer: Vec<((u8, u64), GroupEntry)>,
 }
@@ -14871,12 +14881,12 @@ impl Collector for GroupCollector {
         let id_col = fast.u64("id")?;
         let sort_col = match self.sort {
             GroupSort::IdAsc => None, // עמודת ה-id כבר בידינו
-            GroupSort::GenerationAsc => Some(fast.u64("generationSort")?),
+            GroupSort::GenerationAsc => Some(GenerationSortColumn::open(reader)?),
             GroupSort::ScoreDesc => None,
         };
         let key_col = match self.mode {
-            ResultGrouping::SameSection => fast.u64("sectionId")?,
-            ResultGrouping::IdenticalText => fast.u64("lineHash")?,
+            ResultGrouping::SameSection => GroupKeyColumn::Section(SectionIdColumn::open(reader)?),
+            ResultGrouping::IdenticalText => GroupKeyColumn::LineHash(fast.u64("lineHash")?),
         };
         Ok(GroupSegmentCollector {
             seg_ord,
@@ -16090,6 +16100,7 @@ mod tests {
             Some(current.clone())
         );
         let entry = |name: &str| current.get_field_entry(current.get_field(name).unwrap());
+        let mut removed = Vec::new();
         for (_, old) in released.fields() {
             match old.name() {
                 "id" | "filePath" => {
@@ -16098,15 +16109,22 @@ mod tests {
                     assert_eq!(now.is_fast(), old.is_fast(), "{}", old.name());
                     assert_eq!(now.is_stored(), old.is_stored(), "{}", old.name());
                 }
+                name if current.get_field(name).is_err() => removed.push(name),
                 name => assert_eq!(entry(name), old, "{name}"),
             }
         }
+        // Derived at query time from `id` and the two small columns that replace them.
+        assert_eq!(removed, ["sectionId", "generationSort"]);
         let added: Vec<&str> = current
             .fields()
             .map(|(_, entry)| entry.name())
             .filter(|name| released.get_field(name).is_err())
             .collect();
-        assert!(added.is_empty(), "{added:?}");
+        assert_eq!(added, [SECTION_OFFSET_FIELD, GENERATION_FIELD]);
+        for name in added {
+            let added = entry(name);
+            assert!(added.is_fast() && !added.is_indexed() && !added.is_stored());
+        }
 
         for version in [5, MIN_READABLE_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION + 1] {
             assert_eq!(schema_of_version(version), None, "{version}");
@@ -26372,8 +26390,8 @@ mod tests {
                 field("topics") => Facet::from_text("/root").unwrap(),
                 field("contentHash") => 0u64,
                 field("textHash") => 0u64,
-                field("sectionId") => id & !0xFFFF_FFFF,
-                field("generationSort") => 0u64,
+                field(SECTION_OFFSET_FIELD) => 0u64,
+                field(GENERATION_FIELD) => 0u64,
                 field("lineHash") => 0u64
             );
             document.add_u64(field(CHUNK_KEY_FIELD), column);

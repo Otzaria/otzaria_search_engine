@@ -365,7 +365,7 @@ impl FairPlaces {
 /// The columns a resolver reads, opened once per segment for one search.
 struct SegmentColumns {
     id: Column<u64>,
-    section: Column<u64>,
+    section: crate::derived_columns::SectionIdColumn,
     line_hash: Column<u64>,
     /// The book's text hash, stamped on every line of it.
     text_hash: Column<u64>,
@@ -443,7 +443,8 @@ impl<'a> LiveResolver<'a> {
                 let fast = reader.fast_fields();
                 Ok(SegmentColumns {
                     id: fast.u64("id").map_err(index_error)?,
-                    section: fast.u64("sectionId").map_err(index_error)?,
+                    section: crate::derived_columns::SectionIdColumn::open(reader)
+                        .map_err(index_error)?,
                     line_hash: fast.u64("lineHash").map_err(index_error)?,
                     text_hash: fast.u64("textHash").map_err(index_error)?,
                     chunk_key: match &chunk_key_name {

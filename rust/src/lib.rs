@@ -3,6 +3,7 @@ pub mod api;
 mod cross_line;
 #[cfg(test)]
 mod cross_line_tests;
+mod derived_columns;
 mod display_highlight;
 mod frb_generated;
 mod highlight_matcher;

@@ -37,7 +37,6 @@ use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
 use rayon::prelude::*;
 #[cfg(feature = "semantic-integration")]
 use std::collections::HashMap;
-use tantivy::columnar::Column;
 use tantivy::schema::Value;
 use tantivy::{DocAddress, Searcher, TantivyDocument};
 
@@ -161,7 +160,7 @@ pub fn recompute_chunk_keys(
     let mut sections = Vec::with_capacity(end - start + 1);
     let mut pdf = Vec::with_capacity(end - start + 1);
     // Opened once per segment: opening a column reads its whole block index.
-    let mut section_columns: Vec<Option<Column<u64>>> =
+    let mut section_columns: Vec<Option<crate::derived_columns::SectionIdColumn>> =
         vec![None; searcher.segment_readers().len()];
     for &address in &book[start..=end] {
         let document: TantivyDocument = searcher
@@ -177,12 +176,9 @@ pub fn recompute_chunk_keys(
         // FAST and not stored, so read from its column.
         let column = match &mut section_columns[address.segment_ord as usize] {
             Some(column) => column,
-            unopened => unopened.insert(
-                searcher
-                    .segment_reader(address.segment_ord)
-                    .fast_fields()
-                    .u64("sectionId")?,
-            ),
+            unopened => unopened.insert(crate::derived_columns::SectionIdColumn::open(
+                searcher.segment_reader(address.segment_ord),
+            )?),
         };
         sections.push(
             column
@@ -256,7 +252,7 @@ pub(crate) fn recompute_chunk_keys_at(
         section: Option<u64>,
     }
     let is_pdf_field = searcher.schema().get_field("isPdf")?;
-    let mut section_columns: Vec<Option<Column<u64>>> =
+    let mut section_columns: Vec<Option<crate::derived_columns::SectionIdColumn>> =
         vec![None; searcher.segment_readers().len()];
     let mut read: HashMap<DocAddress, Read> = HashMap::new();
     let mut read_all = |mut addresses: Vec<DocAddress>, read: &mut HashMap<DocAddress, Read>| {
@@ -279,12 +275,9 @@ pub(crate) fn recompute_chunk_keys_at(
         for ((address, document), line) in documents.iter().zip(texts) {
             let column = match &mut section_columns[address.segment_ord as usize] {
                 Some(column) => column,
-                unopened => unopened.insert(
-                    searcher
-                        .segment_reader(address.segment_ord)
-                        .fast_fields()
-                        .u64("sectionId")?,
-                ),
+                unopened => unopened.insert(crate::derived_columns::SectionIdColumn::open(
+                    searcher.segment_reader(address.segment_ord),
+                )?),
             };
             read.insert(
                 *address,

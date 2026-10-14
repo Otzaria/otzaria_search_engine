@@ -448,7 +448,7 @@ fn column_value(sha256: &[u8; 32]) -> u64 {
 
 /// The columns a book's lines are read from, per segment.
 struct SegmentColumns {
-    section: Vec<Column<u64>>,
+    section: Vec<crate::derived_columns::SectionIdColumn>,
     chunk_key: Vec<Option<Column<u64>>>,
 }
 
@@ -457,7 +457,7 @@ impl SegmentColumns {
         let mut section = Vec::new();
         let mut keys = Vec::new();
         for reader in searcher.segment_readers() {
-            section.push(reader.fast_fields().u64("sectionId")?);
+            section.push(crate::derived_columns::SectionIdColumn::open(reader)?);
             keys.push(if chunk_key {
                 Some(reader.fast_fields().u64("chunkKey")?)
             } else {
