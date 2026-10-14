@@ -1003,7 +1003,9 @@ pub(crate) fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option
 #[test]
 fn library_documents_keep_no_text_in_the_doc_store() {
     let _guard = guard();
-    let f = fixture();
+    let mut f = fixture();
+    f.external.merge_into_one_segment();
+    f.stored.merge_into_one_segment();
     let size = |p: &Path| -> u64 {
         std::fs::read_dir(p)
             .unwrap()
@@ -1290,10 +1292,13 @@ fn image_rows_are_shown_from_the_index_without_reading_the_database() {
 fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
     use tantivy::schema::Value;
     let _guard = guard();
-    let f = fixture();
+    let mut f = fixture();
     let legacy_path = f.dir.path().join("legacy");
     std::fs::create_dir_all(&legacy_path).unwrap();
-    let legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    let mut legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    for engine in [&mut legacy, &mut f.external, &mut f.stored] {
+        engine.merge_into_one_segment();
+    }
     // `textStored` of the official books' documents, by (filePath, segment).
     let official_text = |e: &SearchEngine| -> std::collections::BTreeMap<(String, u64), String> {
         let searcher = e.corpus_searcher();

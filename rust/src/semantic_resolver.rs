@@ -1761,8 +1761,10 @@ impl LiveResolver<'_> {
             let mut doc = postings.doc();
             while doc != TERMINATED {
                 if !reader.is_deleted(doc) {
-                    let hash = columns.text_hash.first(doc).unwrap_or(0);
-                    one_text &= *text_hash.get_or_insert(hash) == hash;
+                    // Only the document `stamp_book_fingerprints` wrote holds the book's hash.
+                    if let Some(hash) = columns.text_hash.first(doc) {
+                        one_text &= *text_hash.get_or_insert(hash) == hash;
+                    }
                     let value = columns.chunk_key.as_ref().and_then(|keys| keys.first(doc));
                     if let (Some(value), Some(id)) = (value, columns.id.first(doc)) {
                         if value != 0 {

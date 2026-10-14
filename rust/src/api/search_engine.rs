@@ -3085,6 +3085,22 @@ fn generation_sort_key(generation_order: u32, id: u64) -> u64 {
     (u64::from(generation_order.min(255)) << GENERATION_SORT_SHIFT) | (id & GENERATION_SORT_ID_MASK)
 }
 
+/// Records a book's `(contentHash, textHash)` on one of its documents, the columns' only
+/// value for the book: a value repeated on every line cost 64 bits a line once blocks of
+/// the column straddle two books. 0, "no fingerprint", is not written.
+fn stamp_book_fingerprints(
+    document: &mut TantivyDocument,
+    (content_field, text_field): (Field, Field),
+    (content_hash, text_hash): (u64, u64),
+) {
+    if content_hash != 0 {
+        document.add_u64(content_field, content_hash);
+    }
+    if text_hash != 0 {
+        document.add_u64(text_field, text_hash);
+    }
+}
+
 /// Records `key` in the `chunkKey` column, when the index has one this build writes: `0`
 /// for a line with no vector, a line's [`ChunkKey::column_value`] for one with a vector.
 ///
@@ -4558,6 +4574,21 @@ impl SearchEngine {
             #[cfg(feature = "semantic-integration")]
             semantic_highlights: Default::default(),
         }
+    }
+
+    /// Merges every committed segment into one, so a test can compare on-disk sizes that
+    /// do not depend on how the writer's threads happened to split the documents.
+    #[cfg(test)]
+    pub(crate) fn merge_into_one_segment(&mut self) {
+        let writer = self.writer_mut().unwrap();
+        writer.commit().unwrap();
+        let segments = self.index.searchable_segment_ids().unwrap();
+        let writer = self.writer_mut().unwrap();
+        if segments.len() > 1 {
+            writer.merge(&segments).wait().unwrap();
+        }
+        writer.garbage_collect_files().wait().unwrap();
+        self.index_reader.reload().unwrap();
     }
 
     /// An engine over an index opened by the caller, with no writer and no metadata written:
@@ -7234,8 +7265,8 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            content_hash_f,
-            text_hash_f,
+            _content_hash_f,
+            _text_hash_f,
             text_vocalized_f,
             section_id_f,
             generation_sort_f,
@@ -7252,8 +7283,6 @@ impl SearchEngine {
             is_pdf_f       => _is_pdf,
             file_path_f    => _file_path,
             topics_f       => topics_facet,
-            content_hash_f => 0u64,
-            text_hash_f    => 0u64,
             section_id_f   => _section_id.unwrap_or(_id),
             generation_sort_f => generation_sort_key(
                 _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
@@ -7313,6 +7342,8 @@ impl SearchEngine {
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
         refuse_library_storage(&docs)?;
+        let hash_fields = (content_hash_f, text_hash_f);
+        let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
         let writer = self.writer_mut()?;
         for doc in docs {
             let topics_facet = Facet::from_text(&doc.topics)?;
@@ -7327,8 +7358,6 @@ impl SearchEngine {
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                content_hash_f => doc.content_hash.unwrap_or(0),
-                text_hash_f    => doc.text_hash.unwrap_or(0),
                 section_id_f   => doc.section_id.unwrap_or(doc.id),
                 generation_sort_f => generation_sort_key(
                     doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
@@ -7337,6 +7366,11 @@ impl SearchEngine {
                 line_hash_f    => line_hash
             );
             set_chunk_key(&mut document, chunk_key_f, 0);
+            let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
+            if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
+                stamp_book_fingerprints(&mut document, hash_fields, fingerprints);
+                stamped.insert(doc.file_path.clone(), fingerprints);
+            }
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -7629,8 +7663,6 @@ impl SearchEngine {
                 is_pdf_f       => false,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
-                content_hash_f => content_hash,
-                text_hash_f    => text_hash,
                 // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
                 // בין ספרים, אז המזהה ייחודי גלובלית.
                 section_id_f   => id_base + u64::from(reference_of_line[segment]),
@@ -7639,6 +7671,13 @@ impl SearchEngine {
             );
             let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
             set_chunk_key(&mut document, chunk_key_f, chunk_key);
+            if ordinal == 0 {
+                stamp_book_fingerprints(
+                    &mut document,
+                    (content_hash_f, text_hash_f),
+                    (content_hash, text_hash),
+                );
+            }
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
@@ -7713,8 +7752,8 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            content_hash_f,
-            text_hash_f,
+            _content_hash_f,
+            _text_hash_f,
             // PDF אינו משתתף בחיפוש מנוקד: ניקוד שמגיע מ-OCR אינו אמין,
             // והנרמול של PDF ממילא מוחק אותו.
             _text_vocalized_f,
@@ -7784,8 +7823,6 @@ impl SearchEngine {
                 is_pdf_f       => true,
                 file_path_f    => file_path.as_str(),
                 topics_f       => topics_facet.clone(),
-                content_hash_f => 0u64,
-                text_hash_f    => 0u64,
                 // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
                 section_id_f   => id_base + u64::from(page.page_index),
                 generation_sort_f => generation_sort_key(generation_order, id),
@@ -7872,6 +7909,8 @@ impl SearchEngine {
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
         refuse_library_storage(&docs)?;
+        let hash_fields = (content_hash_f, text_hash_f);
+        let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
         let writer = self.writer_mut()?;
         for doc in docs {
             writer.delete_term(Term::from_field_u64(id_f, doc.id));
@@ -7887,8 +7926,6 @@ impl SearchEngine {
                 is_pdf_f       => doc.is_pdf,
                 file_path_f    => doc.file_path,
                 topics_f       => topics_facet,
-                content_hash_f => doc.content_hash.unwrap_or(0),
-                text_hash_f    => doc.text_hash.unwrap_or(0),
                 section_id_f   => doc.section_id.unwrap_or(doc.id),
                 generation_sort_f => generation_sort_key(
                     doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER),
@@ -7897,6 +7934,11 @@ impl SearchEngine {
                 line_hash_f    => line_hash
             );
             set_chunk_key(&mut document, chunk_key_f, 0);
+            let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
+            if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
+                stamp_book_fingerprints(&mut document, hash_fields, fingerprints);
+                stamped.insert(doc.file_path.clone(), fingerprints);
+            }
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
             }
@@ -14898,8 +14940,9 @@ impl SegmentCollector for GroupSegmentCollector {
 
 /// Collects a u64 fast-field value (`hash_column`) per `filePath` fast field.
 /// Per-segment work uses term ordinals; strings are decoded only in harvest().
-/// Documents of the same book that disagree on the hash collapse to 0
-/// ("unverifiable"), and 0 wins over any value when merging segments.
+/// Only the document [`stamp_book_fingerprints`] wrote holds a book's value: a book
+/// whose documents hold none is 0, and two that disagree collapse to 0
+/// ("unverifiable"), which wins over any value when merging segments.
 struct BookFingerprintCollector {
     hash_column: &'static str,
 }
@@ -14907,7 +14950,18 @@ struct BookFingerprintCollector {
 struct BookFingerprintSegmentCollector {
     str_col: Option<tantivy::columnar::StrColumn>,
     hash_col: Option<tantivy::columnar::Column<u64>>,
-    fingerprints: HashMap<u64, u64>,
+    fingerprints: HashMap<u64, Option<u64>>,
+}
+
+/// One more of a book's fingerprint values, `None` for a document without one:
+/// `Some(0)` once two values disagree.
+pub(crate) fn combine_fingerprint(seen: Option<u64>, value: Option<u64>) -> Option<u64> {
+    match (seen, value) {
+        (seen, None) => seen,
+        (None, value) => value,
+        (Some(a), Some(b)) if a == b => Some(a),
+        _ => Some(0),
+    }
 }
 
 impl Collector for BookFingerprintCollector {
@@ -14935,31 +14989,28 @@ impl Collector for BookFingerprintCollector {
 
     fn merge_fruits(
         &self,
-        per_segment: Vec<tantivy::Result<HashMap<String, u64>>>,
+        per_segment: Vec<tantivy::Result<HashMap<String, Option<u64>>>>,
     ) -> tantivy::Result<HashMap<String, u64>> {
-        let mut merged: HashMap<String, u64> = HashMap::new();
+        let mut merged: HashMap<String, Option<u64>> = HashMap::new();
         for seg_result in per_segment {
             for (path, hash) in seg_result? {
-                merged
-                    .entry(path)
-                    .and_modify(|existing| {
-                        if *existing != hash {
-                            *existing = 0;
-                        }
-                    })
-                    .or_insert(hash);
+                let seen = merged.entry(path).or_default();
+                *seen = combine_fingerprint(*seen, hash);
             }
         }
-        Ok(merged)
+        Ok(merged
+            .into_iter()
+            .map(|(path, hash)| (path, hash.unwrap_or(0)))
+            .collect())
     }
 }
 
 // ── SingleBookFingerprintCollector ────────────────────────────────────────────
 
-/// The `textHash` of the documents a single-book query matched. Documents that
-/// disagree collapse to 0 ("unverifiable"), and 0 wins over any value — same
-/// semantics as [`BookFingerprintCollector`], without touching `filePath`:
-/// the query already restricts the documents to one book.
+/// The `textHash` of the documents a single-book query matched, read from those
+/// that hold one. Values that disagree collapse to 0 ("unverifiable"), and 0 wins
+/// over any value — same semantics as [`BookFingerprintCollector`], without
+/// touching `filePath`: the query already restricts the documents to one book.
 struct SingleBookFingerprintCollector;
 
 struct SingleBookFingerprintSegmentCollector {
@@ -14988,15 +15039,10 @@ impl Collector for SingleBookFingerprintCollector {
     }
 
     fn merge_fruits(&self, per_segment: Vec<Option<u64>>) -> tantivy::Result<u64> {
-        let mut merged: Option<u64> = None;
-        for hash in per_segment.into_iter().flatten() {
-            match merged {
-                None => merged = Some(hash),
-                Some(existing) if existing != hash => return Ok(0),
-                Some(_) => {}
-            }
-        }
-        Ok(merged.unwrap_or(0))
+        Ok(per_segment
+            .into_iter()
+            .fold(None, combine_fingerprint)
+            .unwrap_or(0))
     }
 }
 
@@ -15004,16 +15050,8 @@ impl SegmentCollector for SingleBookFingerprintSegmentCollector {
     type Fruit = Option<u64>;
 
     fn collect(&mut self, doc_id: DocId, _score: Score) {
-        let hash = self
-            .hash_col
-            .as_ref()
-            .and_then(|col| col.first(doc_id))
-            .unwrap_or(0);
-        match self.fingerprint {
-            None => self.fingerprint = Some(hash),
-            Some(existing) if existing != hash => self.fingerprint = Some(0),
-            Some(_) => {}
-        }
+        let hash = self.hash_col.as_ref().and_then(|col| col.first(doc_id));
+        self.fingerprint = combine_fingerprint(self.fingerprint, hash);
     }
 
     fn harvest(self) -> Option<u64> {
@@ -15022,7 +15060,7 @@ impl SegmentCollector for SingleBookFingerprintSegmentCollector {
 }
 
 impl SegmentCollector for BookFingerprintSegmentCollector {
-    type Fruit = tantivy::Result<HashMap<String, u64>>;
+    type Fruit = tantivy::Result<HashMap<String, Option<u64>>>;
 
     fn collect(&mut self, doc_id: DocId, _score: Score) {
         let Some(str_col) = &self.str_col else {
@@ -15031,22 +15069,12 @@ impl SegmentCollector for BookFingerprintSegmentCollector {
         let Some(term_ord) = str_col.term_ords(doc_id).next() else {
             return;
         };
-        let hash = self
-            .hash_col
-            .as_ref()
-            .and_then(|col| col.first(doc_id))
-            .unwrap_or(0);
-        self.fingerprints
-            .entry(term_ord)
-            .and_modify(|existing| {
-                if *existing != hash {
-                    *existing = 0;
-                }
-            })
-            .or_insert(hash);
+        let hash = self.hash_col.as_ref().and_then(|col| col.first(doc_id));
+        let seen = self.fingerprints.entry(term_ord).or_default();
+        *seen = combine_fingerprint(*seen, hash);
     }
 
-    fn harvest(self) -> tantivy::Result<HashMap<String, u64>> {
+    fn harvest(self) -> tantivy::Result<HashMap<String, Option<u64>>> {
         let Some(col) = self.str_col else {
             return Ok(HashMap::new());
         };
@@ -19906,6 +19934,72 @@ mod tests {
             .unwrap();
         engine.commit().unwrap();
         assert!(engine.count_documents_by_file_path().unwrap().is_empty());
+    }
+
+    /// One document of a book holds its fingerprints, so the columns cost nothing on the
+    /// rest; the book's value is read from it, whatever its other documents lack.
+    #[test]
+    fn book_fingerprints_live_on_one_document() {
+        let (mut engine, _dir) = make_engine();
+        let text = "<h1>ספר</h1>
+שורה ראשונה
+שורה שנייה
+שורה שלישית";
+        engine
+            .add_text_book(
+                "ספר".to_string(),
+                "/root".to_string(),
+                "id:1".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                text.to_string(),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine
+            .add_documents_batch(vec![
+                fingerprint_doc(100, "א", "id:2", Some(5)),
+                fingerprint_doc(101, "ב", "id:2", Some(5)),
+                fingerprint_doc(102, "ג", "id:2", None),
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+        engine.index_reader.reload().unwrap();
+
+        let searcher = engine.index_reader.searcher();
+        let mut holders = 0;
+        for reader in searcher.segment_readers() {
+            for name in ["contentHash", "textHash"] {
+                let column = reader.fast_fields().u64(name).unwrap();
+                holders += reader
+                    .doc_ids_alive()
+                    .filter(|&doc| column.first(doc).is_some())
+                    .count();
+            }
+        }
+        assert_eq!(holders, 4, "two books, two columns, one document each");
+
+        let text_hash = compute_content_fingerprint(text.to_string());
+        assert_eq!(
+            engine.get_book_text_fingerprints().unwrap()["id:1"],
+            text_hash
+        );
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("id:1".to_string())
+                .unwrap(),
+            text_hash
+        );
+        assert_ne!(engine.get_book_fingerprints().unwrap()["id:1"], 0);
+        assert_eq!(engine.get_book_fingerprints().unwrap()["id:2"], 5);
+        assert_eq!(
+            engine
+                .get_book_text_fingerprint("id:2".to_string())
+                .unwrap(),
+            5
+        );
     }
 
     #[test]
