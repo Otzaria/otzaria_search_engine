@@ -389,6 +389,23 @@ fn a_cross_space_pattern_verifies_candidate_lines() {
 }
 
 #[test]
+fn a_cross_space_pattern_finds_words_with_characters_the_index_drops() {
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(
+        dir.path(),
+        &[TestBook {
+            title: "ספר ג",
+            topics: "/תנך",
+            path: "c.txt".into(),
+            order: 0,
+            lines: vec!["כי יב[ע]ר את הקוצים", "פרק 3.14 סוף"],
+        }],
+    );
+    assert_eq!(count(&engine, r"/יב\[ע\]ר\W+את/", &[]), 1);
+    assert_eq!(count(&engine, r"/פרק\W+3\.14\W/", &[]), 1);
+}
+
+#[test]
 fn a_cross_space_pattern_without_fixed_words_reads_the_books_in_scope() {
     let dir = TempDir::new().unwrap();
     let engine = stored_engine(dir.path(), &sample_books());

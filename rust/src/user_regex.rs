@@ -869,6 +869,10 @@ fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
             let c = text.chars().next().unwrap_or(' ');
             if is_term_char(c) {
                 run.extend(c.to_lowercase());
+            } else if crate::hebrew_tokenizer::is_transparent(c) {
+                // The tokenizer drops it inside a term (`יב[ע]ר` is `יבער`), so no edge here.
+                flush(&mut run, left_bounded, false, &mut clauses);
+                left_bounded = false;
             } else {
                 flush(&mut run, left_bounded, true, &mut clauses);
                 left_bounded = true;
