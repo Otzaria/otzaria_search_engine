@@ -7537,10 +7537,7 @@ impl SearchEngine {
             .map_init(
                 || edge_analyzer.clone(),
                 |analyzer, (segment, raw_line)| {
-                    let plain = hebrew_query::normalize_text_for_indexing(raw_line);
-                    let vocalized = hebrew_query::contains_attached_marks(raw_line)
-                        .then(|| hebrew_query::normalize_vocalized_text_for_indexing(raw_line))
-                        .filter(|v| !v.is_empty());
+                    let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw_line);
                     let line_hash = line_dedup_hash(&plain);
                     let line_check =
                         (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));

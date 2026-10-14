@@ -960,7 +960,96 @@ pub(crate) fn is_breaking_tag(body: &[char]) -> bool {
     BREAKING_TAG_NAMES.contains(&name.as_str())
 }
 
-/// Strips HTML tags and entities like the Dart `stripHtmlIfNeeded`, with one
+/// [`is_breaking_tag`] over the tag's text.
+fn is_breaking_tag_str(body: &str) -> bool {
+    let name = body.strip_prefix('/').unwrap_or(body).as_bytes();
+    let len = name
+        .iter()
+        .position(|b| !b.is_ascii_alphanumeric())
+        .unwrap_or(name.len());
+    if len == 0 || len > 10 {
+        return false;
+    }
+    let mut lower = [0u8; 10];
+    for (to, from) in lower.iter_mut().zip(&name[..len]) {
+        *to = from.to_ascii_lowercase();
+    }
+    let lower = std::str::from_utf8(&lower[..len]).expect("ASCII");
+    BREAKING_TAG_NAMES.contains(&lower)
+}
+
+/// The whitespace entities [`strip_html_for_indexing`] turns into a space.
+const SPACE_ENTITIES: [&[u8]; 4] = [b"&nbsp;", b"&thinsp;", b"&ensp;", b"&emsp;"];
+
+fn space_entity_len(at: &[u8]) -> Option<usize> {
+    SPACE_ENTITIES
+        .iter()
+        .find(|entity| at.starts_with(entity))
+        .map(|entity| entity.len())
+}
+
+/// Feeds `f` the characters of [`strip_html_for_indexing`]'s output, without building it.
+fn for_each_html_stripped_char(text: &str, mut f: impl FnMut(char)) {
+    if !text.contains(['<', '&']) {
+        text.chars().for_each(f);
+        return;
+    }
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' => match bytes[i + 1..].iter().position(|&b| b == b'>') {
+                Some(close) => {
+                    if is_breaking_tag_str(&text[i + 1..i + 1 + close]) {
+                        f(' ');
+                    }
+                    i += close + 2;
+                }
+                None => {
+                    f('<');
+                    i += 1;
+                }
+            },
+            b'&' => {
+                if let Some(len) = space_entity_len(&bytes[i..]) {
+                    f(' ');
+                    i += len;
+                    continue;
+                }
+                // A space entity inside the span is one character, and its `;` is gone.
+                let mut j = i + 1;
+                let mut semi = None;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b';' => {
+                            semi = Some(j);
+                            break;
+                        }
+                        b'&' => j += space_entity_len(&bytes[j..]).unwrap_or(1),
+                        _ => j += 1,
+                    }
+                }
+                match semi {
+                    Some(semi) if semi > i + 1 => i = semi + 1,
+                    _ => {
+                        f('&');
+                        i += 1;
+                    }
+                }
+            }
+            b if b < 0x80 => {
+                f(b as char);
+                i += 1;
+            }
+            _ => {
+                let c = text[i..].chars().next().expect("on a char boundary");
+                f(c);
+                i += c.len_utf8();
+            }
+        }
+    }
+}
+
 /// deliberate divergence: breaking tags ([`BREAKING_TAG_NAMES`]) become a
 /// space, so words the reader sees on separate lines stay separate tokens.
 /// The whitespace entities become a space first (so adjacent words are not
@@ -970,6 +1059,17 @@ pub(crate) fn is_breaking_tag(body: &[char]) -> bool {
 /// through the next `>` (kept verbatim if unterminated); an `&` is dropped
 /// through the next `;` only if at least one non-`;` char precedes it.
 pub fn strip_html_for_indexing(text: &str) -> String {
+    if !text.contains(['<', '&']) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for_each_html_stripped_char(text, |c| out.push(c));
+    out
+}
+
+/// [`strip_html_for_indexing`] as the char-vector scan its stream must match.
+#[cfg(test)]
+pub(crate) fn strip_html_for_indexing_reference(text: &str) -> String {
     // Fast path: this runs on every corpus line at indexing time, and a line
     // with no markup at all needs none of the passes (or allocations) below.
     if !text.contains(['<', '&']) {
@@ -1024,6 +1124,87 @@ pub fn strip_html_for_indexing(text: &str) -> String {
     out
 }
 
+/// Whitespace runs collapsed to one space, none leading or trailing.
+struct Collapsed {
+    out: String,
+    pending_space: bool,
+}
+
+impl Collapsed {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            out: String::with_capacity(capacity),
+            pending_space: false,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, c: char) {
+        if c.is_whitespace() {
+            if !self.out.is_empty() {
+                self.pending_space = true;
+            }
+        } else {
+            if self.pending_space {
+                self.out.push(' ');
+                self.pending_space = false;
+            }
+            self.out.push(c);
+        }
+    }
+}
+
+/// Feeds `f` `c` with its presentation form decomposed.
+#[inline]
+fn for_each_folded(c: char, mut f: impl FnMut(char)) {
+    match fold_presentation_form(c) {
+        Some(folded) => folded.chars().for_each(f),
+        None => f(c),
+    }
+}
+
+/// HTML strip → fold presentation forms → strip attached marks (`strip_marks`) → collapse
+/// whitespace, in one pass. `drop` filters characters before folding (the PDF path drops
+/// invisibles).
+fn normalize_one_pass(input: &str, strip_marks: bool, drop: impl Fn(char) -> bool) -> String {
+    let mut out = Collapsed::with_capacity(input.len());
+    for_each_html_stripped_char(input, |c| {
+        if drop(c) {
+            return;
+        }
+        for_each_folded(c, |c| {
+            if !(strip_marks && is_attached_mark(c)) {
+                out.push(c);
+            }
+        });
+    });
+    out.out
+}
+
+/// Both texts a line is indexed as, in one pass: [`normalize_text_for_indexing`], and
+/// [`normalize_vocalized_text_for_indexing`] when the line carries attached marks
+/// ([`contains_attached_marks`]) and it is not empty.
+pub fn normalize_line_for_indexing(input: &str) -> (String, Option<String>) {
+    if !contains_attached_marks(input) {
+        return (normalize_one_pass(input, true, |_| false), None);
+    }
+    let mut plain = Collapsed::with_capacity(input.len());
+    let mut vocalized = Collapsed::with_capacity(input.len());
+    for_each_html_stripped_char(input, |c| {
+        for_each_folded(c, |c| {
+            if !is_attached_mark(c) {
+                plain.push(c);
+            }
+            vocalized.push(c);
+        });
+    });
+    let vocalized = (!vocalized.out.is_empty()).then_some(vocalized.out);
+    (plain.out, vocalized)
+}
+
+/// The normalizations as separate passes over [`strip_html_for_indexing_reference`]: what
+/// [`normalize_one_pass`] and [`normalize_line_for_indexing`] must produce.
+#[cfg(test)]
 /// Fused fold(presentation forms) → strip(attached marks) → collapse
 /// whitespace, in a single pass with one output allocation. Semantically
 /// identical to `collapse_whitespace(&strip_attached_marks(
@@ -1031,7 +1212,11 @@ pub fn strip_html_for_indexing(text: &str) -> String {
 /// fusing matters because this runs on every line of the corpus. `drop`
 /// filters extra characters before folding (the PDF path drops invisibles);
 /// `strip_marks: false` keeps nikud/cantillation (the vocalized field).
-fn fold_strip_collapse(s: &str, strip_marks: bool, drop: impl Fn(char) -> bool) -> String {
+pub(crate) fn fold_strip_collapse(
+    s: &str,
+    strip_marks: bool,
+    drop: impl Fn(char) -> bool,
+) -> String {
     let mut out = String::with_capacity(s.len());
     // Collapse+trim in one go: a whitespace run becomes a single pending
     // space, emitted only when more content follows (never leading/trailing).
@@ -1068,11 +1253,37 @@ fn fold_strip_collapse(s: &str, strip_marks: bool, drop: impl Fn(char) -> bool) 
     out
 }
 
+/// Asserts that every one-pass normalization of `line` equals its separate passes.
+#[cfg(test)]
+pub(crate) fn assert_normalization_parity(line: &str) {
+    let html = strip_html_for_indexing_reference(line);
+    let plain = fold_strip_collapse(&html, true, |_| false);
+    let vocalized = contains_attached_marks(line)
+        .then(|| fold_strip_collapse(&html, false, |_| false))
+        .filter(|v| !v.is_empty());
+    assert_eq!(normalize_text_for_indexing(line), plain, "{line:?}");
+    assert_eq!(
+        normalize_vocalized_text_for_indexing(line),
+        fold_strip_collapse(&html, false, |_| false),
+        "{line:?}"
+    );
+    assert_eq!(
+        normalize_pdf_text_for_indexing(line),
+        fold_strip_collapse(&html, true, is_invisible_char),
+        "{line:?}"
+    );
+    assert_eq!(
+        normalize_line_for_indexing(line),
+        (plain, vocalized),
+        "{line:?}"
+    );
+}
+
 /// Full ingestion normalisation for text-book lines: strip HTML, decompose
 /// presentation forms, strip attached nikud/cantillation, collapse whitespace.
 /// Punctuation is intentionally preserved — it is shown in search results.
 pub fn normalize_text_for_indexing(input: &str) -> String {
-    fold_strip_collapse(&strip_html_for_indexing(input), true, |_| false)
+    normalize_one_pass(input, true, |_| false)
 }
 
 /// Ingestion normalisation for the vocalized field (`textVocalized`): like
@@ -1081,14 +1292,14 @@ pub fn normalize_text_for_indexing(input: &str) -> String {
 /// ([`contains_attached_marks`]); the stored copy is what vocalized search
 /// results display.
 pub fn normalize_vocalized_text_for_indexing(input: &str) -> String {
-    fold_strip_collapse(&strip_html_for_indexing(input), false, |_| false)
+    normalize_one_pass(input, false, |_| false)
 }
 
 /// Ingestion normalisation for PDF text: like [`normalize_text_for_indexing`]
 /// but also drops bidi/zero-width invisibles OCR tends to leave behind
 /// ([`is_invisible_char`] — the Dart `_pdfInvisibleChars` set).
 pub fn normalize_pdf_text_for_indexing(input: &str) -> String {
-    fold_strip_collapse(&strip_html_for_indexing(input), true, is_invisible_char)
+    normalize_one_pass(input, true, is_invisible_char)
 }
 
 /// Heuristic mirroring the Dart `isProbablyGarbagePdfText`: after removing all
@@ -2799,6 +3010,74 @@ mod tests {
         assert_eq!(strip_attached_marks("א׀ב"), "א׀ב");
         assert_eq!(strip_attached_marks("ברא\u{05C3}"), "ברא\u{05C3}");
         assert_eq!(strip_attached_marks("שלום"), "שלום");
+    }
+
+    /// Random lines over markup, entities, marks and presentation forms: the one-pass
+    /// normalizations against the separate passes they replace.
+    #[test]
+    fn one_pass_normalization_matches_the_separate_passes() {
+        const PIECES: &[&str] = &[
+            "א",
+            "שלום",
+            " ",
+            "  ",
+            "\t",
+            "\u{00A0}",
+            "<",
+            ">",
+            "<b>",
+            "</b>",
+            "<br>",
+            "<BR/>",
+            "</p>",
+            "<h2 class=\"x\">",
+            "<figcaption>",
+            "<span>",
+            "&",
+            ";",
+            "&amp;",
+            "&nbsp;",
+            "&thinsp;",
+            "&ensp;",
+            "&emsp;",
+            "&nbsp",
+            "&;",
+            "&&",
+            "nbsp;",
+            "\u{05B8}",
+            "\u{0591}",
+            "\u{05BE}",
+            "\u{FB2A}",
+            "\u{FB1E}",
+            "\u{FB4F}",
+            "\u{200F}",
+            "\u{FEFF}",
+            "a",
+            "1",
+            "'",
+            "\"",
+            "/",
+            "=",
+            "(",
+            "[",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        for _ in 0..200_000 {
+            let len = 1 + next(20);
+            let line: String = (0..len).map(|_| PIECES[next(PIECES.len())]).collect();
+            assert_eq!(
+                strip_html_for_indexing(&line),
+                strip_html_for_indexing_reference(&line),
+                "{line:?}"
+            );
+            assert_normalization_parity(&line);
+        }
     }
 
     #[test]

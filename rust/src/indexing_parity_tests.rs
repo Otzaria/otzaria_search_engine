@@ -75,3 +75,24 @@ fn real_library_line_edges_match_the_full_walk() {
     }
     println!("{} books, {lines} lines: line edges identical", books.len());
 }
+
+#[test]
+#[ignore = "needs OTZARIA_SEFORIM_DB pointing at a real seforim.db"]
+fn real_library_one_pass_normalization_matches_the_separate_passes() {
+    let Some(books) = sample_books() else {
+        return;
+    };
+    let mut lines = 0usize;
+    for (_, rows) in &books {
+        for row in rows {
+            for raw in row.split('\n') {
+                crate::hebrew_query::assert_normalization_parity(raw);
+                lines += 1;
+            }
+        }
+    }
+    println!(
+        "{} books, {lines} lines: normalization identical",
+        books.len()
+    );
+}
