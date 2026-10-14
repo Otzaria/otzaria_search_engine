@@ -44,6 +44,7 @@ use crate::magic::{MagicDictionary, MAX_LEXICAL_FORMS};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
+use crate::term_automaton::{self, TermDfa};
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
 
 #[cfg(feature = "semantic-integration")]
@@ -3029,6 +3030,11 @@ const LEXICAL_FUZZY_PHRASE_SLOP: u32 = 1;
 // ranking they never use. Recall is unchanged either way (the exact term is a
 // subset of the fuzzy automaton match), and exact/advanced never use these.
 const FUZZY_BOOST_EXACT: Score = 1000.0;
+/// Relevance tiers of an advanced single-word search ranked by relevance:
+/// the typed form, then affixed forms, then spelling variants, then the rest
+/// (see `hebrew_query::match_tier`). Only the order matters; a document's
+/// clauses sum, so each tier outweighs every lower one combined.
+const ADVANCED_TIER_BOOSTS: [Score; 4] = [1000.0, 100.0, 10.0, 1.0];
 const FUZZY_BOOST_EXACT_REL: Score = 1.0;
 const FUZZY_BOOST_LEXICAL: Score = 30.0;
 const FUZZY_BOOST_FUZZY: Score = 1.0;
@@ -4268,14 +4274,15 @@ struct CachedTermSet {
     truncated: bool,
 }
 
-/// Ceiling on the summed per-segment `doc_freq` a single-word term set may
-/// accumulate. This — not the term count — is the true cost guard: executing
-/// the resulting `TermSetQuery` unions one postings list per matched term per
-/// segment into a BitSet, O(Σ doc_freq). The term-count ceiling
-/// (`max_expansions`) remains only as a memory guard on the materialized
-/// `Vec<Term>`. Initial value pending empirical calibration via
-/// `benchmark_cli` (VARIATION_CEILING_RESEARCH.md §3.א).
-const SINGLE_WORD_POSTINGS_BUDGET: u64 = 1_000_000;
+/// Ceiling on the summed `doc_freq` (over all segments) of the terms a
+/// single-word term set keeps. This — not the term count — is the true cost
+/// guard: executing the resulting `TermSetQuery` unions one postings list per
+/// matched term per segment into a BitSet, O(Σ doc_freq). The term-count
+/// ceiling (`max_expansions`) remains only as a memory guard on the
+/// materialized `Vec<Term>`. On the full library 8M keeps every realistic
+/// expansion whole (אמר + affixes: 2.6M, ~60ms to count) and stops only
+/// pathological ones (ב with prefix+suffix windows: 64M).
+const SINGLE_WORD_POSTINGS_BUDGET: u64 = 8_000_000;
 
 /// Term ceiling for one *word position* of a phrase on the degrade path
 /// ([`TermListPhraseQuery`]). Unlike tantivy's `RegexPhraseQuery` ceiling —
@@ -9094,19 +9101,21 @@ impl SearchEngine {
         // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
         // בתוך בניית השאילתה.
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-            &query,
-            distance,
-            &custom_spacing,
-            any_order.unwrap_or(false),
-            &alternative_words,
-            &search_options,
-            facets,
-            &voc,
-            &scope,
-            &match_mode,
-            true,
-        )?;
+        let (q, regex_terms, proximity, truncated, acronym_alts) = self
+            .build_advanced_query_ranked(
+                &query,
+                distance,
+                &custom_spacing,
+                any_order.unwrap_or(false),
+                &alternative_words,
+                &search_options,
+                facets,
+                &voc,
+                &scope,
+                &match_mode,
+                true,
+                matches!(order, ResultsOrder::Relevance),
+            )?;
         let (q, _) = self.apply_advanced_negative_query(
             q,
             truncated,
@@ -9169,19 +9178,21 @@ impl SearchEngine {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
         let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-            &query,
-            distance,
-            &custom_spacing,
-            any_order.unwrap_or(false),
-            &alternative_words,
-            &search_options,
-            facets,
-            &voc,
-            &scope,
-            &match_mode,
-            true,
-        )?;
+        let (q, regex_terms, proximity, truncated, acronym_alts) = self
+            .build_advanced_query_ranked(
+                &query,
+                distance,
+                &custom_spacing,
+                any_order.unwrap_or(false),
+                &alternative_words,
+                &search_options,
+                facets,
+                &voc,
+                &scope,
+                &match_mode,
+                true,
+                matches!(order, ResultsOrder::Relevance),
+            )?;
         let (q, truncated) = self.apply_advanced_negative_query(
             q,
             truncated,
@@ -9252,19 +9263,21 @@ impl SearchEngine {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-                &query,
-                distance,
-                &custom_spacing,
-                any_order.unwrap_or(false),
-                &alternative_words,
-                &search_options,
-                facets,
-                &voc,
-                &scope,
-                &match_mode,
-                true,
-            )?;
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self
+                .build_advanced_query_ranked(
+                    &query,
+                    distance,
+                    &custom_spacing,
+                    any_order.unwrap_or(false),
+                    &alternative_words,
+                    &search_options,
+                    facets,
+                    &voc,
+                    &scope,
+                    &match_mode,
+                    true,
+                    matches!(order, ResultsOrder::Relevance),
+                )?;
             let (q, _) = self.apply_advanced_negative_query(
                 q,
                 truncated,
@@ -9339,19 +9352,21 @@ impl SearchEngine {
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
             let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-            let (q, regex_terms, proximity, truncated, acronym_alts) = self.build_advanced_query(
-                &query,
-                distance,
-                &custom_spacing,
-                any_order.unwrap_or(false),
-                &alternative_words,
-                &search_options,
-                facets,
-                &voc,
-                &scope,
-                &match_mode,
-                true,
-            )?;
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self
+                .build_advanced_query_ranked(
+                    &query,
+                    distance,
+                    &custom_spacing,
+                    any_order.unwrap_or(false),
+                    &alternative_words,
+                    &search_options,
+                    facets,
+                    &voc,
+                    &scope,
+                    &match_mode,
+                    true,
+                    matches!(order, ResultsOrder::Relevance),
+                )?;
             let (q, truncated) = self.apply_advanced_negative_query(
                 q,
                 truncated,
@@ -10243,6 +10258,7 @@ impl SearchEngine {
             &SearchScope::WordDistance,
             &WordMatch::All,
             true,
+            None,
         )
     }
 
@@ -10336,6 +10352,7 @@ impl SearchEngine {
         scope: &SearchScope,
         match_mode: &WordMatch,
         cross_line: bool,
+        ranking_roots: Option<&[String]>,
     ) -> Result<(Box<dyn Query>, bool)> {
         // Resolved up front: the same facet filter both narrows the section
         // pre-pass (fewer candidate sections to intersect) and gates the
@@ -10353,12 +10370,21 @@ impl SearchEngine {
         // nothing and reports none.
         let (main_query, truncated): (Box<dyn Query>, bool) = match regex_terms.len() {
             0 => (Box::new(EmptyQuery), false),
-            1 => self.single_regex_term_query(
-                regex_terms[0].branches(),
-                typo_tokens,
-                text_field,
-                max_expansions,
-            )?,
+            1 => match ranking_roots {
+                Some(roots) => self.ranked_term_query(
+                    regex_terms[0].branches(),
+                    typo_tokens,
+                    text_field,
+                    max_expansions,
+                    roots,
+                )?,
+                None => self.single_regex_term_query(
+                    regex_terms[0].branches(),
+                    typo_tokens,
+                    text_field,
+                    max_expansions,
+                )?,
+            },
             _ => match (scope, match_mode) {
                 // הטווחים "פסקה"/"כותרת" מוותרים על סדר ומרווח, וכך גם כל
                 // מצב התאמה שאינו "כל המילים" (מילים עשויות לחסור) — כל
@@ -10441,18 +10467,27 @@ impl SearchEngine {
             .map(hebrew_query::WordPattern::joined)
             .collect();
         let slop_budget = gaps.iter().fold(0u32, |acc, &g| acc.saturating_add(g));
-        let mut phrase_query = RegexPhraseQuery::new(text_field, joined);
-        phrase_query.set_slop(slop_budget);
-        phrase_query.set_max_expansions(max_expansions);
-        // The query caches the compiled DFAs; the checks below and its weight share them.
-        let joined_compiles = phrase_query.regexes().is_ok();
-        if joined_compiles
-            && !self.phrase_exceeds_max_expansions(
-                phrase_query.regexes()?,
-                text_field,
-                max_expansions,
-            )?
-        {
+        // One DFA per word; the checks below and the query's weight share them.
+        let automata: Option<Vec<Arc<TermDfa>>> = joined
+            .iter()
+            .map(|pattern| term_automaton::compile_pattern(pattern).ok())
+            .collect();
+        let joined_compiles = automata.is_some();
+        let exceeds = match &automata {
+            Some(automata) => {
+                self.phrase_exceeds_max_expansions(automata, text_field, max_expansions)?
+            }
+            None => false,
+        };
+        if let (Some(automata), false) = (automata, exceeds) {
+            let terms = joined
+                .into_iter()
+                .zip(automata)
+                .enumerate()
+                .map(|(offset, (pattern, automaton))| (offset, pattern, automaton))
+                .collect();
+            let mut phrase_query = RegexPhraseQuery::from_automata(text_field, terms, slop_budget);
+            phrase_query.set_max_expansions(max_expansions);
             let inline: Box<dyn Query> = if slop_budget == 0 {
                 Box::new(phrase_query)
             } else {
@@ -10572,12 +10607,16 @@ impl SearchEngine {
     /// here — disjoint vocabularies in several segments may be larger than
     /// `max_expansions` together while every segment remains valid for
     /// Tantivy's BM25 phrase scorer.
-    fn phrase_exceeds_max_expansions(
+    fn phrase_exceeds_max_expansions<A>(
         &self,
-        regexes: &[Arc<tantivy_fst::Regex>],
+        regexes: &[Arc<A>],
         text_field: Field,
         max_expansions: u32,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let searcher = self.index_reader.searcher();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
@@ -10788,6 +10827,55 @@ impl SearchEngine {
         ))
     }
 
+    /// [`Self::single_regex_term_query`] scored in relevance tiers: the same
+    /// terms (the result set is unchanged), split by
+    /// [`hebrew_query::match_tier`] against the typed `roots` into
+    /// constant-score clauses whose scores sum.
+    fn ranked_term_query(
+        &self,
+        branches: &[String],
+        typo_tokens: &[String],
+        text_field: Field,
+        max_expansions: u32,
+        roots: &[String],
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let entry = self.materialize_term_set(
+            branches,
+            typo_tokens,
+            text_field,
+            max_expansions,
+            SINGLE_WORD_POSTINGS_BUDGET,
+        )?;
+        let mut tiers: [Vec<Term>; 4] = Default::default();
+        for term in entry.terms.iter() {
+            let tier = term
+                .value()
+                .as_str()
+                .map_or(3, |text| hebrew_query::match_tier(text, roots));
+            tiers[usize::from(tier)].push(term.clone());
+        }
+        let clauses: Vec<(Occur, Box<dyn Query>)> = tiers
+            .into_iter()
+            .zip(ADVANCED_TIER_BOOSTS)
+            .filter(|(terms, _)| !terms.is_empty())
+            .map(|(terms, boost)| {
+                (
+                    Occur::Should,
+                    Box::new(ConstScoreQuery::new(
+                        Box::new(TermSetQuery::new(terms)),
+                        boost,
+                    )) as Box<dyn Query>,
+                )
+            })
+            .collect();
+        let query: Box<dyn Query> = if clauses.is_empty() {
+            Box::new(EmptyQuery)
+        } else {
+            Box::new(BooleanQuery::new(clauses))
+        };
+        Ok((query, entry.truncated))
+    }
+
     /// The materialization behind [`Self::single_regex_term_query`] and the
     /// phrase degrade path: streams every branch's (and typo automaton's)
     /// dictionary matches into one term set under the two collection budgets,
@@ -10820,93 +10908,55 @@ impl SearchEngine {
             return Ok(entry.clone());
         }
 
-        let regexes: Vec<tantivy_fst::Regex> = branches
-            .iter()
-            .map(|branch| {
-                tantivy_fst::Regex::new(branch).map_err(|e| {
-                    // Surface the failing branch loudly: the historical
-                    // failure mode here was a compile error silently becoming
-                    // "0 results" in the UI.
-                    error!(
-                        "regex branch compilation failed ({} chars): {e}. Branch prefix: {}",
-                        branch.chars().count(),
-                        branch.chars().take(80).collect::<String>(),
-                    );
-                    anyhow::anyhow!(
-                        "invalid regex branch ({} chars): {e}",
-                        branch.chars().count()
-                    )
-                })
-            })
-            .collect::<Result<_>>()?;
+        let automata = term_automaton::compile_branches(branches).map_err(|e| {
+            // Surface the failure loudly: the historical failure mode here
+            // was a compile error silently becoming "0 results" in the UI.
+            error!(
+                "regex branches failed to compile ({} branches): {e}. First branch prefix: {}",
+                branches.len(),
+                branches
+                    .first()
+                    .map(|b| b.chars().take(80).collect::<String>())
+                    .unwrap_or_default(),
+            );
+            anyhow::anyhow!("invalid regex branches ({} branches): {e}", branches.len())
+        })?;
         let inverted_indexes = searcher
             .segment_readers()
             .iter()
             .map(|reader| reader.inverted_index(text_field))
             .collect::<tantivy::Result<Vec<_>>>()?;
-        let mut matched: HashSet<String> = HashSet::new();
-        // Sum of doc_freq over every stream hit — the real cost of executing
-        // the TermSetQuery (BitSet union of one postings list per matched term
-        // per segment). A term matched by several automatons in the same
-        // segment is counted once per automaton — a slight over-estimate that
-        // only errs toward earlier truncation.
-        let mut postings_cost: u64 = 0;
-        let mut truncated = false;
-        // Automatons run most-important-first: branches (exact forms before
-        // typo variants — the `build_word_regex` contract), then the
-        // Levenshtein typo automatons. Each automaton covers *all* segments
-        // before the next starts, so when a budget runs out mid-collection
-        // the query degrades to the highest-priority automaton prefix rather
-        // than over-serving whichever segment happened to be scanned first.
-        if Self::collect_automatons_terms(
+        // Same builder configuration as the fuzzy path (distance 1,
+        // transposition counts as one edit): the whole edit-distance-1
+        // neighborhood of each typo token, ranked after every branch.
+        let typo_automata = typo_tokens
+            .iter()
+            .map(|token| self.fuzzy_automaton(token, 1))
+            .collect::<Result<Vec<_>>>()?;
+        // Everything is gathered and ranked before a budget applies, so a
+        // budget drops the lowest-ranked forms — not whatever the dictionary
+        // order happened to reach last.
+        let (ranked, capped) = term_automaton::collect_ranked(
             &inverted_indexes,
-            &regexes,
-            max_expansions,
+            &automata,
+            &typo_automata,
+            term_automaton::COLLECT_CAP.max(max_expansions as usize),
+        )?;
+        let (kept, truncated) = term_automaton::within_budgets(
+            ranked,
+            capped,
+            max_expansions as usize,
             postings_budget,
-            &mut matched,
-            &mut postings_cost,
-        )? {
-            truncated = true;
-        }
-        if !truncated && !typo_tokens.is_empty() {
-            // Same builder configuration as the fuzzy path (distance 1,
-            // transposition counts as one edit): the whole edit-distance-1
-            // neighborhood in one scan per token per segment, replacing the
-            // ≤128 sampled literal-variant scans (VARIATION_CEILING_RESEARCH
-            // §3.ג). Guarded by `!truncated` on purpose — typo expansion has
-            // the lowest priority, so when the exact branches alone exhaust a
-            // budget (an extremely common word) the scan is skipped entirely
-            // rather than pushed past the budget; the query then behaves as
-            // if typo tolerance found nothing, and the warn! below records it.
-            'typo: for token in typo_tokens {
-                let automaton = self.fuzzy_automaton(token, 1)?;
-                for inverted in &inverted_indexes {
-                    if Self::collect_automaton_terms(
-                        inverted,
-                        &automaton,
-                        max_expansions,
-                        postings_budget,
-                        &mut matched,
-                        &mut postings_cost,
-                    )? {
-                        truncated = true;
-                        break 'typo;
-                    }
-                }
-            }
-        }
+        );
         if truncated {
             warn!(
-                "term collection truncated at {} terms / ~{postings_cost} postings \
-                 (caps: {max_expansions} terms, {postings_budget} postings); \
-                 serving the highest-priority branches collected so far",
-                matched.len(),
+                "term collection truncated at {} terms (caps: {max_expansions} terms,                  {postings_budget} postings); serving the highest-ranked terms",
+                kept.len(),
             );
         }
         let terms: Arc<Vec<Term>> = Arc::new(
-            matched
-                .into_iter()
-                .map(|t| Term::from_field_text(text_field, &t))
+            kept.iter()
+                .map(|t| Term::from_field_text(text_field, &t.term))
                 .collect(),
         );
         let entry = CachedTermSet { terms, truncated };
@@ -10915,293 +10965,6 @@ impl SearchEngine {
             .unwrap()
             .put(cache_key, entry.clone());
         Ok(entry)
-    }
-
-    /// [`Self::collect_automaton_terms`] over every `(automaton, segment)` pair
-    /// in priority order (automaton-major), with the dictionary scans run in
-    /// parallel waves after a bounded, read-only first-segment probe. Narrow
-    /// first branches run synchronously; broad branches share the pool. Each
-    /// scan is capped by the remaining postings budget and the full term cap.
-    /// Hits are then replayed in order into `matched` — so the collected set
-    /// and the truncation point are exactly those of the sequential loop.
-    fn collect_automatons_terms<A>(
-        inverted_indexes: &[Arc<tantivy::InvertedIndexReader>],
-        automatons: &[A],
-        max_expansions: u32,
-        postings_budget: u64,
-        matched: &mut HashSet<String>,
-        postings_cost: &mut u64,
-    ) -> Result<bool>
-    where
-        A: Automaton + Sync,
-        A::State: Clone,
-    {
-        use rayon::prelude::*;
-
-        let pairs: Vec<(usize, usize)> = (0..automatons.len())
-            .flat_map(|a| (0..inverted_indexes.len()).map(move |s| (a, s)))
-            .collect();
-        // A bounded probe distinguishes cheap scans and early budget stops
-        // from broad scans without changing the global set or postings cost.
-        // A broad first automaton can then scan all its segments together;
-        // keeping its first segment synchronous would lose that parallel gain.
-        let initial_terms = matched.len();
-        let mut cursor = 0;
-        if let Some(&(a, segment)) = pairs.first() {
-            if inverted_indexes.len() > 1 {
-                let (hits, broad) = Self::probe_first_automaton_scan(
-                    &inverted_indexes[segment],
-                    &automatons[a],
-                    max_expansions,
-                    postings_budget,
-                    matched,
-                    *postings_cost,
-                )?;
-                if !broad {
-                    // Few hits can still require traversing most of the FST.
-                    // Reuse them instead of repeating that dictionary scan.
-                    if Self::replay_automaton_hits(
-                        hits,
-                        max_expansions,
-                        postings_budget,
-                        matched,
-                        postings_cost,
-                    ) {
-                        return Ok(true);
-                    }
-                    cursor = 1;
-                }
-            } else {
-                if Self::collect_automaton_terms(
-                    &inverted_indexes[segment],
-                    &automatons[a],
-                    max_expansions,
-                    postings_budget,
-                    matched,
-                    postings_cost,
-                )? {
-                    return Ok(true);
-                }
-                cursor = 1;
-            }
-        }
-        if cursor == pairs.len() {
-            return Ok(false);
-        }
-        // Finish the highest-priority automaton before speculating on other
-        // branches. Common narrow patterns can consume the postings budget
-        // across several segments while matching only one or two terms.
-        // Those tiny scans remain serial; broader scans share the pool.
-        let first_automaton_end = inverted_indexes.len();
-        if cursor == 1 && matched.len().saturating_sub(initial_terms) <= 8 {
-            for &(a, segment) in pairs.iter().take(first_automaton_end).skip(cursor) {
-                if Self::collect_automaton_terms(
-                    &inverted_indexes[segment],
-                    &automatons[a],
-                    max_expansions,
-                    postings_budget,
-                    matched,
-                    postings_cost,
-                )? {
-                    return Ok(true);
-                }
-            }
-            cursor = first_automaton_end;
-        }
-        if cursor == pairs.len() {
-            return Ok(false);
-        }
-        let threads = if pairs.len() - cursor > 1 {
-            rayon::current_num_threads().max(1)
-        } else {
-            1
-        };
-        while cursor < pairs.len() {
-            let remaining_postings = postings_budget.saturating_sub(*postings_cost);
-            let remaining_terms = (max_expansions as usize).saturating_sub(matched.len());
-            // Shrink speculative waves near either global limit. Keep the
-            // original local term cap: earlier hits can duplicate `matched`,
-            // so a cap of `remaining_terms` would lose valid prefix terms.
-            let by_postings = if remaining_postings >= postings_budget / 4 {
-                threads
-            } else {
-                ((threads as u128 * remaining_postings as u128)
-                    .div_ceil(postings_budget.max(1) as u128)) as usize
-            };
-            let by_terms = if remaining_terms >= max_expansions as usize / 4 {
-                threads
-            } else {
-                ((threads as u128 * remaining_terms as u128)
-                    .div_ceil(max_expansions.max(1) as u128)) as usize
-            };
-            let wave = threads.min(by_postings).min(by_terms).max(1);
-            let priority_end = if cursor < first_automaton_end {
-                first_automaton_end
-            } else {
-                pairs.len()
-            };
-            let end = (cursor + wave).min(priority_end);
-            // A single remaining scan needs neither task dispatch nor a
-            // temporary hit vector, including waves reduced by the budgets.
-            if end == cursor + 1 {
-                let (a, segment) = pairs[cursor];
-                if Self::collect_automaton_terms(
-                    &inverted_indexes[segment],
-                    &automatons[a],
-                    max_expansions,
-                    postings_budget,
-                    matched,
-                    postings_cost,
-                )? {
-                    return Ok(true);
-                }
-                cursor = end;
-                continue;
-            }
-            let scans: Vec<Vec<(String, u32)>> = pairs[cursor..end]
-                .par_iter()
-                .map(|&(a, segment)| {
-                    Self::scan_automaton_terms(
-                        &inverted_indexes[segment],
-                        &automatons[a],
-                        max_expansions,
-                        remaining_postings,
-                    )
-                })
-                .collect::<Result<_>>()?;
-            if Self::replay_automaton_hits(
-                scans.into_iter().flatten(),
-                max_expansions,
-                postings_budget,
-                matched,
-                postings_cost,
-            ) {
-                return Ok(true);
-            }
-            cursor = end;
-        }
-        Ok(false)
-    }
-
-    /// Inspect at most nine hits without changing the global set or cost.
-    /// Narrow scans return their complete prefix for replay; broad scans will
-    /// repeat only this bounded prefix when starting the parallel wave.
-    /// First-segment terms are distinct, so membership in the prefilled set
-    /// suffices to predict the sequential term budget.
-    fn probe_first_automaton_scan<A>(
-        inverted: &tantivy::InvertedIndexReader,
-        automaton: &A,
-        max_expansions: u32,
-        postings_budget: u64,
-        matched: &HashSet<String>,
-        mut postings_cost: u64,
-    ) -> Result<(Vec<(String, u32)>, bool)>
-    where
-        A: Automaton,
-        A::State: Clone,
-    {
-        let mut terms = matched.len();
-        let mut hits = Vec::new();
-        let mut stream = inverted.terms().search(automaton).into_stream()?;
-        while stream.advance() {
-            if let Ok(term) = std::str::from_utf8(stream.key()) {
-                let doc_freq = stream.value().doc_freq;
-                postings_cost += u64::from(doc_freq);
-                terms += usize::from(!matched.contains(term));
-                hits.push((term.to_string(), doc_freq));
-                if terms >= max_expansions as usize || postings_cost >= postings_budget {
-                    return Ok((hits, false));
-                }
-                if hits.len() > 8 {
-                    return Ok((hits, true));
-                }
-            }
-        }
-        Ok((hits, false))
-    }
-
-    fn replay_automaton_hits(
-        hits: impl IntoIterator<Item = (String, u32)>,
-        max_expansions: u32,
-        postings_budget: u64,
-        matched: &mut HashSet<String>,
-        postings_cost: &mut u64,
-    ) -> bool {
-        for (term, doc_freq) in hits {
-            *postings_cost += u64::from(doc_freq);
-            matched.insert(term);
-            if matched.len() >= max_expansions as usize || *postings_cost >= postings_budget {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// One segment's dictionary hits for `automaton`, in dictionary order,
-    /// stopping where [`Self::collect_automaton_terms`] alone would stop.
-    fn scan_automaton_terms<A>(
-        inverted: &tantivy::InvertedIndexReader,
-        automaton: &A,
-        max_expansions: u32,
-        postings_budget: u64,
-    ) -> Result<Vec<(String, u32)>>
-    where
-        A: Automaton,
-        A::State: Clone,
-    {
-        let mut hits = Vec::new();
-        let mut distinct = 0usize;
-        let mut cost = 0u64;
-        let mut stream = inverted.terms().search(automaton).into_stream()?;
-        while stream.advance() {
-            if let Ok(term) = std::str::from_utf8(stream.key()) {
-                let doc_freq = stream.value().doc_freq;
-                cost += u64::from(doc_freq);
-                distinct += 1;
-                hits.push((term.to_string(), doc_freq));
-                if distinct >= max_expansions as usize || cost >= postings_budget {
-                    break;
-                }
-            }
-        }
-        Ok(hits)
-    }
-
-    /// Streams every term `automaton` matches in one segment's dictionary
-    /// into `matched`, charging each hit's per-segment `doc_freq` against
-    /// `postings_cost` (the streamer decodes `TermInfo` in-memory on
-    /// `advance()`, so reading the value adds no IO). Returns `true` when a
-    /// collection budget was hit — degrade, never error: the check runs after
-    /// insertion, so even a first term costlier than the whole budget is
-    /// kept and the caller serves what was gathered.
-    fn collect_automaton_terms<A>(
-        inverted: &tantivy::InvertedIndexReader,
-        automaton: &A,
-        max_expansions: u32,
-        postings_budget: u64,
-        matched: &mut HashSet<String>,
-        postings_cost: &mut u64,
-    ) -> Result<bool>
-    where
-        A: Automaton,
-        A::State: Clone,
-    {
-        let mut stream = inverted.terms().search(automaton).into_stream()?;
-        while stream.advance() {
-            if let Ok(term) = std::str::from_utf8(stream.key()) {
-                *postings_cost += u64::from(stream.value().doc_freq);
-                // contains-before-insert avoids re-allocating the term string
-                // when it was already seen in an earlier segment or matched
-                // by an earlier automaton.
-                if !matched.contains(term) {
-                    matched.insert(term.to_string());
-                }
-                if matched.len() >= max_expansions as usize || *postings_cost >= postings_budget {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
     }
 
     /// Tokenizes `text` with the same `"hebrew"` analyzer the `text` field is
@@ -12085,6 +11848,7 @@ impl SearchEngine {
     /// regex patterns so callers can materialize concrete terms for highlighting.
     /// `any_order` applies as [`hebrew_query::resolve_proximity`] says; acronym
     /// expansions stay ordered.
+    #[allow(clippy::too_many_arguments)]
     fn build_advanced_query(
         &self,
         query: &str,
@@ -12098,6 +11862,40 @@ impl SearchEngine {
         scope: &SearchScope,
         match_mode: &WordMatch,
         cross_line: bool,
+    ) -> Result<AdvancedQueryBuild> {
+        self.build_advanced_query_ranked(
+            query,
+            distance,
+            custom_spacing,
+            any_order,
+            alternative_words,
+            search_options,
+            facets,
+            voc,
+            scope,
+            match_mode,
+            cross_line,
+            false,
+        )
+    }
+
+    /// [`Self::build_advanced_query`]; `rank` (a relevance-ordered search)
+    /// scores a single word's matches in tiers — see [`ADVANCED_TIER_BOOSTS`].
+    #[allow(clippy::too_many_arguments)]
+    fn build_advanced_query_ranked(
+        &self,
+        query: &str,
+        distance: u32,
+        custom_spacing: &HashMap<String, String>,
+        any_order: bool,
+        alternative_words: &HashMap<u32, Vec<String>>,
+        search_options: &HashMap<String, HashMap<String, bool>>,
+        facets: Vec<String>,
+        voc: &VocalizedFlags,
+        scope: &SearchScope,
+        match_mode: &WordMatch,
+        cross_line: bool,
+        rank: bool,
     ) -> Result<AdvancedQueryBuild> {
         // The vocalized mode is requested either by the global API flags or
         // by a per-word "ניקוד"/"טעמים" option; the per-word requirement
@@ -12176,6 +11974,31 @@ impl SearchEngine {
             scope,
             cross_line,
         )?;
+        // Tiers compare mark-free text, so the vocalized field stays unranked.
+        let ranking_roots: Option<Vec<String>> = (rank && !voc_mode.any())
+            .then(|| {
+                let word = source_words.first()?;
+                let ignore_quotes =
+                    hebrew_query::word_flags_at(&source_words, 0, search_options).ignore_quotes;
+                let roots = std::iter::once(word.clone())
+                    .chain(
+                        alternative_words
+                            .get(&0)
+                            .into_iter()
+                            .flatten()
+                            .map(|a| hebrew_query::normalize_for_index(a)),
+                    )
+                    .map(|r| {
+                        if ignore_quotes {
+                            hebrew_query::strip_quote_chars(&r)
+                        } else {
+                            r
+                        }
+                    })
+                    .collect();
+                Some(roots)
+            })
+            .flatten();
         let (main_query, main_truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
             &source_words,
@@ -12187,6 +12010,7 @@ impl SearchEngine {
             scope,
             match_mode,
             cross_line,
+            ranking_roots.as_deref(),
         )?;
         let (query, truncated, acronym_patterns) = if acronym_alts.is_empty() {
             (main_query, main_truncated, Vec::new())
@@ -12299,6 +12123,7 @@ impl SearchEngine {
                 scope,
                 &WordMatch::All,
                 cross_line,
+                None,
             )?;
             out.push((alt_query, truncated, literal_patterns));
         }
@@ -12993,50 +12818,43 @@ impl SearchEngine {
             &alternative_words,
             &search_options,
         );
-        let searcher = self.index_reader.searcher();
 
-        // Per word: compile the word's branches and collect the index terms
-        // they match. `automaton_highlight_terms` splits its budget across the
-        // word's branches, so a wide word (partial + typo) still spreads its
-        // term allowance over all variants instead of exhausting it on the
-        // first branch; the display char budget bounds the final pattern size.
+        // Per word: the very term set the search serves — same automata, same
+        // ranking, same budgets (the phrase degrade path's for a multi-word
+        // query, which keep a superset of the scoped paths' ranked prefix) —
+        // so every form a result was found by is painted. A word whose
+        // branches fail to compile paints the query shape instead.
+        let text_field = self.schema.get_field("text")?;
+        let single = advanced.regex_terms.len() == 1;
+        let (max_terms, postings_budget) = if single {
+            (advanced.max_expansions, SINGLE_WORD_POSTINGS_BUDGET)
+        } else {
+            (
+                PHRASE_POSITION_MAX_EXPANSIONS.max(advanced.max_expansions),
+                PHRASE_POSITION_POSTINGS_BUDGET,
+            )
+        };
         let mut per_word_terms: Vec<Vec<String>> = Vec::with_capacity(advanced.regex_terms.len());
         for word_pattern in &advanced.regex_terms {
-            let automatons: Vec<tantivy_fst::Regex> = word_pattern
-                .branches()
-                .iter()
-                .filter_map(|branch| match tantivy_fst::Regex::new(branch) {
-                    Ok(re) => Some(re),
-                    Err(e) => {
-                        // A branch the search itself would reject: skip it for
-                        // highlighting (the search surfaces the error), keep
-                        // painting what the remaining branches match.
-                        log::error!(
-                            "highlight branch failed to compile ({} chars): {e}",
-                            branch.chars().count()
-                        );
-                        None
-                    }
-                })
-                .collect();
-            let mut matched: HashSet<String> = if automatons.is_empty() {
-                HashSet::new()
-            } else {
-                self.automaton_highlight_terms(&searcher, &automatons)?
-            };
-            // Single-word typo path: the search expands typo coverage through
-            // Levenshtein-1 automatons, not regex branches — run the same
-            // scan here so a document found via any edit-distance-1 variant
-            // highlights that variant (search↔highlight parity).
-            if !advanced.typo_tokens.is_empty() {
-                let typo_automatons = advanced
-                    .typo_tokens
+            let typo_tokens: &[String] = if single { &advanced.typo_tokens } else { &[] };
+            let terms = match self.materialize_term_set(
+                word_pattern.branches(),
+                typo_tokens,
+                text_field,
+                max_terms,
+                postings_budget,
+            ) {
+                Ok(entry) => entry
+                    .terms
                     .iter()
-                    .map(|t| self.fuzzy_automaton(t, 1))
-                    .collect::<Result<Vec<_>>>()?;
-                matched.extend(self.automaton_highlight_terms(&searcher, &typo_automatons)?);
-            }
-            per_word_terms.push(matched.into_iter().collect());
+                    .filter_map(|t| t.value().as_str().map(str::to_string))
+                    .collect(),
+                Err(e) => {
+                    log::error!("highlight terms unavailable: {e}");
+                    Vec::new()
+                }
+            };
+            per_word_terms.push(terms);
         }
 
         Ok(display_highlight::build_display_highlight_from_terms(
@@ -13119,16 +12937,15 @@ impl SearchEngine {
         }))
     }
 
-    /// One index-term set per query word (in phrase order), each materialized by
-    /// streaming the term dictionary through that word's regex automaton — the
-    /// same FST scan the search uses, so the sets contain exactly the
-    /// morphological variants (prefixes, suffixes, alternatives) that genuinely
-    /// matched. The per-word budget split mirrors
-    /// [`Self::automaton_highlight_terms`], so their union equals the merged
-    /// highlight term set the flat query paints with.
+    /// One index-term set per query word (in phrase order), materialized like
+    /// the search's own term sets ([`Self::materialize_term_set`]: same
+    /// automata, same ranking), so the sets contain exactly the morphological
+    /// variants (prefixes, suffixes, alternatives) that genuinely matched.
+    /// [`MAX_HIGHLIGHT_TERMS`] is split evenly between the words; a word's
+    /// highest-ranked forms fill its share first.
     fn phrase_per_word_terms(
         &self,
-        searcher: &Searcher,
+        _searcher: &Searcher,
         regex_terms: &[String],
         field: Field,
     ) -> Result<Vec<HashSet<String>>> {
@@ -13136,11 +12953,19 @@ impl SearchEngine {
         regex_terms
             .iter()
             .map(|pattern| {
-                let re = tantivy_fst::Regex::new(pattern)
+                let entry = self
+                    .materialize_term_set(
+                        hebrew_query::WordPattern::parse(pattern).branches(),
+                        &[],
+                        field,
+                        cap as u32,
+                        u64::MAX,
+                    )
                     .map_err(|e| anyhow::anyhow!("invalid highlight regex {pattern:?}: {e}"))?;
-                Ok(self
-                    .automaton_terms_in_field(searcher, field, &re, cap)?
-                    .into_iter()
+                Ok(entry
+                    .terms
+                    .iter()
+                    .filter_map(|t| t.value().as_str().map(str::to_string))
                     .collect())
             })
             .collect()
@@ -15182,6 +15007,14 @@ fn select_level_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<Seg
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[path = "../search_quality_tests.rs"]
+mod quality_tests;
+
+#[cfg(test)]
+#[path = "../quality_bench.rs"]
+mod quality_bench;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -16991,387 +16824,6 @@ mod tests {
     }
 
     #[test]
-    fn parallel_term_collection_equals_the_sequential_loop() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let (mut engine, _dir) = make_engine();
-        engine.set_bulk_indexing(true).unwrap();
-        let words = [
-            "ספר",
-            "ספרים",
-            "הספר",
-            "מספר",
-            "סופר",
-            "ספרא",
-            "בספרו",
-            "תורה",
-        ];
-        for (segment, chunk) in words.chunks(2).enumerate() {
-            for (i, word) in chunk.iter().enumerate() {
-                let id = (segment * 10 + i) as u64;
-                engine
-                    .add_document(
-                        id,
-                        "title",
-                        "ref",
-                        "/root",
-                        &format!("{word} {word} ספר אחר"),
-                        id,
-                        false,
-                        &format!("/books/{id}.txt"),
-                        None,
-                        None,
-                        None,
-                    )
-                    .unwrap();
-            }
-            engine.commit().unwrap();
-        }
-        assert!(engine.get_segment_count().unwrap() > 1);
-
-        let searcher = engine.index_reader.searcher();
-        let text = engine.schema.get_field("text").unwrap();
-        let inverted: Vec<_> = searcher
-            .segment_readers()
-            .iter()
-            .map(|r| r.inverted_index(text).unwrap())
-            .collect();
-        let regexes: Vec<tantivy_fst::Regex> = [".{0,3}ספר.{0,3}", "סופר", ".{0,2}ס.{0,3}"]
-            .iter()
-            .map(|p| tantivy_fst::Regex::new(p).unwrap())
-            .collect();
-
-        struct CountedRegex {
-            regex: tantivy_fst::Regex,
-            starts: Arc<AtomicUsize>,
-        }
-        impl Automaton for CountedRegex {
-            type State = <tantivy_fst::Regex as Automaton>::State;
-            fn start(&self) -> Self::State {
-                self.starts.fetch_add(1, Ordering::Relaxed);
-                self.regex.start()
-            }
-            fn is_match(&self, state: &Self::State) -> bool {
-                self.regex.is_match(state)
-            }
-            fn can_match(&self, state: &Self::State) -> bool {
-                self.regex.can_match(state)
-            }
-            fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
-                self.regex.accept(state, byte)
-            }
-        }
-        let counted: Vec<_> = (0..8)
-            .map(|_| CountedRegex {
-                regex: tantivy_fst::Regex::new(".*").unwrap(),
-                starts: Arc::new(AtomicUsize::new(0)),
-            })
-            .collect();
-        assert!(SearchEngine::collect_automatons_terms(
-            &inverted,
-            &counted,
-            1,
-            u64::MAX,
-            &mut HashSet::new(),
-            &mut 0,
-        )
-        .unwrap());
-        assert!(counted[0].starts.load(Ordering::Relaxed) > 0);
-        assert!(counted[1..]
-            .iter()
-            .all(|automaton| automaton.starts.load(Ordering::Relaxed) == 0));
-
-        // The common first branch can also consume the budget across all
-        // segments, rather than on its first hit. Later branches stay idle.
-        let first_budget: u64 = inverted
-            .iter()
-            .map(|reader| {
-                let mut stream = reader.terms().search(&counted[0]).into_stream().unwrap();
-                let mut cost = 0;
-                while stream.advance() {
-                    cost += u64::from(stream.value().doc_freq);
-                }
-                cost
-            })
-            .sum();
-        for automaton in &counted {
-            automaton.starts.store(0, Ordering::Relaxed);
-        }
-        assert!(SearchEngine::collect_automatons_terms(
-            &inverted,
-            &counted,
-            1000,
-            first_budget,
-            &mut HashSet::new(),
-            &mut 0,
-        )
-        .unwrap());
-        assert!(counted[0].starts.load(Ordering::Relaxed) > 0);
-        assert!(counted[1..]
-            .iter()
-            .all(|automaton| automaton.starts.load(Ordering::Relaxed) == 0));
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .unwrap();
-        // Narrow leading-wildcard and empty scans can traverse the whole
-        // dictionary. Their probe hits must be reused, so each visited
-        // segment starts exactly as many scans as the sequential collector.
-        for pattern in [".*ספר", "סופר", ".*missing"] {
-            let narrow = [CountedRegex {
-                regex: tantivy_fst::Regex::new(pattern).unwrap(),
-                starts: Arc::new(AtomicUsize::new(0)),
-            }];
-            for initial in [HashSet::new(), HashSet::from(["ספר".to_owned()])] {
-                for max_expansions in [0, 1, 1000] {
-                    for budget in [0, 1, u64::MAX] {
-                        narrow[0].starts.store(0, Ordering::Relaxed);
-                        let mut actual = initial.clone();
-                        let mut actual_cost = 0;
-                        let actual_truncated = pool
-                            .install(|| {
-                                SearchEngine::collect_automatons_terms(
-                                    &inverted,
-                                    &narrow,
-                                    max_expansions,
-                                    budget,
-                                    &mut actual,
-                                    &mut actual_cost,
-                                )
-                            })
-                            .unwrap();
-                        let actual_scans = narrow[0].starts.swap(0, Ordering::Relaxed);
-                        let mut seq = initial.clone();
-                        let mut seq_cost = 0;
-                        let mut seq_truncated = false;
-                        for reader in &inverted {
-                            if SearchEngine::collect_automaton_terms(
-                                reader,
-                                &narrow[0],
-                                max_expansions,
-                                budget,
-                                &mut seq,
-                                &mut seq_cost,
-                            )
-                            .unwrap()
-                            {
-                                seq_truncated = true;
-                                break;
-                            }
-                        }
-                        assert_eq!(actual, seq, "pattern={pattern}");
-                        assert_eq!(actual_cost, seq_cost, "pattern={pattern}");
-                        assert_eq!(actual_truncated, seq_truncated, "pattern={pattern}");
-                        assert_eq!(
-                            actual_scans,
-                            narrow[0].starts.load(Ordering::Relaxed),
-                            "narrow probe repeated a scan: pattern={pattern}",
-                        );
-                    }
-                }
-            }
-        }
-        // Existing terms, per-segment duplicates, exhausted initial budgets,
-        // and shrinking waves all retain the original sequential prefix.
-        for initial in [vec![], vec!["ספר"], vec!["ספר", "סופר", "not-in-index"]] {
-            for max_expansions in [0, 1, 2, 3, 7, 1000] {
-                for budget in [0, 1, 3, 5, 9, u64::MAX] {
-                    for initial_cost in [0, 2, budget] {
-                        // Avoid an irrelevant arithmetic overflow in both
-                        // collectors when starting already at u64::MAX.
-                        if initial_cost == u64::MAX {
-                            continue;
-                        }
-                        let initial: HashSet<String> =
-                            initial.iter().map(|term| (*term).to_owned()).collect();
-                        let mut seq = initial.clone();
-                        let mut seq_cost = initial_cost;
-                        let mut seq_truncated = false;
-                        'outer: for regex in &regexes {
-                            for inv in &inverted {
-                                if SearchEngine::collect_automaton_terms(
-                                    inv,
-                                    regex,
-                                    max_expansions,
-                                    budget,
-                                    &mut seq,
-                                    &mut seq_cost,
-                                )
-                                .unwrap()
-                                {
-                                    seq_truncated = true;
-                                    break 'outer;
-                                }
-                            }
-                        }
-                        let mut par = initial;
-                        let mut par_cost = initial_cost;
-                        let par_truncated = pool
-                            .install(|| {
-                                SearchEngine::collect_automatons_terms(
-                                    &inverted,
-                                    &regexes,
-                                    max_expansions,
-                                    budget,
-                                    &mut par,
-                                    &mut par_cost,
-                                )
-                            })
-                            .unwrap();
-                        let case = format!("max_expansions={max_expansions} budget={budget} initial_cost={initial_cost}");
-                        assert_eq!(par, seq, "{case}");
-                        assert_eq!(par_cost, seq_cost, "{case}");
-                        assert_eq!(par_truncated, seq_truncated, "{case}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn broad_term_collection_on_few_segments_retains_sequential_prefix() {
-        let (mut engine, _dir) = make_engine();
-        engine.set_bulk_indexing(true).unwrap();
-        let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
-        let term = |index: usize| {
-            format!(
-                "מלה{}{}",
-                letters[index / letters.len()],
-                letters[index % letters.len()]
-            )
-        };
-        for segment in 0..3 {
-            let words: Vec<_> = (segment * 16..segment * 16 + 32).map(term).collect();
-            add(
-                &mut engine,
-                segment as u64,
-                &words.join(" "),
-                &format!("/books/{segment}.txt"),
-            );
-            engine.commit().unwrap();
-        }
-        let searcher = engine.index_reader.searcher();
-        let text = engine.schema.get_field("text").unwrap();
-        let inverted: Vec<_> = searcher
-            .segment_readers()
-            .iter()
-            .map(|reader| reader.inverted_index(text).unwrap())
-            .collect();
-        assert_eq!(inverted.len(), 3);
-        let regexes = [tantivy_fst::Regex::new("מלה.*").unwrap()];
-
-        // Wide dictionaries exercise the probe and parallel waves, while
-        // budgets reached inside the probe select synchronous collection.
-        // Overlapping dictionaries and prefilled sets retain the same prefix,
-        // including budgets reached immediately after the ninth probe hit.
-        for threads in [1, 4] {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap();
-            for segment_count in [2, 3] {
-                let readers = &inverted[..segment_count];
-                for initial in [HashSet::new(), (0..20).map(term).collect()] {
-                    for max_expansions in [0, 1, 8, 9, 10, 24, 40, 1000] {
-                        for budget in [0, 1, 8, 9, 10, 11, 24, 40, 64, 1000] {
-                            let mut seq = initial.clone();
-                            let mut seq_cost = 2;
-                            let mut seq_truncated = false;
-                            for reader in readers {
-                                if SearchEngine::collect_automaton_terms(
-                                    reader,
-                                    &regexes[0],
-                                    max_expansions,
-                                    budget,
-                                    &mut seq,
-                                    &mut seq_cost,
-                                )
-                                .unwrap()
-                                {
-                                    seq_truncated = true;
-                                    break;
-                                }
-                            }
-                            let mut actual = initial.clone();
-                            let mut actual_cost = 2;
-                            let actual_truncated = pool
-                                .install(|| {
-                                    SearchEngine::collect_automatons_terms(
-                                        readers,
-                                        &regexes,
-                                        max_expansions,
-                                        budget,
-                                        &mut actual,
-                                        &mut actual_cost,
-                                    )
-                                })
-                                .unwrap();
-                            let case = format!("threads={threads} segments={segment_count} cap={max_expansions} budget={budget}");
-                            assert_eq!(actual, seq, "{case}");
-                            assert_eq!(actual_cost, seq_cost, "{case}");
-                            assert_eq!(actual_truncated, seq_truncated, "{case}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn term_budget_respects_segment_order_before_dictionary_order() {
-        let (mut engine, _dir) = make_engine();
-        engine.set_bulk_indexing(true).unwrap();
-        add(
-            &mut engine,
-            1,
-            "מלהד מלהה מלהו מלהז מלהח מלהט",
-            "/books/later.txt",
-        );
-        engine.commit().unwrap();
-        add(&mut engine, 2, "מלהא", "/books/early.txt");
-        engine.commit().unwrap();
-        let searcher = engine.index_reader.searcher();
-        let text = engine.schema.get_field("text").unwrap();
-        let early = Term::from_field_text(text, "מלהא");
-        let mut inverted: Vec<_> = searcher
-            .segment_readers()
-            .iter()
-            .map(|reader| reader.inverted_index(text).unwrap())
-            .collect();
-        assert_eq!(inverted.len(), 2);
-        // Reproduce the layout that made the overflow phrase test flaky:
-        // a segment containing later terms exhausts the cap before the
-        // segment that contains the globally earliest term is visited.
-        inverted.sort_by_key(|reader| reader.get_term_info(&early).unwrap().is_some());
-        let regexes = vec![tantivy_fst::Regex::new("מלה.*").unwrap()];
-        let mut seq = HashSet::new();
-        let mut seq_cost = 0;
-        assert!(SearchEngine::collect_automaton_terms(
-            &inverted[0],
-            &regexes[0],
-            5,
-            u64::MAX,
-            &mut seq,
-            &mut seq_cost,
-        )
-        .unwrap());
-        assert!(!seq.contains("מלהא"));
-        let mut parallel = HashSet::new();
-        let mut parallel_cost = 0;
-        assert!(SearchEngine::collect_automatons_terms(
-            &inverted,
-            &regexes,
-            5,
-            u64::MAX,
-            &mut parallel,
-            &mut parallel_cost,
-        )
-        .unwrap());
-        assert_eq!(parallel, seq);
-        assert_eq!(parallel_cost, seq_cost);
-    }
-
-    #[test]
     fn add_document_and_batch_normalize_like_add_text_book() {
         // ה-API הישירים חשופים ב-FFI — ההנחה "הקלט כבר מנורמל" נאכפת:
         // HTML מוסר, ניקוד מוסר מהשדה הרגיל, והעותק המנוקד נבנה מהגולמי.
@@ -18532,23 +17984,23 @@ mod tests {
         // typo-only single word expands through a Levenshtein-1 automaton
         // scan (VARIATION_CEILING_RESEARCH §3.ג): full edit-distance-1
         // coverage, a superset of the historical literal variant list.
-        // "ספגר" — an insertion of ג, which is NOT in INSERTION_LETTERS — was
+        // "ברכגה" — an insertion of ג, which is NOT in INSERTION_LETTERS — was
         // invisible to the sampled variants and must now match; a distance-2
-        // word must not.
+        // word must not. (A word needs four letters for the full distance.)
         let (mut engine, _dir) = make_engine();
-        add(&mut engine, 1, "ספר בראשית", "/books/a.txt");
-        add(&mut engine, 2, "ספגר אחר", "/books/b.txt");
+        add(&mut engine, 1, "ברכה בראשית", "/books/a.txt");
+        add(&mut engine, 2, "ברכגה אחר", "/books/b.txt");
         add(&mut engine, 3, "תורה צוה", "/books/c.txt");
         engine.commit().unwrap();
 
         let mut options: HashMap<String, HashMap<String, bool>> = HashMap::new();
         options.insert(
-            "ספר_0".to_string(),
+            "ברכה_0".to_string(),
             HashMap::from([("שגיאות כתיב".to_string(), true)]),
         );
         let mut ids: Vec<u64> = search_advanced_default(
             &engine,
-            "ספר".to_string(),
+            "ברכה".to_string(),
             vec!["/root".to_string()],
             100,
             0,
@@ -19348,7 +18800,7 @@ mod tests {
     #[test]
     fn index_highlight_affix_typo_paints_found_variants_among_many_forms() {
         let (mut engine, _dir) = make_engine();
-        let line_a = "ימים אחר הזמן שייעד להביא כלומר עתה ידעתי כי מזה אשר צוה";
+        let line_a = "ימים אחר הזמן שייעד להביא כלומר עתה ידעתי כי מצוא אשר צוה";
         let line_b = "אבל כשאין עשרה לא. וכל זמן שאין שלשה מצוה להם ליחלק";
         let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
         let mut filler = Vec::new();
@@ -19401,19 +18853,19 @@ mod tests {
         };
         assert_eq!(painted(line_b), vec!["זמן", "מצוה"]);
         // Word forms paint their root, as with affixes alone; typo terms paint whole.
-        assert_eq!(painted(line_a), vec!["זמן", "מזה"]);
+        assert_eq!(painted(line_a), vec!["זמן", "מצוא"]);
     }
 
     /// A one-sided expansion must keep painting a typo variant its own
-    /// branches cannot cover (`ספרא` under prefixes only).
+    /// branches cannot cover (`ברכתא` under prefixes only).
     #[test]
     fn index_highlight_one_sided_affix_typo_paints_variant() {
         let (mut engine, _dir) = make_engine();
-        add(&mut engine, 1, "ספרא תורה", "/books/a.txt");
+        add(&mut engine, 1, "ברכתא תורה", "/books/a.txt");
         engine.commit().unwrap();
 
         let options = HashMap::from([(
-            "ספר_0".to_string(),
+            "ברכת_0".to_string(),
             HashMap::from([
                 ("קידומות".to_string(), true),
                 ("שגיאות כתיב".to_string(), true),
@@ -19421,7 +18873,7 @@ mod tests {
         )]);
         let matcher = engine
             .generate_index_highlight_pattern(
-                "ספר תורה".to_string(),
+                "ברכת תורה".to_string(),
                 0,
                 HashMap::new(),
                 HashMap::new(),
@@ -19432,9 +18884,9 @@ mod tests {
             .expect("pattern")
             .matcher
             .expect("matcher");
-        let found = matcher.find_matches("ספרא תורה".to_string(), vec![]);
+        let found = matcher.find_matches("ברכתא תורה".to_string(), vec![]);
         assert_eq!(found.len(), 1);
-        assert_eq!((found[0].start, found[0].end), (0, 9));
+        assert_eq!((found[0].start, found[0].end), (0, 10));
     }
 
     #[test]

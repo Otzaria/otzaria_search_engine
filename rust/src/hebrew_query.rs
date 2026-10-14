@@ -79,29 +79,70 @@ pub const OPT_TRANSLATION: &str = "תרגום ארמי";
 /// `SearchEngine::acronym_alternatives`). מוגדר כאן לריכוז מפתחות ה-UI.
 pub const OPT_ACRONYM: &str = "ראשי תיבות";
 
-// ── Morphological affix patterns ──────────────────────────────────────────
+// ── Morphological affix alternatives ───────────────────────────────────────
 //
-// Nikud-free (see index contract above). Non-capturing groups. No anchors.
-//
-// There are intentionally TWO prefix groups:
-//   * `GRAM_PREFIX_GROUP` — the richer set used by the standalone grammatical
-//     prefix option (קידומות דקדוקיות). Its first alternation additionally
-//     carries דא, א, כש so that Aramaic דא־ / bare א־ / כש־ prefixed forms can
-//     match. Keep these distinct from PREFIX_GROUP.
-//   * `PREFIX_GROUP` — the leaner set used by the full prefix+suffix morphology
-//     builder, where the suffix half already widens recall, so the extra
-//     first-position alternatives are not needed.
-//
-// `FULL_SUFFIX_PATTERN` extends `SUFFIX_PATTERN` with three rare endings
-// (יות, יא, תא) used only when the full prefix+suffix morphology is active.
+// Nikud-free (see index contract above). Rendered as optional non-capturing
+// groups by [`optional_alts_group`] — mark-free for the plain dictionary,
+// with free-mark runs interleaved for the vocalized one. No anchors.
 
-const GRAM_PREFIX_GROUP: &str = r"(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
-
-const PREFIX_GROUP: &str = r"(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?";
-
-const SUFFIX_PATTERN: &str = r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יי|יך|יו|יה|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
-
-const FULL_SUFFIX_PATTERN: &str = r"(?:ותי|ותיך|ותיו|ותיה|ותינו|ותיכם|ותיכן|ותיהם|ותיהן|יות|יי|יך|יו|יה|יא|תא|ינו|יכם|יכן|יהם|יהן|י|ך|ו|ה|נו|כם|כן|ם|ן|ים|ות)?";
+/// First slot of the grammatical prefix group (קידומות דקדוקיות); דא and כש
+/// let Aramaic דא־ / כש־ prefixed forms match. No bare א: it is a root letter
+/// far more often than a prefix (אשבת, אמר→אאמר).
+const GRAM_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "כש", "כ", "ב", "ש", "ל", "ה", "ד"];
+/// A grammatical prefix never leaves fewer root letters than this, or a
+/// short word would match inside unrelated words (ית→בית) — the
+/// `MIN_STEM_LETTERS` of the dictionary path. Abbreviations (ר', רמב"ם)
+/// are exempt: their letters stand for whole words.
+const MIN_GRAM_PREFIX_ROOT_LETTERS: usize = 3;
+/// Second slot, after the first prefix (ו+ב, ש+ל, ו+כש…).
+const GRAM_PREFIX_ALTS_B: &[&str] = &["כש", "כ", "ב", "ש", "ל", "ה", "ד"];
+/// The definite article, last before the root.
+const HE_ALTS: &[&str] = &["ה"];
+/// First slot of the Aramaic prefix group (קידומות ארמיות): ד/דא/א, and
+/// כד/אד/מד through the second slot.
+const ARAMAIC_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "א", "כש", "כ", "ב", "ש", "ל", "ה", "ד"];
+/// Grammatical suffixes (סיומות דקדוקיות): possessive, plural and the rare
+/// יות/יא/תא endings.
+const GRAM_SUFFIX_ALTS: &[&str] = &[
+    "ותי",
+    "ותיך",
+    "ותיו",
+    "ותיה",
+    "ותינו",
+    "ותיכם",
+    "ותיכן",
+    "ותיהם",
+    "ותיהן",
+    "יות",
+    "יי",
+    "יך",
+    "יו",
+    "יה",
+    "יא",
+    "תא",
+    "ינו",
+    "יכם",
+    "יכן",
+    "יהם",
+    "יהן",
+    "י",
+    "ך",
+    "ו",
+    "ה",
+    "נו",
+    "כם",
+    "כן",
+    "ם",
+    "ן",
+    "ים",
+    "ות",
+];
+/// Past-tense person endings (אמרתי, אמרת, אמרתם, אמרתן); נו/ו are already
+/// grammatical suffixes. Only for a verb-sized root — see [`takes_verb_suffixes`].
+const VERB_SUFFIX_ALTS: &[&str] = &["תי", "ת", "תם", "תן"];
+/// A root ending in ה drops it before a suffix: ת (construct — תורתו) or ות
+/// (plural — תורות, תורותיו).
+const HE_STEM_ALTS: &[&str] = &["ות", "ת"];
 
 // Letters tried for single-insertion typo variants (ordered by frequency).
 const INSERTION_LETTERS: &[&str] = &[
@@ -1184,12 +1225,20 @@ pub(crate) fn strip_quote_chars(s: &str) -> String {
 ///   מותרת (מצות ימצא מצוות).
 /// * **תקרה פר-אות** — לכל מילה עד [`MAX_EDITS_PER_LETTER`] עריכות של י
 ///   ועד כך של ו (בנפרד).
+/// * **לא משנים מילה** — אין השמטה והוספה של אותה אות באותו וריאנט (קודש
+///   ↛ קדוש); אין השמטת י/ו שלפני ה סופית (מצוה ↛ מצה); השמטה לא משאירה
+///   פחות משלוש אותיות, ומילה בת שלוש אותיות אינה מקבלת הוספות (שבת ↛
+///   שבות/שבית/שובת).
 /// * גרש/גרשיים נותרים ניתנים להשמטה בכל מיקום, ללא תקרה (התנהגות קודמת).
 ///
 /// הסדר: המילה המקורית, אחר כך וריאנטים של עריכה אחת (השמטות לפני הוספות,
 /// משמאל לימין), אחר כך שתי עריכות, וכן הלאה — כך שקיצוץ תקציב מהסוף משמר
 /// תמיד את הצורות הקרובות ביותר למה שהוקלד.
 pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<String> {
+    /// השמטה לעולם לא משאירה פחות אותיות מזה.
+    const MIN_SPELLING_LETTERS: usize = 3;
+    /// מילה קצרה מזה אינה מקבלת הוספות.
+    const MIN_SPELLING_INSERTION_LETTERS: usize = 4;
     /// תקרת עריכות לכל אות (י בנפרד, ו בנפרד) בווריאנט אחד.
     const MAX_EDITS_PER_LETTER: usize = 3;
     /// תקרת מועמדי-עריכה למילה — שומרת את חיפוש הקומבינציות פולינומיאלי
@@ -1212,6 +1261,7 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
     }
     let chars: Vec<char> = word.chars().collect();
     let n = chars.len();
+    let letters = chars.iter().filter(|c| !matches!(c, '\'' | '"')).count();
 
     // מועמדי עריכה בסדר דטרמיניסטי: השמטות משמאל לימין, אחר כך הוספות
     // (לכל מרווח: ו לפני י).
@@ -1219,12 +1269,14 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
     for (i, &c) in chars.iter().enumerate() {
         match c {
             'י' | 'ו' => {
-                // נציג השמטה אחד לכל רצף: האיבר הפנימי הראשון שלו.
+                // נציג השמטה אחד לכל רצף: האיבר הפנימי הראשון שלו. י/ו שלפני
+                // ה סופית עיצורית (מצוה, שתיה) — השמטתה יוצרת מילה אחרת (מצה).
                 let run_start = i == 0 || chars[i - 1] != c;
                 if run_start {
                     if let Some(del_at) = (i..n)
                         .take_while(|&j| chars[j] == c)
                         .find(|&j| j > 0 && j + 1 < n)
+                        .filter(|&j| !(j + 2 == n && chars[n - 1] == 'ה'))
                     {
                         edits.push(Edit::Del(del_at));
                     }
@@ -1234,9 +1286,12 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
             _ => {}
         }
     }
-    for gap in 1..n {
-        edits.push(Edit::Ins(gap, 'ו'));
-        edits.push(Edit::Ins(gap, 'י'));
+    // במילה בת שלוש אותיות כל הוספה יוצרת מילה אחרת (שבת→שבות/שבית/שובת).
+    if letters >= MIN_SPELLING_INSERTION_LETTERS {
+        for gap in 1..n {
+            edits.push(Edit::Ins(gap, 'ו'));
+            edits.push(Edit::Ins(gap, 'י'));
+        }
     }
     edits.truncate(MAX_EDIT_CANDIDATES);
     let m = edits.len();
@@ -1248,19 +1303,27 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
         let mut yod = 0usize;
         let mut vav = 0usize;
         let mut deleted = [false; 64];
+        let mut deleted_letters = 0usize;
         let mut gaps: Vec<usize> = Vec::new();
+        let mut removed: Vec<char> = Vec::new();
+        let mut added: Vec<char> = Vec::new();
         for &i in idx {
             match edits[i] {
                 Edit::Del(pos) => {
                     deleted[pos] = true;
+                    removed.push(chars[pos]);
                     match chars[pos] {
                         'י' => yod += 1,
                         'ו' => vav += 1,
                         _ => {}
                     }
+                    if !matches!(chars[pos], '\'' | '"') {
+                        deleted_letters += 1;
+                    }
                 }
                 Edit::Ins(gap, letter) => {
                     gaps.push(gap);
+                    added.push(letter);
                     match letter {
                         'י' => yod += 1,
                         _ => vav += 1,
@@ -1269,6 +1332,13 @@ pub(crate) fn generate_spelling_variations(word: &str, limit: usize) -> Vec<Stri
             }
         }
         if yod > MAX_EDITS_PER_LETTER || vav > MAX_EDITS_PER_LETTER {
+            return false;
+        }
+        // השמטה והוספה של אותה אות מזיזות אותה (קודש→קדוש) — מילה אחרת.
+        if removed.iter().any(|c| added.contains(c)) {
+            return false;
+        }
+        if letters - deleted_letters < MIN_SPELLING_LETTERS {
             return false;
         }
         // מועמדי ההוספה נוצרו ממוינים לפי מרווח, והקומבינציות שומרות סדר —
@@ -1397,13 +1467,51 @@ fn generate_common_typo_variations(word: &str) -> Vec<String> {
     out
 }
 
-/// Full edit-distance-1 expansion: common substitutions/transpositions, then
-/// single deletions, then single insertions. Capped at `max` variants.
+/// Typo tolerance by word length: no letters to spare in a word of up to
+/// two letters (אב would match א, ב, אם…), only the common letter confusions
+/// in a three-letter word, and the full edit distance 1 from four letters.
+const MIN_TYPO_SUBSTITUTION_LETTERS: usize = 3;
+const MIN_TYPO_EDIT_LETTERS: usize = 4;
+
+/// Letters of `word` that a typo may change: quotes and marks not counted.
+pub(crate) fn typo_letter_count(word: &str) -> usize {
+    word.chars()
+        .filter(|&c| !matches!(c, '\'' | '"') && !is_attached_mark(c))
+        .count()
+}
+
+/// Whether a word gets the full edit-distance-1 neighborhood (the engine's
+/// Levenshtein scan or [`generate_typo_variations`]' edits).
+pub(crate) fn takes_typo_edits(word: &str) -> bool {
+    typo_letter_count(word) >= MIN_TYPO_EDIT_LETTERS
+}
+
+/// Typo variants of `word`, original first, capped at `max`: by length (see
+/// [`MIN_TYPO_EDIT_LETTERS`]) nothing, the common letter confusions, or the
+/// full edit-distance-1 expansion — confusions/transpositions, then single
+/// deletions, then single insertions.
 fn generate_typo_variations(word: &str, max: usize) -> Vec<String> {
     if word.is_empty() {
         return vec![String::new()];
     }
+    let letters = typo_letter_count(word);
+    if letters < MIN_TYPO_SUBSTITUTION_LETTERS {
+        return vec![word.to_string()];
+    }
     let graphemes: Vec<&str> = word.graphemes(true).collect();
+    if letters < MIN_TYPO_EDIT_LETTERS {
+        let mut out = vec![word.to_string()];
+        let mut seen: HashSet<String> = HashSet::from([word.to_string()]);
+        for (i, &g) in graphemes.iter().enumerate() {
+            for &sub in typo_substitutions(g) {
+                let mut v = graphemes.clone();
+                v[i] = sub;
+                push_unique(&mut out, &mut seen, v.concat());
+            }
+        }
+        out.truncate(max.max(1));
+        return out;
+    }
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -1444,44 +1552,27 @@ fn generate_typo_variations(word: &str, max: usize) -> Vec<String> {
     out
 }
 
-// ── Single-word regex pattern builders ────────────────────────────────────
+// ── Affix arms: the one source of the morphology options ──────────────────
 //
-// All patterns are whole-term (no `^`/`$`) and use bounded wildcards instead
-// of `.*` so the tantivy-fst scanner visits a bounded portion of the term
-// dictionary.
+// Every option that surrounds a root — prefix/suffix windows, grammatical
+// prefixes/suffixes, partial word, Aramaic prefixes — becomes `AffixArm`s:
+// a regex before the root, the root form, a regex after it. Search patterns
+// (plain and vocalized) and the display highlight all render the same arms.
+// Windows are bounded (`{0,k}`) so a scan visits a bounded slice of the
+// term dictionary.
 
-fn grammatical_prefix_pattern(root: &str) -> String {
-    if root.is_empty() {
-        return String::new();
-    }
-    format!("{}{}", GRAM_PREFIX_GROUP, escape_regex(root))
+/// One way a root form may be surrounded. `core` is the literal root form
+/// (vocalized on the vocalized path); `lead`/`trail` are regexes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AffixArm {
+    pub(crate) lead: String,
+    pub(crate) core: String,
+    pub(crate) trail: String,
 }
 
-fn grammatical_suffix_pattern(root: &str) -> String {
-    if root.is_empty() {
-        return String::new();
-    }
-    format!("{}{}", escape_regex(root), SUFFIX_PATTERN)
-}
-
-fn full_morphological_pattern(root: &str) -> String {
-    if root.is_empty() {
-        return String::new();
-    }
-    format!(
-        "{}{}{}",
-        PREFIX_GROUP,
-        escape_regex(root),
-        FULL_SUFFIX_PATTERN
-    )
-}
-
-/// Bounded prefix-search: `.{0,k}` before the root, where `k` shrinks as the
-/// root grows (shorter root → more room for prefix content).
-fn user_prefix_pattern(root: &str) -> String {
-    match user_prefix_window(root.chars().count()) {
-        0 => String::new(),
-        window => format!(".{{0,{}}}{}", window, escape_regex(root)),
+impl AffixArm {
+    fn render(&self, core: impl Fn(&str) -> String) -> String {
+        format!("{}{}{}", self.lead, core(&self.core), self.trail)
     }
 }
 
@@ -1494,14 +1585,6 @@ fn user_prefix_window(root_len: usize) -> usize {
     }
 }
 
-/// Bounded suffix-search: `.{0,k}` after the root.
-fn user_suffix_pattern(root: &str) -> String {
-    match user_suffix_window(root.chars().count()) {
-        0 => String::new(),
-        window => format!("{}.{{0,{}}}", escape_regex(root), window),
-    }
-}
-
 fn user_suffix_window(root_len: usize) -> usize {
     match root_len {
         0 => 0,
@@ -1509,15 +1592,6 @@ fn user_suffix_window(root_len: usize) -> usize {
         2 => 6,
         _ => 5,
     }
-}
-
-/// Bounded anywhere-in-word: `.{0,k}` on both sides.
-fn partial_word_pattern(root: &str) -> String {
-    if root.is_empty() {
-        return String::new();
-    }
-    let window = partial_word_window(root.chars().count());
-    format!(".{{0,{w}}}{}.{{0,{w}}}", escape_regex(root), w = window)
 }
 
 fn partial_word_window(root_len: usize) -> usize {
@@ -1528,49 +1602,186 @@ fn partial_word_window(root_len: usize) -> usize {
     }
 }
 
-/// The same morphological branches as `word_to_pattern`, kept separate so
-/// display matching can capture the root and use each spelling's own bounds.
-pub(crate) fn highlight_affix_patterns(root: &str, flags: &WordFlags) -> Vec<(String, String)> {
-    let n = root.chars().count();
-    let bounded = |n| format!(".{{0,{n}}}");
-    let base = if flags.prefix && flags.suffix {
-        let p = bounded(partial_word_window(n));
-        (p.clone(), p)
-    } else if flags.gram_prefix && flags.gram_suffix {
-        (PREFIX_GROUP.to_string(), FULL_SUFFIX_PATTERN.to_string())
-    } else if flags.prefix {
-        (bounded(user_prefix_window(n)), String::new())
-    } else if flags.suffix {
-        (String::new(), bounded(user_suffix_window(n)))
-    } else if flags.gram_prefix {
-        (GRAM_PREFIX_GROUP.to_string(), String::new())
-    } else if flags.gram_suffix {
-        (String::new(), SUFFIX_PATTERN.to_string())
-    } else if flags.partial {
-        let p = bounded(partial_word_window(n));
-        (p.clone(), p)
+/// What a prefix/suffix window may add around the root: a Hebrew letter
+/// (Yiddish digraphs included) or a geresh/gershayim, in the index's ASCII
+/// form — never a digit, a Latin letter or another script.
+const AFFIX_LETTER: &str = "[א-תװ-ײ\"']";
+
+/// Up to `n` letters before or after the root.
+fn affix_window(n: usize, voc: bool) -> String {
+    affix_window_between(0, n, voc)
+}
+
+/// Between `min` and `max` letters. On the vocalized dictionary each unit is
+/// a letter plus its attached marks — a window over chars would be spent on
+/// marks (three vocalized letters are 6–9 chars).
+fn affix_window_between(min: usize, max: usize, voc: bool) -> String {
+    if voc {
+        format!("(?:{AFFIX_LETTER}{VOC_FREE_MARKS}){{{min},{max}}}")
     } else {
-        (String::new(), String::new())
-    };
-    if !flags.aramaic_prefix {
-        return vec![base];
-    }
-    let aramaic = (
-        GRAM_PREFIX_GROUP.to_string(),
-        if flags.gram_suffix {
-            SUFFIX_PATTERN.to_string()
-        } else {
-            String::new()
-        },
-    );
-    if flags.expands_besides_aramaic() && base != aramaic {
-        vec![aramaic, base]
-    } else {
-        vec![aramaic]
+        format!("{AFFIX_LETTER}{{{min},{max}}}")
     }
 }
 
-// ── ארמית: שקילות אות סופית + קידומות ─────────────────────────────────────
+fn prefix_group(first: &[&str], voc: bool) -> String {
+    format!(
+        "{}{}{}",
+        optional_alts_group(first, voc),
+        optional_alts_group(GRAM_PREFIX_ALTS_B, voc),
+        optional_alts_group(HE_ALTS, voc)
+    )
+}
+
+fn alternation(parts: Vec<String>) -> String {
+    match parts.len() {
+        0 => String::new(),
+        1 => parts.into_iter().next().unwrap(),
+        _ => format!("(?:{})", parts.join("|")),
+    }
+}
+
+/// Letters of `root`, attached marks not counted.
+fn base_len(root: &str) -> usize {
+    root.chars().filter(|&c| !is_attached_mark(c)).count()
+}
+
+/// The affix arms of one root form under `flags`: the Aramaic prefix arm
+/// when asked for, and the arm of the remaining options — prefix and suffix
+/// options compose (each side is the union of its selected options).
+pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixArm> {
+    let letters = base_len(root);
+    if letters == 0 {
+        return Vec::new();
+    }
+    let mut arms = Vec::new();
+    if flags.aramaic_prefix {
+        let lead = prefix_group(ARAMAIC_PREFIX_ALTS_A, voc);
+        for (core, trail) in suffix_sides(root, letters, None, flags.gram_suffix, voc) {
+            arms.push(AffixArm {
+                lead: lead.clone(),
+                core,
+                trail,
+            });
+        }
+        // The Aramaic arm already covers the bare form (its prefixes are
+        // optional); the base arm joins only for an option it lacks.
+        if !flags.expands_besides_aramaic() {
+            return arms;
+        }
+    }
+    let both_windows = flags.partial || (flags.prefix && flags.suffix);
+    let mut leads = Vec::new();
+    let mut trail_window = None;
+    if both_windows {
+        leads.push(affix_window(partial_word_window(letters), voc));
+        trail_window = Some(partial_word_window(letters));
+    } else {
+        if flags.prefix {
+            leads.push(affix_window(user_prefix_window(letters), voc));
+        }
+        if flags.suffix {
+            trail_window = Some(user_suffix_window(letters));
+        }
+    }
+    let abbreviation = root.contains(['\'', '"']);
+    if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
+        leads.push(prefix_group(GRAM_PREFIX_ALTS_A, voc));
+    }
+    let lead = alternation(leads);
+    for (core, trail) in suffix_sides(root, letters, trail_window, flags.gram_suffix, voc) {
+        let arm = AffixArm {
+            lead: lead.clone(),
+            core,
+            trail,
+        };
+        if !arms.contains(&arm) {
+            arms.push(arm);
+        }
+    }
+    arms
+}
+
+/// The final-letter forms of the root letters, before a suffix.
+fn base_form_of_final(c: char) -> Option<char> {
+    match c {
+        'ך' => Some('כ'),
+        'ם' => Some('מ'),
+        'ן' => Some('נ'),
+        'ף' => Some('פ'),
+        'ץ' => Some('צ'),
+        _ => None,
+    }
+}
+
+/// Byte index and char of the root's last letter (marks skipped).
+fn last_letter(root: &str) -> Option<(usize, char)> {
+    root.char_indices()
+        .rev()
+        .find(|&(_, c)| !is_attached_mark(c))
+}
+
+/// Past-tense endings suit a verb-sized root (3–4 letters) that does not
+/// end in ה or ת, whose past forms change shape (עשה→עשיתי, כרת→כרתי).
+fn takes_verb_suffixes(root: &str, letters: usize) -> bool {
+    (3..=4).contains(&letters)
+        && !root.contains(['\'', '"'])
+        && last_letter(root).is_some_and(|(_, c)| c != 'ה' && c != 'ת')
+}
+
+/// The `(root form, trail)` pairs of the suffix options. Before a suffix a
+/// final letter takes its base form (מלך→מלכים), and a final ה gives way to
+/// ת/ות under the grammatical suffixes (תורה→תורתו/תורות, never תורהו).
+fn suffix_sides(
+    root: &str,
+    letters: usize,
+    window: Option<usize>,
+    gram: bool,
+    voc: bool,
+) -> Vec<(String, String)> {
+    if window.is_none() && !gram {
+        return vec![(root.to_string(), String::new())];
+    }
+    let mut suffixes: Vec<&str> = GRAM_SUFFIX_ALTS.to_vec();
+    if takes_verb_suffixes(root, letters) {
+        suffixes.extend(VERB_SUFFIX_ALTS);
+    }
+    let (at, last) = last_letter(root).expect("a root with letters");
+    if let Some(base) = base_form_of_final(last) {
+        let stem = format!("{}{base}{}", &root[..at], &root[at + last.len_utf8()..]);
+        let mut required = Vec::new();
+        if let Some(n) = window {
+            required.push(affix_window_between(1, n, voc));
+        }
+        if gram {
+            required.push(alts_group(&suffixes, voc));
+        }
+        return vec![
+            (root.to_string(), String::new()),
+            (stem, alternation(required)),
+        ];
+    }
+    let window = window.map(|n| affix_window(n, voc));
+    if last == 'ה' && gram {
+        return vec![
+            (root.to_string(), window.unwrap_or_default()),
+            (
+                root[..at].to_string(),
+                format!(
+                    "{}{}",
+                    alts_group(HE_STEM_ALTS, voc),
+                    optional_alts_group(&suffixes, voc)
+                ),
+            ),
+        ];
+    }
+    let mut trails: Vec<String> = window.into_iter().collect();
+    if gram {
+        trails.push(optional_alts_group(&suffixes, voc));
+    }
+    vec![(root.to_string(), alternation(trails))]
+}
+
+// ── ארמית: שקילות אות סופית ───────────────────────────────────────────────
 
 /// וריאנט השקילות הארמית של האות הסופית: ה↔א (מלכה↔מלכא), ם↔ן
 /// (חכמים↔חכמין). `None` כשהמילה לא מסתיימת באחת מהאותיות האלה.
@@ -1597,56 +1808,20 @@ pub(crate) fn aramaic_root_variants(word: &str) -> Vec<String> {
     out
 }
 
-/// הענף הארמי הבסיסי: קבוצת הקידומות הדקדוקית (שנושאת את הצורות הארמיות
-/// ד/דא/א, ולכן גם כד/אד/מד דרך המשבצת השנייה) לפני השורש. זהה ל-
-/// [`grammatical_prefix_pattern`] — קיים כשם נפרד כדי שקריאת הקוד של מסלול
-/// הארמית לא תתלה בסמנטיקה של "קידומות דקדוקיות".
-fn aramaic_prefix_pattern(root: &str) -> String {
-    grammatical_prefix_pattern(root)
-}
-
-/// כמו [`aramaic_prefix_pattern`] בתוספת סיומות דקדוקיות — משמש כשסומנו
-/// גם ארמית וגם "סיומות דקדוקיות", כדי שצורה עם קידומת ארמית *וגם* סיומת
-/// (ודמלכתא) לא תיפול בין שני הענפים.
-fn aramaic_prefix_suffix_pattern(root: &str) -> String {
-    if root.is_empty() {
-        return String::new();
+/// Spelling variants fan through the grammatical arms at a tighter cap than
+/// through the plain windows (denser patterns per variant).
+fn spelling_limit(flags: &WordFlags) -> usize {
+    if flags.gram_prefix || flags.gram_suffix || flags.aramaic_prefix {
+        MAX_GRAMMATICAL_SPELLING_BRANCHES
+    } else {
+        MAX_SPELLING_BRANCHES
     }
-    format!(
-        "{}{}{}",
-        GRAM_PREFIX_GROUP,
-        escape_regex(root),
-        SUFFIX_PATTERN
-    )
 }
 
-/// Joins spelling variants each through a builder, wrapped in a non-capturing
-/// group. The spelling-only case passes [`escape_regex`] as the builder.
-fn join_spelling(word: &str, limit: usize, build: fn(&str) -> String) -> String {
-    let branches: Vec<String> = generate_spelling_variations(word, limit)
-        .into_iter()
-        .map(|v| build(&v))
-        .collect();
-    format!("(?:{})", branches.join("|"))
-}
-
-/// The core decision tree that maps a root word + [`WordFlags`] to a single
-/// tantivy-fst regex pattern. Priority order is preserved from the original
-/// Dart `createSearchPattern`.
-///
-/// אפשרויות הארמית מפוצלות: "סיומות ארמיות" מרחיבה את השורש לווריאנטי
-/// השקילות הסופית (מלכה↔מלכא), ו"קידומות ארמיות" עוטפת כל וריאנט בענף
-/// הקידומות הארמי (וסיומות דקדוקיות אם סומנו). כשסומנה גם אפשרות הרחבה
-/// נוספת (חלון קידומת חופשית, חלק ממילה וכו'), ענף עץ-הבסיס מתלווה לכל
-/// וריאנט כדי ששאר האפשרויות ימשיכו לחול גם עליו.
+/// The whole-term pattern of one root under `flags`: every root form —
+/// the Aramaic final-letter variants ("סיומות ארמיות"), each fanned out into
+/// its כתיב מלא/חסר variants — through its affix arms, as one alternation.
 fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
-    if root.is_empty() {
-        return String::new();
-    }
-    if !flags.aramaic_prefix && !flags.aramaic_suffix {
-        return word_to_pattern_base(root, flags);
-    }
-    // סיומות ארמיות: השורש + וריאנט השקילות; בלעדיהן — השורש בלבד.
     let variants = if flags.aramaic_suffix {
         aramaic_root_variants(root)
     } else {
@@ -1655,99 +1830,18 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
     let mut branches: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for variant in &variants {
-        if flags.aramaic_prefix {
-            let aramaic_builder: fn(&str) -> String = if flags.gram_suffix {
-                aramaic_prefix_suffix_pattern
-            } else {
-                aramaic_prefix_pattern
-            };
-            let aramaic_branch = if flags.spelling {
-                join_spelling(variant, MAX_GRAMMATICAL_SPELLING_BRANCHES, aramaic_builder)
-            } else {
-                aramaic_builder(variant)
-            };
-            push_unique(&mut branches, &mut seen, aramaic_branch);
-            // הענף הארמי כבר מכסה את הצורה המדויקת (הקידומות אופציונליות),
-            // אז ענף הבסיס מתווסף רק כשיש אפשרות הרחבה שהענף לא נושא.
-            if flags.expands_besides_aramaic() {
-                push_unique(
-                    &mut branches,
-                    &mut seen,
-                    word_to_pattern_base(variant, flags),
-                );
+        let forms = if flags.spelling {
+            generate_spelling_variations(variant, spelling_limit(flags))
+        } else {
+            vec![variant.clone()]
+        };
+        for form in forms {
+            for arm in affix_arms(&form, flags, false) {
+                push_unique(&mut branches, &mut seen, arm.render(escape_regex));
             }
-        } else {
-            // סיומות בלבד: כל וריאנט עובר את עץ-הבסיס המלא (ליטרל כשאין
-            // אפשרויות נוספות), כך ששאר האפשרויות חלות על שתי הצורות.
-            push_unique(
-                &mut branches,
-                &mut seen,
-                word_to_pattern_base(variant, flags),
-            );
         }
     }
-    if branches.len() == 1 {
-        branches.into_iter().next().unwrap()
-    } else {
-        format!("(?:{})", branches.join("|"))
-    }
-}
-
-/// עץ ההחלטות ללא ארמית — הגוף ההיסטורי של [`word_to_pattern`].
-fn word_to_pattern_base(root: &str, flags: &WordFlags) -> String {
-    if root.is_empty() {
-        return String::new();
-    }
-    if flags.spelling {
-        // With spelling: fan each variant through the appropriate morphological
-        // builder (or just escape if no morphological option is set).
-        if flags.prefix && flags.suffix {
-            join_spelling(root, MAX_SPELLING_BRANCHES, partial_word_pattern)
-        } else if flags.gram_prefix && flags.gram_suffix {
-            join_spelling(
-                root,
-                MAX_GRAMMATICAL_SPELLING_BRANCHES,
-                full_morphological_pattern,
-            )
-        } else if flags.prefix {
-            join_spelling(root, MAX_SPELLING_BRANCHES, user_prefix_pattern)
-        } else if flags.suffix {
-            join_spelling(root, MAX_SPELLING_BRANCHES, user_suffix_pattern)
-        } else if flags.gram_prefix {
-            join_spelling(
-                root,
-                MAX_GRAMMATICAL_SPELLING_BRANCHES,
-                grammatical_prefix_pattern,
-            )
-        } else if flags.gram_suffix {
-            join_spelling(
-                root,
-                MAX_GRAMMATICAL_SPELLING_BRANCHES,
-                grammatical_suffix_pattern,
-            )
-        } else if flags.partial {
-            join_spelling(root, MAX_SPELLING_BRANCHES, partial_word_pattern)
-        } else {
-            // Spelling only: alternation of the escaped variants themselves.
-            join_spelling(root, MAX_SPELLING_BRANCHES, escape_regex)
-        }
-    } else if flags.prefix && flags.suffix {
-        partial_word_pattern(root)
-    } else if flags.gram_prefix && flags.gram_suffix {
-        full_morphological_pattern(root)
-    } else if flags.prefix {
-        user_prefix_pattern(root)
-    } else if flags.suffix {
-        user_suffix_pattern(root)
-    } else if flags.gram_prefix {
-        grammatical_prefix_pattern(root)
-    } else if flags.gram_suffix {
-        grammatical_suffix_pattern(root)
-    } else if flags.partial {
-        partial_word_pattern(root)
-    } else {
-        escape_regex(root)
-    }
+    alternation(branches)
 }
 
 // ── Vocalized (nikud/te'amim) query patterns ───────────────────────────────
@@ -1801,129 +1895,9 @@ pub(crate) fn vocalized_free_pattern(base: &str) -> String {
     vocalized_token_pattern(base, &VocalizedFlags::default())
 }
 
-/// Bounded window of `n` letter-units on the vocalized dictionary. Each unit
-/// is one char plus its attached marks — a bare `.{{0,n}}` would spend the
-/// window on marks (three vocalized letters are 6–9 chars). The unit's `.`
-/// can itself consume a mark, over-accepting slightly; the term dictionary
-/// constrains what actually matches.
-fn voc_window(n: usize) -> String {
-    format!("(?:.{VOC_FREE_MARKS}){{0,{n}}}")
-}
-
-/// A vocalized root ready for affix composition: its whole-term pattern
-/// (marks required or free) plus the mark-free letter count that sizes the
-/// affix windows exactly like the plain path sizes them from `root`.
-struct VocCore {
-    pattern: String,
-    base_len: usize,
-}
-
-fn voc_user_prefix(core: &VocCore) -> String {
-    let window = match core.base_len {
-        0 => return String::new(),
-        1 => 5,
-        2 => 4,
-        _ => 3,
-    };
-    format!("{}{}", voc_window(window), core.pattern)
-}
-
-fn voc_user_suffix(core: &VocCore) -> String {
-    let window = match core.base_len {
-        0 => return String::new(),
-        1 => 7,
-        2 => 6,
-        _ => 5,
-    };
-    format!("{}{}", core.pattern, voc_window(window))
-}
-
-fn voc_partial(core: &VocCore) -> String {
-    if core.base_len == 0 {
-        return String::new();
-    }
-    let w = if core.base_len <= 3 { 3 } else { 2 };
-    format!("{}{}{}", voc_window(w), core.pattern, voc_window(w))
-}
-
-// The grammatical affix groups, as alternative lists. The plain-path string
-// constants above stay the source of truth for the mark-free field; these
-// arrays exist so the vocalized builders can interleave free-mark runs into
-// every alternative, and parity tests assert the mark-free rendering of each
-// array equals its string constant — the two forms cannot drift apart.
-const GRAM_PREFIX_ALTS_A: &[&str] = &["ו", "מ", "דא", "א", "כש", "כ", "ב", "ש", "ל", "ה", "ד"];
-const GRAM_PREFIX_ALTS_B: &[&str] = &["כ", "ב", "ש", "ל", "ה", "ד"];
-const PREFIX_ALTS_A: &[&str] = &["ו", "מ", "כ", "ב", "ש", "ל", "ה", "ד"];
-const HE_ALTS: &[&str] = &["ה"];
-const SUFFIX_ALTS: &[&str] = &[
-    "ותי",
-    "ותיך",
-    "ותיו",
-    "ותיה",
-    "ותינו",
-    "ותיכם",
-    "ותיכן",
-    "ותיהם",
-    "ותיהן",
-    "יי",
-    "יך",
-    "יו",
-    "יה",
-    "ינו",
-    "יכם",
-    "יכן",
-    "יהם",
-    "יהן",
-    "י",
-    "ך",
-    "ו",
-    "ה",
-    "נו",
-    "כם",
-    "כן",
-    "ם",
-    "ן",
-    "ים",
-    "ות",
-];
-const FULL_SUFFIX_ALTS: &[&str] = &[
-    "ותי",
-    "ותיך",
-    "ותיו",
-    "ותיה",
-    "ותינו",
-    "ותיכם",
-    "ותיכן",
-    "ותיהם",
-    "ותיהן",
-    "יות",
-    "יי",
-    "יך",
-    "יו",
-    "יה",
-    "יא",
-    "תא",
-    "ינו",
-    "יכם",
-    "יכן",
-    "יהם",
-    "יהן",
-    "י",
-    "ך",
-    "ו",
-    "ה",
-    "נו",
-    "כם",
-    "כן",
-    "ם",
-    "ן",
-    "ים",
-    "ות",
-];
-
-/// `(?:a|b|…)?` over the alternatives; `voc` interleaves free-mark runs so a
+/// `(?:a|b|…)` over the alternatives; `voc` interleaves free-mark runs so a
 /// vocalized affix (וּ, בְּ…) still matches.
-fn optional_alts_group(alts: &[&str], voc: bool) -> String {
+fn alts_group(alts: &[&str], voc: bool) -> String {
     let inner: Vec<String> = alts
         .iter()
         .map(|a| {
@@ -1934,87 +1908,27 @@ fn optional_alts_group(alts: &[&str], voc: bool) -> String {
             }
         })
         .collect();
-    format!("(?:{})?", inner.join("|"))
+    format!("(?:{})", inner.join("|"))
 }
 
-fn voc_gram_prefix_group() -> String {
-    format!(
-        "{}{}{}",
-        optional_alts_group(GRAM_PREFIX_ALTS_A, true),
-        optional_alts_group(GRAM_PREFIX_ALTS_B, true),
-        optional_alts_group(HE_ALTS, true)
-    )
+/// [`alts_group`], optional.
+fn optional_alts_group(alts: &[&str], voc: bool) -> String {
+    format!("{}?", alts_group(alts, voc))
 }
 
-fn voc_prefix_group() -> String {
-    format!(
-        "{}{}{}",
-        optional_alts_group(PREFIX_ALTS_A, true),
-        optional_alts_group(GRAM_PREFIX_ALTS_B, true),
-        optional_alts_group(HE_ALTS, true)
-    )
-}
-
-/// Vocalized counterpart of [`word_to_pattern`]'s morphological decision
-/// tree. Spelling is intentionally absent: on the vocalized path spelling
-/// variants are generated on the mark-free base and fed through here as
-/// their own cores (see [`build_word_regex_vocalized`]).
-fn word_to_pattern_vocalized(core: &VocCore, flags: &WordFlags) -> String {
-    if core.base_len == 0 {
-        return String::new();
+/// Vocalized counterpart of [`word_to_pattern`] for one root form: `text`
+/// keeps the marks of `required`'s classes required, every other mark free
+/// (pass `VocalizedFlags::default()` for a variant whose letters differ from
+/// what was typed). Spelling variants arrive as their own root forms (see
+/// [`build_word_regex_vocalized`]).
+fn word_to_pattern_vocalized(text: &str, required: &VocalizedFlags, flags: &WordFlags) -> String {
+    let mut branches: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for arm in affix_arms(text, flags, true) {
+        let branch = arm.render(|core| vocalized_token_pattern(core, required));
+        push_unique(&mut branches, &mut seen, branch);
     }
-    if flags.aramaic_prefix {
-        // המראה המנוקדת של זרוע הקידומות הארמיות ב-[`word_to_pattern`]:
-        // קבוצת הקידומות הדקדוקית (הנושאת את הצורות הארמיות) סביב ליבת
-        // המילה, בתוספת סיומות כשסומנו; וריאנטי השקילות הסופית ("סיומות
-        // ארמיות") נכנסים כליבות נפרדות ב-[`build_word_regex_vocalized`]
-        // (שינוי אות משמיט את עוגני הסימנים).
-        let suffix = if flags.gram_suffix {
-            optional_alts_group(SUFFIX_ALTS, true)
-        } else {
-            String::new()
-        };
-        let aramaic_branch = format!("{}{}{}", voc_gram_prefix_group(), core.pattern, suffix);
-        if !flags.expands_besides_aramaic() {
-            return aramaic_branch;
-        }
-        let base_branch = word_to_pattern_vocalized_base(core, flags);
-        if base_branch == aramaic_branch {
-            return aramaic_branch;
-        }
-        return format!("(?:{}|{})", aramaic_branch, base_branch);
-    }
-    word_to_pattern_vocalized_base(core, flags)
-}
-
-/// עץ ההחלטות המנוקד ללא ארמית — הגוף ההיסטורי של
-/// [`word_to_pattern_vocalized`].
-fn word_to_pattern_vocalized_base(core: &VocCore, flags: &WordFlags) -> String {
-    if core.base_len == 0 {
-        return String::new();
-    }
-    if flags.prefix && flags.suffix {
-        voc_partial(core)
-    } else if flags.gram_prefix && flags.gram_suffix {
-        format!(
-            "{}{}{}",
-            voc_prefix_group(),
-            core.pattern,
-            optional_alts_group(FULL_SUFFIX_ALTS, true)
-        )
-    } else if flags.prefix {
-        voc_user_prefix(core)
-    } else if flags.suffix {
-        voc_user_suffix(core)
-    } else if flags.gram_prefix {
-        format!("{}{}", voc_gram_prefix_group(), core.pattern)
-    } else if flags.gram_suffix {
-        format!("{}{}", core.pattern, optional_alts_group(SUFFIX_ALTS, true))
-    } else if flags.partial {
-        voc_partial(core)
-    } else {
-        core.pattern.clone()
-    }
+    alternation(branches)
 }
 
 /// Vocalized counterpart of [`build_word_regex`]: assembles the branch list
@@ -2059,20 +1973,19 @@ fn build_word_regex_vocalized(
     let mut branches: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut full = false;
-    let push_core = |branches: &mut Vec<String>, seen: &mut HashSet<String>, core: VocCore| {
-        let pattern = word_to_pattern_vocalized(&core, flags);
+    let free = VocalizedFlags::default();
+    let push_core = |branches: &mut Vec<String>,
+                     seen: &mut HashSet<String>,
+                     text: &str,
+                     required: &VocalizedFlags| {
+        let pattern = word_to_pattern_vocalized(text, required, flags);
         push_unique(branches, seen, pattern);
         branches.len() >= max
     };
 
     // Pass 0 — exact candidates, typed marks required.
     'exact: for candidate in &candidates {
-        let base = strip_attached_marks(candidate);
-        let core = VocCore {
-            pattern: vocalized_token_pattern(candidate, voc),
-            base_len: base.chars().count(),
-        };
-        if push_core(&mut branches, &mut seen, core) {
+        if push_core(&mut branches, &mut seen, candidate, voc) {
             full = true;
             break 'exact;
         }
@@ -2084,11 +1997,7 @@ fn build_word_regex_vocalized(
         'aramaic: for candidate in &candidates {
             let base = strip_attached_marks(candidate);
             if let Some(variant) = aramaic_final_swap(&base) {
-                let core = VocCore {
-                    base_len: variant.chars().count(),
-                    pattern: vocalized_free_pattern(&variant),
-                };
-                if push_core(&mut branches, &mut seen, core) {
+                if push_core(&mut branches, &mut seen, &variant, &free) {
                     full = true;
                     break 'aramaic;
                 }
@@ -2103,11 +2012,7 @@ fn build_word_regex_vocalized(
                 if variant == base {
                     continue;
                 }
-                let core = VocCore {
-                    base_len: variant.chars().count(),
-                    pattern: vocalized_free_pattern(&variant),
-                };
-                if push_core(&mut branches, &mut seen, core) {
+                if push_core(&mut branches, &mut seen, &variant, &free) {
                     full = true;
                     break 'spelling;
                 }
@@ -2122,11 +2027,7 @@ fn build_word_regex_vocalized(
                 if variant == base {
                     continue;
                 }
-                let core = VocCore {
-                    base_len: variant.chars().count(),
-                    pattern: vocalized_free_pattern(&variant),
-                };
-                if push_core(&mut branches, &mut seen, core) {
+                if push_core(&mut branches, &mut seen, &variant, &free) {
                     break 'typo;
                 }
             }
@@ -2175,6 +2076,60 @@ fn build_word_regex_vocalized(
 /// [`normalize_for_index`].
 pub(crate) fn normalize_for_index_vocalized(text: &str) -> String {
     fold_presentation_forms(text).to_lowercase()
+}
+
+// ── Relevance tiers ────────────────────────────────────────────────────────
+
+/// How closely a matched index term reproduces what was typed, for ranking
+/// an advanced search by relevance: 0 the typed form (or an alternative
+/// word) itself, 1 that form inside a longer word (prefixes/suffixes, a final
+/// letter in its base form, ה→ת), 2 a כתיב מלא/חסר variant of it (ו/י and
+/// quotes aside, affixed or not), 3 anything else the options matched
+/// (typos, Aramaic final-letter swaps).
+pub(crate) fn match_tier(term: &str, roots: &[String]) -> u8 {
+    fn unquoted(s: &str) -> String {
+        s.chars().filter(|c| !matches!(c, '\'' | '"')).collect()
+    }
+    fn skeleton(s: &str) -> String {
+        s.chars()
+            .filter(|c| !matches!(c, '\'' | '"' | 'ו' | 'י'))
+            .map(|c| base_form_of_final(c).unwrap_or(c))
+            .collect()
+    }
+    let roots: Vec<String> = roots
+        .iter()
+        .map(|r| unquoted(r))
+        .filter(|r| !r.is_empty())
+        .collect();
+    let term = unquoted(term);
+    if roots.contains(&term) {
+        return 0;
+    }
+    // The suffixed forms of a root: final letter in its base form (מלכ־),
+    // final ה turned to ת/ות (תורת־, תורות).
+    let inside = |root: &str| {
+        let Some(last) = root.chars().last() else {
+            return false;
+        };
+        let head = &root[..root.len() - last.len_utf8()];
+        let stems: Vec<String> = match (base_form_of_final(last), last) {
+            (Some(base), _) => vec![format!("{head}{base}")],
+            (None, 'ה') => vec![format!("{head}ת"), format!("{head}ות")],
+            _ => Vec::new(),
+        };
+        term.contains(root) || stems.iter().any(|stem| term.contains(stem.as_str()))
+    };
+    if roots.iter().any(|r| inside(r)) {
+        return 1;
+    }
+    let term_skeleton = skeleton(&term);
+    if roots.iter().any(|r| {
+        let root = skeleton(r);
+        !root.is_empty() && term_skeleton.contains(&root)
+    }) {
+        return 2;
+    }
+    3
 }
 
 // ── Per-word regex assembly ────────────────────────────────────────────────
@@ -2528,13 +2483,20 @@ fn prepare_advanced_query_impl(
         } else {
             Vec::new()
         };
+    // Only words long enough for the full edit distance take the automaton;
+    // shorter ones keep the literal (length-limited) variants.
+    let typo_literal = typo_tokens.iter().any(|t| !takes_typo_edits(t));
+    let typo_tokens: Vec<String> = typo_tokens
+        .into_iter()
+        .filter(|t| takes_typo_edits(t))
+        .collect();
 
     let regex_terms: Vec<WordPattern> = words
         .iter()
         .enumerate()
         .map(|(i, word)| {
             let mut flags = word_flags_at(&words, i, search_options);
-            if !typo_tokens.is_empty() {
+            if !typo_tokens.is_empty() && !typo_literal {
                 // The Levenshtein automaton supplies the typo coverage; the
                 // branches keep only the exact candidate forms.
                 flags.typo = false;
@@ -2973,33 +2935,31 @@ mod tests {
         assert!(vocalized_token_pattern(word, &both).contains('\u{05A3}'));
     }
 
-    #[test]
-    fn alt_groups_match_plain_constants() {
-        // חוזה ה-parity: הרינדור נטול-הסימנים של מערכי החלופות חייב להיות
-        // זהה בייטים לקבועי המחרוזת של המסלול הרגיל.
-        assert_eq!(
-            format!(
-                "{}{}{}",
-                optional_alts_group(GRAM_PREFIX_ALTS_A, false),
-                optional_alts_group(GRAM_PREFIX_ALTS_B, false),
-                optional_alts_group(HE_ALTS, false)
-            ),
-            GRAM_PREFIX_GROUP
-        );
-        assert_eq!(
-            format!(
-                "{}{}{}",
-                optional_alts_group(PREFIX_ALTS_A, false),
-                optional_alts_group(GRAM_PREFIX_ALTS_B, false),
-                optional_alts_group(HE_ALTS, false)
-            ),
-            PREFIX_GROUP
-        );
-        assert_eq!(optional_alts_group(SUFFIX_ALTS, false), SUFFIX_PATTERN);
-        assert_eq!(
-            optional_alts_group(FULL_SUFFIX_ALTS, false),
-            FULL_SUFFIX_PATTERN
-        );
+    fn gram_group() -> String {
+        prefix_group(GRAM_PREFIX_ALTS_A, false)
+    }
+
+    fn aramaic_group() -> String {
+        prefix_group(ARAMAIC_PREFIX_ALTS_A, false)
+    }
+
+    fn suffix_group() -> String {
+        optional_alts_group(GRAM_SUFFIX_ALTS, false)
+    }
+
+    /// Whether `pattern` accepts the whole term.
+    fn accepts(pattern: &str, term: &str) -> bool {
+        use tantivy_fst::Automaton;
+        let dfa = crate::term_automaton::compile_pattern(pattern).unwrap();
+        let mut state = dfa.start();
+        for &b in term.as_bytes() {
+            state = dfa.accept(&state, b);
+        }
+        dfa.is_match(&state)
+    }
+
+    fn word_accepts(word: &str, flags: &WordFlags, term: &str) -> bool {
+        accepts(&word_to_pattern(word, flags), term)
     }
 
     #[test]
@@ -3028,9 +2988,9 @@ mod tests {
     #[test]
     fn prepare_vocalized_single_typo_word_yields_stripped_typo_token() {
         let voc = VocalizedFlags::new(true, false);
-        let options = make_options(&[("בָּרָא_0", &[(OPT_TYPO, true)])]);
+        let options = make_options(&[("בְּרָכָה_0", &[(OPT_TYPO, true)])]);
         let q = prepare_advanced_query_vocalized(
-            "בָּרָא",
+            "בְּרָכָה",
             0,
             &HashMap::new(),
             &HashMap::new(),
@@ -3038,7 +2998,7 @@ mod tests {
             &voc,
         );
         // הטוקן לסריקת ה-Levenshtein חוזר נטול סימנים (נסרק מול המילון הרגיל).
-        assert_eq!(q.typo_tokens, vec!["ברא".to_string()]);
+        assert_eq!(q.typo_tokens, vec!["ברכה".to_string()]);
         // וה-branch המדויק עדיין דורש את הסימנים שהוקלדו.
         assert!(q.regex_terms[0].joined().contains('\u{05B8}'));
     }
@@ -3374,14 +3334,14 @@ mod tests {
 
     #[test]
     fn spelling_variations_original_first_then_single_edits() {
-        let v = generate_spelling_variations("בוא", 100);
+        let v = generate_spelling_variations("שלום", 100);
         // המקורית תמיד ראשונה, ההשמטה לפני ההוספות.
-        assert_eq!(v[0], "בוא");
-        assert_eq!(v[1], "בא");
+        assert_eq!(v[0], "שלום");
+        assert_eq!(v[1], "שלם");
         // הוספות פנימיות (חסר→מלא) קיימות.
-        assert!(v.contains(&"בווא".to_string()));
+        assert!(v.contains(&"שלוום".to_string()));
         // limit==1 משאיר רק את המקורית — המנייה נעצרת מוקדם.
-        assert_eq!(generate_spelling_variations("בוא", 1), vec!["בוא"]);
+        assert_eq!(generate_spelling_variations("שלום", 1), vec!["שלום"]);
     }
 
     #[test]
@@ -3415,6 +3375,28 @@ mod tests {
     }
 
     #[test]
+    fn spelling_variations_never_make_another_word() {
+        let has = |word: &str, variant: &str| {
+            generate_spelling_variations(word, 1000).contains(&variant.to_string())
+        };
+        // מילה בת שלוש אותיות — בלי הוספות ובלי השמטות.
+        for v in ["שבות", "שבית", "שובת"] {
+            assert!(!has("שבת", v), "{v}");
+        }
+        assert!(!has("שור", "שר"));
+        // י/ו שלפני ה סופית עיצורית.
+        assert!(!has("מצוה", "מצה"));
+        assert!(!has("שתיה", "שתה"));
+        assert!(has("מצוה", "מצווה"));
+        // השמטה והוספה של אותה אות.
+        assert!(!has("קודש", "קדוש"));
+        assert!(has("קודש", "קדש"));
+        assert!(has("קדש", "קדש"));
+        assert!(has("תפלה", "תפילה"));
+        assert!(has("תפילה", "תפלה"));
+    }
+
+    #[test]
     fn spelling_variations_cap_edits_per_letter() {
         // מילה עם הרבה מרווחים: אף וריאנט לא צובר יותר מ-3 עריכות של אותה
         // אות. נספרות ההוספות בלבד (אין במילה י/ו להשמטה).
@@ -3437,6 +3419,63 @@ mod tests {
         assert!(v.contains(&"בע".to_string()));
         assert!(v.contains(&"בה".to_string()));
         assert!(v.contains(&"אב".to_string()));
+    }
+
+    #[test]
+    fn match_tiers_order_exact_affix_spelling_typo() {
+        let roots = vec!["תורה".to_string(), "ספר".to_string()];
+        for (term, tier) in [
+            ("תורה", 0),
+            ("ספר", 0),
+            ("ובתורה", 1),
+            ("תורתו", 1),
+            ("תורות", 1),
+            ("ספרים", 1),
+            ("תוריה", 2),
+            ("ובתוריה", 2),
+            ("סופר", 2),
+            ("תודה", 3),
+            ("ספט", 3),
+        ] {
+            assert_eq!(match_tier(term, &roots), tier, "{term}");
+        }
+        let roots = vec!["רמב\"ם".to_string(), "מלך".to_string()];
+        assert_eq!(match_tier("רמבם", &roots), 0);
+        assert_eq!(match_tier("להרמב\"ם", &roots), 1);
+        assert_eq!(match_tier("מלכים", &roots), 1);
+    }
+
+    #[test]
+    fn typo_tolerance_scales_with_word_length() {
+        // עד שתי אותיות — אין טעות; שלוש — רק חילופי אותיות מטבלת הבלבול;
+        // מארבע — מרחק עריכה 1 מלא.
+        assert_eq!(generate_typo_variations("אב", 100), vec!["אב"]);
+        let three = generate_typo_variations("שבת", 100);
+        for v in ["שבת", "סבת", "שות", "שבט"] {
+            assert!(three.contains(&v.to_string()), "{v}");
+        }
+        for v in ["שב", "שבתי", "בשת", "ששבת"] {
+            assert!(!three.contains(&v.to_string()), "{v}");
+        }
+        let four = generate_typo_variations("ברכה", 500);
+        for v in ["ברכ", "רבכה", "בברכה", "ברקה"] {
+            assert!(four.contains(&v.to_string()), "{v}");
+        }
+        // מרחק העריכה במנוע (אוטומט לבנשטיין) רק למילה של ארבע אותיות לפחות;
+        // מילה קצרה נשארת עם הווריאנטים המוגבלים.
+        let typo = |w: &str| make_options(&[(&format!("{w}_0"), &[(OPT_TYPO, true)])]);
+        let q = prepare_advanced_query("אב", 0, &HashMap::new(), &HashMap::new(), &typo("אב"));
+        assert!(q.typo_tokens.is_empty());
+        assert_eq!(joined_terms(&q), vec!["אב"]);
+        let q = prepare_advanced_query("שבת", 0, &HashMap::new(), &HashMap::new(), &typo("שבת"));
+        assert!(q.typo_tokens.is_empty());
+        assert!(q.regex_terms[0].branches().contains(&"שבט".to_string()));
+        let q =
+            prepare_advanced_query("ברכות", 0, &HashMap::new(), &HashMap::new(), &typo("ברכות"));
+        assert_eq!(q.typo_tokens, vec!["ברכות"]);
+        assert_eq!(joined_terms(&q), vec!["ברכות"]);
+        // גרשיים אינם נספרים כאותיות.
+        assert!(!takes_typo_edits("ר\"ת"));
     }
 
     #[test]
@@ -3483,27 +3522,172 @@ mod tests {
             ..Default::default()
         };
         let p = word_to_pattern("ספר", &flags);
-        assert_eq!(p, "(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר");
+        assert_eq!(p, "(?:ו|מ|דא|כש|כ|ב|ש|ל|ה|ד)?(?:כש|כ|ב|ש|ל|ה|ד)?(?:ה)?ספר");
     }
 
     #[test]
-    fn full_morphology_uses_lean_prefix_group() {
-        // Cross-check: the full prefix+suffix morphology path deliberately uses
-        // the leaner PREFIX_GROUP (no דא/א/כש), as it always has.
+    fn full_morphology_composes_prefix_and_suffix_groups() {
+        // קידומות + סיומות דקדוקיות: אותה קבוצת קידומות כמו האפשרות לבדה,
+        // ואחריה קבוצת הסיומות.
         let flags = WordFlags {
             gram_prefix: true,
             gram_suffix: true,
             ..Default::default()
         };
-        let p = word_to_pattern("ספר", &flags);
-        assert!(
-            p.starts_with("(?:ו|מ|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"),
-            "{p}"
-        );
-        assert!(
-            !p.contains("דא"),
-            "full morphology must use the lean group: {p}"
-        );
+        let p = word_to_pattern("ברכות", &flags);
+        assert_eq!(p, format!("{}ברכות{}", gram_group(), suffix_group()));
+    }
+
+    #[test]
+    fn affix_windows_add_only_hebrew_letters_and_quotes() {
+        for flags in [
+            WordFlags {
+                prefix: true,
+                ..Default::default()
+            },
+            WordFlags {
+                suffix: true,
+                ..Default::default()
+            },
+            WordFlags {
+                partial: true,
+                ..Default::default()
+            },
+        ] {
+            let p = word_to_pattern("שבת", &flags);
+            assert!(accepts(&p, "בשבת") || accepts(&p, "שבתו"), "{p}");
+            for foreign in ["1שבת", "aשבת", "שבת1", "שבתx", "\u{0301}שבת"] {
+                assert!(!accepts(&p, foreign), "{p} accepted {foreign:?}");
+            }
+        }
+        let partial = WordFlags {
+            partial: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("רמב", &partial, "הרמב\"ם"));
+        assert!(word_accepts("שבת", &partial, "מחשבתו"));
+        // אותו כלל במסלול המנוקד: אות + ריצת סימנים, לא תו כלשהו.
+        let voc = word_to_pattern_vocalized("שבת", &VocalizedFlags::default(), &partial);
+        assert!(accepts(&voc, "בְּשַׁבָּת"));
+        assert!(!accepts(&voc, "1שַׁבָּת"));
+    }
+
+    #[test]
+    fn grammatical_prefixes_need_a_root_and_skip_bare_alef() {
+        let gram = WordFlags {
+            gram_prefix: true,
+            ..Default::default()
+        };
+        // שורש קצר משתי אותיות אינו מקבל קידומות דקדוקיות.
+        assert!(!word_accepts("ית", &gram, "בית"));
+        assert!(word_accepts("ית", &gram, "ית"));
+        // ראשי תיבות פטורים: ור' / להרמב"ם.
+        assert!(word_accepts("ר'", &gram, "ור'"));
+        assert!(word_accepts("רמב\"ם", &gram, "להרמב\"ם"));
+        // א אינה קידומת; ד/דא/ש/כש כן.
+        assert!(!word_accepts("שבת", &gram, "אשבת"));
+        assert!(!word_accepts("אמר", &gram, "אאמר"));
+        for form in ["דאמר", "שאמר", "כשאמר", "ואמר"] {
+            assert!(word_accepts("אמר", &gram, form), "{form}");
+        }
+        // הקידומות הארמיות שומרות את א.
+        let aramaic = WordFlags {
+            aramaic_prefix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("שבתא", &aramaic, "אשבתא"));
+    }
+
+    #[test]
+    fn suffixes_follow_final_letters_and_final_he() {
+        let gs = WordFlags {
+            gram_suffix: true,
+            ..Default::default()
+        };
+        for (root, forms) in [
+            ("מלך", &["מלך", "מלכים", "מלכו", "מלכיהם", "מלכם"][..]),
+            ("ארץ", &["ארץ", "ארצות", "ארצו"]),
+            (
+                "תורה",
+                &["תורה", "תורות", "תורתו", "תורתי", "תורותיו", "תורתם"],
+            ),
+            ("מצוה", &["מצות", "מצוות", "מצותיו"]),
+        ] {
+            for form in forms {
+                assert!(word_accepts(root, &gs, form), "{root} → {form}");
+            }
+        }
+        for (root, form) in [
+            ("מלך", "מלךים"),
+            ("ארץ", "ארץות"),
+            ("תורה", "תורהו"),
+            ("תורה", "תורהה"),
+        ] {
+            assert!(!word_accepts(root, &gs, form), "{root} ↛ {form}");
+        }
+        // חלון סיומת: גם הוא אחרי האות הלא-סופית.
+        let window = WordFlags {
+            suffix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("מלך", &window, "מלכים"));
+        assert!(!word_accepts("מלך", &window, "מלךים"));
+        // אותו כלל במסלול המנוקד.
+        let voc = word_to_pattern_vocalized("מלך", &VocalizedFlags::default(), &gs);
+        assert!(accepts(&voc, "מְלָכִים"));
+    }
+
+    #[test]
+    fn grammatical_morphology_covers_verbs_and_stacked_prefixes() {
+        let both = WordFlags {
+            gram_prefix: true,
+            gram_suffix: true,
+            ..Default::default()
+        };
+        for form in ["אמרתי", "אמרת", "ואמרתם", "אמרתן", "אמרנו", "ואמרו"]
+        {
+            assert!(word_accepts("אמר", &both, form), "{form}");
+        }
+        // סיומות פועל רק לשורש בגודל פועל שאינו נגמר ב-ה/ת.
+        assert!(!word_accepts("ירושלים", &both, "ירושלימתי"));
+        assert!(!word_accepts("שבת", &both, "שבתתי"));
+        let gp = WordFlags {
+            gram_prefix: true,
+            ..Default::default()
+        };
+        for form in ["כשאמר", "וכשאמר", "ושכשאמר"] {
+            assert_eq!(word_accepts("אמר", &gp, form), form != "ושכשאמר", "{form}");
+        }
+    }
+
+    #[test]
+    fn prefix_and_suffix_options_compose() {
+        // קידומות (חלון) + סיומות דקדוקיות: אף צד לא נבלע.
+        let window_and_gram = WordFlags {
+            prefix: true,
+            gram_suffix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("שבת", &window_and_gram, "שבתות"));
+        assert!(word_accepts("שבת", &window_and_gram, "בשבתות"));
+        assert!(word_accepts("שבת", &window_and_gram, "ובשבת"));
+        // ולהפך: קידומות דקדוקיות + סיומות (חלון).
+        let gram_and_window = WordFlags {
+            gram_prefix: true,
+            suffix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("שבת", &gram_and_window, "בשבת"));
+        assert!(word_accepts("שבת", &gram_and_window, "בשבתא"));
+        assert!(word_accepts("שבת", &gram_and_window, "שבתות"));
+        // קידומות דקדוקיות + חלון קידומת: איחוד — גם קידומת של ארבע אותיות.
+        let both_prefixes = WordFlags {
+            prefix: true,
+            gram_prefix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("שבת", &both_prefixes, "כשבהשבת"));
+        assert!(word_accepts("שבת", &both_prefixes, "אבגשבת"));
     }
 
     #[test]
@@ -3534,14 +3718,15 @@ mod tests {
             ..Default::default()
         };
         let p = word_to_pattern("וו", &flags);
-        assert_eq!(p, "(?:.{0,3}וו.{0,3}|.{0,3}ווו.{0,3}|.{0,3}ויו.{0,3})");
+        let w = affix_window(3, false);
+        assert_eq!(p, format!("{w}וו{w}"));
         assert!(
-            !p.contains(".{0,3}.{0,3}"),
+            !p.contains(&format!("{w}{w}")),
             "empty variant widened to wildcard: {p}"
         );
         let q = word_to_pattern("''", &flags);
         assert!(
-            !q.contains(".{0,3}.{0,3}"),
+            !q.contains(&format!("{w}{w}")),
             "empty variant widened to wildcard: {q}"
         );
     }
@@ -3569,11 +3754,11 @@ mod tests {
         // סופית ניתנת להחלפה: שני ענפים, לכל וריאנט קבוצת הקידומות
         // הדקדוקית (שנושאת את הצורות הארמיות ד/כד/אד/מד).
         let p = word_to_pattern("מלכה", &flags);
-        assert_eq!(p, format!("(?:{g}מלכה|{g}מלכא)", g = GRAM_PREFIX_GROUP));
+        assert_eq!(p, format!("(?:{g}מלכה|{g}מלכא)", g = aramaic_group()));
         // בלי סופית כזו — ענף קידומות יחיד.
         assert_eq!(
             word_to_pattern("ספר", &flags),
-            format!("{}ספר", GRAM_PREFIX_GROUP)
+            format!("{}ספר", aramaic_group())
         );
     }
 
@@ -3586,7 +3771,7 @@ mod tests {
         // קידומות בלבד: אין וריאנט שקילות סופית — ענף קידומות יחיד.
         assert_eq!(
             word_to_pattern("מלכה", &flags),
-            format!("{}מלכה", GRAM_PREFIX_GROUP)
+            format!("{}מלכה", aramaic_group())
         );
     }
 
@@ -3611,7 +3796,7 @@ mod tests {
             ..Default::default()
         };
         let p = word_to_pattern("מלכה", &flags);
-        assert_eq!(p, format!("(?:{g}מלכה|{g}מלכא)", g = GRAM_PREFIX_GROUP));
+        assert_eq!(p, format!("(?:{g}מלכה|{g}מלכא)", g = gram_group()));
     }
 
     #[test]
@@ -3622,11 +3807,11 @@ mod tests {
             gram_suffix: true,
             ..Default::default()
         };
-        let p = word_to_pattern("מלכה", &flags);
         // הענף הארמי נושא גם את הסיומות — צורה עם קידומת ארמית וגם סיומת
-        // (ודמלכתא) לא נופלת בין הענפים.
-        assert!(p.contains(&format!("{}מלכה{}", GRAM_PREFIX_GROUP, SUFFIX_PATTERN)));
-        assert!(p.contains(&format!("{}מלכא{}", GRAM_PREFIX_GROUP, SUFFIX_PATTERN)));
+        // לא נופלת בין הענפים, בשני הווריאנטים.
+        for form in ["ודמלכה", "ודמלכא", "דמלכתו", "ודמלכאי"] {
+            assert!(word_accepts("מלכה", &flags, form), "{form}");
+        }
     }
 
     #[test]
@@ -3635,12 +3820,11 @@ mod tests {
             aramaic_prefix: true,
             ..Default::default()
         };
-        let core = VocCore {
-            pattern: vocalized_free_pattern("מלכה"),
-            base_len: 4,
-        };
-        let p = word_to_pattern_vocalized(&core, &flags);
-        assert!(p.starts_with(&voc_gram_prefix_group()), "{p}");
+        let p = word_to_pattern_vocalized("מלכה", &VocalizedFlags::default(), &flags);
+        assert!(
+            p.starts_with(&prefix_group(ARAMAIC_PREFIX_ALTS_A, true)),
+            "{p}"
+        );
     }
 
     #[test]
@@ -3974,7 +4158,7 @@ mod tests {
         let q = prepare_advanced_query("ספר", 0, &HashMap::new(), &HashMap::new(), &so);
         assert_eq!(
             joined_terms(&q),
-            vec!["(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?(?:כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"]
+            vec!["(?:ו|מ|דא|כש|כ|ב|ש|ל|ה|ד)?(?:כש|כ|ב|ש|ל|ה|ד)?(?:ה)?ספר"]
         );
     }
 
@@ -3990,7 +4174,7 @@ mod tests {
         };
         let p = word_to_pattern("בוא", &flags);
         // Every branch carries the rich group; דא must be present.
-        assert!(p.contains("(?:ו|מ|דא|א|כש|כ|ב|ש|ל|ה|ד)?"), "{p}");
+        assert!(p.contains("(?:ו|מ|דא|כש|כ|ב|ש|ל|ה|ד)?"), "{p}");
     }
 
     // ── compute_max_expansions ───────────────────────────────────────────

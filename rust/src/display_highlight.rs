@@ -8,15 +8,15 @@
 //! `combined_pattern` remains compatible for a single word. For multiple words
 //! it is the ECMAScript never-match sentinel `(?!)`; callers must use `matcher`.
 //! Morphological bounds belong to each normalized spelling/alternative branch,
-//! rather than the typed word's length. Boundary waiver only applies to the
-//! outer endpoints, preserving the historical root-highlight behavior.
+//! rather than the typed word's length. A waived boundary lets a word carry
+//! its own affixes — at the phrase's outer endpoints as inside it.
 
 use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 
 use crate::hebrew_query::{
-    aramaic_root_variants, generate_spelling_variations, highlight_affix_patterns, is_word_mark,
+    affix_arms, aramaic_root_variants, generate_spelling_variations, is_word_mark,
     normalize_for_index, split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES,
     MAX_SPELLING_BRANCHES,
 };
@@ -391,8 +391,13 @@ fn matcher_branches(
             break;
         }
         total += len;
-        for (lead, trail) in highlight_affix_patterns(&root, flags) {
-            branches.push((lead, pattern.clone(), trail));
+        for arm in affix_arms(&root, flags, false) {
+            let core = if arm.core == root {
+                pattern.clone()
+            } else {
+                charwise_display_pattern(&arm.core)
+            };
+            branches.push((arm.lead, core, arm.trail));
         }
     }
     branches
@@ -1776,7 +1781,7 @@ mod tests {
                 "lost prior typo: {term}"
             );
         }
-        for text in ["הקונטרסים", "הקונטרסיםא", "כונטרסים", "קונטרשים"]
+        for text in ["הקונטרסים", "הקונטרסימא", "כונטרסים", "קונטרשים"]
         {
             assert!(
                 !hl.matcher.find_matches(text, &[]).is_empty(),
