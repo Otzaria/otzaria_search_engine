@@ -24815,6 +24815,22 @@ mod tests {
     }
 
     #[test]
+    fn any_order_relevance_ranks_the_tightest_overlapping_window() {
+        let (engine, _dir) = lines_engine(&["חייב את החפץ הזה להחזיר חייב", "חייב את להחזיר"]);
+        let call = AdvancedCall::new("חייב להחזיר", 5, Some(true));
+        let ranked: Vec<u64> = call
+            .search_in_order(&engine, ResultsOrder::Relevance)
+            .iter()
+            .map(|r| r.segment / 2)
+            .collect();
+        assert_eq!(
+            ranked,
+            [0, 1],
+            "the adjacent reversed match must outrank distance two"
+        );
+    }
+
+    #[test]
     fn any_order_gives_each_repeated_word_its_own_occurrence() {
         let (engine, _dir) = lines_engine(&ANY_ORDER_LINES);
         let lines = |query, distance| AdvancedCall::new(query, distance, Some(true)).lines(&engine);

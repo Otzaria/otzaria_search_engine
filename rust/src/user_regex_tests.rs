@@ -1370,3 +1370,189 @@ fn cached_answers_are_keyed_by_segment_order() {
 
     assert_ne!(index_identity(&before), index_identity(&after));
 }
+
+#[test]
+fn line_search_cache_observes_commits_to_every_source() {
+    let _guard = crate::external_text_tests::guard();
+    for source in [
+        Source::Library,
+        Source::UserBooks,
+        Source::attached("cache-commits").unwrap(),
+    ] {
+        for pattern in [r"/^\S+\s\S+\s\S+$/", r"/שמע .* ישראל/"] {
+            let dir = TempDir::new().unwrap();
+            let db = dir.path().join("books.db");
+            write_library(&db, &[(7, &["שמע בני ישראל"])]);
+            let path = db.to_str().unwrap();
+            let file_path = match source {
+                Source::Library => {
+                    configure_line_source(path.into()).unwrap();
+                    "id:7"
+                }
+                Source::UserBooks => {
+                    crate::api::search_engine::configure_user_books_line_source(Some(path.into()))
+                        .unwrap();
+                    "uid:7"
+                }
+                Source::Attached(_) => {
+                    configure_attached_line_source(
+                        "cache-commits".into(),
+                        Some(path.into()),
+                        false,
+                    )
+                    .unwrap();
+                    "db:cache-commits:7"
+                }
+            };
+            let index = dir.path().join("idx");
+            std::fs::create_dir_all(&index).unwrap();
+            let mut engine = SearchEngine::new(index.to_str().unwrap());
+            engine
+                .add_text_book(
+                    "ספר".into(),
+                    "/root".into(),
+                    file_path.into(),
+                    0,
+                    0,
+                    "שמע בני ישראל".into(),
+                    None,
+                    TextStorage::LibraryDb,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            assert_eq!(count(&engine, pattern, &[]), 1);
+            let writer = rusqlite::Connection::open(&db).unwrap();
+            writer.execute_batch("PRAGMA journal_mode=WAL").unwrap();
+            for (text, expected) in [("מילה", 0), ("שמע בני ישראל", 1)] {
+                writer
+                    .execute("UPDATE line_content SET content = ?1", [text])
+                    .unwrap();
+                // A different reader must not consume the cache's invalidation.
+                line_source::with_store(source, |store| store.book_row_count(7)).unwrap();
+                assert_eq!(count(&engine, pattern, &["/root"]), expected);
+                assert_eq!(
+                    count(&engine, pattern, &[]),
+                    expected,
+                    "{source:?}: {pattern}"
+                );
+                assert_eq!(count(&engine, pattern, &[]), expected);
+                let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+                assert_eq!(last(&found).total_count, Some(expected));
+                assert_eq!(results(&found).len(), expected as usize);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_count_only_scan_tracks_commits_when_the_source_started_closed() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let engine = library_engine(dir.path(), &[(7, &["שמע בני ישראל"])]);
+    suspend_line_source().unwrap();
+    resume_line_source().unwrap();
+    assert!(!line_source::status(Source::Library).open);
+    let pattern = r"/^\S+\s\S+\s\S+$/";
+    assert_eq!(count(&engine, pattern, &[]), 1);
+    let writer = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
+    writer
+        .execute("UPDATE line_content SET content = 'מילה'", [])
+        .unwrap();
+    assert_eq!(count(&engine, pattern, &[]), 0);
+}
+
+#[test]
+fn unreadable_rows_mark_whole_book_scans_partial() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let engine = library_engine(dir.path(), &[(7, &["שמע בני ישראל"])]);
+    let conn = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
+    conn.execute("UPDATE line_content SET content = ?1", [vec![1u8, 2, 3]])
+        .unwrap();
+    let found = events(&engine, r"/^\S+\s\S+\s\S+$/", &[], &AtomicBool::new(false));
+    assert!(
+        last(&found).truncated,
+        "an unreadable row must not become a complete zero-hit result"
+    );
+}
+
+#[test]
+fn unreadable_rows_preserve_other_hits_and_are_retried() {
+    let _guard = crate::external_text_tests::guard();
+    for missing_decoder in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let engine = library_engine(dir.path(), &[(7, &["שמע בני ישראל", "שמע עמי ישראל"])]);
+        let writer = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
+        writer
+            .execute(
+                "UPDATE line_content SET content = ?1 WHERE id = 1",
+                [vec![1u8, 2, 3]],
+            )
+            .unwrap();
+        if missing_decoder {
+            writer.execute_batch("DROP TABLE zstd_dict").unwrap();
+        }
+        let pattern = r"/^\S+\s\S+\s\S+$/";
+        for _ in 0..2 {
+            let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+            assert!(last(&found).truncated, "missing_decoder={missing_decoder}");
+            assert_eq!(last(&found).total_count, Some(1));
+            assert_eq!(results(&found).len(), 1);
+            assert_eq!(results(&found)[0].segment, 1);
+        }
+        writer
+            .execute(
+                "UPDATE line_content SET content = 'שמע בני ישראל' WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+        assert!(!last(&found).truncated);
+        assert_eq!(last(&found).total_count, Some(2));
+        assert_eq!(results(&found).len(), 2);
+    }
+}
+
+#[test]
+fn a_commit_discards_the_partial_hits_of_a_cancelled_scan() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let rows: &[&str] = &["שמע בני ישראל"];
+    let books: Vec<_> = (0..300).map(|id| (id, rows)).collect();
+    let engine = library_engine(dir.path(), &books);
+    let pattern = r"/^\S+\s\S+\s\S+$/";
+    let cancel = AtomicBool::new(false);
+    let mut first = Vec::new();
+    engine
+        .user_regex_stream_into(
+            pattern,
+            &[],
+            10,
+            0,
+            &ResultsOrder::Catalogue,
+            10,
+            &cancel,
+            &mut |update| {
+                if update.progress_total > 0 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                first.push(update);
+                true
+            },
+        )
+        .unwrap();
+    let stopped = last(&first);
+    assert!(stopped.cancelled);
+    assert!(stopped.progress_done > 0 && stopped.progress_done < stopped.progress_total);
+    assert!(stopped.found_so_far > 0);
+    let writer = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
+    writer
+        .execute("UPDATE line_content SET content = 'מילה'", [])
+        .unwrap();
+    assert_eq!(count(&engine, pattern, &[]), 0);
+    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    assert!(!last(&found).cancelled);
+    assert!(!last(&found).truncated);
+    assert!(results(&found).is_empty());
+}

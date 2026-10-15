@@ -1310,9 +1310,8 @@ pub(crate) fn status(source: Source) -> Status {
     }
 }
 
-/// One source's input to the semantic query cache: generation, data_version (the library)
+/// One source's input to a query cache: generation, data_version (the library)
 /// or commits seen (user books), suspended.
-#[cfg(feature = "semantic-integration")]
 pub(crate) type SourceGeneration = (u64, Option<i64>, bool);
 
 /// The input of every source to the semantic query cache, sampled before its lookup.
@@ -1366,7 +1365,6 @@ fn user_books_cache_generation() -> SourceGeneration {
     (g.generation, Some(g.content_epoch as i64), false)
 }
 
-#[cfg(feature = "semantic-integration")]
 fn source_cache_generation(source: Source) -> SourceGeneration {
     let mut g = global(source);
     let version = if g.busy_until.is_some_and(|until| Instant::now() < until) {
@@ -1398,6 +1396,12 @@ fn source_cache_generation(source: Source) -> SourceGeneration {
         version,
         g.suspend_depth > 0 || !g.owner_ports.is_empty(),
     )
+}
+
+/// גרסת המקור למטמון הסריקה; גם סריקה בחיבורים נפרדים צריכה חיבור קבוע לזיהוי כתיבות.
+pub(crate) fn scan_cache_generation(source: Source) -> SourceGeneration {
+    let _ = with_store(source, |_| Ok(()));
+    source_cache_generation(source)
 }
 
 /// Counts a book asked for as `LibraryDb` and stored `InIndex`.

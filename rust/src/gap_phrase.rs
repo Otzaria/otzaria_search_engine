@@ -799,17 +799,24 @@ impl GapVerifiedScorer {
                 self.merge.push(Reverse((next, w, i + 1)));
             }
         }
-        let Some(mut last) = self.windows.next_window(0, max_span, &mut self.assignment) else {
+        let Some(_) = self.windows.next_window(0, max_span, &mut self.assignment) else {
             return false;
         };
         if self.rank_span {
             let mut span = self.windows.assigned_span(&self.assignment);
-            while let Some(next) = self
-                .windows
-                .next_window(last + 1, span, &mut self.assignment)
-            {
-                span = span.min(self.windows.assigned_span(&self.assignment));
-                last = next;
+            // חיפוש בינארי על הרוחב כולל חלונות חופפים בלי לסרוק מחדש מכל התחלה.
+            let mut lower = (self.words.len() - 1) as u32;
+            while lower < span {
+                let middle = lower + (span - lower) / 2;
+                if self
+                    .windows
+                    .next_window(0, middle, &mut self.assignment)
+                    .is_some()
+                {
+                    span = self.windows.assigned_span(&self.assignment);
+                } else {
+                    lower = middle + 1;
+                }
             }
             self.span_bonus = 1.0 / (1.0 + span as Score);
         }
@@ -1196,6 +1203,70 @@ mod tests {
                     &|tokens| contains_any_order(tokens, &words, max_span),
                     &documents,
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn any_order_scores_use_the_minimum_span_of_every_assignment() {
+        let (index, text, documents) = oracle_index();
+        let searcher = index.reader().unwrap().searcher();
+        let segment = &searcher.segment_readers()[0];
+        let inverted = segment.inverted_index(text).unwrap();
+        let mut cases = oracle_word_sets();
+        cases.extend([
+            vec![vec!["a0", "shared"], vec!["b0", "shared"]],
+            vec![
+                vec!["a0", "shared"],
+                vec!["a0", "shared"],
+                vec!["b0", "shared"],
+            ],
+            vec![vec!["shared"]],
+        ]);
+        for words in cases {
+            let terms: Vec<Vec<Term>> = words
+                .iter()
+                .map(|word| {
+                    word.iter()
+                        .map(|term| Term::from_field_text(text, term))
+                        .collect()
+                })
+                .collect();
+            for max_span in [0, 1, 2, 5, u32::MAX] {
+                let candidates: Vec<_> = (0..segment.max_doc())
+                    .filter(|&doc| !segment.is_deleted(doc))
+                    .collect();
+                let expected: Vec<_> = candidates
+                    .iter()
+                    .filter_map(|&doc| {
+                        let tokens = &documents[doc as usize];
+                        (0..tokens.len() as u32)
+                            .take_while(|&span| span <= max_span)
+                            .find(|&span| contains_any_order(tokens, &words, span))
+                            .map(|span| (doc, span))
+                    })
+                    .collect();
+                let postings = positional_postings(&inverted, &terms).unwrap().unwrap();
+                let mut scorer = GapVerifiedScorer::new(
+                    Box::new(Candidates {
+                        docs: candidates,
+                        cursor: 0,
+                    }),
+                    postings,
+                    Proximity::AnyOrder { max_span },
+                    true,
+                );
+                for (doc, span) in expected {
+                    assert_eq!(scorer.doc(), doc, "{words:?} max_span={max_span}");
+                    let expected_score = 2.75 + doc as Score * 0.001 + 1.0 / (1.0 + span as Score);
+                    assert!(
+                        (scorer.score() - expected_score).abs() < 0.000001,
+                        "{words:?} doc={doc} max_span={max_span} minimum={span} actual={}",
+                        scorer.score()
+                    );
+                    scorer.advance();
+                }
+                assert_eq!(scorer.doc(), TERMINATED);
             }
         }
     }

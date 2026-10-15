@@ -1186,7 +1186,7 @@ impl LineOutcome {
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct LineCacheKey {
     index: u64,
-    sources: Vec<u64>,
+    sources: Vec<(Source, line_source::SourceGeneration)>,
     facets: Vec<String>,
     pattern: String,
     max_hits: usize,
@@ -1272,7 +1272,7 @@ pub(crate) fn run_line_search(
         index: index_identity(ctx.searcher),
         sources: Source::all()
             .into_iter()
-            .map(|source| line_source::status(source).generation)
+            .map(|source| (source, line_source::scan_cache_generation(source)))
             .collect(),
         facets,
         pattern: regex.pattern.clone(),
@@ -2062,6 +2062,7 @@ fn scan_fetched(
         Fetched::Library(Ok(Some(found))) => found,
     };
     use rayon::prelude::*;
+    let unavailable = AtomicBool::new(false);
     let matched: HashSet<u64> = rows
         .par_chunks(CANCEL_CHECK_ROWS)
         .map(|chunk| -> anyhow::Result<Vec<u64>> {
@@ -2077,6 +2078,7 @@ fn scan_fetched(
                     RawRow::Text(bytes) => bytes,
                     RawRow::Frame(frame) => {
                         let Some(decoder) = decoder.as_ref() else {
+                            unavailable.store(true, Ordering::Relaxed);
                             continue;
                         };
                         if dctx.is_none() {
@@ -2087,7 +2089,10 @@ fn scan_fetched(
                                 decoded = bytes;
                                 &decoded
                             }
-                            Err(_) => continue,
+                            Err(_) => {
+                                unavailable.store(true, Ordering::Relaxed);
+                                continue;
+                            }
                         }
                     }
                 };
@@ -2108,8 +2113,9 @@ fn scan_fetched(
         .into_iter()
         .flatten()
         .collect();
+    let unavailable = unavailable.load(Ordering::Relaxed);
     if matched.is_empty() {
-        return Ok(BookScan::empty(false));
+        return Ok(BookScan::empty(unavailable));
     }
     let documents = match &book.candidates {
         Some(candidates) => candidates.clone(),
@@ -2120,10 +2126,7 @@ fn scan_fetched(
         .filter(|&(id, _)| ordinal_of(id).is_some_and(|o| matched.contains(&o)))
         .map(|(id, address)| LineHit { id, address })
         .collect();
-    Ok(BookScan {
-        hits,
-        unavailable: false,
-    })
+    Ok(BookScan { hits, unavailable })
 }
 
 /// A book whose text the index stores: its lines (or candidates) read from the doc store.
