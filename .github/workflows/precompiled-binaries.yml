@@ -40,8 +40,8 @@ jobs:
             --repository "${{ github.repository }}" \
             --manifest-dir ../../rust
 
-  # One target group per runner: a macOS runner has few cores, and building
-  # every target in sequence on one made it the long pole of the release.
+  # One target per runner: a macOS runner has few cores, and even two targets
+  # in sequence on one made it the long pole of the release.
   publish-apple:
     name: Publish Apple (${{ matrix.name }})
     needs: prepare-release
@@ -50,12 +50,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
-            targets: x86_64-apple-darwin aarch64-apple-darwin
+          - name: macOS x86_64
+            targets: x86_64-apple-darwin
+          - name: macOS arm64
+            targets: aarch64-apple-darwin
           - name: iOS
             targets: aarch64-apple-ios
-          - name: iOS simulator
-            targets: aarch64-apple-ios-sim x86_64-apple-ios
+          - name: iOS simulator arm64
+            targets: aarch64-apple-ios-sim
+          - name: iOS simulator x86_64
+            targets: x86_64-apple-ios
     env:
       # Unset, cc-rs compiles the C deps at the runner SDK's default while
       # rustc uses its own much lower one, so both minimums land in the same
