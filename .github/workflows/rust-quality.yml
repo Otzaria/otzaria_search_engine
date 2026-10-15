@@ -369,6 +369,19 @@ jobs:
         with:
           workspaces: rust
 
+      # FRB installs cargo-expand from source when it is missing, and it
+      # publishes no binaries, so build it once per version and cache it.
+      - name: Cache cargo-expand
+        id: cargo-expand-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-expand
+          key: cargo-expand-1.0.127-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install cargo-expand
+        if: steps.cargo-expand-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-expand --version 1.0.127 --locked
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
