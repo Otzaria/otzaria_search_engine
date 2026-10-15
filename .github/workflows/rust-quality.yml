@@ -26,6 +26,11 @@ concurrency:
   group: rust-semantic-quality-${{ github.ref }}
   cancel-in-progress: true
 
+# Line tables keep file:line in panics and backtraces while making the test
+# builds, their link step, and the caches much smaller.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   rust-tests:
     name: Rust tests (${{ matrix.features }})
@@ -47,26 +52,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          # Saved from the default branch only: a PR's cache is visible to that PR
+          # alone, and every one of them would crowd the 10 GB limit.
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
           key: ${{ matrix.features }}
 
       - name: Check formatting
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 
-      - name: Check
+      # Clippy type-checks every target, so no separate `cargo check` runs
+      # first, and it goes before the tests to fail fast on a compile error.
+      - name: Clippy
         if: matrix.features == 'default'
-        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets
 
-      - name: Check semantic mock integration
+      - name: Clippy semantic mock integration
         if: matrix.features == 'semantic-mock'
-        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
 
       # The ONNX backend without the stand-in: exactly what `semantic`, the
       # production feature, turns on. It loads ONNX Runtime when a model loads
       # rather than linking it, so the build downloads nothing; running a model
       # needs that runtime, and is the real-model job's.
-      - name: Check semantic ONNX integration
+      - name: Clippy semantic ONNX integration
         if: matrix.features == 'semantic-onnx'
-        run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
 
       # The sidecar compiled with no embedding backend behind it. Every
       # `onnx-backend` gate in the sidecar is paired with the desktop targets,
@@ -95,26 +105,15 @@ jobs:
         if: matrix.features == 'semantic-onnx'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
 
-      - name: Clippy
-        if: matrix.features == 'default'
-        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets
-
-      - name: Clippy semantic mock integration
-        if: matrix.features == 'semantic-mock'
-        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-mock
-
-      - name: Clippy semantic ONNX integration
-        if: matrix.features == 'semantic-onnx'
-        run: cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
-
   real-backend-build:
     name: Real semantic backend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Not Linux: `semantic` is `semantic-onnx`, which rust-tests already
+        # compiles there.
         os:
-          - ubuntu-24.04
           - macos-15
           - windows-2022
     steps:
@@ -125,6 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
           key: ${{ matrix.os }}
 
       # `semantic` is the ONNX backend, as the application builds it.
@@ -209,6 +209,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
           key: real-model-${{ matrix.os }}
 
       # The artifact test builds and opens with the model's published identity
@@ -368,6 +369,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
 
       # FRB installs cargo-expand from source when it is missing, and it
       # publishes no binaries, so build it once per version and cache it.
@@ -385,6 +387,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       - name: Install Flutter dependencies
         run: flutter pub get
