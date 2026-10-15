@@ -6,6 +6,7 @@
 import 'api/benchmark.dart';
 import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
+import 'api/library_indexing.dart';
 import 'api/search_engine.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -67,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1605767343;
+  int get rustContentHash => 828869268;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -90,6 +91,20 @@ abstract class RustLibApi extends BaseApi {
     required String data,
     required List<bool> requireTokenBoundaries,
   });
+
+  void crateApiLibraryIndexingIndexingCancellationTokenCancel({
+    required IndexingCancellationToken that,
+  });
+
+  Future<IndexingCancellationToken>
+  crateApiLibraryIndexingIndexingCancellationTokenDefault();
+
+  bool crateApiLibraryIndexingIndexingCancellationTokenIsCancelled({
+    required IndexingCancellationToken that,
+  });
+
+  IndexingCancellationToken
+  crateApiLibraryIndexingIndexingCancellationTokenNew();
 
   Future<BenchmarkSuite>
   crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries({
@@ -124,6 +139,13 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiSearchEngineSearchEngineAddDocumentsBatch({
     required SearchEngine that,
     required List<DocumentInput> docs,
+  });
+
+  Future<List<LibraryBookResult>>
+  crateApiSearchEngineSearchEngineAddLibraryBooks({
+    required SearchEngine that,
+    required List<LibraryBookInput> books,
+    required IndexingCancellationToken cancel,
   });
 
   Future<int> crateApiSearchEngineSearchEngineAddPdfBook({
@@ -161,6 +183,11 @@ abstract class RustLibApi extends BaseApi {
     List<String>? extraFacets,
     required TextStorage textStorage,
     Uint32List? storedLines,
+  });
+
+  void crateApiSearchEngineSearchEngineCancelLexicalSearch({
+    required SearchEngine that,
+    required int requestId,
   });
 
   Future<void> crateApiSearchEngineSearchEngineClear({
@@ -212,6 +239,8 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountAdvancedWithStatus({
@@ -233,6 +262,8 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBook({
@@ -262,6 +293,8 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   Future<BookCountResult>
@@ -284,6 +317,8 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookExact({
@@ -292,6 +327,7 @@ abstract class RustLibApi extends BaseApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   Future<BookCountResult>
@@ -301,6 +337,7 @@ abstract class RustLibApi extends BaseApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   Future<Map<String, int>> crateApiSearchEngineSearchEngineCountByBookFuzzy({
@@ -310,6 +347,7 @@ abstract class RustLibApi extends BaseApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   Future<BookCountResult>
@@ -320,6 +358,14 @@ abstract class RustLibApi extends BaseApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
+  });
+
+  Future<BookCountResult> crateApiSearchEngineSearchEngineCountByBookUserRegex({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
   });
 
   Future<BookCountResult>
@@ -342,6 +388,7 @@ abstract class RustLibApi extends BaseApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountExactWithStatus({
@@ -350,6 +397,7 @@ abstract class RustLibApi extends BaseApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   Future<int> crateApiSearchEngineSearchEngineCountFuzzy({
@@ -359,6 +407,7 @@ abstract class RustLibApi extends BaseApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountFuzzyWithStatus({
@@ -368,6 +417,14 @@ abstract class RustLibApi extends BaseApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
+  });
+
+  Future<CountResult> crateApiSearchEngineSearchEngineCountUserRegex({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
   });
 
   Future<CountResult> crateApiSearchEngineSearchEngineCountWithStatus({
@@ -412,6 +469,7 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   });
 
   Future<Map<String, BigInt>>
@@ -468,6 +526,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<FacetCountsResult>
@@ -491,6 +550,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<List<FacetCount>> crateApiSearchEngineSearchEngineGetFacetCountsExact({
@@ -534,6 +594,15 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<FacetCountsResult>
+  crateApiSearchEngineSearchEngineGetFacetCountsUserRegex({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required String facetPrefix,
+    required UserRegexCancellationToken cancellation,
+  });
+
+  Future<FacetCountsResult>
   crateApiSearchEngineSearchEngineGetFacetCountsWithStatus({
     required SearchEngine that,
     required List<String> regexTerms,
@@ -572,6 +641,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<SearchEngine> crateApiSearchEngineSearchEngineNew({
     required String path,
+  });
+
+  Future<void> crateApiSearchEngineSearchEngineOpenIndexWriter({
+    required SearchEngine that,
   });
 
   Future<SemanticStatus> crateApiSearchEngineSearchEngineOpenSemanticArtifact({
@@ -638,6 +711,7 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Stream<List<SearchResult>>
@@ -665,6 +739,8 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   Stream<SearchStreamUpdate>
@@ -692,6 +768,8 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCount({
@@ -730,6 +808,7 @@ abstract class RustLibApi extends BaseApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<SearchPageResult> crateApiSearchEngineSearchEngineSearchAndCountExact({
@@ -780,6 +859,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   Stream<SearchStreamUpdate>
@@ -794,6 +874,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchFuzzy({
@@ -821,6 +902,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   Stream<SearchStreamUpdate>
@@ -836,6 +918,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   Future<List<SearchResult>> crateApiSearchEngineSearchEngineSearchFuzzyTerms({
@@ -877,6 +960,18 @@ abstract class RustLibApi extends BaseApi {
     required ResultsOrder order,
     HighlightConfig? highlight,
     required int chunkSize,
+  });
+
+  Stream<UserRegexStreamUpdate>
+  crateApiSearchEngineSearchEngineSearchUserRegexStream({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required int chunkSize,
+    required UserRegexCancellationToken cancellation,
   });
 
   Future<SemanticCoverage> crateApiSearchEngineSearchEngineSemanticCoverage({
@@ -975,6 +1070,25 @@ abstract class RustLibApi extends BaseApi {
 
   SemanticCancellationToken crateApiSearchEngineSemanticCancellationTokenNew();
 
+  void crateApiSearchEngineUserRegexCancellationTokenCancel({
+    required UserRegexCancellationToken that,
+  });
+
+  bool crateApiSearchEngineUserRegexCancellationTokenIsCancelled({
+    required UserRegexCancellationToken that,
+  });
+
+  UserRegexCancellationToken
+  crateApiSearchEngineUserRegexCancellationTokenNew();
+
+  List<HighlightMatch> crateApiSearchEngineUserRegexMatcherFindMatches({
+    required UserRegexMatcher that,
+    required String data,
+  });
+
+  Future<AttachedLineSourceStatus>
+  crateApiSearchEngineAttachedLineSourceStatus({required String slug});
+
   Future<IndexCompatibility> crateApiSearchEngineCheckIndexCompatibility({
     required String path,
   });
@@ -994,8 +1108,18 @@ abstract class RustLibApi extends BaseApi {
     required List<int> text,
   });
 
+  Future<void> crateApiSearchEngineConfigureAttachedLineSource({
+    required String slug,
+    String? dbPath,
+    required bool immutable,
+  });
+
   Future<void> crateApiSearchEngineConfigureLineSource({
     required String dbPath,
+  });
+
+  Future<void> crateApiSearchEngineConfigureUserBooksLineSource({
+    String? dbPath,
   });
 
   HighlightPattern? crateApiSearchEngineGenerateHighlightPattern({
@@ -1004,6 +1128,7 @@ abstract class RustLibApi extends BaseApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   });
 
   String? crateApiSearchEngineGenerateLiteralHighlightPattern({
@@ -1012,6 +1137,13 @@ abstract class RustLibApi extends BaseApi {
 
   bool crateApiSearchEngineIsProbablyGarbagePdfText({
     required String normalizedText,
+  });
+
+  Future<BigInt?> crateApiLibraryIndexingLibraryBookContentFingerprint({
+    required LibraryBookSource source,
+    String? attachedSlug,
+    required PlatformInt64 bookId,
+    String? dbTitle,
   });
 
   Future<LineSourceStatus> crateApiSearchEngineLineSourceStatus();
@@ -1028,6 +1160,12 @@ abstract class RustLibApi extends BaseApi {
 
   List<String> crateApiSearchEngineNormalizeTextsForIndexing({
     required List<String> inputs,
+  });
+
+  UserRegexPlan crateApiSearchEngineParseUserRegex({required String raw});
+
+  UserRegexMatcher? crateApiSearchEnginePrepareUserRegexMatcher({
+    required String raw,
   });
 
   List<QueryWordSpan> crateApiSearchEngineQueryWordSpans({
@@ -1071,6 +1209,15 @@ abstract class RustLibApi extends BaseApi {
   get rust_arc_decrement_strong_count_HighlightMatcherPtr;
 
   RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_IndexingCancellationToken;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_IndexingCancellationToken;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_IndexingCancellationTokenPtr;
+
+  RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_RegexBenchmarker;
 
   RustArcDecrementStrongCountFnType
@@ -1095,6 +1242,24 @@ abstract class RustLibApi extends BaseApi {
 
   CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_SemanticCancellationTokenPtr;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_UserRegexCancellationToken;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_UserRegexCancellationToken;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_UserRegexCancellationTokenPtr;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_UserRegexMatcher;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_UserRegexMatcher;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_UserRegexMatcherPtr;
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -1178,6 +1343,135 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  void crateApiLibraryIndexingIndexingCancellationTokenCancel({
+    required IndexingCancellationToken that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiLibraryIndexingIndexingCancellationTokenCancelConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLibraryIndexingIndexingCancellationTokenCancelConstMeta =>
+      const TaskConstMeta(
+        debugName: "IndexingCancellationToken_cancel",
+        argNames: ["that"],
+      );
+
+  @override
+  Future<IndexingCancellationToken>
+  crateApiLibraryIndexingIndexingCancellationTokenDefault() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiLibraryIndexingIndexingCancellationTokenDefaultConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLibraryIndexingIndexingCancellationTokenDefaultConstMeta =>
+      const TaskConstMeta(
+        debugName: "IndexingCancellationToken_default",
+        argNames: [],
+      );
+
+  @override
+  bool crateApiLibraryIndexingIndexingCancellationTokenIsCancelled({
+    required IndexingCancellationToken that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiLibraryIndexingIndexingCancellationTokenIsCancelledConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLibraryIndexingIndexingCancellationTokenIsCancelledConstMeta =>
+      const TaskConstMeta(
+        debugName: "IndexingCancellationToken_is_cancelled",
+        argNames: ["that"],
+      );
+
+  @override
+  IndexingCancellationToken
+  crateApiLibraryIndexingIndexingCancellationTokenNew() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiLibraryIndexingIndexingCancellationTokenNewConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLibraryIndexingIndexingCancellationTokenNewConstMeta =>
+      const TaskConstMeta(
+        debugName: "IndexingCancellationToken_new",
+        argNames: [],
+      );
+
+  @override
   Future<BenchmarkSuite>
   crateApiBenchmarkRegexBenchmarkerBenchmarkCustomQueries({
     required RegexBenchmarker that,
@@ -1195,7 +1489,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 7,
             port: port_,
           );
         },
@@ -1230,7 +1524,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 8,
             port: port_,
           );
         },
@@ -1268,7 +1562,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 9,
             port: port_,
           );
         },
@@ -1328,7 +1622,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 10,
             port: port_,
           );
         },
@@ -1392,7 +1686,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 11,
             port: port_,
           );
         },
@@ -1412,6 +1706,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "SearchEngine_add_documents_batch",
         argNames: ["that", "docs"],
+      );
+
+  @override
+  Future<List<LibraryBookResult>>
+  crateApiSearchEngineSearchEngineAddLibraryBooks({
+    required SearchEngine that,
+    required List<LibraryBookInput> books,
+    required IndexingCancellationToken cancel,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_list_library_book_input(books, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+            cancel,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 12,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_library_book_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSearchEngineSearchEngineAddLibraryBooksConstMeta,
+        argValues: [that, books, cancel],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineAddLibraryBooksConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_add_library_books",
+        argNames: ["that", "books", "cancel"],
       );
 
   @override
@@ -1443,7 +1781,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 13,
             port: port_,
           );
         },
@@ -1515,7 +1853,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 14,
             port: port_,
           );
         },
@@ -1591,7 +1929,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 15,
             port: port_,
           );
         },
@@ -1636,6 +1974,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  void crateApiSearchEngineSearchEngineCancelLexicalSearch({
+    required SearchEngine that,
+    required int requestId,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_u_32(requestId, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineCancelLexicalSearchConstMeta,
+        argValues: [that, requestId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineCancelLexicalSearchConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_cancel_lexical_search",
+        argNames: ["that", "requestId"],
+      );
+
+  @override
   Future<void> crateApiSearchEngineSearchEngineClear({
     required SearchEngine that,
   }) {
@@ -1650,7 +2023,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 17,
             port: port_,
           );
         },
@@ -1683,7 +2056,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 18,
             port: port_,
           );
         },
@@ -1731,7 +2104,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 19,
             port: port_,
           );
         },
@@ -1777,7 +2150,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 20,
             port: port_,
           );
         },
@@ -1822,7 +2195,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 21,
             port: port_,
           );
         },
@@ -1863,6 +2236,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1898,10 +2273,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 22,
             port: port_,
           );
         },
@@ -1929,6 +2306,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
+          cancelRequestId,
         ],
         apiImpl: this,
       ),
@@ -1957,6 +2336,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
+          "cancelRequestId",
         ],
       );
 
@@ -1980,6 +2361,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2015,10 +2398,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 23,
             port: port_,
           );
         },
@@ -2047,6 +2432,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
+          cancelRequestId,
         ],
         apiImpl: this,
       ),
@@ -2076,6 +2463,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
+          "cancelRequestId",
         ],
       );
 
@@ -2102,7 +2491,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 24,
             port: port_,
           );
         },
@@ -2143,6 +2532,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2178,10 +2569,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 25,
             port: port_,
           );
         },
@@ -2210,6 +2603,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
+          cancelRequestId,
         ],
         apiImpl: this,
       ),
@@ -2239,6 +2634,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
+          "cancelRequestId",
         ],
       );
 
@@ -2263,6 +2660,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2298,10 +2697,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 26,
             port: port_,
           );
         },
@@ -2330,6 +2731,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
+          cancelRequestId,
         ],
         apiImpl: this,
       ),
@@ -2359,6 +2762,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
+          "cancelRequestId",
         ],
       );
 
@@ -2369,6 +2774,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2382,10 +2788,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_String(facets, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 27,
             port: port_,
           );
         },
@@ -2394,7 +2801,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountByBookExactConstMeta,
-        argValues: [that, query, facets, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2404,7 +2818,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineCountByBookExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_by_book_exact",
-        argNames: ["that", "query", "facets", "matchNikud", "matchTaamim"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "matchNikud",
+          "matchTaamim",
+          "cancelRequestId",
+        ],
       );
 
   @override
@@ -2415,6 +2836,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2428,10 +2850,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_String(facets, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 28,
             port: port_,
           );
         },
@@ -2441,7 +2864,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineCountByBookExactWithStatusConstMeta,
-        argValues: [that, query, facets, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2451,7 +2881,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineCountByBookExactWithStatusConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_by_book_exact_with_status",
-        argNames: ["that", "query", "facets", "matchNikud", "matchTaamim"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "matchNikud",
+          "matchTaamim",
+          "cancelRequestId",
+        ],
       );
 
   @override
@@ -2462,6 +2899,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2476,10 +2914,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_8(maxDistance, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 29,
             port: port_,
           );
         },
@@ -2488,7 +2927,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountByBookFuzzyConstMeta,
-        argValues: [that, query, facets, maxDistance, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          maxDistance,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2505,6 +2952,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "maxDistance",
           "matchNikud",
           "matchTaamim",
+          "cancelRequestId",
         ],
       );
 
@@ -2517,6 +2965,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2531,10 +2980,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_8(maxDistance, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 30,
             port: port_,
           );
         },
@@ -2544,7 +2994,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineCountByBookFuzzyWithStatusConstMeta,
-        argValues: [that, query, facets, maxDistance, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          maxDistance,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2561,7 +3019,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "maxDistance",
           "matchNikud",
           "matchTaamim",
+          "cancelRequestId",
         ],
+      );
+
+  @override
+  Future<BookCountResult> crateApiSearchEngineSearchEngineCountByBookUserRegex({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(raw, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 31,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_book_count_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineCountByBookUserRegexConstMeta,
+        argValues: [that, raw, facets, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineCountByBookUserRegexConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_by_book_user_regex",
+        argNames: ["that", "raw", "facets", "cancellation"],
       );
 
   @override
@@ -2588,7 +3094,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 32,
             port: port_,
           );
         },
@@ -2627,7 +3133,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 33,
             port: port_,
           );
         },
@@ -2657,6 +3163,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2670,10 +3177,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_String(facets, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 34,
             port: port_,
           );
         },
@@ -2682,7 +3190,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountExactConstMeta,
-        argValues: [that, query, facets, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2691,7 +3206,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSearchEngineSearchEngineCountExactConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_exact",
-        argNames: ["that", "query", "facets", "matchNikud", "matchTaamim"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "matchNikud",
+          "matchTaamim",
+          "cancelRequestId",
+        ],
       );
 
   @override
@@ -2701,6 +3223,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2714,10 +3237,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_String(facets, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 35,
             port: port_,
           );
         },
@@ -2727,7 +3251,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineCountExactWithStatusConstMeta,
-        argValues: [that, query, facets, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2737,7 +3268,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiSearchEngineSearchEngineCountExactWithStatusConstMeta =>
       const TaskConstMeta(
         debugName: "SearchEngine_count_exact_with_status",
-        argNames: ["that", "query", "facets", "matchNikud", "matchTaamim"],
+        argNames: [
+          "that",
+          "query",
+          "facets",
+          "matchNikud",
+          "matchTaamim",
+          "cancelRequestId",
+        ],
       );
 
   @override
@@ -2748,6 +3286,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2762,10 +3301,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_8(maxDistance, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2774,7 +3314,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSearchEngineSearchEngineCountFuzzyConstMeta,
-        argValues: [that, query, facets, maxDistance, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          maxDistance,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2790,6 +3338,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "maxDistance",
           "matchNikud",
           "matchTaamim",
+          "cancelRequestId",
         ],
       );
 
@@ -2801,6 +3350,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2815,10 +3365,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_8(maxDistance, serializer);
           sse_encode_bool(matchNikud, serializer);
           sse_encode_bool(matchTaamim, serializer);
+          sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 37,
             port: port_,
           );
         },
@@ -2828,7 +3379,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiSearchEngineSearchEngineCountFuzzyWithStatusConstMeta,
-        argValues: [that, query, facets, maxDistance, matchNikud, matchTaamim],
+        argValues: [
+          that,
+          query,
+          facets,
+          maxDistance,
+          matchNikud,
+          matchTaamim,
+          cancelRequestId,
+        ],
         apiImpl: this,
       ),
     );
@@ -2845,7 +3404,53 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "maxDistance",
           "matchNikud",
           "matchTaamim",
+          "cancelRequestId",
         ],
+      );
+
+  @override
+  Future<CountResult> crateApiSearchEngineSearchEngineCountUserRegex({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(raw, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 38,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_count_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSearchEngineSearchEngineCountUserRegexConstMeta,
+        argValues: [that, raw, facets, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineCountUserRegexConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_count_user_regex",
+        argNames: ["that", "raw", "facets", "cancellation"],
       );
 
   @override
@@ -2871,7 +3476,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 39,
             port: port_,
           );
         },
@@ -2909,7 +3514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2948,7 +3553,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2988,7 +3593,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 42,
             port: port_,
           );
         },
@@ -3026,7 +3631,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 43,
             port: port_,
           );
         },
@@ -3067,7 +3672,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 44,
             port: port_,
           );
         },
@@ -3099,6 +3704,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3116,10 +3722,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             searchOptions,
             serializer,
           );
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 45,
             port: port_,
           );
         },
@@ -3136,6 +3743,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           customSpacing,
           alternativeWords,
           searchOptions,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -3153,6 +3761,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "customSpacing",
           "alternativeWords",
           "searchOptions",
+          "anyOrder",
         ],
       );
 
@@ -3172,7 +3781,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 46,
             port: port_,
           );
         },
@@ -3212,7 +3821,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 47,
             port: port_,
           );
         },
@@ -3251,7 +3860,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 48,
             port: port_,
           );
         },
@@ -3291,7 +3900,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 49,
             port: port_,
           );
         },
@@ -3327,7 +3936,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 50,
             port: port_,
           );
         },
@@ -3374,7 +3983,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 51,
             port: port_,
           );
         },
@@ -3424,6 +4033,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3460,10 +4070,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 52,
             port: port_,
           );
         },
@@ -3493,6 +4104,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -3523,6 +4135,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -3548,6 +4161,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -3584,10 +4198,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_search_scope(negativeScope, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 53,
             port: port_,
           );
         },
@@ -3617,6 +4232,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           negativeScope,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -3647,6 +4263,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "negativeScope",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -3675,7 +4292,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 54,
             port: port_,
           );
         },
@@ -3731,7 +4348,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 55,
             port: port_,
           );
         },
@@ -3788,7 +4405,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 56,
             port: port_,
           );
         },
@@ -3855,7 +4472,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 57,
             port: port_,
           );
         },
@@ -3896,6 +4513,56 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<FacetCountsResult>
+  crateApiSearchEngineSearchEngineGetFacetCountsUserRegex({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required String facetPrefix,
+    required UserRegexCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_String(raw, serializer);
+          sse_encode_list_String(facets, serializer);
+          sse_encode_String(facetPrefix, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 58,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_facet_counts_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineGetFacetCountsUserRegexConstMeta,
+        argValues: [that, raw, facets, facetPrefix, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineGetFacetCountsUserRegexConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_get_facet_counts_user_regex",
+        argNames: ["that", "raw", "facets", "facetPrefix", "cancellation"],
+      );
+
+  @override
+  Future<FacetCountsResult>
   crateApiSearchEngineSearchEngineGetFacetCountsWithStatus({
     required SearchEngine that,
     required List<String> regexTerms,
@@ -3920,7 +4587,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 59,
             port: port_,
           );
         },
@@ -3965,7 +4632,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 60,
             port: port_,
           );
         },
@@ -4003,7 +4670,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 61,
             port: port_,
           );
         },
@@ -4036,7 +4703,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 62)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -4069,7 +4736,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 63)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -4101,7 +4768,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 55)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 64)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -4148,7 +4815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 65,
             port: port_,
           );
         },
@@ -4183,7 +4850,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 66,
             port: port_,
           );
         },
@@ -4203,6 +4870,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "SearchEngine_new", argNames: ["path"]);
 
   @override
+  Future<void> crateApiSearchEngineSearchEngineOpenIndexWriter({
+    required SearchEngine that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 67,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSearchEngineSearchEngineOpenIndexWriterConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineOpenIndexWriterConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_open_index_writer",
+        argNames: ["that"],
+      );
+
+  @override
   Future<SemanticStatus> crateApiSearchEngineSearchEngineOpenSemanticArtifact({
     required SearchEngine that,
     required SemanticArtifactInput config,
@@ -4219,7 +4922,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 68,
             port: port_,
           );
         },
@@ -4257,7 +4960,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 69,
             port: port_,
           );
         },
@@ -4295,7 +4998,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 70,
             port: port_,
           );
         },
@@ -4336,7 +5039,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 71,
             port: port_,
           );
         },
@@ -4375,7 +5078,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 72,
             port: port_,
           );
         },
@@ -4412,7 +5115,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 73,
             port: port_,
           );
         },
@@ -4464,7 +5167,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 74,
             port: port_,
           );
         },
@@ -4529,6 +5232,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4568,10 +5272,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 75,
             port: port_,
           );
         },
@@ -4603,6 +5308,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           grouping,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -4635,6 +5341,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -4664,6 +5371,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -4712,11 +5421,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               serializer,
             );
             sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+            sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
+            sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 66,
+              funcId: 76,
               port: port_,
             );
           },
@@ -4750,6 +5461,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             grouping,
             wordMatchMode,
             wordMatchCount,
+            anyOrder,
+            cancelRequestId,
             sink,
           ],
           apiImpl: this,
@@ -4787,6 +5500,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
+          "cancelRequestId",
           "sink",
         ],
       );
@@ -4817,6 +5532,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -4865,11 +5582,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
               serializer,
             );
             sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+            sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
+            sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 67,
+              funcId: 77,
               port: port_,
             );
           },
@@ -4903,6 +5622,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             grouping,
             wordMatchMode,
             wordMatchCount,
+            anyOrder,
+            cancelRequestId,
             sink,
           ],
           apiImpl: this,
@@ -4940,6 +5661,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
+          "cancelRequestId",
           "sink",
         ],
       );
@@ -4975,7 +5698,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 78,
             port: port_,
           );
         },
@@ -5041,6 +5764,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -5080,10 +5804,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
           sse_encode_opt_box_autoadd_word_match_mode(wordMatchMode, serializer);
           sse_encode_opt_box_autoadd_u_32(wordMatchCount, serializer);
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 79,
             port: port_,
           );
         },
@@ -5116,6 +5841,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           grouping,
           wordMatchMode,
           wordMatchCount,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -5149,6 +5875,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "grouping",
           "wordMatchMode",
           "wordMatchCount",
+          "anyOrder",
         ],
       );
 
@@ -5183,7 +5910,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 80,
             port: port_,
           );
         },
@@ -5259,7 +5986,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 71,
+            funcId: 81,
             port: port_,
           );
         },
@@ -5335,7 +6062,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 72,
+            funcId: 82,
             port: port_,
           );
         },
@@ -5388,6 +6115,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -5408,11 +6136,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
+            sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 73,
+              funcId: 83,
               port: port_,
             );
           },
@@ -5433,6 +6162,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchTaamim,
             chunkSize,
             grouping,
+            cancelRequestId,
             sink,
           ],
           apiImpl: this,
@@ -5457,6 +6187,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "chunkSize",
           "grouping",
+          "cancelRequestId",
           "sink",
         ],
       );
@@ -5474,6 +6205,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -5494,11 +6226,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
+            sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 74,
+              funcId: 84,
               port: port_,
             );
           },
@@ -5519,6 +6252,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchTaamim,
             chunkSize,
             grouping,
+            cancelRequestId,
             sink,
           ],
           apiImpl: this,
@@ -5543,6 +6277,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "chunkSize",
           "grouping",
+          "cancelRequestId",
           "sink",
         ],
       );
@@ -5580,7 +6315,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 85,
             port: port_,
           );
         },
@@ -5636,6 +6371,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) {
     final sink = RustStreamSink<List<SearchResult>>();
     unawaited(
@@ -5657,11 +6393,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
+            sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
             sse_encode_StreamSink_list_search_result_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 76,
+              funcId: 86,
               port: port_,
             );
           },
@@ -5683,6 +6420,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchTaamim,
             chunkSize,
             grouping,
+            cancelRequestId,
             sink,
           ],
           apiImpl: this,
@@ -5708,6 +6446,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "chunkSize",
           "grouping",
+          "cancelRequestId",
           "sink",
         ],
       );
@@ -5726,6 +6465,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) {
     final sink = RustStreamSink<SearchStreamUpdate>();
     unawaited(
@@ -5747,11 +6487,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             sse_encode_bool(matchTaamim, serializer);
             sse_encode_u_32(chunkSize, serializer);
             sse_encode_opt_box_autoadd_result_grouping(grouping, serializer);
+            sse_encode_opt_box_autoadd_u_32(cancelRequestId, serializer);
             sse_encode_StreamSink_search_stream_update_Sse(sink, serializer);
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 77,
+              funcId: 87,
               port: port_,
             );
           },
@@ -5773,6 +6514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             matchTaamim,
             chunkSize,
             grouping,
+            cancelRequestId,
             sink,
           ],
           apiImpl: this,
@@ -5798,6 +6540,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "chunkSize",
           "grouping",
+          "cancelRequestId",
           "sink",
         ],
       );
@@ -5831,7 +6574,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 78,
+            funcId: 88,
             port: port_,
           );
         },
@@ -5920,7 +6663,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 79,
+            funcId: 89,
             port: port_,
           );
         },
@@ -6005,7 +6748,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 80,
+              funcId: 90,
               port: port_,
             );
           },
@@ -6053,6 +6796,90 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Stream<UserRegexStreamUpdate>
+  crateApiSearchEngineSearchEngineSearchUserRegexStream({
+    required SearchEngine that,
+    required String raw,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required int chunkSize,
+    required UserRegexCancellationToken cancellation,
+  }) {
+    final sink = RustStreamSink<UserRegexStreamUpdate>();
+    unawaited(
+      handler.executeNormal(
+        NormalTask(
+          callFfi: (port_) {
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+              that,
+              serializer,
+            );
+            sse_encode_String(raw, serializer);
+            sse_encode_list_String(facets, serializer);
+            sse_encode_u_32(limit, serializer);
+            sse_encode_u_32(offset, serializer);
+            sse_encode_results_order(order, serializer);
+            sse_encode_u_32(chunkSize, serializer);
+            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+              cancellation,
+              serializer,
+            );
+            sse_encode_StreamSink_user_regex_stream_update_Sse(
+              sink,
+              serializer,
+            );
+            pdeCallFfi(
+              generalizedFrbRustBinding,
+              serializer,
+              funcId: 91,
+              port: port_,
+            );
+          },
+          codec: SseCodec(
+            decodeSuccessData: sse_decode_unit,
+            decodeErrorData: sse_decode_AnyhowException,
+          ),
+          constMeta:
+              kCrateApiSearchEngineSearchEngineSearchUserRegexStreamConstMeta,
+          argValues: [
+            that,
+            raw,
+            facets,
+            limit,
+            offset,
+            order,
+            chunkSize,
+            cancellation,
+            sink,
+          ],
+          apiImpl: this,
+        ),
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSearchUserRegexStreamConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_search_user_regex_stream",
+        argNames: [
+          "that",
+          "raw",
+          "facets",
+          "limit",
+          "offset",
+          "order",
+          "chunkSize",
+          "cancellation",
+          "sink",
+        ],
+      );
+
+  @override
   Future<SemanticCoverage> crateApiSearchEngineSearchEngineSemanticCoverage({
     required SearchEngine that,
     required String vectorsDir,
@@ -6074,7 +6901,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 81,
+            funcId: 92,
             port: port_,
           );
         },
@@ -6114,7 +6941,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 82,
+            funcId: 93,
             port: port_,
           );
         },
@@ -6151,7 +6978,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 83,
+            funcId: 94,
             port: port_,
           );
         },
@@ -6198,7 +7025,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 84,
+            funcId: 95,
             port: port_,
           );
         },
@@ -6236,7 +7063,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 85,
+            funcId: 96,
             port: port_,
           );
         },
@@ -6275,7 +7102,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 86,
+            funcId: 97,
             port: port_,
           );
         },
@@ -6312,7 +7139,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 87)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 98)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6350,7 +7177,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 88,
+            funcId: 99,
             port: port_,
           );
         },
@@ -6388,7 +7215,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 100,
             port: port_,
           );
         },
@@ -6424,7 +7251,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 90)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 101,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6459,7 +7290,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(path, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 91)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 102,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6517,7 +7352,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 92,
+            funcId: 103,
             port: port_,
           );
         },
@@ -6581,7 +7416,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 93,
+            funcId: 104,
             port: port_,
           );
         },
@@ -6627,7 +7462,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 94,
+            funcId: 105,
             port: port_,
           );
         },
@@ -6662,7 +7497,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 95)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 106,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -6695,7 +7534,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 96)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 107,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -6722,7 +7565,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 97)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 108,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -6744,6 +7591,181 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  void crateApiSearchEngineUserRegexCancellationTokenCancel({
+    required UserRegexCancellationToken that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 109,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiSearchEngineUserRegexCancellationTokenCancelConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineUserRegexCancellationTokenCancelConstMeta =>
+      const TaskConstMeta(
+        debugName: "UserRegexCancellationToken_cancel",
+        argNames: ["that"],
+      );
+
+  @override
+  bool crateApiSearchEngineUserRegexCancellationTokenIsCancelled({
+    required UserRegexCancellationToken that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 110,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta:
+            kCrateApiSearchEngineUserRegexCancellationTokenIsCancelledConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineUserRegexCancellationTokenIsCancelledConstMeta =>
+      const TaskConstMeta(
+        debugName: "UserRegexCancellationToken_is_cancelled",
+        argNames: ["that"],
+      );
+
+  @override
+  UserRegexCancellationToken
+  crateApiSearchEngineUserRegexCancellationTokenNew() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 111,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineUserRegexCancellationTokenNewConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineUserRegexCancellationTokenNewConstMeta =>
+      const TaskConstMeta(
+        debugName: "UserRegexCancellationToken_new",
+        argNames: [],
+      );
+
+  @override
+  List<HighlightMatch> crateApiSearchEngineUserRegexMatcherFindMatches({
+    required UserRegexMatcher that,
+    required String data,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+            that,
+            serializer,
+          );
+          sse_encode_String(data, serializer);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 112,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_highlight_match,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineUserRegexMatcherFindMatchesConstMeta,
+        argValues: [that, data],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineUserRegexMatcherFindMatchesConstMeta =>
+      const TaskConstMeta(
+        debugName: "UserRegexMatcher_find_matches",
+        argNames: ["that", "data"],
+      );
+
+  @override
+  Future<AttachedLineSourceStatus>
+  crateApiSearchEngineAttachedLineSourceStatus({required String slug}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(slug, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 113,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_attached_line_source_status,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineAttachedLineSourceStatusConstMeta,
+        argValues: [slug],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineAttachedLineSourceStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "attached_line_source_status",
+        argNames: ["slug"],
+      );
+
+  @override
   Future<IndexCompatibility> crateApiSearchEngineCheckIndexCompatibility({
     required String path,
   }) {
@@ -6755,7 +7777,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 98,
+            funcId: 114,
             port: port_,
           );
         },
@@ -6795,7 +7817,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(catalogueOrder, serializer);
           sse_encode_u_32(generationOrder, serializer);
           sse_encode_opt_list_String(extraFacets, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 99)!;
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 115,
+          )!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_u_64,
@@ -6838,7 +7864,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 116,
           )!;
         },
         codec: SseCodec(
@@ -6870,7 +7896,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 117,
             port: port_,
           );
         },
@@ -6893,6 +7919,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiSearchEngineConfigureAttachedLineSource({
+    required String slug,
+    String? dbPath,
+    required bool immutable,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(slug, serializer);
+          sse_encode_opt_String(dbPath, serializer);
+          sse_encode_bool(immutable, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 118,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSearchEngineConfigureAttachedLineSourceConstMeta,
+        argValues: [slug, dbPath, immutable],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineConfigureAttachedLineSourceConstMeta =>
+      const TaskConstMeta(
+        debugName: "configure_attached_line_source",
+        argNames: ["slug", "dbPath", "immutable"],
+      );
+
+  @override
   Future<void> crateApiSearchEngineConfigureLineSource({
     required String dbPath,
   }) {
@@ -6904,7 +7967,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 119,
             port: port_,
           );
         },
@@ -6926,12 +7989,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiSearchEngineConfigureUserBooksLineSource({
+    String? dbPath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_opt_String(dbPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 120,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSearchEngineConfigureUserBooksLineSourceConstMeta,
+        argValues: [dbPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineConfigureUserBooksLineSourceConstMeta =>
+      const TaskConstMeta(
+        debugName: "configure_user_books_line_source",
+        argNames: ["dbPath"],
+      );
+
+  @override
   HighlightPattern? crateApiSearchEngineGenerateHighlightPattern({
     required String query,
     required int distance,
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -6945,10 +8043,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             searchOptions,
             serializer,
           );
+          sse_encode_opt_box_autoadd_bool(anyOrder, serializer);
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 121,
           )!;
         },
         codec: SseCodec(
@@ -6962,6 +8061,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           customSpacing,
           alternativeWords,
           searchOptions,
+          anyOrder,
         ],
         apiImpl: this,
       ),
@@ -6977,6 +8077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "customSpacing",
           "alternativeWords",
           "searchOptions",
+          "anyOrder",
         ],
       );
 
@@ -6992,7 +8093,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 122,
           )!;
         },
         codec: SseCodec(
@@ -7026,7 +8127,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 123,
           )!;
         },
         codec: SseCodec(
@@ -7047,6 +8148,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<BigInt?> crateApiLibraryIndexingLibraryBookContentFingerprint({
+    required LibraryBookSource source,
+    String? attachedSlug,
+    required PlatformInt64 bookId,
+    String? dbTitle,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_library_book_source(source, serializer);
+          sse_encode_opt_String(attachedSlug, serializer);
+          sse_encode_i_64(bookId, serializer);
+          sse_encode_opt_String(dbTitle, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 124,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_u_64,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta:
+            kCrateApiLibraryIndexingLibraryBookContentFingerprintConstMeta,
+        argValues: [source, attachedSlug, bookId, dbTitle],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLibraryIndexingLibraryBookContentFingerprintConstMeta =>
+      const TaskConstMeta(
+        debugName: "library_book_content_fingerprint",
+        argNames: ["source", "attachedSlug", "bookId", "dbTitle"],
+      );
+
+  @override
   Future<LineSourceStatus> crateApiSearchEngineLineSourceStatus() {
     return handler.executeNormal(
       NormalTask(
@@ -7055,7 +8197,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 106,
+            funcId: 125,
             port: port_,
           );
         },
@@ -7085,7 +8227,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 107,
+            funcId: 126,
           )!;
         },
         codec: SseCodec(
@@ -7117,7 +8259,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 108,
+            funcId: 127,
           )!;
         },
         codec: SseCodec(
@@ -7148,7 +8290,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 109,
+            funcId: 128,
           )!;
         },
         codec: SseCodec(
@@ -7180,7 +8322,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 110,
+            funcId: 129,
           )!;
         },
         codec: SseCodec(
@@ -7201,6 +8343,66 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  UserRegexPlan crateApiSearchEngineParseUserRegex({required String raw}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(raw, serializer);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 130,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_user_regex_plan,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEngineParseUserRegexConstMeta,
+        argValues: [raw],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineParseUserRegexConstMeta =>
+      const TaskConstMeta(debugName: "parse_user_regex", argNames: ["raw"]);
+
+  @override
+  UserRegexMatcher? crateApiSearchEnginePrepareUserRegexMatcher({
+    required String raw,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(raw, serializer);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 131,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSearchEnginePrepareUserRegexMatcherConstMeta,
+        argValues: [raw],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEnginePrepareUserRegexMatcherConstMeta =>
+      const TaskConstMeta(
+        debugName: "prepare_user_regex_matcher",
+        argNames: ["raw"],
+      );
+
+  @override
   List<QueryWordSpan> crateApiSearchEngineQueryWordSpans({
     required String query,
   }) {
@@ -7212,7 +8414,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 111,
+            funcId: 132,
           )!;
         },
         codec: SseCodec(
@@ -7238,7 +8440,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 112,
+            funcId: 133,
             port: port_,
           );
         },
@@ -7268,7 +8470,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 113,
+            funcId: 134,
             port: port_,
           );
         },
@@ -7298,7 +8500,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 114,
+            funcId: 135,
             port: port_,
           );
         },
@@ -7325,7 +8527,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 115,
+            funcId: 136,
             port: port_,
           );
         },
@@ -7353,7 +8555,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 116,
+            funcId: 137,
           )!;
         },
         codec: SseCodec(
@@ -7380,7 +8582,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 117,
+            funcId: 138,
           )!;
         },
         codec: SseCodec(
@@ -7411,7 +8613,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 118,
+            funcId: 139,
           )!;
         },
         codec: SseCodec(
@@ -7442,7 +8644,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 119,
+            funcId: 140,
           )!;
         },
         codec: SseCodec(
@@ -7468,7 +8670,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 120,
+            funcId: 141,
           )!;
         },
         codec: SseCodec(
@@ -7494,7 +8696,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 121,
+            funcId: 142,
             port: port_,
           );
         },
@@ -7524,7 +8726,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 122,
+            funcId: 143,
             port: port_,
           );
         },
@@ -7554,6 +8756,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher;
 
   RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_IndexingCancellationToken => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_IndexingCancellationToken => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken;
+
+  RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_RegexBenchmarker => wire
       .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
@@ -7577,6 +8787,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get rust_arc_decrement_strong_count_SemanticCancellationToken => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken;
 
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_UserRegexCancellationToken => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_UserRegexCancellationToken => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_UserRegexMatcher => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_UserRegexMatcher => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -7590,6 +8816,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return HighlightMatcherImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  IndexingCancellationToken
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return IndexingCancellationTokenImpl.frbInternalDcoDecode(
+      raw as List<dynamic>,
+    );
   }
 
   @protected
@@ -7622,6 +8859,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexCancellationToken
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexCancellationTokenImpl.frbInternalDcoDecode(
+      raw as List<dynamic>,
+    );
+  }
+
+  @protected
+  UserRegexMatcher
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexMatcherImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   RegexBenchmarker
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -7649,6 +8906,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IndexingCancellationToken
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return IndexingCancellationTokenImpl.frbInternalDcoDecode(
+      raw as List<dynamic>,
+    );
+  }
+
+  @protected
   SearchEngine
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     dynamic raw,
@@ -7666,6 +8934,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SemanticCancellationTokenImpl.frbInternalDcoDecode(
       raw as List<dynamic>,
     );
+  }
+
+  @protected
+  UserRegexCancellationToken
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexCancellationTokenImpl.frbInternalDcoDecode(
+      raw as List<dynamic>,
+    );
+  }
+
+  @protected
+  UserRegexMatcher
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexMatcherImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -7733,6 +9021,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IndexingCancellationToken
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return IndexingCancellationTokenImpl.frbInternalDcoDecode(
+      raw as List<dynamic>,
+    );
+  }
+
+  @protected
   RegexBenchmarker
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -7762,6 +9061,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexCancellationToken
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexCancellationTokenImpl.frbInternalDcoDecode(
+      raw as List<dynamic>,
+    );
+  }
+
+  @protected
+  UserRegexMatcher
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexMatcherImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   RustStreamSink<List<SearchResult>>
   dco_decode_StreamSink_list_search_result_Sse(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -7776,9 +9095,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RustStreamSink<UserRegexStreamUpdate>
+  dco_decode_StreamSink_user_regex_stream_update_Sse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
+  @protected
   String dco_decode_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as String;
+  }
+
+  @protected
+  AttachedLineSourceStatus dco_decode_attached_line_source_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return AttachedLineSourceStatus(
+      configured: dco_decode_bool(arr[0]),
+      open: dco_decode_bool(arr[1]),
+      generation: dco_decode_u_64(arr[2]),
+      libraryFallbacks: dco_decode_u_64(arr[3]),
+    );
   }
 
   @protected
@@ -7845,9 +9185,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexMatcher
+  dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+      raw,
+    );
+  }
+
+  @protected
   BenchmarkResult dco_decode_box_autoadd_benchmark_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_benchmark_result(raw);
+  }
+
+  @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
   }
 
   @protected
@@ -8121,11 +9478,61 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  LibraryBookInput dco_decode_library_book_input(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return LibraryBookInput(
+      source: dco_decode_library_book_source(arr[0]),
+      attachedSlug: dco_decode_opt_String(arr[1]),
+      bookId: dco_decode_i_64(arr[2]),
+      dbTitle: dco_decode_opt_String(arr[3]),
+      title: dco_decode_String(arr[4]),
+      topics: dco_decode_String(arr[5]),
+      filePath: dco_decode_String(arr[6]),
+      catalogueOrder: dco_decode_u_32(arr[7]),
+      generationOrder: dco_decode_u_32(arr[8]),
+      extraFacets: dco_decode_opt_list_String(arr[9]),
+      textStorage: dco_decode_text_storage(arr[10]),
+    );
+  }
+
+  @protected
+  LibraryBookResult dco_decode_library_book_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return LibraryBookResult(
+      bookId: dco_decode_i_64(arr[0]),
+      status: dco_decode_library_book_status(arr[1]),
+      docs: dco_decode_u_32(arr[2]),
+      textStorage: dco_decode_text_storage(arr[3]),
+      contentHash: dco_decode_u_64(arr[4]),
+      textHash: dco_decode_u_64(arr[5]),
+      error: dco_decode_opt_String(arr[6]),
+    );
+  }
+
+  @protected
+  LibraryBookSource dco_decode_library_book_source(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LibraryBookSource.values[raw as int];
+  }
+
+  @protected
+  LibraryBookStatus dco_decode_library_book_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LibraryBookStatus.values[raw as int];
+  }
+
+  @protected
   LineSourceStatus dco_decode_line_source_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return LineSourceStatus(
       configured: dco_decode_bool(arr[0]),
       open: dco_decode_bool(arr[1]),
@@ -8133,6 +9540,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hostApiReady: dco_decode_bool(arr[3]),
       generation: dco_decode_u_64(arr[4]),
       libraryFallbacks: dco_decode_u_64(arr[5]),
+      userBooksConfigured: dco_decode_bool(arr[6]),
+      userBooksOpen: dco_decode_bool(arr[7]),
+      userBooksGeneration: dco_decode_u_64(arr[8]),
+      userBooksFallbacks: dco_decode_u_64(arr[9]),
     );
   }
 
@@ -8176,6 +9587,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<HighlightRange> dco_decode_list_highlight_range(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_highlight_range).toList();
+  }
+
+  @protected
+  List<LibraryBookInput> dco_decode_list_library_book_input(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_library_book_input).toList();
+  }
+
+  @protected
+  List<LibraryBookResult> dco_decode_list_library_book_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_library_book_result).toList();
   }
 
   @protected
@@ -8330,6 +9753,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<UserRegexLineMatches> dco_decode_list_user_regex_line_matches(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_user_regex_line_matches)
+        .toList();
+  }
+
+  @protected
   MergedSibling dco_decode_merged_sibling(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -8371,9 +9804,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexMatcher?
+  dco_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+            raw,
+          );
+  }
+
+  @protected
   BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_benchmark_result(raw);
+  }
+
+  @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_bool(raw);
   }
 
   @protected
@@ -9191,6 +10643,58 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexKind dco_decode_user_regex_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UserRegexKind.values[raw as int];
+  }
+
+  @protected
+  UserRegexLineMatches dco_decode_user_regex_line_matches(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return UserRegexLineMatches(
+      ranges: dco_decode_list_highlight_range(arr[0]),
+    );
+  }
+
+  @protected
+  UserRegexPlan dco_decode_user_regex_plan(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return UserRegexPlan(
+      kind: dco_decode_user_regex_kind(arr[0]),
+      pattern: dco_decode_String(arr[1]),
+      words: dco_decode_list_String(arr[2]),
+      reason: dco_decode_opt_String(arr[3]),
+    );
+  }
+
+  @protected
+  UserRegexStreamUpdate dco_decode_user_regex_stream_update(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return UserRegexStreamUpdate(
+      kind: dco_decode_user_regex_kind(arr[0]),
+      results: dco_decode_list_search_result(arr[1]),
+      matchRanges: dco_decode_list_user_regex_line_matches(arr[2]),
+      totalCount: dco_decode_opt_box_autoadd_u_32(arr[3]),
+      bookCounts: dco_decode_opt_Map_String_u_32_None(arr[4]),
+      foundSoFar: dco_decode_u_32(arr[5]),
+      progressDone: dco_decode_u_32(arr[6]),
+      progressTotal: dco_decode_u_32(arr[7]),
+      truncated: dco_decode_bool(arr[8]),
+      done: dco_decode_bool(arr[9]),
+      cancelled: dco_decode_bool(arr[10]),
+    );
+  }
+
+  @protected
   BigInt dco_decode_usize(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeU64(raw);
@@ -9216,6 +10720,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return HighlightMatcherImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  IndexingCancellationToken
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return IndexingCancellationTokenImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -9258,6 +10774,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexCancellationToken
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return UserRegexCancellationTokenImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  UserRegexMatcher
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return UserRegexMatcherImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   RegexBenchmarker
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -9294,6 +10834,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IndexingCancellationToken
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return IndexingCancellationTokenImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   SearchEngine
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SseDeserializer deserializer,
@@ -9312,6 +10864,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return SemanticCancellationTokenImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  UserRegexCancellationToken
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return UserRegexCancellationTokenImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  UserRegexMatcher
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return UserRegexMatcherImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -9387,6 +10963,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IndexingCancellationToken
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return IndexingCancellationTokenImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   RegexBenchmarker
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -9423,6 +11011,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexCancellationToken
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return UserRegexCancellationTokenImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  UserRegexMatcher
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return UserRegexMatcherImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   RustStreamSink<List<SearchResult>>
   sse_decode_StreamSink_list_search_result_Sse(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -9437,10 +11049,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RustStreamSink<UserRegexStreamUpdate>
+  sse_decode_StreamSink_user_regex_stream_update_Sse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_prim_u_8_strict(deserializer);
     return utf8.decoder.convert(inner);
+  }
+
+  @protected
+  AttachedLineSourceStatus sse_decode_attached_line_source_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_configured = sse_decode_bool(deserializer);
+    var var_open = sse_decode_bool(deserializer);
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_libraryFallbacks = sse_decode_u_64(deserializer);
+    return AttachedLineSourceStatus(
+      configured: var_configured,
+      open: var_open,
+      generation: var_generation,
+      libraryFallbacks: var_libraryFallbacks,
+    );
   }
 
   @protected
@@ -9515,11 +11153,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexMatcher
+  sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+      deserializer,
+    ));
+  }
+
+  @protected
   BenchmarkResult sse_decode_box_autoadd_benchmark_result(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_benchmark_result(deserializer));
+  }
+
+  @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bool(deserializer));
   }
 
   @protected
@@ -9814,6 +11469,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  LibraryBookInput sse_decode_library_book_input(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_source = sse_decode_library_book_source(deserializer);
+    var var_attachedSlug = sse_decode_opt_String(deserializer);
+    var var_bookId = sse_decode_i_64(deserializer);
+    var var_dbTitle = sse_decode_opt_String(deserializer);
+    var var_title = sse_decode_String(deserializer);
+    var var_topics = sse_decode_String(deserializer);
+    var var_filePath = sse_decode_String(deserializer);
+    var var_catalogueOrder = sse_decode_u_32(deserializer);
+    var var_generationOrder = sse_decode_u_32(deserializer);
+    var var_extraFacets = sse_decode_opt_list_String(deserializer);
+    var var_textStorage = sse_decode_text_storage(deserializer);
+    return LibraryBookInput(
+      source: var_source,
+      attachedSlug: var_attachedSlug,
+      bookId: var_bookId,
+      dbTitle: var_dbTitle,
+      title: var_title,
+      topics: var_topics,
+      filePath: var_filePath,
+      catalogueOrder: var_catalogueOrder,
+      generationOrder: var_generationOrder,
+      extraFacets: var_extraFacets,
+      textStorage: var_textStorage,
+    );
+  }
+
+  @protected
+  LibraryBookResult sse_decode_library_book_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_bookId = sse_decode_i_64(deserializer);
+    var var_status = sse_decode_library_book_status(deserializer);
+    var var_docs = sse_decode_u_32(deserializer);
+    var var_textStorage = sse_decode_text_storage(deserializer);
+    var var_contentHash = sse_decode_u_64(deserializer);
+    var var_textHash = sse_decode_u_64(deserializer);
+    var var_error = sse_decode_opt_String(deserializer);
+    return LibraryBookResult(
+      bookId: var_bookId,
+      status: var_status,
+      docs: var_docs,
+      textStorage: var_textStorage,
+      contentHash: var_contentHash,
+      textHash: var_textHash,
+      error: var_error,
+    );
+  }
+
+  @protected
+  LibraryBookSource sse_decode_library_book_source(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return LibraryBookSource.values[inner];
+  }
+
+  @protected
+  LibraryBookStatus sse_decode_library_book_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return LibraryBookStatus.values[inner];
+  }
+
+  @protected
   LineSourceStatus sse_decode_line_source_status(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_configured = sse_decode_bool(deserializer);
@@ -9822,6 +11547,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_hostApiReady = sse_decode_bool(deserializer);
     var var_generation = sse_decode_u_64(deserializer);
     var var_libraryFallbacks = sse_decode_u_64(deserializer);
+    var var_userBooksConfigured = sse_decode_bool(deserializer);
+    var var_userBooksOpen = sse_decode_bool(deserializer);
+    var var_userBooksGeneration = sse_decode_u_64(deserializer);
+    var var_userBooksFallbacks = sse_decode_u_64(deserializer);
     return LineSourceStatus(
       configured: var_configured,
       open: var_open,
@@ -9829,6 +11558,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hostApiReady: var_hostApiReady,
       generation: var_generation,
       libraryFallbacks: var_libraryFallbacks,
+      userBooksConfigured: var_userBooksConfigured,
+      userBooksOpen: var_userBooksOpen,
+      userBooksGeneration: var_userBooksGeneration,
+      userBooksFallbacks: var_userBooksFallbacks,
     );
   }
 
@@ -9920,6 +11653,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <HighlightRange>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_highlight_range(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<LibraryBookInput> sse_decode_list_library_book_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <LibraryBookInput>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_library_book_input(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<LibraryBookResult> sse_decode_list_library_book_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <LibraryBookResult>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_library_book_result(deserializer));
     }
     return ans_;
   }
@@ -10197,6 +11958,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<UserRegexLineMatches> sse_decode_list_user_regex_line_matches(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <UserRegexLineMatches>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_user_regex_line_matches(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   MergedSibling sse_decode_merged_sibling(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_title = sse_decode_String(deserializer);
@@ -10256,6 +12031,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexMatcher?
+  sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BenchmarkResult? sse_decode_opt_box_autoadd_benchmark_result(
     SseDeserializer deserializer,
   ) {
@@ -10263,6 +12054,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_benchmark_result(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bool(deserializer));
     } else {
       return null;
     }
@@ -11352,6 +13154,68 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UserRegexKind sse_decode_user_regex_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return UserRegexKind.values[inner];
+  }
+
+  @protected
+  UserRegexLineMatches sse_decode_user_regex_line_matches(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_ranges = sse_decode_list_highlight_range(deserializer);
+    return UserRegexLineMatches(ranges: var_ranges);
+  }
+
+  @protected
+  UserRegexPlan sse_decode_user_regex_plan(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_user_regex_kind(deserializer);
+    var var_pattern = sse_decode_String(deserializer);
+    var var_words = sse_decode_list_String(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    return UserRegexPlan(
+      kind: var_kind,
+      pattern: var_pattern,
+      words: var_words,
+      reason: var_reason,
+    );
+  }
+
+  @protected
+  UserRegexStreamUpdate sse_decode_user_regex_stream_update(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_user_regex_kind(deserializer);
+    var var_results = sse_decode_list_search_result(deserializer);
+    var var_matchRanges = sse_decode_list_user_regex_line_matches(deserializer);
+    var var_totalCount = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_bookCounts = sse_decode_opt_Map_String_u_32_None(deserializer);
+    var var_foundSoFar = sse_decode_u_32(deserializer);
+    var var_progressDone = sse_decode_u_32(deserializer);
+    var var_progressTotal = sse_decode_u_32(deserializer);
+    var var_truncated = sse_decode_bool(deserializer);
+    var var_done = sse_decode_bool(deserializer);
+    var var_cancelled = sse_decode_bool(deserializer);
+    return UserRegexStreamUpdate(
+      kind: var_kind,
+      results: var_results,
+      matchRanges: var_matchRanges,
+      totalCount: var_totalCount,
+      bookCounts: var_bookCounts,
+      foundSoFar: var_foundSoFar,
+      progressDone: var_progressDone,
+      progressTotal: var_progressTotal,
+      truncated: var_truncated,
+      done: var_done,
+      cancelled: var_cancelled,
+    );
+  }
+
+  @protected
   BigInt sse_decode_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
@@ -11382,6 +13246,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as HighlightMatcherImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    IndexingCancellationToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as IndexingCancellationTokenImpl).frbInternalSseEncode(move: true),
       serializer,
     );
   }
@@ -11427,6 +13304,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    UserRegexCancellationToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as UserRegexCancellationTokenImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as UserRegexMatcherImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -11466,6 +13369,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    IndexingCancellationToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as IndexingCancellationTokenImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SearchEngine self,
     SseSerializer serializer,
@@ -11486,6 +13402,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as SemanticCancellationTokenImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    UserRegexCancellationToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as UserRegexCancellationTokenImpl).frbInternalSseEncode(
+        move: false,
+      ),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as UserRegexMatcherImpl).frbInternalSseEncode(move: false),
       serializer,
     );
   }
@@ -11577,6 +13521,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    IndexingCancellationToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as IndexingCancellationTokenImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -11610,6 +13567,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as SemanticCancellationTokenImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    UserRegexCancellationToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as UserRegexCancellationTokenImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as UserRegexMatcherImpl).frbInternalSseEncode(move: null),
       serializer,
     );
   }
@@ -11649,9 +13632,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_StreamSink_user_regex_stream_update_Sse(
+    RustStreamSink<UserRegexStreamUpdate> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_user_regex_stream_update,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
+  }
+
+  @protected
+  void sse_encode_attached_line_source_status(
+    AttachedLineSourceStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.configured, serializer);
+    sse_encode_bool(self.open, serializer);
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_u_64(self.libraryFallbacks, serializer);
   }
 
   @protected
@@ -11714,12 +13726,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void
+  sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+      self,
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_box_autoadd_benchmark_result(
     BenchmarkResult self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_benchmark_result(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self, serializer);
   }
 
   @protected
@@ -11994,6 +14025,58 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_library_book_input(
+    LibraryBookInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_library_book_source(self.source, serializer);
+    sse_encode_opt_String(self.attachedSlug, serializer);
+    sse_encode_i_64(self.bookId, serializer);
+    sse_encode_opt_String(self.dbTitle, serializer);
+    sse_encode_String(self.title, serializer);
+    sse_encode_String(self.topics, serializer);
+    sse_encode_String(self.filePath, serializer);
+    sse_encode_u_32(self.catalogueOrder, serializer);
+    sse_encode_u_32(self.generationOrder, serializer);
+    sse_encode_opt_list_String(self.extraFacets, serializer);
+    sse_encode_text_storage(self.textStorage, serializer);
+  }
+
+  @protected
+  void sse_encode_library_book_result(
+    LibraryBookResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_64(self.bookId, serializer);
+    sse_encode_library_book_status(self.status, serializer);
+    sse_encode_u_32(self.docs, serializer);
+    sse_encode_text_storage(self.textStorage, serializer);
+    sse_encode_u_64(self.contentHash, serializer);
+    sse_encode_u_64(self.textHash, serializer);
+    sse_encode_opt_String(self.error, serializer);
+  }
+
+  @protected
+  void sse_encode_library_book_source(
+    LibraryBookSource self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_library_book_status(
+    LibraryBookStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_line_source_status(
     LineSourceStatus self,
     SseSerializer serializer,
@@ -12005,6 +14088,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.hostApiReady, serializer);
     sse_encode_u_64(self.generation, serializer);
     sse_encode_u_64(self.libraryFallbacks, serializer);
+    sse_encode_bool(self.userBooksConfigured, serializer);
+    sse_encode_bool(self.userBooksOpen, serializer);
+    sse_encode_u_64(self.userBooksGeneration, serializer);
+    sse_encode_u_64(self.userBooksFallbacks, serializer);
   }
 
   @protected
@@ -12082,6 +14169,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_highlight_range(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_library_book_input(
+    List<LibraryBookInput> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_library_book_input(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_library_book_result(
+    List<LibraryBookResult> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_library_book_result(item, serializer);
     }
   }
 
@@ -12334,6 +14445,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_user_regex_line_matches(
+    List<UserRegexLineMatches> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_user_regex_line_matches(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_merged_sibling(MergedSibling self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.title, serializer);
@@ -12385,6 +14508,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void
+  sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+        self,
+        serializer,
+      );
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_benchmark_result(
     BenchmarkResult? self,
     SseSerializer serializer,
@@ -12394,6 +14534,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_benchmark_result(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bool(self, serializer);
     }
   }
 
@@ -13241,6 +15391,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_user_regex_kind(
+    UserRegexKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_user_regex_line_matches(
+    UserRegexLineMatches self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_highlight_range(self.ranges, serializer);
+  }
+
+  @protected
+  void sse_encode_user_regex_plan(
+    UserRegexPlan self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_user_regex_kind(self.kind, serializer);
+    sse_encode_String(self.pattern, serializer);
+    sse_encode_list_String(self.words, serializer);
+    sse_encode_opt_String(self.reason, serializer);
+  }
+
+  @protected
+  void sse_encode_user_regex_stream_update(
+    UserRegexStreamUpdate self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_user_regex_kind(self.kind, serializer);
+    sse_encode_list_search_result(self.results, serializer);
+    sse_encode_list_user_regex_line_matches(self.matchRanges, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.totalCount, serializer);
+    sse_encode_opt_Map_String_u_32_None(self.bookCounts, serializer);
+    sse_encode_u_32(self.foundSoFar, serializer);
+    sse_encode_u_32(self.progressDone, serializer);
+    sse_encode_u_32(self.progressTotal, serializer);
+    sse_encode_bool(self.truncated, serializer);
+    sse_encode_bool(self.done, serializer);
+    sse_encode_bool(self.cancelled, serializer);
+  }
+
+  @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
@@ -13297,6 +15496,42 @@ class HighlightMatcherImpl extends RustOpaque implements HighlightMatcher {
         data: data,
         requireTokenBoundaries: requireTokenBoundaries,
       );
+}
+
+@sealed
+class IndexingCancellationTokenImpl extends RustOpaque
+    implements IndexingCancellationToken {
+  // Not to be used by end users
+  IndexingCancellationTokenImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  IndexingCancellationTokenImpl.frbInternalSseDecode(
+    BigInt ptr,
+    int externalSizeOnNative,
+  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount: RustLib
+        .instance
+        .api
+        .rust_arc_increment_strong_count_IndexingCancellationToken,
+    rustArcDecrementStrongCount: RustLib
+        .instance
+        .api
+        .rust_arc_decrement_strong_count_IndexingCancellationToken,
+    rustArcDecrementStrongCountPtr: RustLib
+        .instance
+        .api
+        .rust_arc_decrement_strong_count_IndexingCancellationTokenPtr,
+  );
+
+  /// Returns at once; the batch stops before its next book.
+  void cancel() => RustLib.instance.api
+      .crateApiLibraryIndexingIndexingCancellationTokenCancel(that: this);
+
+  bool get isCancelled => RustLib.instance.api
+      .crateApiLibraryIndexingIndexingCancellationTokenIsCancelled(that: this);
 }
 
 @sealed
@@ -13404,6 +15639,31 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         docs: docs,
       );
 
+  /// Indexes books whose text the engine reads itself, from the library database
+  /// ([`configure_line_source`]), the user-books database
+  /// ([`configure_user_books_line_source`]) or an attached database
+  /// ([`configure_attached_line_source`]). Does not commit.
+  ///
+  /// Each book is indexed exactly as `add_text_book_bytes` indexes the text the app reads
+  /// for it: rows in `lineIndex` order joined with `\n`, embedded `data:` images removed
+  /// (those rows then stored in the index, as `stored_lines`), the same documents,
+  /// `contentHash` and `textHash`. Several books are read and prepared at once; they
+  /// are added in input order, each whole or not at all.
+  ///
+  /// Takes the engine by shared reference, so searches are not held up while the batch
+  /// prepares; it needs an open writer ([`Self::open_index_writer`]). `cancel` stops the
+  /// batch before its next book. One result per input book, in order. An `Err` means
+  /// the writer failed: books of this batch may be in it, as after a failed
+  /// `add_text_book_bytes`.
+  Future<List<LibraryBookResult>> addLibraryBooks({
+    required List<LibraryBookInput> books,
+    required IndexingCancellationToken cancel,
+  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineAddLibraryBooks(
+    that: this,
+    books: books,
+    cancel: cancel,
+  );
+
   /// Indexes a whole PDF book in ONE FFI call. Does not commit.
   ///
   /// The whole-book replacement for the app's per-page PDF pipeline (Dart
@@ -13456,10 +15716,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
   /// newline-joined rows of an official book read from the library database
-  /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
+  /// (then `file_path` must be `id:<bookId>`), or of a personal book read from the
+  /// user-books database (`uid:<bookId>`) or an attached database
+  /// (`db:<slug>:<bookId>`); the lines are then not stored in
   /// the index and results read them back from that database. The book is
   /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
-  /// configured line source does not hold exactly as many rows for it as `text`
+  /// book's configured line source does not hold exactly as many rows for it as `text`
   /// has lines — a row containing `\n`, a different database — or cannot be read
   /// (unconfigured, suspended, busy).
   ///
@@ -13518,6 +15780,16 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     textStorage: textStorage,
     storedLines: storedLines,
   );
+
+  /// Stops every lexical call tagged with `request_id` (the streams, counts and
+  /// per-book counts that take `cancel_request_id`), running or still to come.
+  /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
+  /// cancelled stream closes without another event. Returns at once.
+  void cancelLexicalSearch({required int requestId}) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCancelLexicalSearch(
+        that: this,
+        requestId: requestId,
+      );
 
   /// Delete all documents. Does not commit.
   Future<void> clear() =>
@@ -13635,6 +15907,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountAdvanced(
     that: this,
     query: query,
@@ -13654,6 +15928,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     negativeScope: negativeScope,
     wordMatchMode: wordMatchMode,
     wordMatchCount: wordMatchCount,
+    anyOrder: anyOrder,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
@@ -13675,6 +15951,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountAdvancedWithStatus(
         that: this,
@@ -13695,6 +15973,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -13732,6 +16012,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookAdvanced(
         that: this,
@@ -13752,6 +16034,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
@@ -13773,6 +16057,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountByBookAdvancedWithStatus(
         that: this,
@@ -13793,6 +16079,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Exact-mode per-book counts. Drops the truncation flag — see
@@ -13802,12 +16090,14 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookExact(
     that: this,
     query: query,
     facets: facets,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::count_by_book_exact`] but also reports whether the
@@ -13817,6 +16107,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountByBookExactWithStatus(
         that: this,
@@ -13824,6 +16115,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         facets: facets,
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Fuzzy-mode per-book counts. Drops the truncation flag — see
@@ -13834,6 +16126,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookFuzzy(
     that: this,
     query: query,
@@ -13841,6 +16134,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     maxDistance: maxDistance,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::count_by_book_fuzzy`] but also reports whether the
@@ -13851,6 +16145,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCountByBookFuzzyWithStatus(
         that: this,
@@ -13859,6 +16154,20 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         maxDistance: maxDistance,
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
+        cancelRequestId: cancelRequestId,
+      );
+
+  /// Lines a `/…/` query matches per `filePath`. A cancelled call is an error.
+  Future<BookCountResult> countByBookUserRegex({
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
+  }) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineCountByBookUserRegex(
+        that: this,
+        raw: raw,
+        facets: facets,
+        cancellation: cancellation,
       );
 
   /// Like [`Self::count_by_book`] but also reports single-word truncation.
@@ -13895,12 +16204,14 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountExact(
     that: this,
     query: query,
     facets: facets,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::count_exact`] but also reports whether the vocalized
@@ -13910,6 +16221,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountExactWithStatus(
         that: this,
@@ -13917,6 +16229,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         facets: facets,
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Fuzzy-mode hit count. Drops the truncation flag: the mark-free path
@@ -13929,6 +16242,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountFuzzy(
     that: this,
     query: query,
@@ -13936,6 +16250,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     maxDistance: maxDistance,
     matchNikud: matchNikud,
     matchTaamim: matchTaamim,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::count_fuzzy`] but also reports whether the vocalized
@@ -13946,6 +16261,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCountFuzzyWithStatus(
         that: this,
@@ -13954,7 +16270,20 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         maxDistance: maxDistance,
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
+        cancelRequestId: cancelRequestId,
       );
+
+  /// Lines a `/…/` query matches. A cancelled call is an error.
+  Future<CountResult> countUserRegex({
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
+  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineCountUserRegex(
+    that: this,
+    raw: raw,
+    facets: facets,
+    cancellation: cancellation,
+  );
 
   /// Like [`Self::count`] but also reports whether single-word collection
   /// truncated, so a UI consumer can flag a partial count.
@@ -14046,6 +16375,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGenerateIndexHighlightPattern(
         that: this,
@@ -14054,6 +16384,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         customSpacing: customSpacing,
         alternativeWords: alternativeWords,
         searchOptions: searchOptions,
+        anyOrder: anyOrder,
       );
 
   /// Content fingerprint per distinct `filePath`, read columnar from the
@@ -14153,6 +16484,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvanced(
         that: this,
@@ -14174,6 +16506,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
@@ -14196,6 +16529,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineGetFacetCountsAdvancedWithStatus(
         that: this,
@@ -14217,6 +16551,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         negativeScope: negativeScope,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   /// Exact-mode facet counts. Drops the truncation flag — see
@@ -14297,6 +16632,23 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchTaamim: matchTaamim,
       );
 
+  /// Per-child facet counts under `facet_prefix` of a `/…/` query (see
+  /// [`Self::get_facet_counts`] on the dimension roots). `facets` filters, as everywhere:
+  /// one book's path is a search in that book. A cancelled call is an error.
+  Future<FacetCountsResult> getFacetCountsUserRegex({
+    required String raw,
+    required List<String> facets,
+    required String facetPrefix,
+    required UserRegexCancellationToken cancellation,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineGetFacetCountsUserRegex(
+        that: this,
+        raw: raw,
+        facets: facets,
+        facetPrefix: facetPrefix,
+        cancellation: cancellation,
+      );
+
   /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
   Future<FacetCountsResult> getFacetCountsWithStatus({
     required List<String> regexTerms,
@@ -14375,6 +16727,11 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         input: input,
         cancellation: cancellation,
       );
+
+  /// Opens the index writer if it is closed (it reopens lazily after some maintenance
+  /// calls); [`Self::add_library_books`] does not open it itself.
+  Future<void> openIndexWriter() => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineOpenIndexWriter(that: this);
 
   /// Open the vector set installed on this device and serve semantic and hybrid
   /// search from it, with every result hydrated from this Tantivy index as
@@ -14523,6 +16880,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvanced(
     that: this,
     query: query,
@@ -14546,6 +16904,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     grouping: grouping,
     wordMatchMode: wordMatchMode,
     wordMatchCount: wordMatchCount,
+    anyOrder: anyOrder,
   );
 
   /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -14575,6 +16934,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSearchAdvancedStream(
         that: this,
@@ -14600,6 +16961,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         grouping: grouping,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -14629,6 +16992,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAdvancedStreamWithCounts(
         that: this,
@@ -14654,6 +17019,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         grouping: grouping,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Search and return total hit count alongside paged results in one call.
@@ -14701,6 +17068,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchAndCountAdvanced(
         that: this,
@@ -14725,6 +17093,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         grouping: grouping,
         wordMatchMode: wordMatchMode,
         wordMatchCount: wordMatchCount,
+        anyOrder: anyOrder,
       );
 
   Future<SearchPageResult> searchAndCountExact({
@@ -14804,6 +17173,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchExactStream(
     that: this,
     query: query,
@@ -14815,6 +17185,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     matchTaamim: matchTaamim,
     chunkSize: chunkSize,
     grouping: grouping,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -14831,6 +17202,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchExactStreamWithCounts(
         that: this,
@@ -14843,6 +17215,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchTaamim: matchTaamim,
         chunkSize: chunkSize,
         grouping: grouping,
+        cancelRequestId: cancelRequestId,
       );
 
   Future<List<SearchResult>> searchFuzzy({
@@ -14879,6 +17252,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchFuzzyStream(
     that: this,
     query: query,
@@ -14891,6 +17265,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     matchTaamim: matchTaamim,
     chunkSize: chunkSize,
     grouping: grouping,
+    cancelRequestId: cancelRequestId,
   );
 
   /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -14908,6 +17283,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchFuzzyStreamWithCounts(
         that: this,
@@ -14921,6 +17297,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchTaamim: matchTaamim,
         chunkSize: chunkSize,
         grouping: grouping,
+        cancelRequestId: cancelRequestId,
       );
 
   /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -15048,6 +17425,30 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     highlight: highlight,
     chunkSize: chunkSize,
   );
+
+  /// Results of a `/…/` query in the order asked for (a cross-space pattern is always in
+  /// catalogue order), `limit` from `offset`, in chunks of `chunk_size`, as
+  /// [`UserRegexStreamUpdate`] events. Grouping is not offered. An invalid pattern is an
+  /// error event; check [`parse_user_regex`] first.
+  Stream<UserRegexStreamUpdate> searchUserRegexStream({
+    required String raw,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required int chunkSize,
+    required UserRegexCancellationToken cancellation,
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineSearchUserRegexStream(
+        that: this,
+        raw: raw,
+        facets: facets,
+        limit: limit,
+        offset: offset,
+        order: order,
+        chunkSize: chunkSize,
+        cancellation: cancellation,
+      );
 
   /// How much of the open index the set at `vectors_dir` covers: the live lines the
   /// recipe embeds, and how many of them the set holds a vector for. From the `chunkKey`
@@ -15298,4 +17699,71 @@ class SemanticCancellationTokenImpl extends RustOpaque
   /// Whether [`Self::cancel`] has been called.
   bool get isCancelled => RustLib.instance.api
       .crateApiSearchEngineSemanticCancellationTokenIsCancelled(that: this);
+}
+
+@sealed
+class UserRegexCancellationTokenImpl extends RustOpaque
+    implements UserRegexCancellationToken {
+  // Not to be used by end users
+  UserRegexCancellationTokenImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  UserRegexCancellationTokenImpl.frbInternalSseDecode(
+    BigInt ptr,
+    int externalSizeOnNative,
+  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount: RustLib
+        .instance
+        .api
+        .rust_arc_increment_strong_count_UserRegexCancellationToken,
+    rustArcDecrementStrongCount: RustLib
+        .instance
+        .api
+        .rust_arc_decrement_strong_count_UserRegexCancellationToken,
+    rustArcDecrementStrongCountPtr: RustLib
+        .instance
+        .api
+        .rust_arc_decrement_strong_count_UserRegexCancellationTokenPtr,
+  );
+
+  /// Returns at once; the search stops at its next look.
+  void cancel() => RustLib.instance.api
+      .crateApiSearchEngineUserRegexCancellationTokenCancel(that: this);
+
+  bool get isCancelled => RustLib.instance.api
+      .crateApiSearchEngineUserRegexCancellationTokenIsCancelled(that: this);
+}
+
+@sealed
+class UserRegexMatcherImpl extends RustOpaque implements UserRegexMatcher {
+  // Not to be used by end users
+  UserRegexMatcherImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  UserRegexMatcherImpl.frbInternalSseDecode(
+    BigInt ptr,
+    int externalSizeOnNative,
+  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_UserRegexMatcher,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_UserRegexMatcher,
+    rustArcDecrementStrongCountPtr: RustLib
+        .instance
+        .api
+        .rust_arc_decrement_strong_count_UserRegexMatcherPtr,
+  );
+
+  /// Every match in `data` (one line of the book, HTML as shown), in UTF-16 units, with
+  /// one word range per word of a `WordSequence`.
+  List<HighlightMatch> findMatches({required String data}) => RustLib
+      .instance
+      .api
+      .crateApiSearchEngineUserRegexMatcherFindMatches(that: this, data: data);
 }

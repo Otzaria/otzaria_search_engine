@@ -387,8 +387,7 @@ pub fn sample_queries(index_path: &Path, count: usize) -> Result<Vec<String>> {
     while queries.len() < count && draws < count.saturating_mul(50).max(50) {
         draws += 1;
         let address = lines[(next() % lines.len() as u64) as usize];
-        let document: TantivyDocument = searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(&searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         if document
             .get_first(is_pdf_field)
@@ -448,7 +447,7 @@ fn column_value(sha256: &[u8; 32]) -> u64 {
 
 /// The columns a book's lines are read from, per segment.
 struct SegmentColumns {
-    section: Vec<Column<u64>>,
+    section: Vec<crate::derived_columns::SectionIdColumn>,
     chunk_key: Vec<Option<Column<u64>>>,
 }
 
@@ -457,7 +456,7 @@ impl SegmentColumns {
         let mut section = Vec::new();
         let mut keys = Vec::new();
         for reader in searcher.segment_readers() {
-            section.push(reader.fast_fields().u64("sectionId")?);
+            section.push(crate::derived_columns::SectionIdColumn::open(reader)?);
             keys.push(if chunk_key {
                 Some(reader.fast_fields().u64("chunkKey")?)
             } else {
@@ -530,8 +529,7 @@ fn plan_book(
     let mut pdf = Vec::with_capacity(book.len());
     let mut stored_keys = Vec::with_capacity(book.len());
     for &address in book {
-        let document: TantivyDocument = searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         pdf.push(
             document

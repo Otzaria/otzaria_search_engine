@@ -27,11 +27,11 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tantivy::columnar::Column;
 use tantivy::index::SegmentId;
-use tantivy::postings::SegmentPostings;
+use tantivy::postings::{SegmentPostings, TermInfo};
 use tantivy::query::{ConstScorer, EmptyScorer, EnableScoring, Explanation, Query, Scorer, Weight};
 use tantivy::schema::{Field, IndexRecordOption, Schema};
 use tantivy::tokenizer::TextAnalyzer;
@@ -41,7 +41,11 @@ use tantivy::{
 };
 
 use crate::gap_phrase::{end_anchored_slack, start_anchored_slack, ChainSweep, WordPositions};
-use crate::hebrew_tokenizer::{next_token_boundaries, paired_reading_after};
+use crate::hebrew_tokenizer::{
+    continues_token, is_word_char, next_token_boundaries, paired_reading_after, starts_token,
+};
+use crate::quote_expansion::QuoteTransparent;
+use crate::term_automaton::{self, TermDfa};
 
 /// Position of a line's first content word, plus one; absent (or 0) when no
 /// phrase may continue into the line from the one before.
@@ -174,13 +178,258 @@ pub(crate) struct LineEdges {
     end_terms: Vec<String>,
 }
 
+/// The tokenizer's walk over a line, keeping the first and last content words.
+struct EdgeScan<'a> {
+    plain: &'a str,
+    content: Range<usize>,
+    byte: usize,
+    count: u32,
+    /// The next token is the second reading of a `(X) [Y]` pair.
+    share: bool,
+    first: Option<(u32, Range<usize>)>,
+    last: Option<(u32, Range<usize>)>,
+}
+
+impl EdgeScan<'_> {
+    /// Advances over one token, as the tokenizer positions it; `false` at the end.
+    fn step(&mut self) -> bool {
+        let Some((start, end)) = next_token_boundaries(self.plain, self.byte) else {
+            return false;
+        };
+        let position = if self.share {
+            self.count - 1
+        } else {
+            self.count
+        };
+        if !self.share {
+            self.count += 1;
+        }
+        self.share = paired_reading_after(self.plain, start, end).is_some();
+        self.byte = end;
+        if start < self.content.start || end > self.content.end {
+            return true;
+        }
+        match &mut self.first {
+            None => self.first = Some((position, start..end)),
+            Some((p, span)) if *p == position => span.end = end,
+            _ => {}
+        }
+        match &mut self.last {
+            Some((p, span)) if *p == position => span.end = end,
+            _ => self.last = Some((position, start..end)),
+        }
+        true
+    }
+
+    fn finish(&mut self) {
+        while self.step() {}
+    }
+}
+
+/// The last byte offset in `from..to` where a word starts right after whitespace. No token
+/// spans it and no `(X) [Y]` pair straddles it, so tokenizing can resume there.
+fn resume_point(plain: &str, from: usize, to: usize) -> Option<usize> {
+    let mut chars = plain[from..to].char_indices().rev().peekable();
+    while let Some((i, c)) = chars.next() {
+        if !starts_token(c) {
+            continue;
+        }
+        if let Some(&(_, before)) = chars.peek() {
+            if before.is_whitespace() {
+                return Some(from + i);
+            }
+        }
+    }
+    None
+}
+
+/// Positions the tokenizer assigns to the tokens in `from..to` — `from` at a token
+/// boundary, `to` from [`resume_point`] — without walking every token: a run of word
+/// characters holds exactly one token, so only runs with quotes or transparent
+/// punctuation take the tokenizer's own scan.
+fn positions_between(plain: &str, from: usize, to: usize) -> u32 {
+    let bytes = plain.as_bytes();
+    let mut tokens = 0u32;
+    let mut pairs = 0u32;
+    let mut count = |start: usize, end: usize| {
+        tokens += 1;
+        if start > 0
+            && bytes[start - 1] == b'('
+            && paired_reading_after(plain, start, end).is_some()
+        {
+            pairs += 1;
+        }
+    };
+    let mut i = from;
+    while i < to {
+        let (class, len) = class_at(plain, bytes, i);
+        if class == CharClass::Separator {
+            i += len;
+            continue;
+        }
+        let run_start = i;
+        let mut simple = true;
+        let mut word_start = None;
+        while i < bytes.len() {
+            let b = bytes[i];
+            // Hebrew letters, the bulk of the text: U+05D0..=U+05EA.
+            if b == 0xD7 && matches!(bytes.get(i + 1), Some(0x90..=0xAA)) {
+                word_start.get_or_insert(i);
+                i += 2;
+                continue;
+            }
+            let (class, len) = class_at(plain, bytes, i);
+            match class {
+                CharClass::Separator => break,
+                CharClass::Special => simple = false,
+                CharClass::WordStart => {
+                    word_start.get_or_insert(i);
+                }
+                CharClass::Mark => {}
+            }
+            i += len;
+        }
+        if simple {
+            if let Some(start) = word_start {
+                count(start, i);
+            }
+        } else {
+            let mut at = run_start;
+            while let Some((start, end)) = next_token_boundaries(plain, at) {
+                if start >= i {
+                    break;
+                }
+                count(start, end);
+                at = end;
+            }
+        }
+    }
+    tokens - pairs
+}
+
+/// A character as [`next_token_boundaries`] treats it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    /// Breaks tokens.
+    Separator,
+    /// A word character that can open a token.
+    WordStart,
+    /// A word character that cannot open one (an attached mark).
+    Mark,
+    /// Continues a token without being a word character: quotes, transparent punctuation.
+    Special,
+}
+
+const ASCII_CLASSES: [CharClass; 128] = {
+    let mut classes = [CharClass::Separator; 128];
+    let mut b = 0;
+    while b < 128 {
+        let c = b as u8;
+        classes[b] = if c.is_ascii_alphanumeric() {
+            CharClass::WordStart
+        } else if matches!(
+            c,
+            b'*' | b'[' | b']' | b'^' | b'$' | b'\\' | b'+' | b'.' | b'~' | b'`' | b'\'' | b'"'
+        ) {
+            CharClass::Special
+        } else {
+            CharClass::Separator
+        };
+        b += 1;
+    }
+    classes
+};
+
+#[inline]
+fn class_at(plain: &str, bytes: &[u8], i: usize) -> (CharClass, usize) {
+    let b = bytes[i];
+    if b < 0x80 {
+        return (ASCII_CLASSES[b as usize], 1);
+    }
+    if b == 0xD7 && matches!(bytes.get(i + 1), Some(0x90..=0xAA)) {
+        return (CharClass::WordStart, 2);
+    }
+    let c = plain[i..].chars().next().expect("on a char boundary");
+    let class = if starts_token(c) {
+        CharClass::WordStart
+    } else if is_word_char(c) {
+        CharClass::Mark
+    } else if continues_token(c) {
+        CharClass::Special
+    } else {
+        CharClass::Separator
+    };
+    (class, c.len_utf8())
+}
+
 /// The edges of a normalized line, or `None` when it has no content word.
 /// `analyzer` must be the `text` field's indexing analyzer: the edge terms are
 /// the terms it indexes the first and last content words as.
 pub(crate) fn line_edges(analyzer: &mut TextAnalyzer, plain: &str) -> Option<LineEdges> {
+    let mut scan = EdgeScan {
+        plain,
+        content: content_range(plain),
+        byte: 0,
+        count: 0,
+        share: false,
+        first: None,
+        last: None,
+    };
+    // Tokens from the start up to the first content word, then from a resume point near
+    // the content's end; the middle is only counted.
+    let mut ended = false;
+    while !(scan.first.is_some() && !scan.share) {
+        if !scan.step() {
+            ended = true;
+            break;
+        }
+    }
+    if !ended {
+        let tail = (scan.byte < scan.content.end)
+            .then(|| resume_point(plain, scan.byte, scan.content.end))
+            .flatten();
+        match tail {
+            Some(resume) => {
+                let (byte, count, last) = (scan.byte, scan.count, scan.last.take());
+                scan.count += positions_between(plain, byte, resume);
+                scan.byte = resume;
+                scan.finish();
+                if scan.last.is_none() {
+                    // No content word after the resume point: walk the middle after all.
+                    scan.byte = byte;
+                    scan.count = count;
+                    scan.share = false;
+                    scan.last = last;
+                    scan.finish();
+                }
+            }
+            None => scan.finish(),
+        }
+    }
+    let (first, first_span) = scan.first?;
+    let (last, last_span) = scan.last?;
+    let mut terms = |span: Range<usize>| {
+        let mut out = Vec::new();
+        let mut stream = analyzer.token_stream(&plain[span]);
+        while stream.advance() {
+            out.push(stream.token().text.clone());
+        }
+        out
+    };
+    let start_terms = terms(first_span);
+    let end_terms = terms(last_span);
+    Some(LineEdges {
+        first,
+        last,
+        start_terms,
+        end_terms,
+    })
+}
+
+/// [`line_edges`] as one walk over every token: the reference its shortcuts must match.
+#[cfg(test)]
+pub(crate) fn line_edges_reference(analyzer: &mut TextAnalyzer, plain: &str) -> Option<LineEdges> {
     let content = content_range(plain);
-    // Positions as the tokenizer assigns them, without building token texts:
-    // only a paired reading `(X) [Y]` puts two words on one position.
     let mut byte = 0usize;
     let mut count = 0u32;
     let mut share = false;
@@ -298,32 +547,53 @@ pub(crate) enum CrossLineWord {
 #[derive(Clone, Debug)]
 enum WordSource {
     Terms(Vec<Term>),
-    Regex(Arc<tantivy_fst::Regex>),
+    Regex(Arc<QuoteTransparent<TermDfa>>),
 }
 
 impl WordSource {
-    fn postings(
-        &self,
-        inverted: &InvertedIndexReader,
-        option: IndexRecordOption,
-    ) -> tantivy::Result<Vec<SegmentPostings>> {
+    /// The word's terms in this dictionary, in dictionary order.
+    fn term_infos(&self, inverted: &InvertedIndexReader) -> tantivy::Result<Vec<TermInfo>> {
         let mut out = Vec::new();
         match self {
             WordSource::Terms(terms) => {
                 for term in terms {
-                    if let Some(info) = inverted.get_term_info(term)? {
-                        out.push(inverted.read_postings_from_terminfo(&info, option)?);
-                    }
+                    out.extend(inverted.get_term_info(term)?);
                 }
             }
             WordSource::Regex(regex) => {
                 let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
                 while stream.advance() {
-                    out.push(inverted.read_postings_from_terminfo(stream.value(), option)?);
+                    out.push(stream.value().clone());
                 }
             }
         }
         Ok(out)
+    }
+
+    /// [`Self::doc_freq`] over already resolved term infos.
+    fn doc_freq_of(&self, infos: &[TermInfo]) -> u64 {
+        let counted = match self {
+            WordSource::Terms(_) => infos.len(),
+            WordSource::Regex(_) => infos.len().min(SCORE_TERMS_PER_SEGMENT),
+        };
+        infos[..counted]
+            .iter()
+            .map(|info| info.doc_freq as u64)
+            .sum()
+    }
+
+    /// Upper-bounded frequency for deciding whether a global scan is small.
+    /// Unlike the scoring estimate, a broad regex cannot stop after the first
+    /// 256 terms and incorrectly look rare when its remaining terms are common.
+    fn bounded_doc_freq_of(infos: &[TermInfo], limit: u64) -> u64 {
+        let mut total = 0u64;
+        for info in infos {
+            if total > limit {
+                break;
+            }
+            total += info.doc_freq as u64;
+        }
+        total.min(limit.saturating_add(1))
     }
 
     /// Documents that hold the word, summed over its terms (capped for patterns).
@@ -347,28 +617,12 @@ impl WordSource {
         Ok(total)
     }
 
-    /// Upper-bounded frequency for deciding whether a global scan is small.
-    /// Unlike the scoring estimate, a broad regex cannot stop after the first
-    /// 256 terms and incorrectly look rare when its remaining terms are common.
+    #[cfg(test)]
     fn bounded_doc_freq(&self, inverted: &InvertedIndexReader, limit: u64) -> tantivy::Result<u64> {
-        let mut total = 0u64;
-        match self {
-            WordSource::Terms(terms) => {
-                for term in terms {
-                    total += inverted.doc_freq(term)? as u64;
-                    if total > limit {
-                        break;
-                    }
-                }
-            }
-            WordSource::Regex(regex) => {
-                let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
-                while total <= limit && stream.advance() {
-                    total += stream.value().doc_freq as u64;
-                }
-            }
-        }
-        Ok(total.min(limit.saturating_add(1)))
+        Ok(Self::bounded_doc_freq_of(
+            &self.term_infos(inverted)?,
+            limit,
+        ))
     }
 }
 
@@ -382,8 +636,8 @@ struct CompiledWord {
 impl CompiledWord {
     fn new(word: &CrossLineWord, text: Field, edge: Field) -> Result<Option<Self>, String> {
         let regex = |pattern: String| {
-            tantivy_fst::Regex::new(&pattern)
-                .map(|r| WordSource::Regex(Arc::new(r)))
+            term_automaton::compile_pattern(&pattern)
+                .map(|dfa| WordSource::Regex(Arc::new(QuoteTransparent::from_arc(dfa))))
                 .map_err(|e| format!("invalid cross-line pattern {pattern:?}: {e}"))
         };
         Ok(Some(match word {
@@ -423,7 +677,6 @@ impl CompiledWord {
 pub(crate) struct CrossLineQuery {
     text: Field,
     edge: Field,
-    id: Field,
     words: Vec<CompiledWord>,
     /// `gaps[i]` = allowed intermediate words between words `i` and `i + 1`;
     /// across the line break the words of both lines count.
@@ -444,7 +697,6 @@ impl CrossLineQuery {
             return Ok(None);
         }
         let edge = schema.get_field(LINE_EDGE_FIELD)?;
-        let id = schema.get_field("id")?;
         let mut compiled = Vec::with_capacity(words.len());
         for word in words {
             match CompiledWord::new(word, text, edge).map_err(anyhow::Error::msg)? {
@@ -455,7 +707,6 @@ impl CrossLineQuery {
         Ok(Some(Self {
             text,
             edge,
-            id,
             words: compiled,
             gaps: gaps.to_vec(),
             filter: None,
@@ -587,9 +838,19 @@ impl CrossLineQuery {
         }
         let second_matches = if first_matches.len() <= LOOKUP_LIMIT {
             let mut per_segment: Vec<Vec<DocId>> = vec![Vec::new(); segments.len()];
+            let mut elsewhere = Vec::new();
             for m in &first_matches {
                 let id = m.id.wrapping_add_signed(neighbour);
-                if let Some((segment, doc)) = self.find_line(segments, id)? {
+                let segment = &segments[m.segment];
+                match crate::id_lookup::neighbour(segment.reader, &segment.id, m.doc, id) {
+                    Some(doc) => per_segment[m.segment].push(doc),
+                    None => elsewhere.push(id),
+                }
+            }
+            if !elsewhere.is_empty() {
+                let readers = segments.iter().map(|segment| segment.reader);
+                for (segment, doc) in crate::id_lookup::find_ids(readers, &elsewhere)?.into_values()
+                {
                     per_segment[segment].push(doc);
                 }
             }
@@ -615,12 +876,10 @@ impl CrossLineQuery {
             }
             matches
         } else {
-            let neighbour_ids: Option<HashSet<u64>> = filter.map(|_| {
-                first_matches
-                    .iter()
-                    .map(|m| m.id.wrapping_add_signed(neighbour))
-                    .collect()
-            });
+            let neighbour_ids: HashSet<u64> = first_matches
+                .iter()
+                .map(|m| m.id.wrapping_add_signed(neighbour))
+                .collect();
             self.scan(
                 segments,
                 second,
@@ -628,7 +887,7 @@ impl CrossLineQuery {
                 candidates,
                 Restriction {
                     filter: if neighbour == -1 { filter } else { None },
-                    neighbour_ids: neighbour_ids.as_ref(),
+                    neighbour_ids: Some(&neighbour_ids),
                 },
             )?
         };
@@ -703,7 +962,7 @@ impl CrossLineQuery {
         for word in part.words {
             let mut freq = 0u64;
             for segment in segments {
-                freq += word.text.doc_freq(&segment.text)?;
+                freq += segment.doc_freq(&word.text)?;
             }
             rarest = rarest.min(freq);
         }
@@ -720,7 +979,7 @@ impl CrossLineQuery {
         for word in part.words {
             let mut freq = 0u64;
             for segment in segments {
-                freq += word.text.bounded_doc_freq(&segment.text, limit - freq)?;
+                freq += segment.bounded_doc_freq(&word.text, limit - freq)?;
                 if freq > limit {
                     break;
                 }
@@ -770,7 +1029,7 @@ impl CrossLineQuery {
                     Side::EndsLine => &boundary.ends,
                     Side::StartsLine => &boundary.starts,
                 };
-                let postings = source.postings(&segment.edge, IndexRecordOption::Basic)?;
+                let postings = segment.postings(source, &segment.edge, IndexRecordOption::Basic)?;
                 if selected.is_some() {
                     self.candidate_docs(postings, range.start, selected)?
                 } else {
@@ -791,15 +1050,14 @@ impl CrossLineQuery {
             Candidates::Driver => {
                 let mut rarest: Option<(u64, &CompiledWord)> = None;
                 for word in part.words {
-                    let freq = word.text.doc_freq(&segment.text)?;
+                    let freq = segment.doc_freq(&word.text)?;
                     if rarest.is_none_or(|(best, _)| freq < best) {
                         rarest = Some((freq, word));
                     }
                 }
                 let (_, word) = rarest.expect("a part has at least one word");
-                let mut postings = word
-                    .text
-                    .postings(&segment.text, IndexRecordOption::Basic)?;
+                let mut postings =
+                    segment.postings(&word.text, &segment.text, IndexRecordOption::Basic)?;
                 for posting in &mut postings {
                     if posting.doc() < range.start {
                         posting.seek(range.start);
@@ -824,9 +1082,11 @@ impl CrossLineQuery {
         let mut words: Vec<WordPositions> = Vec::new();
         if needs_positions {
             for word in part.words {
-                let postings = word
-                    .text
-                    .postings(&segment.text, IndexRecordOption::WithFreqsAndPositions)?;
+                let postings = segment.postings(
+                    &word.text,
+                    &segment.text,
+                    IndexRecordOption::WithFreqsAndPositions,
+                )?;
                 if postings.is_empty() {
                     return Ok(out);
                 }
@@ -913,25 +1173,6 @@ impl CrossLineQuery {
             Some(selected) => Ok(Box::new(SelectedDocs { selected, union })),
             None => Ok(Box::new(union)),
         }
-    }
-
-    /// The live document with `id`, as segment ordinal and doc.
-    fn find_line(&self, segments: &[Segment], id: u64) -> tantivy::Result<Option<(usize, DocId)>> {
-        let term = Term::from_field_u64(self.id, id);
-        for segment in segments {
-            let Some(mut postings) = segment.ids.read_postings(&term, IndexRecordOption::Basic)?
-            else {
-                continue;
-            };
-            let mut doc = postings.doc();
-            while doc != TERMINATED {
-                if segment.is_alive(doc) {
-                    return Ok(Some((segment.ordinal, doc)));
-                }
-                doc = postings.advance();
-            }
-        }
-        Ok(None)
     }
 
     /// Half the BM25 score of one in-line occurrence on a line of average
@@ -1054,9 +1295,11 @@ struct Scratch {
 struct Segment<'a> {
     ordinal: usize,
     reader: &'a SegmentReader,
+    /// Each word source's term infos, keyed by its address, resolved on first
+    /// use: a pattern re-streams the dictionary, and a scan asks hundreds of times.
+    resolved: Mutex<HashMap<usize, Arc<Vec<TermInfo>>>>,
     text: Arc<InvertedIndexReader>,
     edge: Arc<InvertedIndexReader>,
-    ids: Arc<InvertedIndexReader>,
     id: Column<u64>,
     first: Column<u64>,
     last: Column<u64>,
@@ -1072,13 +1315,53 @@ impl<'a> Segment<'a> {
         Ok(Self {
             ordinal,
             reader,
+            resolved: Mutex::default(),
             text: reader.inverted_index(query.text)?,
             edge: reader.inverted_index(query.edge)?,
-            ids: reader.inverted_index(query.id)?,
             id: fast.u64("id")?,
             first: fast.u64(LINE_FIRST_FIELD)?,
             last: fast.u64(LINE_LAST_FIELD)?,
         })
+    }
+
+    /// The source's term infos in `inverted`, which must be the dictionary the
+    /// source always runs against here (`text` for words, `edge` for edges).
+    fn term_infos(
+        &self,
+        source: &WordSource,
+        inverted: &InvertedIndexReader,
+    ) -> tantivy::Result<Arc<Vec<TermInfo>>> {
+        let mut resolved = self.resolved.lock().unwrap();
+        let key = std::ptr::from_ref(source) as usize;
+        if let Some(infos) = resolved.get(&key) {
+            return Ok(Arc::clone(infos));
+        }
+        let infos = Arc::new(source.term_infos(inverted)?);
+        resolved.insert(key, Arc::clone(&infos));
+        Ok(infos)
+    }
+
+    fn postings(
+        &self,
+        source: &WordSource,
+        inverted: &InvertedIndexReader,
+        option: IndexRecordOption,
+    ) -> tantivy::Result<Vec<SegmentPostings>> {
+        self.term_infos(source, inverted)?
+            .iter()
+            .map(|info| Ok(inverted.read_postings_from_terminfo(info, option)?))
+            .collect()
+    }
+
+    fn doc_freq(&self, source: &WordSource) -> tantivy::Result<u64> {
+        Ok(source.doc_freq_of(&self.term_infos(source, &self.text)?))
+    }
+
+    fn bounded_doc_freq(&self, source: &WordSource, limit: u64) -> tantivy::Result<u64> {
+        Ok(WordSource::bounded_doc_freq_of(
+            &self.term_infos(source, &self.text)?,
+            limit,
+        ))
     }
 
     fn is_alive(&self, doc: DocId) -> bool {
@@ -1220,11 +1503,17 @@ mod tests {
         let reader = index.reader().unwrap();
         let searcher = reader.searcher();
         let inverted = searcher.segment_reader(0).inverted_index(text).unwrap();
-        let word = WordSource::Regex(Arc::new(tantivy_fst::Regex::new("x[0-9]+").unwrap()));
+        let word = WordSource::Regex(Arc::new(QuoteTransparent::from_arc(
+            term_automaton::compile_pattern("x[0-9]+").unwrap(),
+        )));
         assert_eq!(
             word.doc_freq(&inverted).unwrap(),
             SCORE_TERMS_PER_SEGMENT as u64
         );
+        // A scan reads the cached term infos; they must estimate the same.
+        let infos = word.term_infos(&inverted).unwrap();
+        assert_eq!(infos.len(), 301);
+        assert_eq!(word.doc_freq_of(&infos), SCORE_TERMS_PER_SEGMENT as u64);
         assert_eq!(
             word.bounded_doc_freq(&inverted, LOOKUP_LIMIT as u64)
                 .unwrap(),
@@ -1371,6 +1660,101 @@ mod tests {
             assert_eq!((edges.first, edges.last), (position, position), "{line}");
             assert_eq!(edges.start_terms, ["הוצא", "היצא"], "{line}");
             assert_eq!(edges.end_terms, ["הוצא", "היצא"], "{line}");
+        }
+    }
+
+    #[test]
+    fn char_classes_follow_the_tokenizer() {
+        let samples = (0u32..0x80)
+            .chain(0x0590..0x0600)
+            .chain([0x0307, 0x200F, 0xFB2A, 0x2019]);
+        for c in samples.filter_map(char::from_u32) {
+            let mut buf = [0u8; 4];
+            let text = c.encode_utf8(&mut buf);
+            let expected = if starts_token(c) {
+                CharClass::WordStart
+            } else if is_word_char(c) {
+                CharClass::Mark
+            } else if continues_token(c) {
+                CharClass::Special
+            } else {
+                CharClass::Separator
+            };
+            assert!(
+                class_at(text, text.as_bytes(), 0) == (expected, c.len_utf8()),
+                "{c:?}"
+            );
+        }
+    }
+
+    /// Random lines over the characters every shortcut of [`line_edges`] reasons about.
+    #[test]
+    fn line_edges_match_the_full_walk_on_random_lines() {
+        const PIECES: &[&str] = &[
+            "א",
+            "בר",
+            "שלום",
+            "ת",
+            " ",
+            " ",
+            "  ",
+            "(",
+            ")",
+            "[",
+            "]",
+            "{",
+            "}",
+            "'",
+            "\"",
+            "׳",
+            "״",
+            ".",
+            ",",
+            ":",
+            "׃",
+            "*",
+            "־",
+            "-",
+            "\u{05B8}",
+            "\u{0307}",
+            "1",
+            "יא",
+            "ab",
+            "<",
+            ">",
+            "&",
+            "\u{200F}",
+            "\t",
+            "(א)",
+            "(הוצא) [היצא]",
+            "(ח')[ו']",
+            "{פ}",
+            "[יב]",
+            "רמב\"ם",
+            "תוס'",
+            "''",
+            "\"\"",
+        ];
+        let mut analyzer = TextAnalyzer::builder(crate::hebrew_tokenizer::HebrewTokenizer {
+            emit_quote_free: true,
+            keep_marks: false,
+        })
+        .build();
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        for _ in 0..200_000 {
+            let len = 1 + next(24);
+            let line: String = (0..len).map(|_| PIECES[next(PIECES.len())]).collect();
+            assert_eq!(
+                line_edges(&mut analyzer, &line),
+                line_edges_reference(&mut analyzer, &line),
+                "{line:?}"
+            );
         }
     }
 

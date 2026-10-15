@@ -34,6 +34,11 @@
 //! *degrades* (the materialization budgets truncate from the back) instead of
 //! failing — the engine uses it whenever a phrase's expansions outgrow the
 //! exact `RegexPhraseQuery` path.
+//!
+//! [`Proximity::AnyOrder`] drops the order: every word takes its own position
+//! and all of them fit one window of `max_span` positions. tantivy's slop is
+//! no superset of every permutation, so it only runs through
+//! [`TermListPhraseQuery`], verified by [`WordWindows`].
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -46,6 +51,9 @@ use tantivy::query::{
 };
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{DocId, DocSet, InvertedIndexReader, Score, SegmentReader, Term, TERMINATED};
+use tantivy_fst::Automaton;
+
+use crate::term_automaton::TermDfa;
 
 /// Positional postings for every materialized term that exists in this
 /// segment — one `Vec` per word position. Returns `None` when some position
@@ -77,10 +85,10 @@ fn positional_postings(
 
 /// A phrase query whose matches are verified position-by-position against
 /// per-pair intermediate-word allowances. See the module docs.
-#[derive(Clone, Debug)]
-pub(crate) struct GapVerifiedPhraseQuery {
+#[derive(Debug)]
+pub(crate) struct GapVerifiedPhraseQuery<A = TermDfa> {
     /// The recall-superset phrase query (slop = sum of `gaps`).
-    inner: RegexPhraseQuery,
+    inner: RegexPhraseQuery<A>,
     /// The field whose positional postings verify candidates — must be the
     /// same field `inner` runs against.
     field: Field,
@@ -88,18 +96,36 @@ pub(crate) struct GapVerifiedPhraseQuery {
     gaps: Vec<u32>,
 }
 
-impl GapVerifiedPhraseQuery {
-    pub(crate) fn new(inner: RegexPhraseQuery, field: Field, gaps: Vec<u32>) -> Self {
+impl<A> Clone for GapVerifiedPhraseQuery<A> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            field: self.field,
+            gaps: self.gaps.clone(),
+        }
+    }
+}
+
+impl<A> GapVerifiedPhraseQuery<A>
+where
+    A: Automaton + Send + Sync + 'static,
+    A::State: Clone,
+{
+    pub(crate) fn new(inner: RegexPhraseQuery<A>, field: Field, gaps: Vec<u32>) -> Self {
         debug_assert_eq!(gaps.len() + 1, inner.phrase_terms().len());
         Self { inner, field, gaps }
     }
 }
 
-impl Query for GapVerifiedPhraseQuery {
+impl<A> Query for GapVerifiedPhraseQuery<A>
+where
+    A: Automaton + Send + Sync + std::fmt::Debug + 'static,
+    A::State: Clone,
+{
     fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
         let inner = self.inner.weight(enable_scoring)?;
-        // Word regexes: the same automata `inner` compiled, one per word position.
-        let regexes = self.inner.regexes()?.to_vec();
+        // Word automata: the same ones `inner` runs, one per word position.
+        let regexes = self.inner.automata()?.to_vec();
         Ok(Box::new(GapVerifiedWeight {
             inner,
             field: self.field,
@@ -109,14 +135,18 @@ impl Query for GapVerifiedPhraseQuery {
     }
 }
 
-struct GapVerifiedWeight {
+struct GapVerifiedWeight<A> {
     inner: Box<dyn Weight>,
     field: Field,
-    regexes: Vec<Arc<tantivy_fst::Regex>>,
+    regexes: Vec<Arc<A>>,
     gaps: Vec<u32>,
 }
 
-impl Weight for GapVerifiedWeight {
+impl<A> Weight for GapVerifiedWeight<A>
+where
+    A: Automaton + Send + Sync + 'static,
+    A::State: Clone,
+{
     fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
         let inner = self.inner.scorer(reader, boost)?;
         let inverted = reader.inverted_index(self.field)?;
@@ -143,7 +173,8 @@ impl Weight for GapVerifiedWeight {
         Ok(Box::new(GapVerifiedScorer::new(
             inner,
             word_postings,
-            self.gaps.clone(),
+            Proximity::Ordered(self.gaps.clone()),
+            false,
         )))
     }
 
@@ -153,9 +184,9 @@ impl Weight for GapVerifiedWeight {
 }
 
 /// A phrase query built from pre-materialized term sets — one per word
-/// position — with per-pair gap allowances. See the module docs: this is the
-/// degrade path for phrases whose expansions outgrow `RegexPhraseQuery`'s
-/// hard `max_expansions` ceiling.
+/// position — under a [`Proximity`]. See the module docs: this is the degrade
+/// path for phrases whose expansions outgrow `RegexPhraseQuery`'s hard
+/// `max_expansions` ceiling, and the only path of an any-order query.
 #[derive(Clone, Debug)]
 pub(crate) struct TermListPhraseQuery {
     /// The field whose positional postings verify candidates — the same
@@ -165,18 +196,19 @@ pub(crate) struct TermListPhraseQuery {
     /// least one term; an empty position means the caller should have built
     /// an `EmptyQuery` instead).
     position_terms: Vec<Vec<Term>>,
-    /// `gaps[i]` = allowed intermediate words between words `i` and `i+1`.
-    gaps: Vec<u32>,
+    proximity: Proximity,
 }
 
 impl TermListPhraseQuery {
-    pub(crate) fn new(field: Field, position_terms: Vec<Vec<Term>>, gaps: Vec<u32>) -> Self {
-        debug_assert_eq!(gaps.len() + 1, position_terms.len());
+    pub(crate) fn new(field: Field, position_terms: Vec<Vec<Term>>, proximity: Proximity) -> Self {
+        if let Proximity::Ordered(gaps) = &proximity {
+            debug_assert_eq!(gaps.len() + 1, position_terms.len());
+        }
         debug_assert!(position_terms.iter().all(|terms| !terms.is_empty()));
         Self {
             field,
             position_terms,
-            gaps,
+            proximity,
         }
     }
 
@@ -184,7 +216,7 @@ impl TermListPhraseQuery {
     /// position's term set matches it somewhere — a plain boolean AND of
     /// per-position `TermSetQuery`s, which never compiles a DFA and has no
     /// expansion ceiling. The verifier then trims this recall superset down
-    /// to real in-order, within-allowance occurrences.
+    /// to real occurrences under the proximity.
     fn driver(&self) -> BooleanQuery {
         let clauses: Vec<(Occur, Box<dyn Query>)> = self
             .position_terms
@@ -206,7 +238,8 @@ impl Query for TermListPhraseQuery {
             driver: self.driver().weight(enable_scoring)?,
             field: self.field,
             position_terms: self.position_terms.clone(),
-            gaps: self.gaps.clone(),
+            proximity: self.proximity.clone(),
+            rank_span: enable_scoring.is_scoring_enabled(),
         }))
     }
 }
@@ -215,7 +248,8 @@ struct TermListPhraseWeight {
     driver: Box<dyn Weight>,
     field: Field,
     position_terms: Vec<Vec<Term>>,
-    gaps: Vec<u32>,
+    proximity: Proximity,
+    rank_span: bool,
 }
 
 impl Weight for TermListPhraseWeight {
@@ -233,7 +267,8 @@ impl Weight for TermListPhraseWeight {
         Ok(Box::new(GapVerifiedScorer::new(
             inner,
             word_postings,
-            self.gaps.clone(),
+            self.proximity.clone(),
+            self.rank_span,
         )))
     }
 
@@ -459,27 +494,253 @@ pub(crate) fn start_anchored_slack(
         .map(|&start| start - first)
 }
 
+/// How the words of a multi-word query must lie relative to each other.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Proximity {
+    /// In query order; `gaps[i]` = allowed intermediate words between words
+    /// `i` and `i+1`.
+    Ordered(Vec<u32>),
+    /// In any order, each word at its own position, the last position at most
+    /// `max_span` after the first.
+    AnyOrder { max_span: u32 },
+}
+
+impl Proximity {
+    /// The span an ordered match of `word_count` words, with at most `distance`
+    /// words between each pair, can take — so any order never loses an ordered hit.
+    pub(crate) fn any_order(word_count: usize, distance: u32) -> Self {
+        let pairs = u32::try_from(word_count.saturating_sub(1)).unwrap_or(u32::MAX);
+        Self::AnyOrder {
+            max_span: pairs.saturating_mul(distance.saturating_add(1)),
+        }
+    }
+
+    /// Strictly adjacent, in order.
+    pub(crate) fn adjacent(word_count: usize) -> Self {
+        Self::Ordered(vec![0; word_count.saturating_sub(1)])
+    }
+
+    pub(crate) fn is_any_order(&self) -> bool {
+        matches!(self, Self::AnyOrder { .. })
+    }
+}
+
+/// Windows of word occurrences for [`Proximity::AnyOrder`]. Fed in increasing
+/// position order with the query words each position can fill; finds windows
+/// where every word gets a distinct position. Word sets are lists, not bit
+/// masks, so any word count works.
+#[derive(Default)]
+pub(crate) struct WordWindows {
+    word_count: usize,
+    positions: Vec<u32>,
+    /// Entry `e` holds `words[starts[e]..starts[e + 1]]`.
+    starts: Vec<usize>,
+    words: Vec<usize>,
+    coverage: Vec<u32>,
+    adjacency: Vec<Vec<usize>>,
+    owner: Vec<usize>,
+    visited: Vec<bool>,
+    stack: Vec<(usize, usize)>,
+}
+
+const UNMATCHED: usize = usize::MAX;
+
+impl WordWindows {
+    pub(crate) fn reset(&mut self, word_count: usize) {
+        self.word_count = word_count;
+        self.positions.clear();
+        self.starts.clear();
+        self.starts.push(0);
+        self.words.clear();
+    }
+
+    /// Records that `word` can fill `position`, which must not precede the
+    /// previous one. Returns the new slot (see [`Self::slot`]), `None` for a repeat.
+    pub(crate) fn push(&mut self, position: u32, word: usize) -> Option<usize> {
+        debug_assert!(word < self.word_count);
+        if self.positions.last() != Some(&position) {
+            debug_assert!(self.positions.last().is_none_or(|&last| last < position));
+            self.positions.push(position);
+            self.starts.push(self.words.len());
+        }
+        let begin = self.starts[self.starts.len() - 2];
+        if self.words[begin..].contains(&word) {
+            return None;
+        }
+        self.words.push(word);
+        *self.starts.last_mut().unwrap() = self.words.len();
+        Some(self.words.len() - 1)
+    }
+
+    /// The slot [`Self::push`] returned for `word` at entry `entry`.
+    pub(crate) fn slot(&self, entry: usize, word: usize) -> usize {
+        let begin = self.starts[entry];
+        begin
+            + self.words[begin..self.starts[entry + 1]]
+                .iter()
+                .position(|&w| w == word)
+                .expect("an assigned word fills its entry")
+    }
+
+    /// Last minus first position of an assignment from [`Self::next_window`].
+    pub(crate) fn assigned_span(&self, assignment: &[usize]) -> u32 {
+        let first = assignment.iter().min().copied().unwrap_or(0);
+        let last = assignment.iter().max().copied().unwrap_or(0);
+        self.positions[last] - self.positions[first]
+    }
+
+    /// The window ending earliest, among entries `from..`, whose positions span
+    /// at most `max_span` and give every word a distinct entry. On success
+    /// `assignment[w]` is word `w`'s entry (the latest ones are preferred, for a
+    /// tight occurrence) and the window's last entry is returned.
+    pub(crate) fn next_window(
+        &mut self,
+        from: usize,
+        max_span: u32,
+        assignment: &mut Vec<usize>,
+    ) -> Option<usize> {
+        let k = self.word_count;
+        if k == 0 {
+            return None;
+        }
+        self.coverage.clear();
+        self.coverage.resize(k, 0);
+        let mut covered = 0;
+        // Entries several words can fill; without any, coverage implies a matching.
+        let mut shared = 0;
+        let mut left = from;
+        for right in from..self.positions.len() {
+            let entry = &self.words[self.starts[right]..self.starts[right + 1]];
+            shared += usize::from(entry.len() > 1);
+            for &w in entry {
+                covered += usize::from(self.coverage[w] == 0);
+                self.coverage[w] += 1;
+            }
+            while self.positions[right] - self.positions[left] > max_span {
+                let entry = &self.words[self.starts[left]..self.starts[left + 1]];
+                shared -= usize::from(entry.len() > 1);
+                for &w in entry {
+                    self.coverage[w] -= 1;
+                    covered -= usize::from(self.coverage[w] == 0);
+                }
+                left += 1;
+            }
+            if covered < k || right + 1 - left < k {
+                continue;
+            }
+            if shared == 0 {
+                assignment.clear();
+                assignment.resize(k, UNMATCHED);
+                for e in (left..=right).rev() {
+                    let w = self.words[self.starts[e]];
+                    if assignment[w] == UNMATCHED {
+                        assignment[w] = e;
+                    }
+                }
+                return Some(right);
+            }
+            if self.match_window(left, right, assignment) {
+                return Some(right);
+            }
+        }
+        None
+    }
+
+    /// Kuhn's bipartite matching of the words to the entries `left..=right`.
+    fn match_window(&mut self, left: usize, right: usize, assignment: &mut Vec<usize>) -> bool {
+        let k = self.word_count;
+        let n = right + 1 - left;
+        self.adjacency.resize_with(k, Vec::new);
+        self.adjacency.iter_mut().for_each(Vec::clear);
+        for e in (left..=right).rev() {
+            for &w in &self.words[self.starts[e]..self.starts[e + 1]] {
+                self.adjacency[w].push(e - left);
+            }
+        }
+        self.owner.clear();
+        self.owner.resize(n, UNMATCHED);
+        for w in 0..k {
+            self.visited.clear();
+            self.visited.resize(n, false);
+            if !self.augment(w) {
+                return false;
+            }
+        }
+        assignment.clear();
+        assignment.resize(k, UNMATCHED);
+        for (i, &w) in self.owner.iter().enumerate() {
+            if w != UNMATCHED {
+                assignment[w] = left + i;
+            }
+        }
+        true
+    }
+
+    /// An augmenting path from `start`; iterative, so a long query cannot
+    /// exhaust the stack. Each frame takes the entry it tried last.
+    fn augment(&mut self, start: usize) -> bool {
+        self.stack.clear();
+        self.stack.push((start, 0));
+        while let Some(&(w, i)) = self.stack.last() {
+            let Some(&e) = self.adjacency[w].get(i) else {
+                self.stack.pop();
+                continue;
+            };
+            self.stack.last_mut().unwrap().1 += 1;
+            if self.visited[e] {
+                continue;
+            }
+            self.visited[e] = true;
+            let holder = self.owner[e];
+            if holder == UNMATCHED {
+                for &(word, next) in &self.stack {
+                    self.owner[self.adjacency[word][next - 1]] = word;
+                }
+                return true;
+            }
+            self.stack.push((holder, 0));
+        }
+        false
+    }
+}
+
 struct GapVerifiedScorer {
     inner: Box<dyn Scorer>,
     words: Vec<WordPositions>,
-    gaps: Vec<u32>,
+    proximity: Proximity,
     // Reused scratch buffers (verification runs per candidate doc).
     cur_positions: Vec<u32>,
     sweep: ChainSweep,
+    word_positions: Vec<Vec<u32>>,
+    merge: BinaryHeap<Reverse<(u32, usize, usize)>>,
+    windows: WordWindows,
+    assignment: Vec<usize>,
+    /// Any order under scoring: the tightest window's span lifts the score.
+    rank_span: bool,
+    span_bonus: Score,
 }
 
 impl GapVerifiedScorer {
     fn new(
         inner: Box<dyn Scorer>,
         word_postings: Vec<Vec<SegmentPostings>>,
-        gaps: Vec<u32>,
+        proximity: Proximity,
+        rank_span: bool,
     ) -> Self {
+        let word_count = word_postings.len();
+        let proximity_is_any_order = proximity.is_any_order();
         let mut scorer = Self {
             inner,
             words: word_postings.into_iter().map(WordPositions::new).collect(),
-            gaps,
+            proximity,
             cur_positions: Vec::new(),
             sweep: ChainSweep::default(),
+            word_positions: vec![Vec::new(); word_count],
+            merge: BinaryHeap::new(),
+            windows: WordWindows::default(),
+            assignment: Vec::new(),
+            rank_span: rank_span && proximity_is_any_order,
+            span_bonus: 0.0,
         };
         // A freshly built DocSet must already sit on its first matching doc.
         let mut doc = scorer.inner.doc();
@@ -489,10 +750,21 @@ impl GapVerifiedScorer {
         scorer
     }
 
-    /// Does `doc` contain positions `p0 < p1 < … < p_{k-1}` (one per word)
-    /// with `p_{i+1} - p_i - 1 <= gaps[i]` for every pair? The inner scorer
-    /// emits docs in increasing order, so the word cursors only seek forward.
+    /// Does `doc` satisfy the proximity? The inner scorer emits docs in
+    /// increasing order, so the word cursors only seek forward.
     fn verify(&mut self, doc: DocId) -> bool {
+        match self.proximity {
+            Proximity::Ordered(_) => self.verify_ordered(doc),
+            Proximity::AnyOrder { max_span } => self.verify_any_order(doc, max_span),
+        }
+    }
+
+    /// Positions `p0 < p1 < … < p_{k-1}` (one per word) with
+    /// `p_{i+1} - p_i - 1 <= gaps[i]` for every pair.
+    fn verify_ordered(&mut self, doc: DocId) -> bool {
+        let Proximity::Ordered(gaps) = &self.proximity else {
+            return false;
+        };
         for w in 0..self.words.len() {
             self.words[w].positions_in(doc, &mut self.cur_positions);
             if self.cur_positions.is_empty() {
@@ -500,9 +772,53 @@ impl GapVerifiedScorer {
             }
             if w == 0 {
                 self.sweep.start(&self.cur_positions);
-            } else if !self.sweep.extend(&self.cur_positions, self.gaps[w - 1]) {
+            } else if !self.sweep.extend(&self.cur_positions, gaps[w - 1]) {
                 return false;
             }
+        }
+        true
+    }
+
+    /// Distinct positions, one per word, within one `max_span` window.
+    fn verify_any_order(&mut self, doc: DocId, max_span: u32) -> bool {
+        for (word, positions) in self.words.iter_mut().zip(&mut self.word_positions) {
+            word.positions_in(doc, positions);
+            if positions.is_empty() {
+                return false;
+            }
+        }
+        // k-way merge: the windows take positions in increasing order.
+        self.windows.reset(self.words.len());
+        self.merge.clear();
+        for (w, positions) in self.word_positions.iter().enumerate() {
+            self.merge.push(Reverse((positions[0], w, 0)));
+        }
+        while let Some(Reverse((position, w, i))) = self.merge.pop() {
+            self.windows.push(position, w);
+            if let Some(&next) = self.word_positions[w].get(i + 1) {
+                self.merge.push(Reverse((next, w, i + 1)));
+            }
+        }
+        let Some(_) = self.windows.next_window(0, max_span, &mut self.assignment) else {
+            return false;
+        };
+        if self.rank_span {
+            let mut span = self.windows.assigned_span(&self.assignment);
+            // חיפוש בינארי על הרוחב כולל חלונות חופפים בלי לסרוק מחדש מכל התחלה.
+            let mut lower = (self.words.len() - 1) as u32;
+            while lower < span {
+                let middle = lower + (span - lower) / 2;
+                if self
+                    .windows
+                    .next_window(0, middle, &mut self.assignment)
+                    .is_some()
+                {
+                    span = self.windows.assigned_span(&self.assignment);
+                } else {
+                    lower = middle + 1;
+                }
+            }
+            self.span_bonus = 1.0 / (1.0 + span as Score);
         }
         true
     }
@@ -544,7 +860,7 @@ impl DocSet for GapVerifiedScorer {
 
 impl Scorer for GapVerifiedScorer {
     fn score(&mut self) -> Score {
-        self.inner.score()
+        self.inner.score() + self.span_bonus
     }
 }
 
@@ -640,8 +956,41 @@ mod tests {
         assert_eq!(start_anchored_slack(&mut sweep, &words, &[5], 1, 1), None);
     }
 
-    #[test]
-    fn phrase_cursor_matches_exhaustive_oracle_with_seeks_and_deletes() {
+    // Every injective assignment of words to positions inside one window.
+    // Deliberately free of the windows' sliding and matching.
+    fn contains_any_order(tokens: &[&str], words: &[Vec<&str>], max_span: u32) -> bool {
+        fn assign(
+            tokens: &[&str],
+            words: &[Vec<&str>],
+            max_span: u32,
+            used: &mut Vec<usize>,
+        ) -> bool {
+            let word = used.len();
+            if word == words.len() {
+                let low = used.iter().min().unwrap();
+                let high = used.iter().max().unwrap();
+                return (high - low) as u64 <= max_span as u64;
+            }
+            (0..tokens.len()).any(|position| {
+                if used.contains(&position) || !words[word].contains(&tokens[position]) {
+                    return false;
+                }
+                used.push(position);
+                let found = assign(tokens, words, max_span, used);
+                used.pop();
+                found
+            })
+        }
+        assign(tokens, words, max_span, &mut Vec::new())
+    }
+
+    const ALPHABET: [&str; 29] = [
+        "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "b0", "b1", "b2", "b3", "b4", "b5",
+        "b6", "b7", "b8", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "shared", "filler",
+    ];
+
+    /// One segment over fixed and seeded documents; doc 55 is deleted.
+    fn oracle_index() -> (tantivy::Index, Field, Vec<Vec<&'static str>>) {
         let mut schema = Schema::builder();
         let text = schema.add_text_field("text", TEXT);
         let id = schema.add_u64_field("id", INDEXED);
@@ -650,11 +999,6 @@ mod tests {
             .writer_with_num_threads::<TantivyDocument>(1, 50_000_000)
             .unwrap();
         writer.set_merge_policy(Box::new(NoMergePolicy));
-        let alphabet = [
-            "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "b0", "b1", "b2", "b3", "b4",
-            "b5", "b6", "b7", "b8", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "shared",
-            "filler",
-        ];
         let mut documents = vec![
             vec![],
             vec!["a0", "filler", "b0", "c0"],
@@ -663,7 +1007,7 @@ mod tests {
             vec!["a0", "b0", "c0"],
             vec!["c0", "b0", "a0"],
         ];
-        let dense: Vec<_> = alphabet
+        let dense: Vec<_> = ALPHABET
             .iter()
             .copied()
             .filter(|&token| token != "filler")
@@ -677,7 +1021,7 @@ mod tests {
                 (0..length)
                     .map(|_| {
                         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                        alphabet[(seed >> 32) as usize % alphabet.len()]
+                        ALPHABET[(seed >> 32) as usize % ALPHABET.len()]
                     })
                     .collect(),
             );
@@ -691,13 +1035,88 @@ mod tests {
         writer.commit().unwrap();
         writer.delete_term(Term::from_field_u64(id, 55));
         writer.commit().unwrap();
-        let reader = index.reader().unwrap();
-        let searcher = reader.searcher();
-        assert_eq!(searcher.segment_readers().len(), 1);
-        let segment = &searcher.segment_readers()[0];
+        (index, text, documents)
+    }
+
+    /// Drives the scorer with advances and seeks over strided candidates and
+    /// compares every step with `oracle`.
+    fn assert_scorer_matches_oracle(
+        segment: &SegmentReader,
+        text: Field,
+        words: &[Vec<&str>],
+        proximity: &Proximity,
+        oracle: &dyn Fn(&[&str]) -> bool,
+        documents: &[Vec<&str>],
+    ) {
         let inverted = segment.inverted_index(text).unwrap();
-        // Exercise direct cursors, heaps, and a mixture within one phrase.
-        for words in [
+        let terms: Vec<Vec<_>> = words
+            .iter()
+            .map(|word| {
+                word.iter()
+                    .map(|term| Term::from_field_text(text, term))
+                    .collect()
+            })
+            .collect();
+        for stride in [1, 2, 7] {
+            let candidates: Vec<_> = (0..segment.max_doc())
+                .filter(|&doc| doc != 55 && doc % stride == 0)
+                .collect();
+            let expected: Vec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|&doc| oracle(&documents[doc as usize]))
+                .collect();
+            let postings = positional_postings(&inverted, &terms).unwrap().unwrap();
+            let mut scorer = GapVerifiedScorer::new(
+                Box::new(Candidates {
+                    docs: candidates,
+                    cursor: 0,
+                }),
+                postings,
+                proximity.clone(),
+                false,
+            );
+            let mut expected_cursor = 0;
+            let mut step = 0;
+            loop {
+                let want = expected.get(expected_cursor).copied().unwrap_or(TERMINATED);
+                assert_eq!(
+                    scorer.doc(),
+                    want,
+                    "{proximity:?} words={words:?} stride={stride} step={step}"
+                );
+                if want == TERMINATED {
+                    break;
+                }
+                assert_eq!(scorer.score(), 2.75 + want as Score * 0.001);
+                // Repeated seeks to/before an already verified doc must
+                // neither reread positions nor change its score.
+                assert_eq!(scorer.seek(want), want);
+                assert_eq!(scorer.seek(want.saturating_sub(1)), want);
+                if step % 3 == 0 {
+                    let target = want + 5;
+                    expected_cursor +=
+                        expected[expected_cursor..].partition_point(|&doc| doc < target);
+                    assert_eq!(
+                        scorer.seek(target),
+                        expected.get(expected_cursor).copied().unwrap_or(TERMINATED)
+                    );
+                } else {
+                    expected_cursor += 1;
+                    assert_eq!(
+                        scorer.advance(),
+                        expected.get(expected_cursor).copied().unwrap_or(TERMINATED)
+                    );
+                }
+                step += 1;
+            }
+            assert_eq!(scorer.seek(TERMINATED), TERMINATED);
+        }
+    }
+
+    fn oracle_word_sets() -> Vec<Vec<Vec<&'static str>>> {
+        // Direct cursors, heaps, and a mixture within one phrase.
+        vec![
             vec![
                 vec!["a0", "a1", "shared", "deleted", "missing"],
                 vec!["b0", "b1", "shared"],
@@ -724,21 +1143,22 @@ mod tests {
                 vec!["c0", "c1", "shared"],
             ],
             vec![vec!["deleted"], vec!["b0"], vec!["c0"]],
-        ] {
-            let terms: Vec<Vec<_>> = words
-                .iter()
-                .map(|word| {
-                    word.iter()
-                        .map(|term| Term::from_field_text(text, term))
-                        .collect()
-                })
-                .collect();
-            assert!(positional_postings(
-                &inverted,
-                &[vec![Term::from_field_text(text, "missing")]]
-            )
-            .unwrap()
-            .is_none());
+        ]
+    }
+
+    #[test]
+    fn phrase_cursor_matches_exhaustive_oracle_with_seeks_and_deletes() {
+        let (index, text, documents) = oracle_index();
+        let searcher = index.reader().unwrap().searcher();
+        assert_eq!(searcher.segment_readers().len(), 1);
+        let segment = &searcher.segment_readers()[0];
+        let inverted = segment.inverted_index(text).unwrap();
+        assert!(
+            positional_postings(&inverted, &[vec![Term::from_field_text(text, "missing")]])
+                .unwrap()
+                .is_none()
+        );
+        for words in oracle_word_sets() {
             for gaps in [
                 vec![0, 0],
                 vec![2, 0],
@@ -746,61 +1166,238 @@ mod tests {
                 vec![4, 7],
                 vec![u32::MAX, u32::MAX],
             ] {
-                for stride in [1, 2, 7] {
-                    let candidates: Vec<_> = (0..segment.max_doc())
-                        .filter(|&doc| doc != 55 && doc % stride == 0)
-                        .collect();
-                    let expected: Vec<_> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|&doc| contains_phrase(&documents[doc as usize], &words, &gaps))
-                        .collect();
-                    let postings = positional_postings(&inverted, &terms).unwrap().unwrap();
-                    let mut scorer = GapVerifiedScorer::new(
-                        Box::new(Candidates {
-                            docs: candidates,
-                            cursor: 0,
-                        }),
-                        postings,
-                        gaps.clone(),
+                assert_scorer_matches_oracle(
+                    segment,
+                    text,
+                    &words,
+                    &Proximity::Ordered(gaps.clone()),
+                    &|tokens| contains_phrase(tokens, &words, &gaps),
+                    &documents,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn any_order_cursor_matches_exhaustive_oracle_with_seeks_and_deletes() {
+        let (index, text, documents) = oracle_index();
+        let searcher = index.reader().unwrap().searcher();
+        let segment = &searcher.segment_readers()[0];
+        let mut word_sets = oracle_word_sets();
+        // Overlapping sets need distinct positions: a repeated word, and a
+        // word whose set contains the others'.
+        word_sets.push(vec![vec!["a0", "a1"], vec!["a0", "a1"]]);
+        word_sets.push(vec![
+            vec!["a0", "shared"],
+            vec!["a0", "shared"],
+            vec!["shared"],
+        ]);
+        word_sets.push(vec![vec!["c0", "b0", "a0"], vec!["a0"], vec!["b0", "a0"]]);
+        for words in word_sets {
+            for max_span in [0, 1, 2, 3, 5, 9, u32::MAX] {
+                assert_scorer_matches_oracle(
+                    segment,
+                    text,
+                    &words,
+                    &Proximity::AnyOrder { max_span },
+                    &|tokens| contains_any_order(tokens, &words, max_span),
+                    &documents,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn any_order_scores_use_the_minimum_span_of_every_assignment() {
+        let (index, text, documents) = oracle_index();
+        let searcher = index.reader().unwrap().searcher();
+        let segment = &searcher.segment_readers()[0];
+        let inverted = segment.inverted_index(text).unwrap();
+        let mut cases = oracle_word_sets();
+        cases.extend([
+            vec![vec!["a0", "shared"], vec!["b0", "shared"]],
+            vec![
+                vec!["a0", "shared"],
+                vec!["a0", "shared"],
+                vec!["b0", "shared"],
+            ],
+            vec![vec!["shared"]],
+        ]);
+        for words in cases {
+            let terms: Vec<Vec<Term>> = words
+                .iter()
+                .map(|word| {
+                    word.iter()
+                        .map(|term| Term::from_field_text(text, term))
+                        .collect()
+                })
+                .collect();
+            for max_span in [0, 1, 2, 5, u32::MAX] {
+                let candidates: Vec<_> = (0..segment.max_doc())
+                    .filter(|&doc| !segment.is_deleted(doc))
+                    .collect();
+                let expected: Vec<_> = candidates
+                    .iter()
+                    .filter_map(|&doc| {
+                        let tokens = &documents[doc as usize];
+                        (0..tokens.len() as u32)
+                            .take_while(|&span| span <= max_span)
+                            .find(|&span| contains_any_order(tokens, &words, span))
+                            .map(|span| (doc, span))
+                    })
+                    .collect();
+                let postings = positional_postings(&inverted, &terms).unwrap().unwrap();
+                let mut scorer = GapVerifiedScorer::new(
+                    Box::new(Candidates {
+                        docs: candidates,
+                        cursor: 0,
+                    }),
+                    postings,
+                    Proximity::AnyOrder { max_span },
+                    true,
+                );
+                for (doc, span) in expected {
+                    assert_eq!(scorer.doc(), doc, "{words:?} max_span={max_span}");
+                    let expected_score = 2.75 + doc as Score * 0.001 + 1.0 / (1.0 + span as Score);
+                    assert!(
+                        (scorer.score() - expected_score).abs() < 0.000001,
+                        "{words:?} doc={doc} max_span={max_span} minimum={span} actual={}",
+                        scorer.score()
                     );
-                    let mut expected_cursor = 0;
-                    let mut step = 0;
-                    loop {
-                        let want = expected.get(expected_cursor).copied().unwrap_or(TERMINATED);
-                        assert_eq!(
-                            scorer.doc(),
-                            want,
-                            "gaps={gaps:?} stride={stride} step={step}"
-                        );
-                        if want == TERMINATED {
-                            break;
-                        }
-                        assert_eq!(scorer.score(), 2.75 + want as Score * 0.001);
-                        // Repeated seeks to/before an already verified doc must
-                        // neither reread positions nor change its score.
-                        assert_eq!(scorer.seek(want), want);
-                        assert_eq!(scorer.seek(want.saturating_sub(1)), want);
-                        if step % 3 == 0 {
-                            let target = want + 5;
-                            expected_cursor +=
-                                expected[expected_cursor..].partition_point(|&doc| doc < target);
-                            assert_eq!(
-                                scorer.seek(target),
-                                expected.get(expected_cursor).copied().unwrap_or(TERMINATED)
-                            );
-                        } else {
-                            expected_cursor += 1;
-                            assert_eq!(
-                                scorer.advance(),
-                                expected.get(expected_cursor).copied().unwrap_or(TERMINATED)
-                            );
-                        }
-                        step += 1;
-                    }
-                    assert_eq!(scorer.seek(TERMINATED), TERMINATED);
+                    scorer.advance();
+                }
+                assert_eq!(scorer.doc(), TERMINATED);
+            }
+        }
+    }
+
+    #[test]
+    fn word_windows_match_exhaustive_assignment_on_random_overlaps() {
+        let mut seed = 0x2545f491u64;
+        let mut next = |bound: usize| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % bound
+        };
+        let mut windows = WordWindows::default();
+        let mut assignment = Vec::new();
+        for _ in 0..4000 {
+            let k = 1 + next(4);
+            let length = next(10);
+            // Each position holds a random subset of the words.
+            let sets: Vec<Vec<usize>> = (0..length)
+                .map(|_| (0..k).filter(|_| next(3) == 0).collect())
+                .collect();
+            let max_span = next(6) as u32;
+            let names: Vec<String> = (0..length).map(|p| format!("p{p}")).collect();
+            let words: Vec<Vec<&str>> = (0..k)
+                .map(|w| {
+                    (0..length)
+                        .filter(|&p| sets[p].contains(&w))
+                        .map(|p| names[p].as_str())
+                        .collect()
+                })
+                .collect();
+            let tokens: Vec<&str> = names.iter().map(String::as_str).collect();
+            windows.reset(k);
+            for (position, set) in sets.iter().enumerate() {
+                for &w in set {
+                    windows.push(position as u32, w);
+                }
+            }
+            let found = windows.next_window(0, max_span, &mut assignment);
+            assert_eq!(
+                found.is_some(),
+                contains_any_order(&tokens, &words, max_span),
+                "{sets:?} span={max_span}"
+            );
+            if let Some(last) = found {
+                let mut entries = assignment.clone();
+                entries.sort_unstable();
+                entries.dedup();
+                assert_eq!(entries.len(), k, "distinct entries: {sets:?}");
+                assert_eq!(*entries.last().unwrap(), last);
+                let span = windows.positions[last] - windows.positions[entries[0]];
+                assert!(span <= max_span);
+                for (w, &e) in assignment.iter().enumerate() {
+                    assert!(sets[windows.positions[e] as usize].contains(&w));
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_ordered_match_is_an_any_order_match() {
+        let alphabet = ["a", "b", "c", "x"];
+        let mut seed = 0x5bd1e995u64;
+        let mut next = |bound: usize| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % bound
+        };
+        let mut windows = WordWindows::default();
+        let mut assignment = Vec::new();
+        let mut ordered_hits = 0;
+        for _ in 0..3000 {
+            let k = 2 + next(3);
+            let distance = next(4) as u32;
+            let tokens: Vec<&str> = (0..next(14)).map(|_| alphabet[next(4)]).collect();
+            // Overlapping sets too, so repeated words need distinct positions.
+            let words: Vec<Vec<&str>> = (0..k)
+                .map(|_| {
+                    let mut set = vec![alphabet[next(3)]];
+                    if next(3) == 0 {
+                        set.push(alphabet[next(3)]);
+                    }
+                    set
+                })
+                .collect();
+            if !contains_phrase(&tokens, &words, &vec![distance; k - 1]) {
+                continue;
+            }
+            ordered_hits += 1;
+            let Proximity::AnyOrder { max_span } = Proximity::any_order(k, distance) else {
+                unreachable!()
+            };
+            windows.reset(k);
+            for (position, token) in tokens.iter().enumerate() {
+                for (w, set) in words.iter().enumerate() {
+                    if set.contains(token) {
+                        windows.push(position as u32, w);
+                    }
+                }
+            }
+            assert!(
+                windows.next_window(0, max_span, &mut assignment).is_some(),
+                "{tokens:?} {words:?} distance={distance}"
+            );
+        }
+        assert!(ordered_hits > 100);
+    }
+
+    #[test]
+    fn word_windows_handle_more_than_64_words() {
+        let k = 100;
+        let mut windows = WordWindows::default();
+        let mut assignment = Vec::new();
+        // Every position can fill every word: only the window size decides.
+        windows.reset(k);
+        for position in 0..150u32 {
+            for w in 0..k {
+                windows.push(position * 2, w);
+            }
+        }
+        assert_eq!(windows.next_window(0, 197, &mut assignment), None);
+        assert_eq!(windows.next_window(0, 198, &mut assignment), Some(99));
+        // Then each position fills exactly one word, in reverse order.
+        windows.reset(k);
+        for w in (0..k).rev() {
+            windows.push((k - 1 - w) as u32, w);
+        }
+        assert_eq!(windows.next_window(0, 98, &mut assignment), None);
+        assert_eq!(windows.next_window(0, 99, &mut assignment), Some(99));
+        assert_eq!(assignment[0], 99);
     }
 }

@@ -3,13 +3,24 @@ pub mod api;
 mod cross_line;
 #[cfg(test)]
 mod cross_line_tests;
+mod derived_columns;
 mod display_highlight;
+mod doc_store;
 mod frb_generated;
+mod highlight_cache;
 mod highlight_matcher;
+mod id_lookup;
+mod quote_expansion;
+#[cfg(test)]
+mod quote_parity_tests;
 // אכיפת מרווח פר-זוג לשאילתות ביטוי — מחוץ ל-crate::api כדי ש-FRB לא ינסה
 // לגזור לו bindings.
 mod gap_phrase;
 mod hebrew_query;
+// DFAs over the term dictionary, cached process-wide — outside `api` so FRB ignores it.
+mod term_automaton;
+#[cfg(test)]
+mod term_automaton_equivalence_tests;
 // סינון "תחת אותה כותרת" (חיתוך sectionId) — מחוץ ל-crate::api כדי ש-FRB
 // לא ינסה לגזור לו bindings.
 mod section_scope;
@@ -17,21 +28,37 @@ mod section_scope;
 mod hebrew_tokenizer;
 // The index's tantivy directory, with Windows' transient refusals to replace a file retried.
 mod index_directory;
+#[cfg(test)]
+mod indexing_parity_tests;
 // Lives at the crate root (not under `api`) so flutter_rust_bridge — which
 // scans `crate::api` — never generates bindings for the dictionary internals.
 // Only `SearchEngine::set_magic_dictionary_path`/`has_magic_dictionary` are
 // exposed to Dart; everything here is used purely from Rust.
 mod magic;
+mod page_cache;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
+mod lexical_cancellation;
 mod lexicons;
-// Line text of official books read from the library database at search time, and the
+// Line text of official and personal books read from their databases at search time, and the
 // choice of SQLite (bundled or the host's) — internal; only thin wrappers live in
 // `crate::api`.
 #[cfg(test)]
 mod external_text_tests;
 mod line_source;
+// The batch behind `SearchEngine::add_library_books`; its types are in `crate::api`.
+mod library_indexing;
+#[cfg(test)]
+mod library_indexing_tests;
 mod sqlite_host;
+// רג'קס מהמשתמש (`/…/`): ניתוח, קמפול מוגבל-גודל וחיפוש שורות — מחוץ ל-crate::api כדי ש-FRB
+// לא ינסה לגזור לו bindings.
+#[cfg(test)]
+mod user_books_text_tests;
+mod user_regex;
+// Books of attached databases (`db:<slug>:<bookId>`) read from those databases.
+#[cfg(test)]
+mod attached_text_tests;
 // Real-data benchmark of smart search, opened read-only; outside `api` so FRB ignores it.
 #[cfg(test)]
 mod smart_search_bench;

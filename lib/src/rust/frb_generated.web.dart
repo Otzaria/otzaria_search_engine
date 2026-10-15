@@ -9,6 +9,7 @@
 import 'api/benchmark.dart';
 import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
+import 'api/library_indexing.dart';
 import 'api/search_engine.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -28,6 +29,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_IndexingCancellationTokenPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_RegexBenchmarkerPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
@@ -39,12 +44,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_SemanticCancellationTokenPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_UserRegexCancellationTokenPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_UserRegexMatcherPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
   @protected
   HighlightMatcher
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    dynamic raw,
+  );
+
+  @protected
+  IndexingCancellationToken
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
     dynamic raw,
   );
 
@@ -67,6 +86,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexCancellationToken
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
+  UserRegexMatcher
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  );
+
+  @protected
   RegexBenchmarker
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -85,6 +116,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  IndexingCancellationToken
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
   SearchEngine
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     dynamic raw,
@@ -93,6 +130,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SemanticCancellationToken
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
+  UserRegexCancellationToken
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
+  UserRegexMatcher
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
     dynamic raw,
   );
 
@@ -122,6 +171,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  IndexingCancellationToken
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
   RegexBenchmarker
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     dynamic raw,
@@ -140,6 +195,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexCancellationToken
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
+  UserRegexMatcher
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  );
+
+  @protected
   RustStreamSink<List<SearchResult>>
   dco_decode_StreamSink_list_search_result_Sse(dynamic raw);
 
@@ -148,7 +215,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_StreamSink_search_stream_update_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<UserRegexStreamUpdate>
+  dco_decode_StreamSink_user_regex_stream_update_Sse(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
+
+  @protected
+  AttachedLineSourceStatus dco_decode_attached_line_source_status(dynamic raw);
 
   @protected
   BenchmarkResult dco_decode_benchmark_result(dynamic raw);
@@ -169,7 +243,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexMatcher
+  dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  );
+
+  @protected
   BenchmarkResult dco_decode_box_autoadd_benchmark_result(dynamic raw);
+
+  @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw);
 
   @protected
   double dco_decode_box_autoadd_f_32(dynamic raw);
@@ -271,6 +354,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IndexCompatibility dco_decode_index_compatibility(dynamic raw);
 
   @protected
+  LibraryBookInput dco_decode_library_book_input(dynamic raw);
+
+  @protected
+  LibraryBookResult dco_decode_library_book_result(dynamic raw);
+
+  @protected
+  LibraryBookSource dco_decode_library_book_source(dynamic raw);
+
+  @protected
+  LibraryBookStatus dco_decode_library_book_status(dynamic raw);
+
+  @protected
   LineSourceStatus dco_decode_line_source_status(dynamic raw);
 
   @protected
@@ -293,6 +388,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<HighlightRange> dco_decode_list_highlight_range(dynamic raw);
+
+  @protected
+  List<LibraryBookInput> dco_decode_list_library_book_input(dynamic raw);
+
+  @protected
+  List<LibraryBookResult> dco_decode_list_library_book_result(dynamic raw);
 
   @protected
   List<MergedSibling> dco_decode_list_merged_sibling(dynamic raw);
@@ -369,6 +470,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
+  List<UserRegexLineMatches> dco_decode_list_user_regex_line_matches(
+    dynamic raw,
+  );
+
+  @protected
   MergedSibling dco_decode_merged_sibling(dynamic raw);
 
   @protected
@@ -384,7 +490,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexMatcher?
+  dco_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    dynamic raw,
+  );
+
+  @protected
   BenchmarkResult? dco_decode_opt_box_autoadd_benchmark_result(dynamic raw);
+
+  @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
   double? dco_decode_opt_box_autoadd_f_32(dynamic raw);
@@ -617,6 +732,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  UserRegexKind dco_decode_user_regex_kind(dynamic raw);
+
+  @protected
+  UserRegexLineMatches dco_decode_user_regex_line_matches(dynamic raw);
+
+  @protected
+  UserRegexPlan dco_decode_user_regex_plan(dynamic raw);
+
+  @protected
+  UserRegexStreamUpdate dco_decode_user_regex_stream_update(dynamic raw);
+
+  @protected
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
@@ -628,6 +755,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   HighlightMatcher
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  IndexingCancellationToken
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
     SseDeserializer deserializer,
   );
 
@@ -650,6 +783,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexCancellationToken
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UserRegexMatcher
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RegexBenchmarker
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -668,6 +813,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  IndexingCancellationToken
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SearchEngine
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SseDeserializer deserializer,
@@ -676,6 +827,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SemanticCancellationToken
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UserRegexCancellationToken
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UserRegexMatcher
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
     SseDeserializer deserializer,
   );
 
@@ -715,6 +878,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  IndexingCancellationToken
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RegexBenchmarker
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -733,6 +902,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexCancellationToken
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UserRegexMatcher
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<List<SearchResult>>
   sse_decode_StreamSink_list_search_result_Sse(SseDeserializer deserializer);
 
@@ -741,7 +922,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_StreamSink_search_stream_update_Sse(SseDeserializer deserializer);
 
   @protected
+  RustStreamSink<UserRegexStreamUpdate>
+  sse_decode_StreamSink_user_regex_stream_update_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
+
+  @protected
+  AttachedLineSourceStatus sse_decode_attached_line_source_status(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BenchmarkResult sse_decode_benchmark_result(SseDeserializer deserializer);
@@ -762,9 +954,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexMatcher
+  sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BenchmarkResult sse_decode_box_autoadd_benchmark_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
   double sse_decode_box_autoadd_f_32(SseDeserializer deserializer);
@@ -886,6 +1087,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  LibraryBookInput sse_decode_library_book_input(SseDeserializer deserializer);
+
+  @protected
+  LibraryBookResult sse_decode_library_book_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  LibraryBookSource sse_decode_library_book_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  LibraryBookStatus sse_decode_library_book_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   LineSourceStatus sse_decode_line_source_status(SseDeserializer deserializer);
 
   @protected
@@ -914,6 +1133,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<HighlightRange> sse_decode_list_highlight_range(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<LibraryBookInput> sse_decode_list_library_book_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<LibraryBookResult> sse_decode_list_library_book_result(
     SseDeserializer deserializer,
   );
 
@@ -1016,6 +1245,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
 
   @protected
+  List<UserRegexLineMatches> sse_decode_list_user_regex_line_matches(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MergedSibling sse_decode_merged_sibling(SseDeserializer deserializer);
 
   @protected
@@ -1033,9 +1267,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UserRegexMatcher?
+  sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BenchmarkResult? sse_decode_opt_box_autoadd_benchmark_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
   double? sse_decode_opt_box_autoadd_f_32(SseDeserializer deserializer);
@@ -1340,6 +1583,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
+  UserRegexKind sse_decode_user_regex_kind(SseDeserializer deserializer);
+
+  @protected
+  UserRegexLineMatches sse_decode_user_regex_line_matches(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  UserRegexPlan sse_decode_user_regex_plan(SseDeserializer deserializer);
+
+  @protected
+  UserRegexStreamUpdate sse_decode_user_regex_stream_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
@@ -1355,6 +1614,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
     HighlightMatcher self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    IndexingCancellationToken self,
     SseSerializer serializer,
   );
 
@@ -1381,6 +1647,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    UserRegexCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -1402,6 +1682,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    IndexingCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     SearchEngine self,
     SseSerializer serializer,
@@ -1411,6 +1698,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
     SemanticCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    UserRegexCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
     SseSerializer serializer,
   );
 
@@ -1459,6 +1760,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    IndexingCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -1479,6 +1787,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    UserRegexCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_list_search_result_Sse(
     RustStreamSink<List<SearchResult>> self,
     SseSerializer serializer,
@@ -1491,7 +1813,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_user_regex_stream_update_Sse(
+    RustStreamSink<UserRegexStreamUpdate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_attached_line_source_status(
+    AttachedLineSourceStatus self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_benchmark_result(
@@ -1522,10 +1856,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_benchmark_result(
     BenchmarkResult self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_f_32(double self, SseSerializer serializer);
@@ -1675,6 +2019,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_library_book_input(
+    LibraryBookInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_library_book_result(
+    LibraryBookResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_library_book_source(
+    LibraryBookSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_library_book_status(
+    LibraryBookStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_line_source_status(
     LineSourceStatus self,
     SseSerializer serializer,
@@ -1713,6 +2081,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_highlight_range(
     List<HighlightRange> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_library_book_input(
+    List<LibraryBookInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_library_book_result(
+    List<LibraryBookResult> self,
     SseSerializer serializer,
   );
 
@@ -1837,6 +2217,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_user_regex_line_matches(
+    List<UserRegexLineMatches> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_merged_sibling(MergedSibling self, SseSerializer serializer);
 
   @protected
@@ -1856,10 +2242,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    UserRegexMatcher? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_benchmark_result(
     BenchmarkResult? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_f_32(double? self, SseSerializer serializer);
@@ -2228,6 +2624,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_unit(void self, SseSerializer serializer);
 
   @protected
+  void sse_encode_user_regex_kind(UserRegexKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_user_regex_line_matches(
+    UserRegexLineMatches self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_user_regex_plan(UserRegexPlan self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_user_regex_stream_update(
+    UserRegexStreamUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
 
   @protected
@@ -2252,6 +2666,22 @@ class RustLibWire implements BaseWire {
     int ptr,
   ) => wasmModule
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+        ptr,
+      );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
         ptr,
       );
 
@@ -2302,6 +2732,38 @@ class RustLibWire implements BaseWire {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
         ptr,
       );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+        ptr,
+      );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+        ptr,
+      );
 }
 
 @JS('wasm_bindgen')
@@ -2317,6 +2779,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHighlightMatcher(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
     int ptr,
   );
 
@@ -2347,6 +2819,26 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexCancellationToken(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUserRegexMatcher(
     int ptr,
   );
 }

@@ -1,6 +1,7 @@
 //! Prepared, bounded display matching. Regexes only inspect individual index
 //! tokens; phrase gaps are resolved with dynamic programming, never regex
 //! backtracking. Work is O(words * tokens), plus linear token-regex matching.
+//! Any-order phrases use the engine's own window search ([`WordWindows`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,15 +9,25 @@ use std::sync::Arc;
 use regex::{Regex, RegexBuilder};
 use tantivy::tokenizer::{TokenStream, Tokenizer};
 
+use crate::gap_phrase::{Proximity, WordWindows};
 use crate::hebrew_query::{fold_presentation_form, is_breaking_tag, is_word_mark};
 use crate::hebrew_tokenizer::{is_geresh, is_gershayim, is_transparent, HebrewTokenizer};
 
 pub(crate) struct PreparedHighlightMatcher {
-    // Mode bits waive the token boundary on the outer left/right, respectively.
-    words: Vec<[Arc<Regex>; 4]>,
-    independent_words: Vec<[Arc<Regex>; 2]>,
-    gaps: Vec<u32>,
+    // Indexed by the outer left word's `Edge` + 3 * the outer right word's.
+    words: Vec<[Arc<Regex>; 9]>,
+    independent_words: Vec<[Arc<Regex>; 3]>,
+    proximity: Proximity,
     boundary_eligible: Vec<bool>,
+}
+
+/// How an outer word may sit in its token.
+struct Edge;
+
+impl Edge {
+    const WHOLE: usize = 0;
+    const AFFIXES: usize = 1;
+    const ANY: usize = 2;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,11 +47,14 @@ pub(crate) struct Match {
 impl PreparedHighlightMatcher {
     pub(crate) fn new(
         branches: Vec<Vec<(String, String, String)>>,
-        gaps: Vec<u32>,
+        proximity: Proximity,
         boundary_eligible: Vec<bool>,
     ) -> Result<Self, regex::Error> {
         let mut cache = HashMap::<String, Arc<Regex>>::new();
         let word_count = branches.len();
+        // Any order has no outer words: each keeps its own affixes, exactly as
+        // the engine's per-word pattern does, whatever the boundary request.
+        let edges = !proximity.is_any_order();
         let mut words = Vec::with_capacity(word_count);
         let mut independent_words = Vec::with_capacity(word_count);
         let mut compile = |pattern: String| -> Result<Arc<Regex>, regex::Error> {
@@ -57,32 +71,31 @@ impl PreparedHighlightMatcher {
                 .map(|(_, root, _)| format!("({root})"))
                 .collect();
             let roots = roots.join("|");
+            let affixed: Vec<String> = branches
+                .iter()
+                .map(|(lead, root, trail)| format!("(?:{lead})({root})(?:{trail})"))
+                .collect();
+            // An expanded word's waiver admits its own affixes, never any
+            // letters: "שבת" with prefixes alone does not paint "מחשבתו".
             independent_words.push([
                 compile(format!("\\A(?:{roots})\\z"))?,
+                compile(format!("\\A(?:{})\\z", affixed.join("|")))?,
                 compile(format!("(?:{roots})"))?,
             ]);
-            let mut modes = Vec::with_capacity(4);
-            for mode in 0..4 {
+            let mut modes = Vec::with_capacity(9);
+            for mode in 0..9 {
                 let alternatives: Vec<String> = branches
                     .iter()
                     .map(|(lead, root, trail)| {
-                        let lead = if i == 0 {
-                            if mode & 1 != 0 {
-                                ".*?"
-                            } else {
-                                ""
-                            }
-                        } else {
-                            lead.as_str()
+                        let lead = match (edges && i == 0).then_some(mode % 3) {
+                            Some(Edge::WHOLE) => "",
+                            Some(Edge::ANY) => ".*?",
+                            _ => lead.as_str(),
                         };
-                        let trail = if i + 1 == word_count {
-                            if mode & 2 != 0 {
-                                ".*"
-                            } else {
-                                ""
-                            }
-                        } else {
-                            trail.as_str()
+                        let trail = match (edges && i + 1 == word_count).then_some(mode / 3) {
+                            Some(Edge::WHOLE) => "",
+                            Some(Edge::ANY) => ".*",
+                            _ => trail.as_str(),
                         };
                         format!("(?:{lead})({root})(?:{trail})")
                     })
@@ -94,7 +107,7 @@ impl PreparedHighlightMatcher {
         Ok(Self {
             words,
             independent_words,
-            gaps,
+            proximity,
             boundary_eligible,
         })
     }
@@ -130,13 +143,14 @@ impl PreparedHighlightMatcher {
                 if candidates[i][position].is_some() {
                     continue;
                 }
-                let boundary = require_boundaries
-                    .get(i)
-                    .copied()
-                    .unwrap_or(self.boundary_eligible[i]);
-                let mode = usize::from(i == 0 && !boundary)
-                    | (usize::from(i + 1 == self.words.len() && !boundary) << 1);
-                if let Some(captures) = patterns[mode].captures(&mapped.text) {
+                let edge = self.edge(i, require_boundaries);
+                let left = if i == 0 { edge } else { Edge::WHOLE };
+                let right = if i + 1 == self.words.len() {
+                    edge
+                } else {
+                    Edge::WHOLE
+                };
+                if let Some(captures) = patterns[left + 3 * right].captures(&mapped.text) {
                     if let Some(root) = captures.iter().skip(1).flatten().next() {
                         if !root.is_empty() {
                             candidates[i][position] = Some(Range {
@@ -167,25 +181,20 @@ impl PreparedHighlightMatcher {
                 !token.text.contains(['\'', '"']),
             );
             for (i, patterns) in self.independent_words.iter().enumerate() {
-                let boundary = require_boundaries
-                    .get(i)
-                    .copied()
-                    .unwrap_or(self.boundary_eligible[i]);
-                let pattern = &patterns[usize::from(!boundary)];
-                for captures in pattern.captures_iter(&mapped.text) {
+                let edge = self.edge(i, require_boundaries);
+                // Only a waived plain word may occur more than once in a token.
+                for captures in patterns[edge].captures_iter(&mapped.text) {
                     let Some(root) = captures.iter().skip(1).flatten().next() else {
                         break;
                     };
                     if root.is_empty() {
                         break;
                     }
-                    let root_start = root.start();
-                    let root_end = root.end();
                     ranges.push(Range {
-                        start: mapped.starts[root_start],
-                        end: mapped.ends[root_end - 1],
+                        start: mapped.starts[root.start()],
+                        end: mapped.ends[root.end() - 1],
                     });
-                    if boundary {
+                    if edge != Edge::ANY {
                         break;
                     }
                 }
@@ -211,11 +220,28 @@ impl PreparedHighlightMatcher {
         matches
     }
 
+    /// A caller waiving a plain word's boundary asks for the root anywhere in
+    /// the token: partial-word display, or a quote cut mid-word.
+    fn edge(&self, word: usize, require_boundaries: &[bool]) -> usize {
+        let eligible = self.boundary_eligible[word];
+        match require_boundaries.get(word).copied().unwrap_or(eligible) {
+            true => Edge::WHOLE,
+            false if eligible => Edge::ANY,
+            false => Edge::AFFIXES,
+        }
+    }
+
     fn resolve(&self, candidates: Vec<Vec<Option<Range>>>) -> Vec<Match> {
         let token_count = candidates[0].len();
         if token_count == 0 {
             return Vec::new();
         }
+        let gaps = match &self.proximity {
+            Proximity::Ordered(gaps) => gaps,
+            &Proximity::AnyOrder { max_span } => {
+                return Self::resolve_any_order(&candidates, max_span)
+            }
+        };
         let word_count = candidates.len();
         // A successor is the earliest next position that can complete the
         // entire remaining phrase. A greedy choice without this viability
@@ -231,7 +257,7 @@ impl PreparedHighlightMatcher {
                 next[p] = if viable[p] { Some(p) } else { next[p + 1] };
             }
             for (p, candidate) in candidates[i].iter().enumerate() {
-                let max_next = p.saturating_add(self.gaps[i] as usize).saturating_add(1);
+                let max_next = p.saturating_add(gaps[i] as usize).saturating_add(1);
                 successor[i][p] = if candidate.is_some() {
                     next[p + 1].filter(|&q| q <= max_next)
                 } else {
@@ -269,6 +295,52 @@ impl PreparedHighlightMatcher {
                     })
                     .collect(),
             });
+        }
+        matches
+    }
+
+    /// Non-overlapping windows, each ending as early as possible, in which every
+    /// word takes its own token position — the engine's any-order verifier.
+    fn resolve_any_order(candidates: &[Vec<Option<Range>>], max_span: u32) -> Vec<Match> {
+        let mut windows = WordWindows::default();
+        windows.reset(candidates.len());
+        let mut slots = Vec::new();
+        for position in 0..candidates[0].len() {
+            let Ok(at) = u32::try_from(position) else {
+                break;
+            };
+            for (word, row) in candidates.iter().enumerate() {
+                if let Some(range) = row[position] {
+                    if windows.push(at, word).is_some() {
+                        slots.push(range);
+                    }
+                }
+            }
+        }
+        let mut matches = Vec::new();
+        let mut assignment = Vec::new();
+        let mut from = 0;
+        while let Some(last) = windows.next_window(from, max_span, &mut assignment) {
+            let mut ranges: Vec<Range> = assignment
+                .iter()
+                .enumerate()
+                .map(|(word, &entry)| slots[windows.slot(entry, word)])
+                .collect();
+            ranges.sort_by_key(|r| (r.start, r.end));
+            let start = ranges[0].start;
+            let end = ranges.iter().map(|r| r.end).max().unwrap();
+            matches.push(Match {
+                start,
+                end,
+                word_ranges: ranges
+                    .into_iter()
+                    .map(|r| Range {
+                        start: r.start - start,
+                        end: r.end - start,
+                    })
+                    .collect(),
+            });
+            from = last + 1;
         }
         matches
     }
@@ -408,6 +480,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &options(query, enabled),
+            false,
         )
         .unwrap()
         .matcher
@@ -433,6 +506,7 @@ mod tests {
             &HashMap::new(),
             &options("אמר תורה", &["חלק ממילה", "כתיב מלא/חסר"]),
             &[vec!["אמר".into()], vec!["אאבתרה".into()]],
+            false,
         )
         .unwrap();
         assert_eq!(from_terms.matcher.find_matches("אמר אאבתרה", &[]), found);
@@ -446,6 +520,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::from([(1, vec!["ב".into()])]),
             &options("אמר תורה", &["קידומות"]),
+            false,
         )
         .unwrap()
         .matcher;
@@ -468,6 +543,7 @@ mod tests {
             &HashMap::from([("0-1".into(), "2".into()), ("1-2".into(), "0".into())]),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         )
         .unwrap()
         .matcher;
@@ -498,19 +574,56 @@ mod tests {
     }
 
     #[test]
-    fn single_word_partial_finds_repeated_roots_without_overlap() {
+    fn single_word_partial_paints_tokens_within_its_windows() {
         let plan = matcher("א", &["חלק ממילה"], 0);
-        let found = plan.find_matches("אאא", &[]);
+        // One root per token the search could match, without overlap.
+        let found = plan.find_matches("אאא בא אב", &[]);
         assert_eq!(found.len(), 3);
-        assert_eq!(
-            found.iter().map(|m| m.start).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
         assert!(plan.find_matches("אאא", &[true]).is_empty());
-        assert_eq!(
-            plan.find_word_matches(&"א".repeat(10_000), &[]).len(),
-            10_000
-        );
+        // A token longer than root + windows is no match; scanning stays linear.
+        assert!(plan.find_word_matches(&"א".repeat(10_000), &[]).is_empty());
+    }
+
+    #[test]
+    fn caller_waived_boundary_paints_inside_the_token() {
+        // The app waives boundaries for partial-word highlighting and counting.
+        let plain = matcher("אמר", &[], 0);
+        assert!(plain.find_matches("ויאמר משה", &[]).is_empty());
+        assert_eq!(plain.find_matches("וַיֹּאמֶר משה אמר", &[false]).len(), 2);
+        assert_eq!(plain.find_matches("אמר ויאמר ונאמר", &[false]).len(), 3);
+        // ...and for a quote whose selection stopped mid-word.
+        let quote = matcher("שֶׁנָּדַרְתָּ עָשִׂיתָ – יְה", &[], 0);
+        let text = "אִם כְּמָה שֶׁנָּדַרְתָּ עָשִׂיתָ – יְהֵא נֶדֶר";
+        assert!(quote.find_matches(text, &[]).is_empty());
+        assert_eq!(quote.find_matches(text, &[false, false, false]).len(), 1);
+        // A word with its own affix options keeps their window when waived.
+        let prefixes = matcher("שבת", &["קידומות"], 0);
+        assert!(prefixes.find_matches("מחשבתו", &[false]).is_empty());
+        let phrase = matcher("שבת קודש", &["קידומות"], 0);
+        assert!(phrase.find_matches("שבת קודשו", &[false, false]).is_empty());
+    }
+
+    #[test]
+    fn single_word_affixes_bound_the_painted_token() {
+        // Prefixes alone: the root may not sit inside a longer word.
+        let prefixes = matcher("שבת", &["קידומות"], 0);
+        assert_eq!(prefixes.find_matches("בשבת", &[]).len(), 1);
+        assert!(prefixes.find_matches("מחשבתו", &[]).is_empty());
+        assert!(prefixes.find_matches("שבתות", &[]).is_empty());
+        let gram = matcher("שבת", &["קידומות דקדוקיות"], 0);
+        assert_eq!(gram.find_matches("ובשבת", &[]).len(), 1);
+        assert!(gram.find_matches("מחשבת", &[]).is_empty());
+        // Part of a word paints the root inside the word, as the search finds it.
+        let partial = matcher("שבת", &["חלק ממילה"], 0);
+        assert_eq!(partial.find_matches("מחשבתו", &[]).len(), 1);
+        // A footnote number glued before the word, as the search finds it.
+        assert_eq!(prefixes.find_matches("עיין 28שבת שם", &[]).len(), 1);
+        assert_eq!(partial.find_matches("עיין 448שבתות", &[]).len(), 1);
+        // The outer words of a phrase obey the same bounds.
+        let phrase = matcher("שבת קודש", &["קידומות"], 0);
+        assert_eq!(phrase.find_matches("בשבת קודש", &[]).len(), 1);
+        assert!(phrase.find_matches("שבתו קודש", &[]).is_empty());
+        assert!(phrase.find_matches("שבת קודשו", &[]).is_empty());
     }
 
     #[test]
@@ -585,8 +698,87 @@ mod tests {
             0,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new()
+            &HashMap::new(),
+            false
         )
         .is_none());
+    }
+
+    fn any_order_matcher(query: &str, enabled: &[&str], distance: u32) -> PreparedHighlightMatcher {
+        build_display_highlight(
+            query,
+            distance,
+            &HashMap::new(),
+            &HashMap::new(),
+            &options(query, enabled),
+            true,
+        )
+        .unwrap()
+        .matcher
+    }
+
+    #[test]
+    fn any_order_matches_either_order_within_the_window() {
+        let plan = any_order_matcher("משה אהרן", &[], 1);
+        // Word ranges follow the text, not the query.
+        assert_eq!(
+            plan.find_matches("אהרן ומרים משה", &[]),
+            vec![Match {
+                start: 0,
+                end: 14,
+                word_ranges: vec![Range { start: 0, end: 4 }, Range { start: 11, end: 14 }]
+            }]
+        );
+        assert_eq!(plan.find_matches("משה אהרן", &[]).len(), 1);
+        assert!(plan.find_matches("אהרן ומרים ואלעזר משה", &[]).is_empty());
+        assert!(matcher("משה אהרן", &[], 1)
+            .find_matches("אהרן ומרים משה", &[])
+            .is_empty());
+    }
+
+    #[test]
+    fn any_order_gives_repeated_words_distinct_tokens_without_overlap() {
+        let plan = any_order_matcher("אמר אמר", &[], 0);
+        assert!(plan.find_matches("אמר רבי", &[]).is_empty());
+        let found = plan.find_matches("אמר אמר אמר אמר", &[]);
+        assert_eq!(
+            found.iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(),
+            vec![(0, 7), (8, 15)]
+        );
+        // A quote-free twin shares its word's position: still one word.
+        assert!(any_order_matcher("רמבם רמבם", &[], 3)
+            .find_matches("רמב״ם", &[])
+            .is_empty());
+    }
+
+    #[test]
+    fn any_order_keeps_each_words_own_affix_window() {
+        // As in the engine: a four-letter root takes at most three prefix letters.
+        let plan = any_order_matcher("חייב להחזיר", &["קידומות"], 0);
+        assert_eq!(plan.find_matches("ולהחזיר וחייב", &[]).len(), 1);
+        assert!(plan.find_matches("להחזיר אבגדחייב", &[]).is_empty());
+        assert!(plan
+            .find_matches("אבגדחייב להחזיר", &[false, false])
+            .is_empty());
+        // The ordered phrase's outer words keep their own window too.
+        let ordered = matcher("חייב להחזיר", &["קידומות"], 0);
+        assert!(ordered.find_matches("אבגדחייב להחזיר", &[]).is_empty());
+        assert_eq!(ordered.find_matches("בגדחייב להחזיר", &[]).len(), 1);
+    }
+
+    #[test]
+    fn any_order_with_custom_spacing_stays_ordered() {
+        let plan = build_display_highlight(
+            "משה אהרן",
+            0,
+            &HashMap::from([("0-1".into(), "1".into())]),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        )
+        .unwrap()
+        .matcher;
+        assert!(plan.find_matches("אהרן משה", &[]).is_empty());
+        assert_eq!(plan.find_matches("משה ו אהרן", &[]).len(), 1);
     }
 }
