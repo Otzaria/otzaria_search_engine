@@ -44,6 +44,11 @@ jobs:
         with:
           components: clippy,rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: ${{ matrix.features }}
+
       - name: Check formatting
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 
@@ -116,6 +121,11 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: ${{ matrix.os }}
 
       # `semantic` is the ONNX backend, as the application builds it.
       # ONNX Runtime is loaded at run time, so this compiles its bindings
@@ -195,6 +205,11 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: real-model-${{ matrix.os }}
 
       # The artifact test builds and opens with the model's published identity
       # files, and they have to be those of the sidecar this crate is built
@@ -350,6 +365,10 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -357,8 +376,17 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
+      # The release's own prebuilt binary rather than `cargo install`, which
+      # compiles the generator from source on every run. Pinned by digest, so a
+      # re-uploaded asset fails here.
       - name: Install pinned FRB generator
-        run: cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
+        run: |
+          archive="$RUNNER_TEMP/frb-codegen.tgz"
+          curl -fSL --retry 5 --retry-all-errors --output "$archive" \
+            "https://github.com/fzyzcjy/flutter_rust_bridge/releases/download/v2.13.0/flutter_rust_bridge_codegen-x86_64-unknown-linux-gnu-v2.13.0.tgz"
+          echo "1bb088e6ea42782848ea6507ab745371dbde58c83abef137d3e1e68ce510d45b  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME/.cargo/bin" flutter_rust_bridge_codegen
+          flutter_rust_bridge_codegen --version
 
       - name: Verify generated bindings are current
         shell: bash
