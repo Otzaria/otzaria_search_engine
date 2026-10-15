@@ -68,6 +68,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       # ל-pub publish דרושה resolution של התלויות, ולחבילת Flutter היא נכשלת
       # תחת dart טהור — ולכן flutter, כמו בשאר ה-workflows כאן.

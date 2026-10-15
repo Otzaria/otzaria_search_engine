@@ -23,6 +23,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       # pub get חיוני: סגנון ה-formatter (short/tall) נקבע לפי גרסת השפה
       # שנפתרת מ-pubspec/.dart_tool. בלי resolution ה-formatter נופל לברירת
