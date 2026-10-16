@@ -133,6 +133,15 @@ impl SetView {
         self.set.generation()
     }
 
+    pub(crate) fn book_source_hash(&self, book: &str) -> Option<u64> {
+        self.set.book_source_hash(book)
+    }
+
+    pub(crate) fn has_windows(&self) -> bool {
+        self.set.identity().model.chunking_identity
+            == crate::semantic_keys::production_chunking().identity()
+    }
+
     /// Every key a scan admitting `book` reaches through the book's records — its live slots,
     /// the live slots its extras name, and those its foreign records resolve to — into
     /// `out`, with the record's hint, sorted.
@@ -159,6 +168,17 @@ impl SetView {
             let Some(segment) = segments.get(slot.seg as usize) else {
                 continue;
             };
+            let snapshot = segments.iter().rev().find_map(|segment| {
+                segment.key_occurrences(slot.key).map(|mut records| {
+                    records.any(|record| admitted(&segment.books()[record.book as usize].name))
+                })
+            });
+            if let Some(admitted) = snapshot {
+                if admitted {
+                    reached.insert(slot.key);
+                }
+                continue;
+            }
             let books = segment.books();
             let through_extra = || {
                 segment.has_extras(slot.slot)

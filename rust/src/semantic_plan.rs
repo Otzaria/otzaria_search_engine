@@ -32,7 +32,7 @@ use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::ledger::{split, Ledger};
 use otzaria_semantic_search::distribution::plan::{
     BookList, EmbedManifest, EmbedPlanWriter, HeldVectors, Parity, PlanManifest, PlanRecord,
-    PlanRecords, RecordsWriter, BOOKS_FILE, RECORDS_FILE, TOMBSTONES_FILE,
+    PlanRecords, RecordsWriter, BOOKS_FILE, BOOK_HASHES_FILE, RECORDS_FILE, TOMBSTONES_FILE,
 };
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
 use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig, EmbeddedWindow};
@@ -126,6 +126,30 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     book_list.write(&dir.join(BOOKS_FILE))?;
 
     let chunker = Chunker::new(chunking.clone())?;
+    if chunker.recipe().0 == ChunkingAlgorithm::AnchoredLineWindows {
+        let text_hashes = searcher
+            .segment_readers()
+            .iter()
+            .map(|reader| reader.fast_fields().u64("textHash"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let hashes: BTreeMap<_, _> = books
+            .iter()
+            .map(|(name, docs)| {
+                let first = docs
+                    .first()
+                    .and_then(|address| {
+                        text_hashes[address.segment_ord as usize].first(address.doc_id)
+                    })
+                    .unwrap_or(0);
+                let consistent = docs.iter().all(|address| {
+                    text_hashes[address.segment_ord as usize].first(address.doc_id) == Some(first)
+                });
+                (name, if consistent { first } else { 0 })
+            })
+            .collect();
+        std::fs::write(dir.join(BOOK_HASHES_FILE), serde_json::to_vec(&hashes)?)
+            .context("writing the plan's source book hashes")?;
+    }
     let mut records = match chunker.recipe().0 {
         ChunkingAlgorithm::AnchoredLine => RecordsWriter::create(&dir.join(RECORDS_FILE))?,
         ChunkingAlgorithm::AnchoredLineWindows => {
@@ -286,7 +310,7 @@ pub fn validate(
     use crate::semantic_resolver::{LiveResolver, ResolverCache};
     use otzaria_semantic_search::cancellation::CancellationToken;
     use otzaria_semantic_search::semantic::oxv::reader::Segment;
-    use std::collections::{BTreeSet, HashSet};
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     let (searcher, chunk_key) = open_index(index_path)?;
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
@@ -376,26 +400,14 @@ pub fn validate(
             validation.unwindowed_standalone_lines += unwindowed_standalone_lines;
             validation.partially_windowed_standalone_lines += partially_windowed_standalone_lines;
             set.book_occurrences(name, &mut records);
-            let resolved = resolver.audit_records(name, &records, &keys, &cancel)?;
+            let audit = resolver.audit_records(name, &records, &keys, &cancel)?;
             anyhow::ensure!(
-                resolved.len() == records.len(),
+                audit.records.len() == records.len(),
                 "the resolver audit returned a different number of records"
             );
-            // Coverage is of source occurrences, not merely membership of a text key in
-            // a book. The same key can be an anchor, an inner window or both, and can
-            // occur beneath different parent anchors within one book.
-            let reached: HashSet<_> = records
-                .iter()
-                .zip(&resolved)
-                .flat_map(|((key, _), places)| {
-                    places
-                        .iter()
-                        .map(move |&(ordinal, window)| (ordinal, window, key.0))
-                })
-                .collect();
             for (ordinal, line) in keys.iter().enumerate() {
                 for &(window, key) in line {
-                    let covered = u64::from(reached.contains(&(ordinal as u32, window, key)));
+                    let covered = u64::from(audit.reached.contains(&(ordinal as u32, window, key)));
                     if window == 0 {
                         validation.keyed_lines += 1;
                         validation.covered_lines += covered;
@@ -405,11 +417,11 @@ pub fn validate(
                     }
                 }
             }
-            for ((_, record), places) in records.iter().zip(resolved) {
+            for record in audit.records {
                 validation.records += 1;
-                if places.iter().any(|&(ordinal, _)| ordinal == record.hint) {
+                if record.at_hint {
                     validation.at_hint += 1;
-                } else if !places.is_empty() {
+                } else if record.resolved {
                     validation.moved += 1;
                 } else {
                     validation.gone += 1;

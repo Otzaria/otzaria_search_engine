@@ -648,6 +648,39 @@ impl CorpusIndex for TantivyCorpus {
 }
 
 impl CorpusBooks for TantivyCorpus {
+    fn book_source_hash(&self, book_key: &str) -> Result<Option<u64>, PackError> {
+        let ids = self.books.get(book_key).ok_or_else(|| PackError::Corpus {
+            reason: format!("no book keyed {book_key:?} in this snapshot"),
+        })?;
+        let columns = self
+            .searcher
+            .segment_readers()
+            .iter()
+            .map(|reader| {
+                reader
+                    .fast_fields()
+                    .u64("textHash")
+                    .map_err(|error| PackError::Corpus {
+                        reason: format!("reading the textHash column: {error}"),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut source = None;
+        for id in ids {
+            let address = self.locations[id].address;
+            let Some(hash) = columns[address.segment_ord as usize]
+                .first(address.doc_id)
+                .filter(|&hash| hash != 0)
+            else {
+                return Ok(None);
+            };
+            if *source.get_or_insert(hash) != hash {
+                return Ok(None);
+            }
+        }
+        Ok(source)
+    }
+
     fn book_keys(&self) -> Result<Vec<String>, PackError> {
         Ok(self.books.keys().cloned().collect())
     }
