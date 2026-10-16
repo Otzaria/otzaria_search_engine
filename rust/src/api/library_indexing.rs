@@ -40,7 +40,8 @@ pub struct LibraryBookInput {
     pub generation_order: u32,
     pub extra_facets: Option<Vec<String>>,
     /// As for `add_text_book_bytes`. `LibraryDb` is kept only when every row is one line
-    /// (no row holds `\n`); `file_path` must then be `id:<bookId>` (library),
+    /// (no row holds `\n`) and, in the library, the book has no `line_note` rows (their
+    /// bodies are indexed back in their lines, as the app does); `file_path` must then be `id:<bookId>` (library),
     /// `uid:<bookId>` (user books) or `db:<slug>:<bookId>` (attached) of this very book.
     pub text_storage: TextStorage,
 }
