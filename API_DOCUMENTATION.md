@@ -337,7 +337,7 @@ Future<SemanticResetResult> resetSemanticIndex()
 
 These reach the semantic sidecar only in a library built with a semantic
 feature; any other build reports an explicit `notInBuild` state and serves
-lexical results. Cargokit builds the library with `semantic`, the ONNX backend,
+lexical results. The build hook builds the library with `semantic`, the ONNX backend,
 and ONNX is the only model format: GGUF models are not supported, and a model
 path that does not end in `.onnx` is refused by its name on every build, as a
 `SemanticError` of kind `modelInvalid` whose `field` is `model_path`. The
