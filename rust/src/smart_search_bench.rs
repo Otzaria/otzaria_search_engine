@@ -256,7 +256,7 @@ impl Directory for ReadOnlyDirectory {
 }
 
 /// The engine over `path`, opened without writing anything there.
-fn open_read_only(path: &Path) -> Result<SearchEngine> {
+pub(crate) fn open_read_only(path: &Path) -> Result<SearchEngine> {
     let directory = ReadOnlyDirectory::open(path)
         .with_context(|| format!("opening {} read-only", path.display()))?;
     let index = Index::open(directory).context("reading the index")?;
@@ -327,8 +327,14 @@ fn run_once(
             Ok(page_outcome(results.len()))
         }
         Mode::ApiFuzzyCount(d) => {
-            let count =
-                engine.count_fuzzy_with_status(query.to_string(), Vec::new(), d, false, false)?;
+            let count = engine.count_fuzzy_with_status(
+                query.to_string(),
+                Vec::new(),
+                d,
+                false,
+                false,
+                None,
+            )?;
             Ok(Outcome {
                 hits: count.count as u64,
                 total: Some(count.count as u64),
@@ -1519,7 +1525,6 @@ fn paging_stability() -> Result<()> {
 struct FoundationalProbe {
     searcher: tantivy::Searcher,
     file_path: tantivy::schema::Field,
-    id: tantivy::schema::Field,
     topics: tantivy::schema::Field,
 }
 
@@ -1535,7 +1540,6 @@ impl FoundationalProbe {
         Ok(Self {
             searcher: reader.searcher(),
             file_path: schema.get_field("filePath")?,
-            id: schema.get_field("id")?,
             topics: schema.get_field("topics")?,
         })
     }
@@ -1552,7 +1556,10 @@ impl FoundationalProbe {
                 Occur::Must,
                 term(Term::from_field_text(self.file_path, file_path)),
             ),
-            (Occur::Must, term(Term::from_field_u64(self.id, id))),
+            (
+                Occur::Must,
+                Box::new(crate::id_lookup::IdSetQuery::new([id])),
+            ),
             (
                 Occur::Must,
                 term(Term::from_facet(self.topics, &Facet::from_text("/base")?)),
@@ -1766,7 +1773,7 @@ fn acronym_modes() -> Result<()> {
     for query in queries {
         let normalized = HebrewNormalizer::new().normalize(query);
         let features = analyze_query(&normalized);
-        let exact_count = engine.count_exact(query.to_string(), Vec::new(), false, false)?;
+        let exact_count = engine.count_exact(query.to_string(), Vec::new(), false, false, None)?;
         for &(label, mode) in SEMANTIC_LEXICAL_MODES {
             engine.invalidate_semantic_sessions_for_bench();
             let r = semantic_page(&engine, query, config.limit, 1, mode, None)?;

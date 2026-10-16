@@ -94,9 +94,9 @@ const BOOK_LINES: usize = 2_000_000;
 /// the foundational books' query, resolve many of the lines the last one did.
 const KEY_CACHE: usize = 65_536;
 
-/// The library database's state as a session is keyed by it
+/// The line-source databases' state (library, user books, attached) as a session is keyed by it
 /// (`line_source::query_cache_generation`): the keys recomputed under one serve only it.
-pub(crate) type LibraryGeneration = (u64, Option<i64>, bool);
+pub(crate) type LibraryGeneration = [crate::line_source::SourceGeneration; 3];
 
 /// How many filters' scan plans are kept between searches, for one generation of the index.
 const PLAN_CACHE: usize = 16;
@@ -389,7 +389,7 @@ impl FairPlaces {
 /// The columns a resolver reads, opened once per segment for one search.
 struct SegmentColumns {
     id: Column<u64>,
-    section: Column<u64>,
+    section: crate::derived_columns::SectionIdColumn,
     line_hash: Column<u64>,
     /// The book's text hash, stamped on every line of it.
     text_hash: Column<u64>,
@@ -482,7 +482,8 @@ impl<'a> LiveResolver<'a> {
                 let fast = reader.fast_fields();
                 Ok(SegmentColumns {
                     id: fast.u64("id").map_err(index_error)?,
-                    section: fast.u64("sectionId").map_err(index_error)?,
+                    section: crate::derived_columns::SectionIdColumn::open(reader)
+                        .map_err(index_error)?,
                     line_hash: fast.u64("lineHash").map_err(index_error)?,
                     text_hash: fast.u64("textHash").map_err(index_error)?,
                     chunk_key: match &chunk_key_name {
@@ -901,7 +902,8 @@ impl<'a> LiveResolver<'a> {
         }
         facets.sort();
         facets.dedup();
-        let document: TantivyDocument = self.searcher.doc(address).map_err(index_error)?;
+        let document: TantivyDocument =
+            crate::doc_store::load_document(&self.searcher, address).map_err(index_error)?;
         let is_pdf_field = self
             .searcher
             .schema()
@@ -2316,8 +2318,10 @@ impl LiveResolver<'_> {
                 }
                 checked += 1;
                 if !reader.is_deleted(doc) {
-                    let hash = columns.text_hash.first(doc).unwrap_or(0);
-                    one_text &= *text_hash.get_or_insert(hash) == hash;
+                    // Only the document `stamp_book_fingerprints` wrote holds the book's hash.
+                    if let Some(hash) = columns.text_hash.first(doc) {
+                        one_text &= *text_hash.get_or_insert(hash) == hash;
+                    }
                     let value = columns.chunk_key.as_ref().and_then(|keys| keys.first(doc));
                     if let (Some(value), Some(id)) = (value, columns.id.first(doc)) {
                         if value != 0 {
@@ -3030,7 +3034,7 @@ mod tests {
             .unwrap();
         // Keys recomputed by an earlier search and shared through the cache resolve alike.
         let mut sharing = LiveResolver::new(reader.searcher(), chunk_key, &cache).unwrap();
-        sharing.share_keys((0, None, false));
+        sharing.share_keys(Default::default());
         for _ in 0..2 {
             let again = sharing
                 .resolve(std::slice::from_ref(&hit), None, &CancellationToken::new())

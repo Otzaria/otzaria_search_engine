@@ -260,7 +260,7 @@ fn ordinary_approximate_quoted_phrases_keep_dictionary_expansion() {
     assert_eq!(got, [1, 2]);
     assert_eq!(
         engine
-            .count_fuzzy("\"הלך שמע\"".into(), vec![], 0, false, false)
+            .count_fuzzy("\"הלך שמע\"".into(), vec![], 0, false, false, None)
             .unwrap(),
         2
     );

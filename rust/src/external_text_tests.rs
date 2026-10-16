@@ -144,7 +144,7 @@ pub(crate) fn books() -> Vec<Book> {
     ]
 }
 
-fn train_dictionary() -> Vec<u8> {
+pub(crate) fn train_dictionary() -> Vec<u8> {
     let samples: Vec<Vec<u8>> = (0..2000)
         .map(|n| {
             format!(
@@ -484,7 +484,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn guard() -> std::sync::MutexGuard<'static, ()> {
     let guard = line_source::TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -796,6 +796,7 @@ fn probes() -> Vec<(String, Probe)> {
                         grouping,
                         any_word.then_some(WordMatchMode::AnyWord),
                         None,
+                        None,
                     )
                     .unwrap()
                 }),
@@ -971,7 +972,7 @@ fn assert_answers_like_stored(stored_index: &SearchEngine, library_index: &Searc
 }
 
 /// `(filePath, has textStored, lineCheck)` of every live document.
-fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
+pub(crate) fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
     use tantivy::schema::Value;
     let searcher = engine.corpus_searcher();
     let schema = searcher.schema().clone();
@@ -981,9 +982,11 @@ fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
     for (ord, reader) in searcher.segment_readers().iter().enumerate() {
         let checks = reader.fast_fields().u64("lineCheck").unwrap();
         for doc_id in reader.doc_ids_alive() {
-            let doc: tantivy::TantivyDocument = searcher
-                .doc(tantivy::DocAddress::new(ord as u32, doc_id))
-                .unwrap();
+            let doc: tantivy::TantivyDocument = crate::doc_store::load_document(
+                &searcher,
+                tantivy::DocAddress::new(ord as u32, doc_id),
+            )
+            .unwrap();
             let path = doc
                 .get_first(path_f)
                 .and_then(|v| v.as_str())
@@ -1002,7 +1005,9 @@ fn doc_store_view(engine: &SearchEngine) -> Vec<(String, bool, Option<u64>)> {
 #[test]
 fn library_documents_keep_no_text_in_the_doc_store() {
     let _guard = guard();
-    let f = fixture();
+    let mut f = fixture();
+    f.external.merge_into_one_segment();
+    f.stored.merge_into_one_segment();
     let size = |p: &Path| -> u64 {
         std::fs::read_dir(p)
             .unwrap()
@@ -1032,7 +1037,7 @@ fn library_documents_keep_no_text_in_the_doc_store() {
         .all(|(_, has_text, check)| *has_text && check.is_none()));
 }
 
-fn exact(e: &SearchEngine, word: &str) -> Vec<SearchResult> {
+pub(crate) fn exact(e: &SearchEngine, word: &str) -> Vec<SearchResult> {
     e.search_exact(
         word.to_string(),
         vec![],
@@ -1289,10 +1294,13 @@ fn image_rows_are_shown_from_the_index_without_reading_the_database() {
 fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
     use tantivy::schema::Value;
     let _guard = guard();
-    let f = fixture();
+    let mut f = fixture();
     let legacy_path = f.dir.path().join("legacy");
     std::fs::create_dir_all(&legacy_path).unwrap();
-    let legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    let mut legacy = index_books_as(&legacy_path, &books(), TextStorage::LibraryDb, false);
+    for engine in [&mut legacy, &mut f.external, &mut f.stored] {
+        engine.merge_into_one_segment();
+    }
     // `textStored` of the official books' documents, by (filePath, segment).
     let official_text = |e: &SearchEngine| -> std::collections::BTreeMap<(String, u64), String> {
         let searcher = e.corpus_searcher();
@@ -1302,9 +1310,11 @@ fn stored_image_rows_add_only_their_cleaned_text_to_the_index() {
         let mut out = std::collections::BTreeMap::new();
         for (ord, reader) in searcher.segment_readers().iter().enumerate() {
             for doc_id in reader.doc_ids_alive() {
-                let doc: tantivy::TantivyDocument = searcher
-                    .doc(tantivy::DocAddress::new(ord as u32, doc_id))
-                    .unwrap();
+                let doc: tantivy::TantivyDocument = crate::doc_store::load_document(
+                    &searcher,
+                    tantivy::DocAddress::new(ord as u32, doc_id),
+                )
+                .unwrap();
                 let path = doc.get_first(path_f).and_then(|v| v.as_str()).unwrap();
                 let text = doc.get_first(text_f).and_then(|v| v.as_str());
                 if let (true, Some(text)) = (path.starts_with("id:"), text) {
@@ -1962,7 +1972,7 @@ fn a_cross_line_hit_counts_while_the_source_is_suspended() {
         assert_eq!(results[0].continues_to_next_line, continues);
         assert_eq!(
             external
-                .count_exact(query.into(), vec![], false, false)
+                .count_exact(query.into(), vec![], false, false, None)
                 .unwrap(),
             1
         );
@@ -2220,7 +2230,7 @@ fn library_storage_needs_an_official_book_key() {
     let _guard = guard();
     let dir = TempDir::new().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
-    for bad in ["/books/a.txt", "uid:3", "id:", "id:x", "id:-1", "id:007"] {
+    for bad in ["/books/a.txt", "id:", "id:x", "id:-1", "id:007"] {
         let err = engine
             .add_text_book(
                 "t".to_string(),
@@ -2269,20 +2279,20 @@ fn library_storage_needs_an_official_book_key() {
 }
 
 #[test]
-fn the_v4_schema_is_refused() {
+fn the_v5_schema_is_refused() {
     let dir = TempDir::new().unwrap();
     drop(SearchEngine::new(dir.path().to_str().unwrap()));
     let meta = dir.path().join("otzaria_index_meta.json");
     let raw = std::fs::read_to_string(&meta).unwrap();
     std::fs::write(
         &meta,
-        raw.replace("\"schema_version\": 5", "\"schema_version\": 4"),
+        raw.replace("\"schema_version\": 6", "\"schema_version\": 5"),
     )
     .unwrap();
     let compat = check_index_compatibility(dir.path().to_string_lossy().into_owned());
     assert!(!compat.compatible);
     assert_eq!(compat.status, "rebuild_required");
-    assert_eq!(compat.required_schema_version, 5);
+    assert_eq!(compat.required_schema_version, 6);
 }
 
 /// Read-only smoke test against a real library: indexes the first books of

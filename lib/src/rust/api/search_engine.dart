@@ -4,12 +4,13 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+import 'library_indexing.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_fuzzy_query`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_addresses`, `collect_automaton_terms`, `collect_automatons_terms`, `collect_garbage_after_optimize`, `collect_grouped`, `compatibility`, `content_fingerprint`, `convert_highlight_matches`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `generation_sort_key`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_book_id`, `library_storage_or_fallback`, `line_dedup_hash`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `probe_first_automaton_scan`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers`, `replay_automaton_hits`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `scan_automaton_terms`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_fuzzy`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `terms_query_from_word_sets`, `text_index_analyzer`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PhraseHighlight`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query_ranked`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_fuzzy_query`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `combine_fingerprint`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `enqueue`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `first`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_storage_or_fallback`, `line_count`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new_index_settings`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_with`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `prepare_text_book`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `ranked_term_query`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers_with`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `set_search_executor`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stamp_book_fingerprints`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `user_regex_line_outcome`, `user_regex_line_search`, `user_regex_stream_into`, `user_regex_term_query`, `user_regex_term_stream`, `user_regex`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupKeyColumn`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PageCounts`, `PhraseHighlight`, `PreparedTextBook`, `RankedPage`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `TextBookMeta`, `WordMatch`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`, `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
@@ -53,6 +54,43 @@ Future<void> resumeLineSourceOwned({required PlatformInt64 ownerPort}) =>
       ownerPort: ownerPort,
     );
 
+/// Points the second line source at the personal-books database (`user_books.db`)
+/// that `uid:<bookId>` [`TextStorage::LibraryDb`] documents read their text from;
+/// `None` closes it (waiting for a window that is reading it) and unconfigures it.
+/// Opened lazily and read-only like the library database. The app may keep writing
+/// it (WAL): a commit is seen by the next window, and a row that no longer matches
+/// its line comes back [`TextStatus::Stale`]. [`suspend_line_source`] does not
+/// apply to it.
+Future<void> configureUserBooksLineSource({String? dbPath}) => RustLib
+    .instance
+    .api
+    .crateApiSearchEngineConfigureUserBooksLineSource(dbPath: dbPath);
+
+/// Points the line source of the attached database `slug` at its file, which
+/// `db:<slug>:<bookId>` [`TextStorage::LibraryDb`] documents read their text from; `None`
+/// closes it (waiting for a window or scan that is reading it) and unconfigures it, after
+/// which its documents come back [`TextStatus::Unavailable`]. Opened lazily, read-only and
+/// hardened like the app's untrusted connections; `immutable` opens it with
+/// `immutable=1` (the app's `AttachedLibrary.immutable`), and SQLite then never notices a
+/// change to the file. The open file cannot be replaced or deleted on Windows: configure
+/// `None` before the app updates, replaces or removes the file, and the path again after.
+/// Any number of slugs may be configured at once. [`suspend_line_source`] does not apply.
+Future<void> configureAttachedLineSource({
+  required String slug,
+  String? dbPath,
+  required bool immutable,
+}) => RustLib.instance.api.crateApiSearchEngineConfigureAttachedLineSource(
+  slug: slug,
+  dbPath: dbPath,
+  immutable: immutable,
+);
+
+Future<AttachedLineSourceStatus> attachedLineSourceStatus({
+  required String slug,
+}) => RustLib.instance.api.crateApiSearchEngineAttachedLineSourceStatus(
+  slug: slug,
+);
+
 Future<LineSourceStatus> lineSourceStatus() =>
     RustLib.instance.api.crateApiSearchEngineLineSourceStatus();
 
@@ -72,7 +110,8 @@ BigInt sqliteHostEntryAddress() =>
 /// default intermediate-word allowance, `custom_spacing` is keyed
 /// `"i-(i+1)"`, `alternative_words` is keyed by word position, and
 /// `search_options` is keyed `"{word}_{index}"` using the same tokenization
-/// as engine queries.
+/// as engine queries. `any_order` (default false) matches the words in any
+/// order within one window, like the advanced search's flag.
 ///
 /// Returns `None` when the query contains no highlightable words.
 HighlightPattern? generateHighlightPattern({
@@ -81,12 +120,14 @@ HighlightPattern? generateHighlightPattern({
   required Map<String, String> customSpacing,
   required Map<int, List<String>> alternativeWords,
   required Map<String, Map<String, bool>> searchOptions,
+  bool? anyOrder,
 }) => RustLib.instance.api.crateApiSearchEngineGenerateHighlightPattern(
   query: query,
   distance: distance,
   customSpacing: customSpacing,
   alternativeWords: alternativeWords,
   searchOptions: searchOptions,
+  anyOrder: anyOrder,
 );
 
 /// Builds the regex for highlighting *literal* in-book search matches (the
@@ -231,6 +272,22 @@ BigInt computeBookFingerprint({
   extraFacets: extraFacets,
 );
 
+/// Classifies a query typed as `/pattern/`. Cheap and synchronous: parsing plus a
+/// size-limited compile, never more than a few milliseconds whatever the pattern.
+///
+/// Rules: the outer `/…/` and `^`, `$`, `\b` at the pattern's edges are dropped (a term
+/// pattern matches whole terms, a cross-space one starts and ends on a word boundary when
+/// its edge is a letter). `.` and negated classes never cross a space by themselves; only
+/// explicit whitespace (a space, `\s`, `\W`, a class of spaces) makes a pattern
+/// cross-space — as do an inner anchor, and a sequence word that names no letter (`.*`).
+/// Matching ignores case and nikud; geresh/gershayim match their ASCII forms.
+UserRegexPlan parseUserRegex({required String raw}) =>
+    RustLib.instance.api.crateApiSearchEngineParseUserRegex(raw: raw);
+
+/// The book-view matcher of a `/…/` query, compiled once; `None` when it is `Invalid`.
+UserRegexMatcher? prepareUserRegexMatcher({required String raw}) =>
+    RustLib.instance.api.crateApiSearchEnginePrepareUserRegexMatcher(raw: raw);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<HighlightMatcher>>
 abstract class HighlightMatcher implements RustOpaqueInterface {
   List<HighlightMatch> findMatches({
@@ -278,6 +335,27 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// through the fast paths at negligible cost.
   Future<void> addDocumentsBatch({required List<DocumentInput> docs});
 
+  /// Indexes books whose text the engine reads itself, from the library database
+  /// ([`configure_line_source`]), the user-books database
+  /// ([`configure_user_books_line_source`]) or an attached database
+  /// ([`configure_attached_line_source`]). Does not commit.
+  ///
+  /// Each book is indexed exactly as `add_text_book_bytes` indexes the text the app reads
+  /// for it: rows in `lineIndex` order joined with `\n`, embedded `data:` images removed
+  /// (those rows then stored in the index, as `stored_lines`), the same documents,
+  /// `contentHash` and `textHash`. Several books are read and prepared at once; they
+  /// are added in input order, each whole or not at all.
+  ///
+  /// Takes the engine by shared reference, so searches are not held up while the batch
+  /// prepares; it needs an open writer ([`Self::open_index_writer`]). `cancel` stops the
+  /// batch before its next book. One result per input book, in order. An `Err` means
+  /// the writer failed: books of this batch may be in it, as after a failed
+  /// `add_text_book_bytes`.
+  Future<List<LibraryBookResult>> addLibraryBooks({
+    required List<LibraryBookInput> books,
+    required IndexingCancellationToken cancel,
+  });
+
   /// Indexes a whole PDF book in ONE FFI call. Does not commit.
   ///
   /// The whole-book replacement for the app's per-page PDF pipeline (Dart
@@ -321,10 +399,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
   ///
   /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
   /// newline-joined rows of an official book read from the library database
-  /// (then `file_path` must be `id:<bookId>`); the lines are then not stored in
+  /// (then `file_path` must be `id:<bookId>`), or of a personal book read from the
+  /// user-books database (`uid:<bookId>`) or an attached database
+  /// (`db:<slug>:<bookId>`); the lines are then not stored in
   /// the index and results read them back from that database. The book is
   /// stored as [`TextStorage::InIndex`] instead (and a warning logged) when the
-  /// configured line source does not hold exactly as many rows for it as `text`
+  /// book's configured line source does not hold exactly as many rows for it as `text`
   /// has lines — a row containing `\n`, a different database — or cannot be read
   /// (unconfigured, suspended, busy).
   ///
@@ -361,6 +441,12 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required TextStorage textStorage,
     Uint32List? storedLines,
   });
+
+  /// Stops every lexical call tagged with `request_id` (the streams, counts and
+  /// per-book counts that take `cancel_request_id`), running or still to come.
+  /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
+  /// cancelled stream closes without another event. Returns at once.
+  void cancelLexicalSearch({required int requestId});
 
   /// Delete all documents. Does not commit.
   Future<void> clear();
@@ -460,6 +546,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_advanced`] but also reports single-word truncation.
@@ -481,6 +569,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Per-book hit counts. Drops the truncation flag — see [`Self::count`];
@@ -512,6 +602,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book_advanced`] but also reports truncation.
@@ -533,6 +625,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Exact-mode per-book counts. Drops the truncation flag — see
@@ -542,6 +636,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book_exact`] but also reports whether the
@@ -551,6 +646,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Fuzzy-mode per-book counts. Drops the truncation flag — see
@@ -561,6 +657,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_by_book_fuzzy`] but also reports whether the
@@ -571,6 +668,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
+  });
+
+  /// Lines a `/…/` query matches per `filePath`. A cancelled call is an error.
+  Future<BookCountResult> countByBookUserRegex({
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
   });
 
   /// Like [`Self::count_by_book`] but also reports single-word truncation.
@@ -599,6 +704,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_exact`] but also reports whether the vocalized
@@ -608,6 +714,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required List<String> facets,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Fuzzy-mode hit count. Drops the truncation flag: the mark-free path
@@ -620,6 +727,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::count_fuzzy`] but also reports whether the vocalized
@@ -630,6 +738,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+    int? cancelRequestId,
+  });
+
+  /// Lines a `/…/` query matches. A cancelled call is an error.
+  Future<CountResult> countUserRegex({
+    required String raw,
+    required List<String> facets,
+    required UserRegexCancellationToken cancellation,
   });
 
   /// Like [`Self::count`] but also reports whether single-word collection
@@ -698,6 +814,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required Map<String, String> customSpacing,
     required Map<int, List<String>> alternativeWords,
     required Map<String, Map<String, bool>> searchOptions,
+    bool? anyOrder,
   });
 
   /// Content fingerprint per distinct `filePath`, read columnar from the
@@ -778,6 +895,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   /// Like [`Self::get_facet_counts_advanced`] but also reports truncation.
@@ -800,6 +918,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SearchScope negativeScope,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   /// Exact-mode facet counts. Drops the truncation flag — see
@@ -844,6 +963,16 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required int maxDistance,
     required bool matchNikud,
     required bool matchTaamim,
+  });
+
+  /// Per-child facet counts under `facet_prefix` of a `/…/` query (see
+  /// [`Self::get_facet_counts`] on the dimension roots). `facets` filters, as everywhere:
+  /// one book's path is a search in that book. A cancelled call is an error.
+  Future<FacetCountsResult> getFacetCountsUserRegex({
+    required String raw,
+    required List<String> facets,
+    required String facetPrefix,
+    required UserRegexCancellationToken cancellation,
   });
 
   /// Like [`Self::get_facet_counts`] but also reports single-word truncation.
@@ -912,6 +1041,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// segment footer; a synchronous binding blocks the calling Dart isolate throughout.
   static Future<SearchEngine> newInstance({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
+
+  /// Opens the index writer if it is closed (it reopens lazily after some maintenance
+  /// calls); [`Self::add_library_books`] does not open it itself.
+  Future<void> openIndexWriter();
 
   /// Open the vector set installed on this device and serve semantic and hybrid
   /// search from it, with every result hydrated from this Tantivy index as
@@ -1033,6 +1166,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -1062,6 +1196,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::search_advanced_stream`] but the first event also carries
@@ -1091,6 +1227,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
+    int? cancelRequestId,
   });
 
   /// Search and return total hit count alongside paged results in one call.
@@ -1128,6 +1266,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     ResultGrouping? grouping,
     WordMatchMode? wordMatchMode,
     int? wordMatchCount,
+    bool? anyOrder,
   });
 
   Future<SearchPageResult> searchAndCountExact({
@@ -1174,6 +1313,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::search_exact_stream`] but the first event also carries
@@ -1190,6 +1330,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   Future<List<SearchResult>> searchFuzzy({
@@ -1215,6 +1356,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   /// Like [`Self::search_fuzzy_stream`] but the first event also carries
@@ -1232,6 +1374,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchTaamim,
     required int chunkSize,
     ResultGrouping? grouping,
+    int? cancelRequestId,
   });
 
   /// Fuzzy (Levenshtein) search on pre-tokenized plain-text terms.
@@ -1324,6 +1467,20 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required ResultsOrder order,
     HighlightConfig? highlight,
     required int chunkSize,
+  });
+
+  /// Results of a `/…/` query in the order asked for (a cross-space pattern is always in
+  /// catalogue order), `limit` from `offset`, in chunks of `chunk_size`, as
+  /// [`UserRegexStreamUpdate`] events. Grouping is not offered. An invalid pattern is an
+  /// error event; check [`parse_user_regex`] first.
+  Stream<UserRegexStreamUpdate> searchUserRegexStream({
+    required String raw,
+    required List<String> facets,
+    required int limit,
+    required int offset,
+    required ResultsOrder order,
+    required int chunkSize,
+    required UserRegexCancellationToken cancellation,
   });
 
   /// How much of the open index the set at `vectors_dir` covers: the live lines the
@@ -1486,6 +1643,64 @@ abstract class SemanticCancellationToken implements RustOpaqueInterface {
   /// A token that is not cancelled.
   factory SemanticCancellationToken() =>
       RustLib.instance.api.crateApiSearchEngineSemanticCancellationTokenNew();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<UserRegexCancellationToken>>
+abstract class UserRegexCancellationToken implements RustOpaqueInterface {
+  /// Returns at once; the search stops at its next look.
+  void cancel();
+
+  bool get isCancelled;
+
+  factory UserRegexCancellationToken() =>
+      RustLib.instance.api.crateApiSearchEngineUserRegexCancellationTokenNew();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<UserRegexMatcher>>
+abstract class UserRegexMatcher implements RustOpaqueInterface {
+  /// Every match in `data` (one line of the book, HTML as shown), in UTF-16 units, with
+  /// one word range per word of a `WordSequence`.
+  List<HighlightMatch> findMatches({required String data});
+}
+
+/// State of the attached database `slug`'s line source.
+class AttachedLineSourceStatus {
+  /// A database path is configured ([`configure_attached_line_source`]).
+  final bool configured;
+
+  /// A connection is currently open.
+  final bool open;
+
+  /// Bumped whenever cached knowledge of the database is discarded.
+  final BigInt generation;
+
+  /// Books of this database asked for as [`TextStorage::LibraryDb`] that were stored
+  /// [`TextStorage::InIndex`] instead. Only grows within a process.
+  final BigInt libraryFallbacks;
+
+  const AttachedLineSourceStatus({
+    required this.configured,
+    required this.open,
+    required this.generation,
+    required this.libraryFallbacks,
+  });
+
+  @override
+  int get hashCode =>
+      configured.hashCode ^
+      open.hashCode ^
+      generation.hashCode ^
+      libraryFallbacks.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AttachedLineSourceStatus &&
+          runtimeType == other.runtimeType &&
+          configured == other.configured &&
+          open == other.open &&
+          generation == other.generation &&
+          libraryFallbacks == other.libraryFallbacks;
 }
 
 /// Per-`filePath` live-document counts paired with the truncation flag — the
@@ -1867,6 +2082,19 @@ class LineSourceStatus {
   /// process.
   final BigInt libraryFallbacks;
 
+  /// A user-books database path has been configured
+  /// ([`configure_user_books_line_source`]).
+  final bool userBooksConfigured;
+
+  /// A connection to the user-books database is currently open.
+  final bool userBooksOpen;
+
+  /// `generation` of the user-books source.
+  final BigInt userBooksGeneration;
+
+  /// `library_fallbacks` of personal (`uid:`) books.
+  final BigInt userBooksFallbacks;
+
   const LineSourceStatus({
     required this.configured,
     required this.open,
@@ -1874,6 +2102,10 @@ class LineSourceStatus {
     required this.hostApiReady,
     required this.generation,
     required this.libraryFallbacks,
+    required this.userBooksConfigured,
+    required this.userBooksOpen,
+    required this.userBooksGeneration,
+    required this.userBooksFallbacks,
   });
 
   @override
@@ -1883,7 +2115,11 @@ class LineSourceStatus {
       suspendDepth.hashCode ^
       hostApiReady.hashCode ^
       generation.hashCode ^
-      libraryFallbacks.hashCode;
+      libraryFallbacks.hashCode ^
+      userBooksConfigured.hashCode ^
+      userBooksOpen.hashCode ^
+      userBooksGeneration.hashCode ^
+      userBooksFallbacks.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1895,7 +2131,11 @@ class LineSourceStatus {
           suspendDepth == other.suspendDepth &&
           hostApiReady == other.hostApiReady &&
           generation == other.generation &&
-          libraryFallbacks == other.libraryFallbacks;
+          libraryFallbacks == other.libraryFallbacks &&
+          userBooksConfigured == other.userBooksConfigured &&
+          userBooksOpen == other.userBooksOpen &&
+          userBooksGeneration == other.userBooksGeneration &&
+          userBooksFallbacks == other.userBooksFallbacks;
 }
 
 /// חברת קבוצה מאוחדת: מיקום בלבד (בלי טקסט/הדגשה) — מספיק כדי להציג
@@ -3994,8 +4234,155 @@ enum TextStatus { ok, stale, unavailable }
 ///   a document's `segment` is the 0-based position of its row among the book's
 ///   rows ordered by `lineIndex`. Each line keeps a check of its exact text
 ///   (`lineCheck`), which the row read back must match. The lines the call lists in
-///   `stored_lines` are stored as for `InIndex` instead.
+///   `stored_lines` are stored as for `InIndex` instead. A personal book
+///   (`uid:<bookId>`) is read the same way from the user-books database configured
+///   with [`configure_user_books_line_source`], and a book of an attached database
+///   (`db:<slug>:<bookId>`) from the one configured with
+///   [`configure_attached_line_source`].
 enum TextStorage { libraryDb, inIndex }
+
+/// How a `/…/` pattern is searched (see [`parse_user_regex`]).
+enum UserRegexKind {
+  /// Not usable as a regex (not wrapped, syntax, too complex): search it as plain text.
+  invalid,
+
+  /// No whitespace: matched against whole index terms (`/מש.ה/`, `/[א-ת]+ים/`).
+  singleWord,
+
+  /// Words separated by a space or `\s+`: an adjacent phrase of term patterns, which may
+  /// continue onto the next line (`/(משה|אהרן) רבנו/`).
+  wordSequence,
+
+  /// Anything else that spans a space: matched against each line's text (`/שמע .* ישראל/`).
+  crossSpace,
+}
+
+/// The match ranges of one result of a cross-space search.
+class UserRegexLineMatches {
+  /// UTF-16 ranges in the result's whole line as [`SearchEngine::get_document_by_id`]
+  /// returns its `text` (the snippet is already painted). Empty for term kinds: their
+  /// snippets are painted, and [`UserRegexMatcher`] finds them in the book.
+  final List<HighlightRange> ranges;
+
+  const UserRegexLineMatches({required this.ranges});
+
+  @override
+  int get hashCode => ranges.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UserRegexLineMatches &&
+          runtimeType == other.runtimeType &&
+          ranges == other.ranges;
+}
+
+/// What [`parse_user_regex`] made of a query.
+class UserRegexPlan {
+  final UserRegexKind kind;
+
+  /// The pattern as searched: without `/…/` and edge anchors, folded like the index text
+  /// (no nikud, ASCII quotes, maqaf as a space). Empty when `Invalid`.
+  final String pattern;
+
+  /// The pattern of each word, for `SingleWord` (one) and `WordSequence`; empty otherwise.
+  final List<String> words;
+
+  /// Why the query is `Invalid`.
+  final String? reason;
+
+  const UserRegexPlan({
+    required this.kind,
+    required this.pattern,
+    required this.words,
+    this.reason,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^ pattern.hashCode ^ words.hashCode ^ reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UserRegexPlan &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          pattern == other.pattern &&
+          words == other.words &&
+          reason == other.reason;
+}
+
+/// One event of [`SearchEngine::search_user_regex_stream`].
+///
+/// The last event has `done` set and carries the final `total_count`/`book_counts` and
+/// `truncated` (and `cancelled` when the token stopped it). Term kinds also send their counts
+/// first, before the results, as the other streams do; a cross-space search reports
+/// `progress_done`/`progress_total` (candidate lines, or books read) and `found_so_far`
+/// while it runs, and the page's results as soon as they are found.
+class UserRegexStreamUpdate {
+  final UserRegexKind kind;
+  final List<SearchResult> results;
+
+  /// One entry per result, in order.
+  final List<UserRegexLineMatches> matchRanges;
+  final int? totalCount;
+  final Map<String, int>? bookCounts;
+  final int foundSoFar;
+  final int progressDone;
+  final int progressTotal;
+
+  /// Partial: a term budget ran out, more than `MAX_LINE_HITS` lines matched, or some lines
+  /// could not be read (the library database suspended or busy).
+  final bool truncated;
+  final bool done;
+  final bool cancelled;
+
+  const UserRegexStreamUpdate({
+    required this.kind,
+    required this.results,
+    required this.matchRanges,
+    this.totalCount,
+    this.bookCounts,
+    required this.foundSoFar,
+    required this.progressDone,
+    required this.progressTotal,
+    required this.truncated,
+    required this.done,
+    required this.cancelled,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^
+      results.hashCode ^
+      matchRanges.hashCode ^
+      totalCount.hashCode ^
+      bookCounts.hashCode ^
+      foundSoFar.hashCode ^
+      progressDone.hashCode ^
+      progressTotal.hashCode ^
+      truncated.hashCode ^
+      done.hashCode ^
+      cancelled.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UserRegexStreamUpdate &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          results == other.results &&
+          matchRanges == other.matchRanges &&
+          totalCount == other.totalCount &&
+          bookCounts == other.bookCounts &&
+          foundSoFar == other.foundSoFar &&
+          progressDone == other.progressDone &&
+          progressTotal == other.progressTotal &&
+          truncated == other.truncated &&
+          done == other.done &&
+          cancelled == other.cancelled;
+}
 
 /// כמה ממילות שאילתה מרובת-מילים חייבות להופיע בתוצאה (המסלול המתקדם).
 ///

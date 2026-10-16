@@ -37,7 +37,6 @@ use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
 use rayon::prelude::*;
 #[cfg(feature = "semantic-integration")]
 use std::collections::HashMap;
-use tantivy::columnar::Column;
 use tantivy::schema::Value;
 use tantivy::{DocAddress, Searcher, TantivyDocument};
 
@@ -94,14 +93,103 @@ static PRODUCTION_CHUNKER: Lazy<Chunker> = Lazy::new(|| {
 /// window alone, and the SHA-256 over it is most of the cost.
 pub fn column_values(lines: &[LineRef<'_>]) -> Vec<u64> {
     let chunker = &*PRODUCTION_CHUNKER;
+    let streamed = *STREAMED_KEYS;
     (0..lines.len())
         .into_par_iter()
         .map(|index| {
+            if streamed {
+                return streamed_column_value(lines, index);
+            }
             chunker
                 .embedded_text(lines, index)
                 .map_or(0, |text| ChunkKey::of(&text).column_value())
         })
         .collect()
+}
+
+/// The sidecar's key of each line, one by one: what [`column_values`] must give.
+#[cfg(test)]
+pub(crate) fn sidecar_column_values(lines: &[LineRef<'_>]) -> Vec<u64> {
+    (0..lines.len())
+        .map(|index| {
+            PRODUCTION_CHUNKER
+                .embedded_text(lines, index)
+                .map_or(0, |text| ChunkKey::of(&text).column_value())
+        })
+        .collect()
+}
+
+/// Whether the production chunker is the recipe [`streamed_column_value`] follows.
+static STREAMED_KEYS: Lazy<bool> = Lazy::new(|| {
+    use otzaria_semantic_search::semantic::recipe::{
+        ChunkingAlgorithm, EmbeddingTextRecipe, TextNormalizationRecipe,
+    };
+    let config = production_chunking();
+    PRODUCTION_CHUNKER.recipe()
+        == (
+            ChunkingAlgorithm::AnchoredLine,
+            EmbeddingTextRecipe::RolePrefixedLineOrNeighbourContext,
+            TextNormalizationRecipe::AsSuppliedByCorpus,
+        )
+        && (
+            config.min_embeddable_chars,
+            config.min_meaningful_chars,
+            config.context_window_lines,
+            config.max_chunk_chars,
+        ) == (5, 20, 2, 512)
+});
+
+/// `ChunkKey::of(&chunker.embedded_text(lines, index)).column_value()` (0 for `None`) for the
+/// production recipe, hashing the line in place: the sidecar builds the text first, a copy
+/// of the line and another with its prefix. Short lines still join their window.
+fn streamed_column_value(lines: &[LineRef<'_>], index: usize) -> u64 {
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    use sha2::{Digest, Sha256};
+    let text = lines[index].text;
+    let char_count = text.trim().chars().take(20).count();
+    if char_count < 5 {
+        return 0;
+    }
+    let context;
+    let embedding_text = if char_count < 20 {
+        context = context_text(lines, index);
+        context.as_str()
+    } else {
+        text
+    };
+    let trimmed = embedding_text.trim();
+    let truncated = match trimmed.char_indices().nth(512) {
+        Some((end, _)) => &trimmed[..end],
+        None => trimmed,
+    };
+    let passage = truncated.trim();
+    if passage.is_empty() {
+        return 0;
+    }
+    let digest = Sha256::new()
+        .chain_update(PASSAGE_PREFIX.as_bytes())
+        .chain_update(passage.as_bytes())
+        .finalize();
+    u64::from_be_bytes(digest[..8].try_into().expect("a digest holds 32 bytes"))
+}
+
+/// The production recipe's text for a short line: it and up to two neighbours on each side
+/// within its section, joined with spaces.
+fn context_text(lines: &[LineRef<'_>], index: usize) -> String {
+    let section = lines[index].section;
+    let mut start = index;
+    while start > 0 && index - start < 2 && lines[start - 1].section == section {
+        start -= 1;
+    }
+    let mut end = index;
+    while end + 1 < lines.len() && end - index < 2 && lines[end + 1].section == section {
+        end += 1;
+    }
+    lines[start..=end]
+        .iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The key of the line at `ordinal` of a book, computed again from what the index stores:
@@ -148,8 +236,7 @@ pub fn recompute_chunk_keys(
     // instead of five.
     if lines.len() == 1 {
         let address = book[lines.start];
-        let document: TantivyDocument = searcher
-            .doc(address)
+        let document: TantivyDocument = crate::doc_store::load_document(searcher, address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         if document
             .get_first(is_pdf_field)
@@ -179,11 +266,12 @@ pub fn recompute_chunk_keys(
     let mut sections = Vec::with_capacity(end - start + 1);
     let mut pdf = Vec::with_capacity(end - start + 1);
     // Opened once per segment: opening a column reads its whole block index.
-    let mut section_columns: Vec<Option<Column<u64>>> =
+    let mut section_columns: Vec<Option<crate::derived_columns::SectionIdColumn>> =
         vec![None; searcher.segment_readers().len()];
+    let mut loader = crate::doc_store::DocumentLoader::new(searcher);
     for &address in &book[start..=end] {
-        let document: TantivyDocument = searcher
-            .doc(address)
+        let document: TantivyDocument = loader
+            .load(address)
             .with_context(|| format!("reading the document at {address:?}"))?;
         pdf.push(
             document
@@ -195,12 +283,9 @@ pub fn recompute_chunk_keys(
         // FAST and not stored, so read from its column.
         let column = match &mut section_columns[address.segment_ord as usize] {
             Some(column) => column,
-            unopened => unopened.insert(
-                searcher
-                    .segment_reader(address.segment_ord)
-                    .fast_fields()
-                    .u64("sectionId")?,
-            ),
+            unopened => unopened.insert(crate::derived_columns::SectionIdColumn::open(
+                searcher.segment_reader(address.segment_ord),
+            )?),
         };
         sections.push(
             column
@@ -248,11 +333,12 @@ fn key_texts(
 /// The text of the lines at `addresses`, as a key is computed from it.
 #[cfg(feature = "semantic-integration")]
 pub(crate) fn line_texts(searcher: &Searcher, addresses: &[DocAddress]) -> Result<Vec<String>> {
+    let mut loader = crate::doc_store::DocumentLoader::new(searcher);
     let documents = addresses
         .iter()
         .map(|&address| {
-            let document: TantivyDocument = searcher
-                .doc(address)
+            let document: TantivyDocument = loader
+                .load(address)
                 .with_context(|| format!("reading the document at {address:?}"))?;
             Ok((address, document))
         })
@@ -274,7 +360,7 @@ pub(crate) fn recompute_chunk_keys_at(
         section: Option<u64>,
     }
     let is_pdf_field = searcher.schema().get_field("isPdf")?;
-    let mut section_columns: Vec<Option<Column<u64>>> =
+    let mut section_columns: Vec<Option<crate::derived_columns::SectionIdColumn>> =
         vec![None; searcher.segment_readers().len()];
     let mut read: HashMap<DocAddress, Read> = HashMap::new();
     let mut read_all = |mut addresses: Vec<DocAddress>, read: &mut HashMap<DocAddress, Read>| {
@@ -286,23 +372,23 @@ pub(crate) fn recompute_chunk_keys_at(
         let documents = addresses
             .into_par_iter()
             .with_min_len(8)
-            .map(|address| {
-                let document: TantivyDocument = searcher
-                    .doc(address)
-                    .with_context(|| format!("reading the document at {address:?}"))?;
-                Ok((address, document))
-            })
+            .map_init(
+                || crate::doc_store::DocumentLoader::new(searcher),
+                |loader, address| {
+                    let document: TantivyDocument = loader
+                        .load(address)
+                        .with_context(|| format!("reading the document at {address:?}"))?;
+                    Ok((address, document))
+                },
+            )
             .collect::<Result<Vec<_>>>()?;
         let texts = indexed_texts(searcher, &documents)?;
         for ((address, document), line) in documents.iter().zip(texts) {
             let column = match &mut section_columns[address.segment_ord as usize] {
                 Some(column) => column,
-                unopened => unopened.insert(
-                    searcher
-                        .segment_reader(address.segment_ord)
-                        .fast_fields()
-                        .u64("sectionId")?,
-                ),
+                unopened => unopened.insert(crate::derived_columns::SectionIdColumn::open(
+                    searcher.segment_reader(address.segment_ord),
+                )?),
             };
             read.insert(
                 *address,
@@ -638,6 +724,70 @@ mod tests {
     use crate::api::search_engine::{SearchEngine, TextStorage};
     use tantivy::Index;
     use tempfile::TempDir;
+
+    /// Random books of short, long, blank and padded lines across section breaks.
+    #[test]
+    fn streamed_keys_are_the_sidecar_keys() {
+        assert!(
+            *STREAMED_KEYS,
+            "the production recipe is the one the stream follows"
+        );
+        const WORDS: &[&str] = &[
+            "א",
+            "בראשית",
+            "ברא",
+            " ",
+            "  ",
+            "\t",
+            "\u{00A0}",
+            "\u{2003}",
+            "x",
+            "ורמב\"ם",
+            "׃",
+            "ּ",
+            "(א)",
+            "שלום עולם ומלואו",
+        ];
+        let mut state = 0x1234_5678_9ABC_DEF1u64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        for _ in 0..3_000 {
+            let line_count = 1 + next(12);
+            let mut section = 0u64;
+            let texts: Vec<(String, u64)> = (0..line_count)
+                .map(|_| {
+                    if next(4) == 0 {
+                        section += 1;
+                    }
+                    let words = match next(5) {
+                        0 => 0,
+                        1 => 1 + next(3),
+                        2 => 3 + next(6),
+                        3 => 100 + next(150),
+                        _ => 8 + next(30),
+                    };
+                    let text: String = (0..words).map(|_| WORDS[next(WORDS.len())]).collect();
+                    (text, section)
+                })
+                .collect();
+            let lines: Vec<LineRef<'_>> = texts
+                .iter()
+                .map(|(text, section)| LineRef {
+                    text,
+                    section: *section,
+                })
+                .collect();
+            assert_eq!(
+                column_values(&lines),
+                sidecar_column_values(&lines),
+                "{texts:?}"
+            );
+        }
+    }
 
     /// `chunking_identity` in the model family Meivin Round 2's vectors are published under,
     /// the sidecar's `config/models/meivin-round2-onnx/model.json` at the pinned revision.

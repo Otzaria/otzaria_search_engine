@@ -1,5 +1,74 @@
 # Changelog
 
+## 4.0.0 – 2026-10-16
+
+> Breaking for every existing index: schema 6 replaces the document store and
+> drops fields, so an index built by 3.x (schema 5) is `rebuild_required`. It
+> ships as 4.0.0, not as a 3.x release that `^3.0.0` would take on its own.
+> Dart code that only calls the existing API is unaffected; the new
+> parameters and status fields have defaults.
+
+### Breaking
+
+- **Index schema 6**: a lean document store (zstd blocks of 64K, holding only
+  what cannot be derived), `id` no longer indexed, no field norms for `id` and
+  `filePath`, `contentHash` and `textHash` kept once per book, and
+  `sectionId`/`generationSort` derived from `id` at query time. An index of
+  schema 5 is `rebuild_required` and is rebuilt by the existing flow. A word
+  with gershayim is no longer indexed twice: the spelling variants are expanded
+  at query time, so `/רמבם/` finds רמב"ם.
+
+### Added
+
+- **A regular expression the user wraps in slashes (`/…/`)**: `parseUserRegex`
+  classifies it (`invalid`, `singleWord`, `wordSequence`, `crossSpace`);
+  `searchUserRegexStream`, `countUserRegex`, `countByBookUserRegex` and
+  `getFacetCountsUserRegex` run it, cancellable by a
+  `UserRegexCancellationToken`, and `prepareUserRegexMatcher` finds its matches
+  in a displayed line. A cross-space search reads candidate lines, streams
+  progress and its results, resumes from where a cancelled scan stopped, and
+  shares one scan between parallel calls.
+- **Indexing in the engine**: `addLibraryBooks` reads official books itself,
+  prepares them in parallel under a memory cap and indexes them as one batch,
+  one failing book failing alone; `libraryBookContentFingerprint` and
+  `IndexingCancellationToken` accompany it, and `library_indexing.dart` is now
+  exported by the package.
+- **Personal books from `user_books.db`**: `configureUserBooksLineSource`
+  reads `uid:<bookId>` books as `libraryDb` from a second source, with
+  `LineSourceStatus.userBooks*` fields. (#48)
+- **Attached databases**: `configureAttachedLineSource` and
+  `attachedLineSourceStatus` read `db:<slug>:<id>` books from an attached
+  database, opened hardened and, on request, immutable.
+- **`anyOrder` in advanced search**: the query words in any order within one
+  window of `(n-1) * (distance + 1)` positions. (#49)
+- **Interest search shows a short line with its context** and highlights it.
+  (#46)
+- **`cancelLexicalSearch`** cancels a lexical search by request id.
+
+### Changed
+
+- **Match quality**: the term dictionary is scanned through `regex-automata`
+  DFAs with a shared cache, candidates are collected in ranked tiers, relevance
+  order ranks exact, affixed, spelling and other expansions in that order, and
+  the prefix, suffix, full/defective spelling and typo rules were tightened
+  (a root under three letters takes no suffixes; typos by word length).
+  Highlights follow the same rules. (#45)
+- **Speed**: dense per-book counts, a thread pool of its own for segment
+  collection, a page and highlight cache keyed by the searcher's segments,
+  lookups by id as per-segment runs, line normalization and edge scanning in
+  one pass, and a thin-LTO release build.
+- **Dependencies**: tantivy from `Otzaria/tantivy@otzaria-0.26` (8b88320)
+  without its default features, `jieba-rs` removed.
+
+### Fixed
+
+- **A cached regex scan follows the database's `data_version`**, also across
+  separate connections, and a line that cannot be decoded marks the result
+  partial instead of being stored as a complete answer.
+- **Overlapping windows in any-order ranking** are all considered.
+- **A word with a suffix written with a non-final letter before the suffix**
+  is found and highlighted. (#45)
+
 ## 3.1.0 – 2026-10-05
 
 > Nothing here breaks Dart code or an index built by 3.0.0: the new response

@@ -143,7 +143,7 @@ fn index_without_column(dir: &Path) {
         dir.join("otzaria_index_meta.json"),
         serde_json::json!({
             "format": "otzaria-search-index",
-            "schema_version": 5,
+            "schema_version": 6,
             "engine_version": "0.9.0",
             "tantivy_version": "0.26.2",
             "created_at_unix_seconds": 0
@@ -1570,13 +1570,20 @@ fn a_line_whose_column_is_stale_is_neither_a_result_nor_a_sibling() {
             field("topics") => Facet::from_text("/מקרא/תורה").unwrap(),
             field("contentHash") => 0u64,
             field("textHash") => 0u64,
-            field("sectionId") => column("sectionId"),
-            field("generationSort") => 0u64,
+            field("sectionOffset") => column("sectionOffset"),
+            field("generation") => 0u64,
             field("lineHash") => column("lineHash"),
         );
         forged.add_u64(field("chunkKey"), column("chunkKey"));
         let mut writer = index.writer(15_000_000).unwrap();
-        writer.delete_term(Term::from_field_u64(field("id"), id));
+        // `id` is not indexed: a range over its column.
+        let id_term = Term::from_field_u64(field("id"), id);
+        writer
+            .delete_query(Box::new(tantivy::query::RangeQuery::new(
+                std::ops::Bound::Included(id_term.clone()),
+                std::ops::Bound::Included(id_term),
+            )))
+            .unwrap();
         writer.add_document(forged).unwrap();
         writer.commit().unwrap();
         id
@@ -2326,7 +2333,7 @@ fn a_release_that_requires_schema_5_serves_an_index_without_the_column() {
         &std::fs::read_to_string(library.index.join("otzaria_index_meta.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(metadata["schema_version"], 5);
+    assert_eq!(metadata["schema_version"], 6);
     assert!(
         metadata.get("chunk_key_version").is_none(),
         "the index stayed without a recipe for its column"

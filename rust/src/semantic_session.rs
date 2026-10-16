@@ -26,7 +26,7 @@ pub(crate) struct SessionKey {
     /// The index's segments and their deletes, in order: a reload that changed neither keeps
     /// the session, whose addresses then hold in the new searcher too.
     pub(crate) index_content: u64,
-    pub(crate) library_generation: (u64, Option<i64>, bool),
+    pub(crate) library_generation: crate::semantic_resolver::LibraryGeneration,
     pub(crate) vectors_generation: Option<u64>,
     pub(crate) epoch: u64,
 }
@@ -365,7 +365,7 @@ mod tests {
             facets: Vec::new(),
             options: String::new(),
             index_content,
-            library_generation: (0, None, false),
+            library_generation: Default::default(),
             vectors_generation: None,
             epoch: 0,
         }
