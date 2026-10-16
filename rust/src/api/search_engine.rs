@@ -26643,6 +26643,142 @@ mod tests {
             assert_eq!(probe_lines(&engine).len(), 4);
         }
 
+        /// Changed-book windows have a bounded discovery budget. Exceeding it never
+        /// exposes a partial arrival set as complete: unfiltered planning backs off and
+        /// filtered planning reports why an update is needed.
+        #[test]
+        fn changed_window_discovery_overflow_backs_off_without_partial_results() {
+            use crate::semantic_resolver::LiveResolver;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let long = (0..600)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            engine.delete_documents_by_file_path(BOOK).unwrap();
+            engine
+                .add_text_book(
+                    "ספר".into(),
+                    "/root".into(),
+                    BOOK.into(),
+                    0,
+                    0,
+                    long,
+                    None,
+                    TextStorage::InIndex,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let cancel = CancellationToken::new();
+            let unfiltered = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            let filtered = SidecarSearchFilters {
+                book_paths: None,
+                facets: Some(vec!["/root".into()]),
+                include_pdf: None,
+            };
+            let previous = crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(1));
+            let unfiltered = resolver.plan(&unfiltered, &view, &cancel);
+            let filtered = resolver.plan(&filtered, &view, &cancel);
+            crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+            assert!(
+                unfiltered.unwrap().is_none(),
+                "no truncated unfiltered plan"
+            );
+            let error = filtered
+                .err()
+                .expect("a filter cannot silently omit discovered windows");
+            assert!(
+                error
+                    .to_string()
+                    .contains("changed-book window occurrences"),
+                "{error}"
+            );
+        }
+
+        /// The working-set cap is shared across Rayon workers and changed books,
+        /// rather than allowing each book to allocate the complete budget independently.
+        #[test]
+        fn changed_window_discovery_budget_is_shared_across_books() {
+            use crate::semantic_resolver::LiveResolver;
+            let dir = TempDir::new().unwrap();
+            let mut engine = open(
+                &dir,
+                built_of_books(
+                    &dir,
+                    false,
+                    &[
+                        (BOOK, "ספר ראשון עם שורה ארוכה מספיק לחיפוש".into()),
+                        (OTHER, "ספר שני עם שורה אחרת ארוכה מספיק לחיפוש".into()),
+                    ],
+                ),
+            );
+            let long = (0..180)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let windows = crate::semantic_keys::window_keys(&long).len();
+            assert!(windows > 1);
+            for (order, path) in [BOOK, OTHER].into_iter().enumerate() {
+                engine.delete_documents_by_file_path(path).unwrap();
+                engine
+                    .add_text_book(
+                        "ספר".into(),
+                        "/root".into(),
+                        path.into(),
+                        order as u32,
+                        0,
+                        long.clone(),
+                        None,
+                        TextStorage::InIndex,
+                        None,
+                    )
+                    .unwrap();
+            }
+            engine.commit().unwrap();
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            let previous =
+                crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(windows + 1));
+            let planned = resolver.plan(&filters, &view, &CancellationToken::new());
+            crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+            assert!(
+                planned.unwrap().is_none(),
+                "each book fits, but their combined window working set exceeds the cap"
+            );
+        }
+
         fn lookups(engine: &SearchEngine) -> u64 {
             engine
                 .semantic_resolver
