@@ -509,6 +509,22 @@ fn the_family_given_chooses_whether_a_long_line_plans_its_windows() {
             .map(|record| (record.ordinal, record.window))
             .collect();
         assert_eq!(plan.records.is_windowed(), chunking.window_chars > 0);
+        if plan.records.is_windowed() {
+            // Current indexes store one textHash value per book, leaving other text
+            // documents sparse. Missing entries must not invalidate the present hash.
+            let engine = SearchEngine::new(index.to_str().unwrap());
+            let expected = engine
+                .get_book_text_fingerprint("/books/l.txt".into())
+                .unwrap();
+            assert_ne!(expected, 0);
+            let hashes = plan.book_source_hashes().unwrap().unwrap();
+            assert_eq!(hashes.get("/books/l.txt"), Some(&expected));
+        } else {
+            assert!(
+                plan.book_source_hashes().unwrap().is_none(),
+                "legacy family metadata stays unchanged"
+            );
+        }
 
         let corpus = TantivyCorpus::from_index_path(
             &index,

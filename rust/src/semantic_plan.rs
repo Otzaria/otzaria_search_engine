@@ -135,16 +135,13 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
         let hashes: BTreeMap<_, _> = books
             .iter()
             .map(|(name, docs)| {
-                let first = docs
-                    .first()
-                    .and_then(|address| {
-                        text_hashes[address.segment_ord as usize].first(address.doc_id)
-                    })
-                    .unwrap_or(0);
-                let consistent = docs.iter().all(|address| {
-                    text_hashes[address.segment_ord as usize].first(address.doc_id) == Some(first)
+                let hash = docs.iter().fold(None, |seen, address| {
+                    crate::api::search_engine::combine_fingerprint(
+                        seen,
+                        text_hashes[address.segment_ord as usize].first(address.doc_id),
+                    )
                 });
-                (name, if consistent { first } else { 0 })
+                (name, hash.unwrap_or(0))
             })
             .collect();
         std::fs::write(dir.join(BOOK_HASHES_FILE), serde_json::to_vec(&hashes)?)

@@ -685,20 +685,14 @@ impl CorpusBooks for TantivyCorpus {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut source = None;
-        for id in ids {
+        let source = ids.iter().fold(None, |seen, id| {
             let address = self.locations[id].address;
-            let Some(hash) = columns[address.segment_ord as usize]
-                .first(address.doc_id)
-                .filter(|&hash| hash != 0)
-            else {
-                return Ok(None);
-            };
-            if *source.get_or_insert(hash) != hash {
-                return Ok(None);
-            }
-        }
-        Ok(source)
+            crate::api::search_engine::combine_fingerprint(
+                seen,
+                columns[address.segment_ord as usize].first(address.doc_id),
+            )
+        });
+        Ok(source.filter(|&hash| hash != 0))
     }
 
     fn book_keys(&self) -> Result<Vec<String>, PackError> {

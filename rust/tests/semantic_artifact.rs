@@ -171,6 +171,14 @@ fn build_library() -> Library {
 /// [`build_library`] of `books`, into an index without the column when `without_column`
 /// asks.
 fn build_library_of(books: &[Book], without_column: bool) -> Library {
+    build_library_under(books, without_column, production_chunking())
+}
+
+fn build_library_under(
+    books: &[Book],
+    without_column: bool,
+    chunking: otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+) -> Library {
     let root = TempDir::new().unwrap();
     let index = root.path().join("tantivy");
     let work = root.path().join("work");
@@ -185,7 +193,6 @@ fn build_library_of(books: &[Book], without_column: bool) -> Library {
     // The chunking this build keys the index's lines under, as the library's vectors are
     // built with it. The stand-in embeds a bag of words, so a query still ranks first the
     // line whose words it repeats, role prefixes aside.
-    let chunking = production_chunking();
     let model = ModelIdentity {
         family_id: "test-mock@0000000".to_string(),
         tokenizer_checksum: mock::stub_tokenizer_checksum(),
@@ -923,13 +930,12 @@ fn a_line_inserted_above_is_found_where_it_moved() {
     }
 }
 
-/// What an index without a `chunkKey` column this build uses does not find, as the README
-/// says: a line the set recorded, once it is more than 16 lines from there, and a text that
+/// What a legacy anchor-family set cannot find without a `chunkKey` column this build uses: a line the set recorded, once it is more than 16 lines from there, and a text that
 /// moved to another book, filtered or not. The same changes are found with the column (the
 /// tests around this one).
 #[test]
-fn an_index_without_the_column_finds_a_line_only_near_where_the_set_recorded_it() {
-    let library = build_library_of(&default_books(), true);
+fn a_legacy_anchor_set_without_the_column_finds_a_line_only_near_its_recorded_hint() {
+    let library = build_library_under(&default_books(), true, production_chunking().anchor());
     let mut engine = library.engine();
     engine.open_semantic_artifact(library.input()).unwrap();
     let probe_found = |engine: &SearchEngine, facets: &[&str]| {
@@ -978,6 +984,39 @@ fn an_index_without_the_column_finds_a_line_only_near_where_the_set_recorded_it(
         !probe_found(&engine, &["/חדש"]),
         "a text in another book, under its filter"
     );
+}
+
+/// New occurrence metadata enables a complete book search by its parent anchor even
+/// when the index has no compatible column. This capability belongs to the v2 family;
+/// legacy anchor-family records retain their bounded text fallback above.
+#[test]
+fn a_window_family_anchor_without_the_column_is_found_after_a_far_shift() {
+    let library = build_library_of(&default_books(), true);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let above = (0..40)
+        .map(|n| format!("שורה חדשה בראש הספר מספר {n} ארוכה דיה לעמוד לבדה"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("{above}\n{GENESIS_TEXT}"),
+        ),
+    );
+    for facets in [&[][..], &["/מקרא"][..]] {
+        let found = semantic_lines(&engine, PROBE_LINE, facets);
+        assert!(
+            found.iter().any(|(book, text, ordinal)| book == GENESIS
+                && text == PROBE_LINE
+                && *ordinal == 43),
+            "the v2 anchor is found across the book without a column: {found:?}"
+        );
+    }
 }
 
 /// A text that left its book for another is found in the other one: the column is passed
@@ -3539,31 +3578,22 @@ fn qa_shared_inner_window_copied_under_a_new_parent_within_the_same_book_is_foun
 #[test]
 fn qa_published_book_hashes_match_the_live_index_source() {
     use otzaria_semantic_search::semantic::segment_set::SegmentSet;
-    use tantivy::ReloadPolicy;
     let library = build_library();
-    let index = tantivy::Index::open_in_dir(&library.index).unwrap();
-    let searcher = index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::Manual)
-        .try_into()
-        .unwrap()
-        .searcher();
+    let engine = library.engine();
     let set = SegmentSet::open(&library.vectors).unwrap();
-    for reader in searcher.segment_readers() {
-        let source_hashes = reader.fast_fields().u64("textHash").unwrap();
-        let paths = reader.fast_fields().str("filePath").unwrap().unwrap();
-        for doc in reader.doc_ids_alive() {
-            let hash = source_hashes.first(doc).unwrap();
-            assert_ne!(hash, 0);
-            let mut path = String::new();
-            paths
-                .ord_to_str(paths.term_ords(doc).next().unwrap(), &mut path)
-                .unwrap();
-            assert_eq!(
-                set.book_source_hash(&path),
-                Some(hash),
-                "published metadata must allow unchanged-book detection: {path}"
-            );
-        }
+    // Current indexes stamp textHash on one document per book. Compare fingerprints
+    // through the public book collector, which also supports older dense columns.
+    // These fixtures are text books; a missing/zero fingerprint must not be skipped.
+    for (_, _, path, _, _) in default_books() {
+        let hash = engine.get_book_text_fingerprint(path.to_string()).unwrap();
+        assert_ne!(
+            hash, 0,
+            "the text book has a verifiable source fingerprint: {path}"
+        );
+        assert_eq!(
+            set.book_source_hash(path),
+            Some(hash),
+            "published metadata must allow unchanged-book detection: {path}"
+        );
     }
 }
