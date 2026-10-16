@@ -60,8 +60,10 @@ pub(crate) fn read_library_book(
     book_id: i64,
     db_title: Option<&str>,
 ) -> std::result::Result<Option<IndexingText>, SourceUnavailable> {
+    // The app puts `line_note` bodies back only in books of the library (`_dbBookNotes`).
+    let with_notes = source == Source::Library;
     line_source::with_store_for_indexing(source, |store| {
-        store.read_book_for_indexing(book_id, db_title)
+        store.read_book_for_indexing(book_id, db_title, with_notes)
     })
 }
 
@@ -126,8 +128,9 @@ pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome
         Ok(Some(text)) if !text.text.is_empty() => text,
         Ok(_) => return Outcome::Done(result(book, LibraryBookStatus::Missing)),
     };
-    // As the app: a row holding `\n` would shift every later line off its row.
-    let text_storage = if text.row_has_newline {
+    // As the app: a row holding `\n` would shift every later line off its row, and a book
+    // whose `line_note` bodies were put back is no longer its rows.
+    let text_storage = if text.row_has_newline || text.has_notes {
         TextStorage::InIndex
     } else {
         book.text_storage
