@@ -124,8 +124,10 @@ static STREAMED_KEYS: Lazy<bool> = Lazy::new(|| {
     use otzaria_semantic_search::semantic::recipe::{
         ChunkingAlgorithm, EmbeddingTextRecipe, TextNormalizationRecipe,
     };
-    let config = production_chunking();
-    PRODUCTION_CHUNKER.recipe()
+    let config = production_chunking().anchor();
+    Chunker::new(config.clone())
+        .expect("the production anchor recipe is supported")
+        .recipe()
         == (
             ChunkingAlgorithm::AnchoredLine,
             EmbeddingTextRecipe::RolePrefixedLineOrNeighbourContext,
