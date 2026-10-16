@@ -19,7 +19,7 @@ sqlite-bundled = ["rusqlite/bundled"]
 # of the SQLite instance Dart already loaded, handed over by
 # `sqlite3_auto_extension(sqlite_host_entry_address())`.
 sqlite-host = ["rusqlite/loadable_extension"]
-# The production feature, and the one cargokit.yaml builds the application with:
+# The production feature, and the one the build hook builds the application with:
 # the ONNX backend, for the Meivin ONNX graph the application uses. It is the
 # only embedding backend there is. GGUF models and llama.cpp are not supported:
 # no feature compiles llama.cpp or ggml, and a model that is not an `*.onnx`
@@ -151,6 +151,6 @@ tantivy-fst = { path = "vendor/tantivy-fst" }
 # #3134-#3138 and #3189-#3191. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
 tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "8b8832069b871e11fe0fd0da1c4c2de8c270596f" }
 
-# Applies to cargokit's `--release` builds as well: it passes no profile overrides.
+# Applies to the build hook's `--release` builds as well: it passes no profile overrides.
 [profile.release]
 lto = "thin"

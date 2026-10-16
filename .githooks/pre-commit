@@ -7,7 +7,7 @@
 #
 # למה צריך גם המרת CRLF->LF: dart/rustfmt משמרים את סוג שורת הקצה של הקובץ,
 # ו-`flutter pub publish` אורז את קבצי תיקיית העבודה — כך ש-CRLF ממחשב Windows
-# היה מתפרסם ל-pub.dev ושובר את בניית macOS/Linux/Android (cargokit).
+# היה מתפרסם ל-pub.dev כפי שהוא.
 #
 # רץ על כל מחשב (Windows / macOS / Linux) דרך core.hooksPath.
 # הפעלה חד-פעמית בכל מחשב:  git config core.hooksPath .githooks

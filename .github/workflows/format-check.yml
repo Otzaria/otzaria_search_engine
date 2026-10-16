@@ -37,9 +37,8 @@ jobs:
         working-directory: example
         run: flutter pub get
 
-      # בודק רק את קוד החבילה (לא cargokit ה-vendored).
       - name: dart format --set-exit-if-changed
-        run: dart format --output=none --set-exit-if-changed lib example tool
+        run: dart format --output=none --set-exit-if-changed lib example tool hook
 
   line-endings:
     name: Line endings (no CRLF)
