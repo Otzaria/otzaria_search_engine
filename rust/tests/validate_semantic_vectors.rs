@@ -463,10 +463,13 @@ fn a_release_with_long_lines_covers_and_resolves_their_windows() {
     assert_eq!(g3["uncoveredWindows"], 0);
     // G3 is recipe coverage. The cap deliberately leaves source tails outside its
     // emitted spans; report that separately even when every planned occurrence resolves.
-    assert!(g3["sourceTextChars"].as_u64().unwrap() > g3["windowedTextChars"].as_u64().unwrap());
-    assert!(g3["unwindowedTextChars"].as_u64().unwrap() > 0);
-    assert_eq!(g3["partiallyWindowedLines"], 2);
-    assert_eq!(g3["unwindowedLines"], 0);
+    assert!(
+        g3["standaloneTextChars"].as_u64().unwrap()
+            > g3["windowedStandaloneChars"].as_u64().unwrap()
+    );
+    assert!(g3["unwindowedStandaloneChars"].as_u64().unwrap() > 0);
+    assert_eq!(g3["partiallyWindowedStandaloneLines"], 2);
+    assert_eq!(g3["unwindowedStandaloneLines"], 0);
     let (status, g4) = gate(&report, "G4");
     assert_eq!(status, "passed", "{printed}");
     assert_eq!(g4["records"], g4["atHint"]);
@@ -609,6 +612,34 @@ fn a_window_key_mislabeled_as_an_anchor_fails_runtime_coverage_and_resolution() 
     assert_eq!(result.covered_windows, 0, "{result:?}");
     assert_eq!(result.records, 1);
     assert_eq!(result.gone, 1, "{result:?}");
+}
+
+/// Short context-borrowing anchors can embed a different joined span, so an exact
+/// standalone character denominator must exclude them rather than imply whole-library coverage.
+#[test]
+fn source_character_coverage_excludes_short_context_borrowing_lines() {
+    let standalone = line(12, 0);
+    let short = "כותרת קצרה";
+    assert!(short.chars().count() < production_chunking().min_meaningful_chars);
+    let release = release(&[(
+        "ספר חלונות",
+        "/אחר",
+        "/books/windows.txt",
+        0,
+        format!("{standalone}\n{short}"),
+    )]);
+    let set =
+        otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&release.vectors).unwrap();
+    let result = search_engine::semantic_plan::validate(&release.index, &set).unwrap();
+    assert_eq!(result.borrowed_context_lines, 1, "{result:?}");
+    assert_eq!(
+        result.standalone_text_chars,
+        standalone.chars().count() as u64
+    );
+    assert_eq!(
+        result.windowed_standalone_chars,
+        result.standalone_text_chars
+    );
 }
 
 /// A gate whose inputs are not given has not run, and the release has not passed it; one

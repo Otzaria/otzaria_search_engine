@@ -139,7 +139,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     for (batch, chunk) in names.chunks(BOOKS_PER_BATCH).enumerate() {
         let planned = chunk
             .par_iter()
-            .map(|name| plan_book(&searcher, &columns, &chunker, &books[*name], false))
+            .map(|name| plan_book(&searcher, &columns, &chunker, &books[*name], None))
             .collect::<Result<Vec<_>>>()?;
         for (offset, lines) in planned.into_iter().enumerate() {
             let book = (batch * BOOKS_PER_BATCH + offset) as u32;
@@ -236,17 +236,19 @@ pub struct Validation {
     pub keyed_windows: u64,
     /// Those whose key the set records in their line's book.
     pub covered_windows: u64,
-    /// Normalized source characters in non-PDF lines, excluding any passage prefix.
-    pub source_text_chars: u64,
-    /// Source character positions inside the union of the recipe's declared window spans.
-    /// This is a source-span estimate: short-line neighbour context can change literal
-    /// model-input coverage, and duplicate-window suppression can make it conservative.
-    /// It is not a measurement of semantic recall.
-    pub windowed_text_chars: u64,
-    /// Nonempty source lines with no emitted window.
-    pub unwindowed_lines: u64,
-    /// Source lines with some, but not all, character positions in emitted window spans.
-    pub partially_windowed_lines: u64,
+    /// Normalized characters in standalone non-PDF source lines. Short lines which
+    /// borrow neighbour context are excluded, as their first window spans joined text.
+    pub standalone_text_chars: u64,
+    /// Standalone source character positions inside emitted window spans. Overlaps count
+    /// once and passage prefixes do not count. Duplicate-window suppression can make
+    /// this conservative; it is not semantic recall or whole-library text coverage.
+    pub windowed_standalone_chars: u64,
+    /// Nonempty standalone source lines with no emitted window.
+    pub unwindowed_standalone_lines: u64,
+    /// Standalone source lines with some, but not all, positions in emitted window spans.
+    pub partially_windowed_standalone_lines: u64,
+    /// Short lines whose embeddings borrow context, excluded from character coverage.
+    pub borrowed_context_lines: u64,
     /// The set's records: in the index's books, and in books the index does not hold.
     pub records: u64,
     /// Records the runtime resolver verifies at their own hint, with their occurrence
@@ -289,7 +291,9 @@ pub fn validate(
     let (searcher, chunk_key) = open_index(index_path)?;
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
-    let chunker = Chunker::new(chunking_of(set.identity().model.chunking_identity)?)?;
+    let chunking = chunking_of(set.identity().model.chunking_identity)?;
+    let standalone_min_chars = chunking.min_meaningful_chars;
+    let chunker = Chunker::new(chunking)?;
     let names: Vec<&String> = books.keys().collect();
     let cache = Mutex::new(ResolverCache::default());
     let resolver = LiveResolver::new(searcher.clone(), chunk_key, &cache)?;
@@ -305,59 +309,74 @@ pub fn validate(
             .map(|name| {
                 let mut mismatches = 0u64;
                 let mut text_coverage = TextSpanCoverage::default();
-                let mut unwindowed_lines = 0u64;
-                let mut partially_windowed_lines = 0u64;
+                let mut unwindowed_standalone_lines = 0u64;
+                let mut partially_windowed_standalone_lines = 0u64;
                 let key =
                     |sha256: &[u8; 32]| <[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32");
-                let keys = plan_book(&searcher, &columns, &chunker, &books[*name], true)?
-                    .into_iter()
-                    .map(|line| {
-                        text_coverage.source += line.coverage.source;
-                        text_coverage.windowed += line.coverage.windowed;
-                        unwindowed_lines +=
-                            u64::from(line.coverage.source > 0 && line.coverage.windowed == 0);
-                        partially_windowed_lines += u64::from(
-                            line.coverage.windowed > 0
-                                && line.coverage.windowed < line.coverage.source,
-                        );
-                        if let Some(column) = line.column {
-                            let expected = line
-                                .text
-                                .as_ref()
-                                .map_or(0, |(sha256, _)| column_value(sha256));
-                            mismatches += u64::from(column != expected);
-                        }
-                        match &line.text {
-                            Some((sha256, _)) if !line.pdf => std::iter::once((0, key(sha256)))
-                                .chain(
-                                    line.windows
-                                        .iter()
-                                        .map(|(window, sha256, _)| (*window, key(sha256))),
-                                )
-                                .collect(),
-                            _ => Vec::new(),
-                        }
-                    })
-                    .collect::<Vec<Vec<(u8, [u8; 16])>>>();
+                let keys = plan_book(
+                    &searcher,
+                    &columns,
+                    &chunker,
+                    &books[*name],
+                    Some(standalone_min_chars),
+                )?
+                .into_iter()
+                .map(|line| {
+                    text_coverage.source += line.coverage.source;
+                    text_coverage.windowed += line.coverage.windowed;
+                    text_coverage.borrowed_context_lines += line.coverage.borrowed_context_lines;
+                    unwindowed_standalone_lines +=
+                        u64::from(line.coverage.source > 0 && line.coverage.windowed == 0);
+                    partially_windowed_standalone_lines += u64::from(
+                        line.coverage.windowed > 0 && line.coverage.windowed < line.coverage.source,
+                    );
+                    if let Some(column) = line.column {
+                        let expected = line
+                            .text
+                            .as_ref()
+                            .map_or(0, |(sha256, _)| column_value(sha256));
+                        mismatches += u64::from(column != expected);
+                    }
+                    match &line.text {
+                        Some((sha256, _)) if !line.pdf => std::iter::once((0, key(sha256)))
+                            .chain(
+                                line.windows
+                                    .iter()
+                                    .map(|(window, sha256, _)| (*window, key(sha256))),
+                            )
+                            .collect(),
+                        _ => Vec::new(),
+                    }
+                })
+                .collect::<Vec<Vec<(u8, [u8; 16])>>>();
                 Ok((
                     keys,
                     mismatches,
                     text_coverage,
-                    unwindowed_lines,
-                    partially_windowed_lines,
+                    unwindowed_standalone_lines,
+                    partially_windowed_standalone_lines,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        for (name, (keys, mismatches, text_coverage, unwindowed_lines, partially_windowed_lines)) in
-            chunk.iter().zip(keyed)
+        for (
+            name,
+            (
+                keys,
+                mismatches,
+                text_coverage,
+                unwindowed_standalone_lines,
+                partially_windowed_standalone_lines,
+            ),
+        ) in chunk.iter().zip(keyed)
         {
             validation.column_mismatches += mismatches;
-            validation.source_text_chars += text_coverage.source;
-            validation.windowed_text_chars += text_coverage.windowed;
-            validation.unwindowed_lines += unwindowed_lines;
-            validation.partially_windowed_lines += partially_windowed_lines;
+            validation.standalone_text_chars += text_coverage.source;
+            validation.windowed_standalone_chars += text_coverage.windowed;
+            validation.borrowed_context_lines += text_coverage.borrowed_context_lines;
+            validation.unwindowed_standalone_lines += unwindowed_standalone_lines;
+            validation.partially_windowed_standalone_lines += partially_windowed_standalone_lines;
             set.book_occurrences(name, &mut records);
-            let resolved = resolver.audit_records(name, &records, &cancel)?;
+            let resolved = resolver.audit_records(name, &records, &keys, &cancel)?;
             anyhow::ensure!(
                 resolved.len() == records.len(),
                 "the resolver audit returned a different number of records"
@@ -530,6 +549,7 @@ struct PlannedLine {
 struct TextSpanCoverage {
     source: u64,
     windowed: u64,
+    borrowed_context_lines: u64,
 }
 
 /// Count source positions rather than summed window lengths: overlapping spans count once,
@@ -538,8 +558,15 @@ fn text_span_coverage(
     chunker: &Chunker,
     text: &str,
     windows: &[EmbeddedWindow],
+    standalone_min_chars: usize,
 ) -> TextSpanCoverage {
     let text = text.trim();
+    if text.chars().count() < standalone_min_chars {
+        return TextSpanCoverage {
+            borrowed_context_lines: u64::from(!windows.is_empty()),
+            ..TextSpanCoverage::default()
+        };
+    }
     let normalization = chunker.recipe().2;
     let source = normalization.apply(text).chars().count() as u64;
     let mut spans: Vec<_> = windows.iter().map(|window| window.chars.clone()).collect();
@@ -562,11 +589,15 @@ fn text_span_coverage(
                 .skip(span.start as usize)
                 .take((span.end - span.start) as usize)
                 .collect();
-            normalization.apply(&piece).chars().count() as u64
+            normalization.apply(&piece).trim().chars().count() as u64
         })
         .sum::<u64>()
         .min(source);
-    TextSpanCoverage { source, windowed }
+    TextSpanCoverage {
+        source,
+        windowed,
+        borrowed_context_lines: 0,
+    }
 }
 
 /// The `chunkKey` column value of a text whose SHA-256 is `sha256`: the key's first eight
@@ -651,7 +682,7 @@ fn plan_book(
     columns: &SegmentColumns,
     chunker: &Chunker,
     book: &[DocAddress],
-    measure_text_coverage: bool,
+    standalone_min_chars: Option<usize>,
 ) -> Result<Vec<PlannedLine>> {
     let schema = searcher.schema();
     let is_pdf_field = schema.get_field("isPdf")?;
@@ -695,10 +726,9 @@ fn plan_book(
             } else {
                 chunker.embedded_windows(&lines, index)
             };
-            let coverage = if pdf[index] || !measure_text_coverage {
-                TextSpanCoverage::default()
-            } else {
-                text_span_coverage(chunker, &texts[index], &embedded)
+            let coverage = match standalone_min_chars.filter(|_| !pdf[index]) {
+                Some(min_chars) => text_span_coverage(chunker, &texts[index], &embedded, min_chars),
+                None => TextSpanCoverage::default(),
             };
             let mut windows = embedded.into_iter().map(|window| {
                 let sha256: [u8; 32] = Sha256::digest(window.text.as_bytes()).into();

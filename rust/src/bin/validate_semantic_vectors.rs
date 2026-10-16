@@ -15,7 +15,7 @@
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
 //!   reached by the runtime resolver at that exact source occurrence, using the set's
 //!   parent-anchor and window metadata and all 128 bits of the recomputed key. The same
-//!   applies to every further window the recipe emits. Source character coverage is
+//!   applies to every further window the recipe emits. Standalone source character coverage is
 //!   reported separately: a bounded recipe can pass G3 while omitting long-line tails;
 //!   and with `--plan`, every record of the plan the set was assembled from is one a scan
 //!   of the installed set reaches, by the sidecar's own count.
@@ -500,12 +500,13 @@ mod gates {
             ));
         }
         detail.push_str(&format!(
-            "; declared window spans cover {} of {} normalized source characters ({}); {} partially windowed line(s), {} nonempty line(s) with no window",
-            validation.windowed_text_chars,
-            validation.source_text_chars,
-            percent(validation.windowed_text_chars, validation.source_text_chars),
-            validation.partially_windowed_lines,
-            validation.unwindowed_lines,
+            "; emitted spans cover {} of {} normalized standalone source characters ({}); {} partially windowed standalone line(s), {} standalone line(s) with no window, {} context-borrowing line(s) excluded",
+            validation.windowed_standalone_chars,
+            validation.standalone_text_chars,
+            percent(validation.windowed_standalone_chars, validation.standalone_text_chars),
+            validation.partially_windowed_standalone_lines,
+            validation.unwindowed_standalone_lines,
+            validation.borrowed_context_lines,
         ));
         let plan_metrics = match plan {
             Some(plan) => {
@@ -558,12 +559,13 @@ mod gates {
                 "keyedWindows": validation.keyed_windows,
                 "coveredWindows": validation.covered_windows,
                 "uncoveredWindows": uncovered_windows,
-                "sourceTextChars": validation.source_text_chars,
-                "windowedTextChars": validation.windowed_text_chars,
-                "unwindowedTextChars": validation.source_text_chars - validation.windowed_text_chars,
-                "partiallyWindowedLines": validation.partially_windowed_lines,
-                "unwindowedLines": validation.unwindowed_lines,
-                "textCoverageDefinition": "union of declared window spans over normalized non-PDF source characters; excludes passage prefixes; short-line neighbour context can change literal input coverage and duplicate-window suppression can make this conservative; not semantic recall",
+                "standaloneTextChars": validation.standalone_text_chars,
+                "windowedStandaloneChars": validation.windowed_standalone_chars,
+                "unwindowedStandaloneChars": validation.standalone_text_chars - validation.windowed_standalone_chars,
+                "partiallyWindowedStandaloneLines": validation.partially_windowed_standalone_lines,
+                "unwindowedStandaloneLines": validation.unwindowed_standalone_lines,
+                "borrowedContextLines": validation.borrowed_context_lines,
+                "textCoverageDefinition": "union of emitted spans over normalized standalone non-PDF source characters; excludes passage prefixes and short context-borrowing lines; duplicate-window suppression can make this conservative; not semantic recall or whole-library text coverage",
                 "plan": plan_metrics,
             }),
         })
