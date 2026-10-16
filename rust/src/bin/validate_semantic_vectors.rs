@@ -13,13 +13,15 @@
 //! removed after (the sidecar's `simulate_device`); or a set installed already, `--vectors`.
 //!
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
-//!   recorded by the set in its own book, by all 128 bits of the key recomputed from the
-//!   stored text, and so has every further window of a long line under a recipe with them;
+//!   reached by the runtime resolver at that exact source occurrence, using the set's
+//!   parent-anchor and window metadata and all 128 bits of the recomputed key. The same
+//!   applies to every further window the recipe emits. Source character coverage is
+//!   reported separately: a bounded recipe can pass G3 while omitting long-line tails;
 //!   and with `--plan`, every record of the plan the set was assembled from is one a scan
 //!   of the installed set reaches, by the sidecar's own count.
 //! * **G4, resolution**: every record of the set resolves on the release index — its book
-//!   is there, and holds its text, in one of a line's windows, by all 128 bits of the key
-//!   recomputed from the stored text — and every line's `chunkKey` column, which a device
+//!   is there, and the runtime verifies its own occurrence metadata against the text,
+//!   including its parent anchor and window — and every line's `chunkKey` column, which a device
 //!   resolves by, is its text's. A record whose text is elsewhere in its book than its hint
 //!   is stale: reported, and fatal only past `--max-stale-hints`.
 //! * **G6, retrieval** (with `--warehouse`, `--model` and `--model-identity`): recall@10 and
@@ -461,8 +463,9 @@ mod gates {
         }
     }
 
-    /// G3: every keyed line of the index is covered by the set; with a plan, every record of
-    /// the plan is reachable in the set.
+    /// G3: every source occurrence the recipe emits is reachable by the runtime resolver;
+    /// with a plan, every record of the plan is reachable in the set. Physical source
+    /// character coverage is informational and does not turn recipe coverage into recall.
     fn g3(set: &SegmentSet, validation: &Validation, plan: Option<&Path>) -> Result<Gate> {
         let uncovered = validation.keyed_lines - validation.covered_lines;
         let uncovered_windows = validation.keyed_windows - validation.covered_windows;
@@ -472,18 +475,18 @@ mod gates {
         }
         if uncovered > 0 {
             faults.push(format!(
-                "{uncovered} keyed line(s) of the index have no record of their text in their \
-                 book"
+                "{uncovered} keyed line occurrence(s) of the index cannot be reached by the \
+                 runtime resolver"
             ));
         }
         if uncovered_windows > 0 {
             faults.push(format!(
-                "{uncovered_windows} further window(s) of long lines have no record in their \
-                 line's book"
+                "{uncovered_windows} further window occurrence(s) of long lines cannot be \
+                 reached by the runtime resolver"
             ));
         }
         let mut detail = format!(
-            "{} of the index's {} keyed line(s) recorded in their book ({})",
+            "{} of the index's {} keyed line occurrence(s) reached by the runtime ({})",
             validation.covered_lines,
             validation.keyed_lines,
             percent(validation.covered_lines, validation.keyed_lines)
@@ -496,6 +499,14 @@ mod gates {
                 percent(validation.covered_windows, validation.keyed_windows)
             ));
         }
+        detail.push_str(&format!(
+            "; declared window spans cover {} of {} normalized source characters ({}); {} partially windowed line(s), {} nonempty line(s) with no window",
+            validation.windowed_text_chars,
+            validation.source_text_chars,
+            percent(validation.windowed_text_chars, validation.source_text_chars),
+            validation.partially_windowed_lines,
+            validation.unwindowed_lines,
+        ));
         let plan_metrics = match plan {
             Some(plan) => {
                 let plan = Plan::open(plan)
@@ -547,6 +558,12 @@ mod gates {
                 "keyedWindows": validation.keyed_windows,
                 "coveredWindows": validation.covered_windows,
                 "uncoveredWindows": uncovered_windows,
+                "sourceTextChars": validation.source_text_chars,
+                "windowedTextChars": validation.windowed_text_chars,
+                "unwindowedTextChars": validation.source_text_chars - validation.windowed_text_chars,
+                "partiallyWindowedLines": validation.partially_windowed_lines,
+                "unwindowedLines": validation.unwindowed_lines,
+                "textCoverageDefinition": "union of declared window spans over normalized non-PDF source characters; excludes passage prefixes; short-line neighbour context can change literal input coverage and duplicate-window suppression can make this conservative; not semantic recall",
                 "plan": plan_metrics,
             }),
         })

@@ -35,7 +35,7 @@ use otzaria_semantic_search::distribution::plan::{
     PlanRecords, RecordsWriter, BOOKS_FILE, RECORDS_FILE, TOMBSTONES_FILE,
 };
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
-use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
+use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig, EmbeddedWindow};
 use otzaria_semantic_search::semantic::official_index::readable_store_identity;
 use otzaria_semantic_search::semantic::recipe::{ChunkingAlgorithm, EmbeddingRecipe};
 use otzaria_semantic_search::semantic::versioning::{
@@ -139,7 +139,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     for (batch, chunk) in names.chunks(BOOKS_PER_BATCH).enumerate() {
         let planned = chunk
             .par_iter()
-            .map(|name| plan_book(&searcher, &columns, &chunker, &books[*name]))
+            .map(|name| plan_book(&searcher, &columns, &chunker, &books[*name], false))
             .collect::<Result<Vec<_>>>()?;
         for (offset, lines) in planned.into_iter().enumerate() {
             let book = (batch * BOOKS_PER_BATCH + offset) as u32;
@@ -236,12 +236,23 @@ pub struct Validation {
     pub keyed_windows: u64,
     /// Those whose key the set records in their line's book.
     pub covered_windows: u64,
+    /// Normalized source characters in non-PDF lines, excluding any passage prefix.
+    pub source_text_chars: u64,
+    /// Source character positions inside the union of the recipe's declared window spans.
+    /// This is a source-span estimate: short-line neighbour context can change literal
+    /// model-input coverage, and duplicate-window suppression can make it conservative.
+    /// It is not a measurement of semantic recall.
+    pub windowed_text_chars: u64,
+    /// Nonempty source lines with no emitted window.
+    pub unwindowed_lines: u64,
+    /// Source lines with some, but not all, character positions in emitted window spans.
+    pub partially_windowed_lines: u64,
     /// The set's records: in the index's books, and in books the index does not hold.
     pub records: u64,
-    /// Records whose hint is a line that holds their key, in any of its windows: resolved at
-    /// the first look.
+    /// Records the runtime resolver verifies at their own hint, with their occurrence
+    /// metadata (parent anchor and window when present).
     pub at_hint: u64,
-    /// Records whose key their book holds at another line: re-anchored by the resolver.
+    /// Records the runtime resolver re-anchors to another line of their book.
     pub moved: u64,
     /// Records whose key their book holds nowhere any more, or whose book the index does not
     /// hold at all.
@@ -259,7 +270,9 @@ pub struct Validation {
 
 /// How the set's records land on the index at `index_path`, read-only: every book's lines
 /// keyed from their text, as [`export_plan`] keys them under the set's chunking, every window
-/// of a line included, against the records a scan of `set` reaches for that book; the
+/// of a line included, against the exact source occurrences the runtime resolver reaches
+/// from the installed set's occurrence metadata. The audit shares runtime matching and
+/// re-anchoring, without the results page's per-hit display limit. It also counts the
 /// records of books the index does not hold; and, with the
 /// `chunkKey` column, every line's column against its text's key. A set built from this
 /// index has every record at its hint, covers every keyed line and names no missing book,
@@ -268,14 +281,19 @@ pub fn validate(
     index_path: &Path,
     set: &otzaria_semantic_search::semantic::segment_set::SegmentSet,
 ) -> Result<Validation> {
-    use otzaria_semantic_search::distribution::gates::book_records;
+    use crate::semantic_resolver::{LiveResolver, ResolverCache};
+    use otzaria_semantic_search::cancellation::CancellationToken;
     use otzaria_semantic_search::semantic::oxv::reader::Segment;
     use std::collections::{BTreeSet, HashSet};
+    use std::sync::Mutex;
     let (searcher, chunk_key) = open_index(index_path)?;
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
     let chunker = Chunker::new(chunking_of(set.identity().model.chunking_identity)?)?;
     let names: Vec<&String> = books.keys().collect();
+    let cache = Mutex::new(ResolverCache::default());
+    let resolver = LiveResolver::new(searcher.clone(), chunk_key, &cache)?;
+    let cancel = CancellationToken::new();
     let mut validation = Validation {
         column_checked: chunk_key.is_some(),
         ..Validation::default()
@@ -286,11 +304,22 @@ pub fn validate(
             .par_iter()
             .map(|name| {
                 let mut mismatches = 0u64;
+                let mut text_coverage = TextSpanCoverage::default();
+                let mut unwindowed_lines = 0u64;
+                let mut partially_windowed_lines = 0u64;
                 let key =
                     |sha256: &[u8; 32]| <[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32");
-                let keys = plan_book(&searcher, &columns, &chunker, &books[*name])?
+                let keys = plan_book(&searcher, &columns, &chunker, &books[*name], true)?
                     .into_iter()
                     .map(|line| {
+                        text_coverage.source += line.coverage.source;
+                        text_coverage.windowed += line.coverage.windowed;
+                        unwindowed_lines +=
+                            u64::from(line.coverage.source > 0 && line.coverage.windowed == 0);
+                        partially_windowed_lines += u64::from(
+                            line.coverage.windowed > 0
+                                && line.coverage.windowed < line.coverage.source,
+                        );
                         if let Some(column) = line.column {
                             let expected = line
                                 .text
@@ -299,24 +328,55 @@ pub fn validate(
                             mismatches += u64::from(column != expected);
                         }
                         match &line.text {
-                            Some((sha256, _)) if !line.pdf => std::iter::once(key(sha256))
-                                .chain(line.windows.iter().map(|(_, sha256, _)| key(sha256)))
+                            Some((sha256, _)) if !line.pdf => std::iter::once((0, key(sha256)))
+                                .chain(
+                                    line.windows
+                                        .iter()
+                                        .map(|(window, sha256, _)| (*window, key(sha256))),
+                                )
                                 .collect(),
                             _ => Vec::new(),
                         }
                     })
-                    .collect::<Vec<Vec<[u8; 16]>>>();
-                Ok((keys, mismatches))
+                    .collect::<Vec<Vec<(u8, [u8; 16])>>>();
+                Ok((
+                    keys,
+                    mismatches,
+                    text_coverage,
+                    unwindowed_lines,
+                    partially_windowed_lines,
+                ))
             })
             .collect::<Result<Vec<_>>>()?;
-        for (name, (keys, mismatches)) in chunk.iter().zip(keyed) {
+        for (name, (keys, mismatches, text_coverage, unwindowed_lines, partially_windowed_lines)) in
+            chunk.iter().zip(keyed)
+        {
             validation.column_mismatches += mismatches;
-            book_records(set, name, &mut records);
-            let held: HashSet<[u8; 16]> = records.iter().map(|(key, _)| key.0).collect();
-            let present: HashSet<[u8; 16]> = keys.iter().flatten().copied().collect();
-            for line in &keys {
-                for (window, key) in line.iter().enumerate() {
-                    let covered = u64::from(held.contains(key));
+            validation.source_text_chars += text_coverage.source;
+            validation.windowed_text_chars += text_coverage.windowed;
+            validation.unwindowed_lines += unwindowed_lines;
+            validation.partially_windowed_lines += partially_windowed_lines;
+            set.book_occurrences(name, &mut records);
+            let resolved = resolver.audit_records(name, &records, &cancel)?;
+            anyhow::ensure!(
+                resolved.len() == records.len(),
+                "the resolver audit returned a different number of records"
+            );
+            // Coverage is of source occurrences, not merely membership of a text key in
+            // a book. The same key can be an anchor, an inner window or both, and can
+            // occur beneath different parent anchors within one book.
+            let reached: HashSet<_> = records
+                .iter()
+                .zip(&resolved)
+                .flat_map(|((key, _), places)| {
+                    places
+                        .iter()
+                        .map(move |&(ordinal, window)| (ordinal, window, key.0))
+                })
+                .collect();
+            for (ordinal, line) in keys.iter().enumerate() {
+                for &(window, key) in line {
+                    let covered = u64::from(reached.contains(&(ordinal as u32, window, key)));
                     if window == 0 {
                         validation.keyed_lines += 1;
                         validation.covered_lines += covered;
@@ -326,14 +386,11 @@ pub fn validate(
                     }
                 }
             }
-            for (key, hint) in &records {
+            for ((_, record), places) in records.iter().zip(resolved) {
                 validation.records += 1;
-                if keys
-                    .get(*hint as usize)
-                    .is_some_and(|line| line.contains(&key.0))
-                {
+                if places.iter().any(|&(ordinal, _)| ordinal == record.hint) {
                     validation.at_hint += 1;
-                } else if present.contains(&key.0) {
+                } else if !places.is_empty() {
                     validation.moved += 1;
                 } else {
                     validation.gone += 1;
@@ -354,7 +411,7 @@ pub fn validate(
         set_books.extend(opened.books().iter().map(|book| book.name.to_string()));
     }
     for name in set_books.iter().filter(|name| !books.contains_key(*name)) {
-        book_records(set, name, &mut records);
+        set.book_occurrences(name, &mut records);
         if !records.is_empty() {
             validation.books_missing += 1;
             validation.records += records.len() as u64;
@@ -466,6 +523,50 @@ struct PlannedLine {
     pdf: bool,
     /// The `chunkKey` column's value, when the index has a column this build uses.
     column: Option<u64>,
+    coverage: TextSpanCoverage,
+}
+
+#[derive(Default)]
+struct TextSpanCoverage {
+    source: u64,
+    windowed: u64,
+}
+
+/// Count source positions rather than summed window lengths: overlapping spans count once,
+/// passage prefixes and borrowed neighbour context do not count as additional source text.
+fn text_span_coverage(
+    chunker: &Chunker,
+    text: &str,
+    windows: &[EmbeddedWindow],
+) -> TextSpanCoverage {
+    let text = text.trim();
+    let normalization = chunker.recipe().2;
+    let source = normalization.apply(text).chars().count() as u64;
+    let mut spans: Vec<_> = windows.iter().map(|window| window.chars.clone()).collect();
+    spans.sort_unstable_by_key(|span| span.start);
+    let mut merged: Vec<std::ops::Range<u32>> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if let Some(previous) = merged.last_mut() {
+            if span.start <= previous.end {
+                previous.end = previous.end.max(span.end);
+                continue;
+            }
+        }
+        merged.push(span);
+    }
+    let windowed = merged
+        .into_iter()
+        .map(|span| {
+            let piece: String = text
+                .chars()
+                .skip(span.start as usize)
+                .take((span.end - span.start) as usize)
+                .collect();
+            normalization.apply(&piece).chars().count() as u64
+        })
+        .sum::<u64>()
+        .min(source);
+    TextSpanCoverage { source, windowed }
 }
 
 /// The `chunkKey` column value of a text whose SHA-256 is `sha256`: the key's first eight
@@ -550,6 +651,7 @@ fn plan_book(
     columns: &SegmentColumns,
     chunker: &Chunker,
     book: &[DocAddress],
+    measure_text_coverage: bool,
 ) -> Result<Vec<PlannedLine>> {
     let schema = searcher.schema();
     let is_pdf_field = schema.get_field("isPdf")?;
@@ -588,13 +690,17 @@ fn plan_book(
         .collect();
     Ok((0..book.len())
         .map(|index| {
-            let mut windows = if pdf[index] {
+            let embedded = if pdf[index] {
                 Vec::new()
             } else {
                 chunker.embedded_windows(&lines, index)
-            }
-            .into_iter()
-            .map(|window| {
+            };
+            let coverage = if pdf[index] || !measure_text_coverage {
+                TextSpanCoverage::default()
+            } else {
+                text_span_coverage(chunker, &texts[index], &embedded)
+            };
+            let mut windows = embedded.into_iter().map(|window| {
                 let sha256: [u8; 32] = Sha256::digest(window.text.as_bytes()).into();
                 (window.ordinal, sha256, window.text)
             });
@@ -604,6 +710,7 @@ fn plan_book(
                 windows: windows.collect(),
                 pdf: pdf[index],
                 column: stored_keys[index],
+                coverage,
             }
         })
         .collect())

@@ -461,11 +461,154 @@ fn a_release_with_long_lines_covers_and_resolves_their_windows() {
     assert!(g3["keyedWindows"].as_u64().unwrap() >= 4, "{g3}");
     assert_eq!(g3["keyedWindows"], g3["coveredWindows"]);
     assert_eq!(g3["uncoveredWindows"], 0);
+    // G3 is recipe coverage. The cap deliberately leaves source tails outside its
+    // emitted spans; report that separately even when every planned occurrence resolves.
+    assert!(g3["sourceTextChars"].as_u64().unwrap() > g3["windowedTextChars"].as_u64().unwrap());
+    assert!(g3["unwindowedTextChars"].as_u64().unwrap() > 0);
+    assert_eq!(g3["partiallyWindowedLines"], 2);
+    assert_eq!(g3["unwindowedLines"], 0);
     let (status, g4) = gate(&report, "G4");
     assert_eq!(status, "passed", "{printed}");
     assert_eq!(g4["records"], g4["atHint"]);
     assert_eq!(g4["unresolved"], 0);
     assert_eq!(gate(&report, "G6").0, "passed", "{printed}");
+}
+
+/// A vector shared by inner windows under distinct parents and a standalone anchor must
+/// reach every source occurrence. A per-book key set cannot detect this regression.
+#[test]
+fn shared_window_keys_with_different_parents_and_anchor_roles_reach_every_occurrence() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    let common = (0..80).map(|at| line(8, at)).collect::<Vec<_>>().join(" ");
+    let first = format!("{}{common}", "אלף ".repeat(96));
+    let second = format!("{}{common}", "בית ".repeat(96));
+    let chunker = Chunker::new(production_chunking()).unwrap();
+    let windows = |text: &str| chunker.embedded_windows(&[LineRef { text, section: 0 }], 0);
+    let first_windows = windows(&first);
+    let second_windows = windows(&second);
+    let shared = first_windows
+        .iter()
+        .find(|window| {
+            window.ordinal > 0
+                && second_windows
+                    .iter()
+                    .any(|other| other.ordinal > 0 && other.text == window.text)
+        })
+        .unwrap();
+    let standalone = shared.text.strip_prefix(PASSAGE_PREFIX).unwrap();
+    let release = release(&[(
+        "ספר חלונות",
+        "/אחר",
+        "/books/windows.txt",
+        0,
+        format!("{first}\n{second}\n{standalone}"),
+    )]);
+    let set =
+        otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&release.vectors).unwrap();
+    let result = search_engine::semantic_plan::validate(&release.index, &set).unwrap();
+    assert!(result.keyed_windows > 0);
+    assert_eq!(result.covered_lines, result.keyed_lines, "{result:?}");
+    assert_eq!(result.covered_windows, result.keyed_windows, "{result:?}");
+    assert_eq!(result.gone, 0, "{result:?}");
+}
+
+/// A stale hint is diagnostic: the parent anchor locates its inner windows even after a
+/// shift beyond the old nearby-text fallback. New source lines still fail G3 as expected.
+#[test]
+fn a_window_parent_moved_beyond_the_old_hint_reach_still_resolves_in_validation() {
+    let long = (0..70).map(|at| line(9, at)).collect::<Vec<_>>().join(" ");
+    let release = release(&[("ספר חלונות", "/אחר", "/books/windows.txt", 0, long.clone())]);
+    let mut engine = SearchEngine::new(release.index.to_str().unwrap());
+    engine
+        .delete_documents_by_file_path("/books/windows.txt")
+        .unwrap();
+    let inserted = (0..40)
+        .map(|at| line(10, at))
+        .collect::<Vec<_>>()
+        .join("\n");
+    engine
+        .add_text_book(
+            "ספר חלונות".into(),
+            "/אחר".into(),
+            "/books/windows.txt".into(),
+            0,
+            0,
+            format!("{inserted}\n{long}"),
+            None,
+            TextStorage::InIndex,
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    drop(engine);
+    let set =
+        otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&release.vectors).unwrap();
+    let result = search_engine::semantic_plan::validate(&release.index, &set).unwrap();
+    assert_eq!(result.gone, 0, "{result:?}");
+    assert_eq!(result.moved, result.records, "{result:?}");
+    assert_eq!(result.keyed_windows, result.covered_windows, "{result:?}");
+    assert_eq!(result.keyed_lines - result.covered_lines, 40, "{result:?}");
+}
+
+/// Merely having a text key in the right book does not prove its stored role can
+/// resolve. Model a faulty planner labeling an inner-window key as a standalone anchor.
+#[test]
+fn a_window_key_mislabeled_as_an_anchor_fails_runtime_coverage_and_resolution() {
+    let long = (0..70).map(|at| line(11, at)).collect::<Vec<_>>().join(" ");
+    let release = release(&[("ספר חלונות", "/אחר", "/books/windows.txt", 0, long)]);
+    let source = Plan::open(&release.plan).unwrap();
+    let mut wrong = source
+        .records
+        .iter()
+        .find(|record| record.window > 0)
+        .unwrap();
+    wrong.window = 0;
+    let dir = release.path("wrong-role-plan");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(release.plan.join(BOOKS_FILE), dir.join(BOOKS_FILE)).unwrap();
+    let mut writer = RecordsWriter::create_windowed(&dir.join(RECORDS_FILE)).unwrap();
+    writer.push(wrong).unwrap();
+    writer.finish().unwrap();
+    PlanManifest::write(
+        &dir,
+        source.manifest.identity,
+        30,
+        source.manifest.library_release_tag,
+        None,
+        PlanCounts {
+            records: 1,
+            books: 1,
+            unique: 1,
+            to_ship: 1,
+            revived: 1,
+            ..PlanCounts::default()
+        },
+        Parity::default(),
+        CREATED_AT.into(),
+    )
+    .unwrap();
+    let assembled = release.path("wrong-role-release");
+    assemble(&AssembleRequest {
+        plan: &Plan::open(&dir).unwrap(),
+        warehouse: &Warehouse::open(&release.warehouse).unwrap(),
+        kind: PackageKind::Base,
+        previous: None,
+        epoch: EpochChoice::New(CodecSpec::parse("i8-sym-vec", 1.0).unwrap()),
+        out_dir: assembled.clone(),
+        created_at: CREATED_AT.into(),
+        built_by: None,
+    })
+    .unwrap();
+    let vectors = release.path("wrong-role-vectors");
+    simulate_device(&vectors, &[&assembled]).unwrap();
+    let set = otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&vectors).unwrap();
+    let result = search_engine::semantic_plan::validate(&release.index, &set).unwrap();
+    assert!(result.keyed_windows > 0);
+    assert_eq!(result.covered_windows, 0, "{result:?}");
+    assert_eq!(result.records, 1);
+    assert_eq!(result.gone, 1, "{result:?}");
 }
 
 /// A gate whose inputs are not given has not run, and the release has not passed it; one
