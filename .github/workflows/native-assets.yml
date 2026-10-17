@@ -167,6 +167,7 @@ jobs:
       # fails to load here.
       - name: Run on an Android emulator
         if: matrix.platform == 'android'
+        timeout-minutes: 45
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 24
@@ -174,4 +175,8 @@ jobs:
           target: default
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           working-directory: probe
-          script: flutter test integration_test -d emulator-5554
+          # The runner reports boot before the package manager answers; an install then hangs.
+          # Each line runs on its own, hence the one-line loop and the retry.
+          script: |
+            until adb shell pm path android | grep -q package:; do sleep 2; done
+            timeout 900 flutter test integration_test -d emulator-5554 || timeout 900 flutter test integration_test -d emulator-5554
