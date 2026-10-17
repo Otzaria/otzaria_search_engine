@@ -7,11 +7,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks/hooks.dart';
 import 'package:path/path.dart' as p;
 
-import '../../hook/src/cargo_build.dart';
-import '../../hook/src/crate_hash.dart';
-import '../../hook/src/native_build.dart';
-import '../../hook/src/precompiled.dart';
-import '../../hook/src/rust_target.dart';
+import 'package:otzaria_search_engine/src/hook/cargo_build.dart';
+import 'package:otzaria_search_engine/src/hook/crate_hash.dart';
+import 'package:otzaria_search_engine/src/hook/native_build.dart';
+import 'package:otzaria_search_engine/src/hook/precompiled.dart';
+import 'package:otzaria_search_engine/src/hook/rust_target.dart';
 
 String _hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -62,7 +62,13 @@ void main() {
       File(
         p.join(root, 'hook', 'build.dart'),
       ).writeAsStringSync('void main() { }\n');
-      expect(CrateHash.compute(packageRoot: root), isNot(afterSource));
+      final afterHook = CrateHash.compute(packageRoot: root);
+      expect(afterHook, isNot(afterSource));
+
+      File(p.join(root, 'lib', 'src', 'hook', 'package_build.dart'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('const x = 1;\n');
+      expect(CrateHash.compute(packageRoot: root), isNot(afterHook));
     });
 
     test('ignores files outside the crate inputs, such as rust/target', () {
