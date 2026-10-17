@@ -112,6 +112,30 @@ jobs:
           }
           EOF
 
+      - name: Rust version
+        id: rustc
+        run: echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      # The hook builds into the hooks runner's shared directory, under the app.
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            probe/.dart_tool/hooks_runner/shared/otzaria_search_engine/build/target
+          key: native-assets-${{ matrix.platform }}-${{ runner.arch }}-rust${{ steps.rustc.outputs.version }}-${{ hashFiles('otzaria_search_engine/rust/Cargo.lock') }}-${{ hashFiles('otzaria_search_engine/rust/**') }}
+          restore-keys: |
+            native-assets-${{ matrix.platform }}-${{ runner.arch }}-rust${{ steps.rustc.outputs.version }}-${{ hashFiles('otzaria_search_engine/rust/Cargo.lock') }}-
+
+      # An exact hit means identical sources; old mtimes keep the fresh checkout
+      # from making cargo rebuild the path crates.
+      - name: Mark cached crate sources as unchanged
+        if: steps.rust-cache.outputs.cache-hit == 'true'
+        run: find otzaria_search_engine/rust -type f -exec touch -t 200001010000 {} +
+
       - name: Run on the Linux desktop
         if: matrix.platform == 'linux'
         working-directory: probe
@@ -175,3 +199,15 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           working-directory: probe
           script: flutter test integration_test -d emulator-5554
+
+      # Saved from refactor only: the repository's cache quota is already full.
+      - name: Save Rust build cache
+        if: github.ref == 'refs/heads/refactor' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            probe/.dart_tool/hooks_runner/shared/otzaria_search_engine/build/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
