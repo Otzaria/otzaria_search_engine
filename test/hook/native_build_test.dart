@@ -4,10 +4,12 @@ import 'dart:typed_data';
 import 'package:code_assets/code_assets.dart';
 import 'package:ed25519_edwards/ed25519_edwards.dart' as ed;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hooks/hooks.dart';
 import 'package:path/path.dart' as p;
 
 import '../../hook/src/cargo_build.dart';
 import '../../hook/src/crate_hash.dart';
+import '../../hook/src/native_build.dart';
 import '../../hook/src/precompiled.dart';
 import '../../hook/src/rust_target.dart';
 
@@ -137,8 +139,8 @@ void main() {
     });
     tearDown(() => server.close(force: true));
 
-    void publish(List<int> data, List<int> signature) {
-      const asset = '/download/precompiled_abc/x86_64-pc-windows-msvc_x.dll';
+    void publish(List<int> data, List<int> signature, {String hash = 'abc'}) {
+      final asset = '/download/precompiled_$hash/x86_64-pc-windows-msvc_x.dll';
       assets[asset] = data;
       assets['$asset.sig'] = signature;
     }
@@ -163,6 +165,54 @@ void main() {
       final before = requests;
       expect((await fetch())!.readAsBytesSync(), library);
       expect(requests, before);
+    });
+
+    test('replaces a tampered cache with the verified download', () async {
+      publish(library, ed.sign(keys.privateKey, library));
+      final cached = (await fetch())!;
+      cached.writeAsBytesSync([0]);
+      final before = requests;
+      expect((await fetch())!.readAsBytesSync(), library);
+      expect(requests, before + 2);
+    });
+
+    test('the build hook bundles the signed download without cargo', () async {
+      // This fixture cannot compile: falling back to cargo must fail the test.
+      writePackage(temp.path);
+      final hash = CrateHash.compute(packageRoot: temp.path);
+      publish(library, ed.sign(keys.privateKey, library), hash: hash);
+      final out = Directory(p.join(temp.path, 'out'))..createSync();
+      final shared = Directory(p.join(temp.path, 'shared'))..createSync();
+      final builder = BuildInputBuilder()
+        ..setupShared(
+          packageRoot: temp.uri,
+          packageName: 'opentype_shaper',
+          outputDirectoryShared: shared.uri,
+          outputFile: out.uri.resolve('output.json'),
+        )
+        ..setupBuildInput();
+      builder.config.setupBuild(linkingEnabled: false);
+      builder.addExtension(
+        CodeAssetExtension(
+          targetOS: OS.windows,
+          targetArchitecture: Architecture.x64,
+          linkModePreference: LinkModePreference.dynamic,
+        ),
+      );
+      final input = builder.build();
+      Directory.fromUri(input.outputDirectory).createSync(recursive: true);
+      final output = BuildOutputBuilder();
+      await NativeBuild(
+        assetName: 'src/bindings.dart',
+        cargo: const CargoOptions(libName: 'x'),
+        precompiled: binaries,
+      ).run(input, output);
+      final asset = output.build().assets.code.single;
+      expect(asset.id, 'package:opentype_shaper/src/bindings.dart');
+      expect(asset.linkMode, isA<DynamicLoadingBundled>());
+      expect(File.fromUri(asset.file!).readAsBytesSync(), library);
+      expect(asset.file, input.outputDirectory.resolve('x.dll'));
+      expect(requests, 2);
     });
 
     test('returns null when the crate hash was never published', () async {

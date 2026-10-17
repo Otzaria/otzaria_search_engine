@@ -5,11 +5,12 @@ homepage: https://github.com/otzaria/otzaria_search_engine
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
-  flutter: ">=3.38.0"
+  flutter: ">=3.38.1"
 
 dependencies:
   # The build hook: the code asset, its signed precompiled binary and its hash.
-  code_assets: ^2.1.0
+  # Flutter 3.38 pins meta 1.17, supported by code_assets 1.x and hooks 2.0.x.
+  code_assets: '>=1.2.1 <3.0.0'
   # Also the SHA-256 of the stub model, which the FFI suite's artifact build
   # declares in its model identity.
   crypto: ^3.0.7
@@ -19,7 +20,7 @@ dependencies:
   # ה-runtime חייב להתאים בדיוק לצד ה-Rust ולקוד המחולל (2.13.0); כל גרסה
   # אחרת נכשלת באתחול RustLib.
   flutter_rust_bridge: "2.13.0"
-  hooks: ^2.2.0
+  hooks: ^2.0.0
   path: ^1.9.1
 
 dev_dependencies:
