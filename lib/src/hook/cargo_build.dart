@@ -133,6 +133,7 @@ Future<File> cargoBuild({
       'build',
       '--release',
       '--locked',
+      '--lib',
       '--manifest-path',
       p.join(crateDir, 'Cargo.toml'),
       '--target',
