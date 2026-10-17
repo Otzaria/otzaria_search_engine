@@ -173,6 +173,8 @@ class RustBuilder {
         manifestPath,
         '-p',
         environment.crateInfo.packageName,
+        // Only the library is shipped; skip [[bin]] targets.
+        '--lib',
         if (!environment.configuration.isDebug) '--release',
         '--target',
         target.rust,

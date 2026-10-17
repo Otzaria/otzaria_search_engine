@@ -1,8 +1,9 @@
 name: Format Check
 
-# רץ אחרי כל קומיט (push לכל ענף) וגם ב-Pull Requests.
+# רץ ב-push ל-refactor וב-Pull Requests; ענף בלי PR — הרצה ידנית (workflow_dispatch).
 on:
   push:
+    branches: [refactor]
   pull_request:
   workflow_dispatch:
 
