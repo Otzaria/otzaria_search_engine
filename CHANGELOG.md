@@ -1,5 +1,41 @@
 # Changelog
 
+## 4.1.0 – 2026-10-17
+
+> Nothing here breaks an index built by 4.0.0: the schema is unchanged, and
+> the engine reads the vector sets of both chunking recipes. Only Dart code
+> that constructs `SemanticSearchResult` itself, which has a new required
+> field, needs a change.
+
+### Added
+
+- **Smart search matches the windows of a long line.** A line longer than one
+  embedding window is embedded in overlapping windows (512 characters, 128
+  overlap, at most six per line); a hit on a window past the first is reported
+  in `SemanticSearchResult.matchedWindow` (0: the line's first), and its
+  `snippetHtml` shows that window. A combined result keeps the whole line,
+  painted, when the lexical words sit in another window. (#47)
+- **`SemanticHighlightTarget.window`** (default 0) passes that window on to
+  `semanticPassageHighlights`.
+- **`SemanticRankingOptions.windowPenalty`** (default 0.04, 0 to 0.2) is taken
+  off the cosine of a window past a line's first, since it matches a part of
+  the line rather than the line.
+
+### Changed
+
+- **The sidecar is pinned at `3aeb94e`** for the windows chunking recipe
+  (version 2, `meivin-round2-windows-onnx`); vector sets of the previous
+  family are still accepted, and the `chunkKey` column keeps the first
+  window's key, so the same index serves both. (#47)
+- **A window's occurrence is checked against the line's text** around the
+  hint, across edits and copied books, with the nearest lines read first; the
+  hit's coverage of the line is reported exactly, apart from its context.
+
+### Fixed
+
+- **Sparse book fingerprints survive the move to engine 4**, and streamed
+  anchor hashing is kept with windowed recipes.
+
 ## 4.0.0 – 2026-10-16
 
 > Breaking for every existing index: schema 6 replaces the document store and
