@@ -6,9 +6,9 @@ import 'package:path/path.dart' as p;
 
 /// Identifies the crate content a precompiled binary was built from.
 ///
-/// Covers the crate sources, its manifests and the build hook itself, which
-/// holds the cargo flags. Text is hashed line by line so a CRLF checkout of
-/// the same commit gives the same hash.
+/// Covers the crate sources, its manifests and the build hook with its
+/// `lib/src/hook` code, which holds the cargo flags. Text is hashed line by
+/// line so a CRLF checkout of the same commit gives the same hash.
 final class CrateHash {
   /// Bump when the published artifact set or its naming changes.
   static const _artifactSetVersion = 3;
@@ -53,9 +53,10 @@ final class CrateHash {
         ..._filesUnder(p.join(crate, dir)),
       for (final name in ['Cargo.toml', 'Cargo.lock', 'build.rs'])
         if (File(p.join(crate, name)).existsSync()) File(p.join(crate, name)),
-      ..._filesUnder(
-        p.join(packageRoot, 'hook'),
-      ).where((file) => file.path.endsWith('.dart')),
+      for (final dir in ['hook', 'lib/src/hook'])
+        ..._filesUnder(
+          p.join(packageRoot, dir),
+        ).where((file) => file.path.endsWith('.dart')),
     ];
     files.sort(
       (a, b) => _relative(a, packageRoot).compareTo(_relative(b, packageRoot)),
