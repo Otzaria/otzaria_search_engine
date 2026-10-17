@@ -1,7 +1,9 @@
 name: Rust and Semantic Quality
 
 on:
+  # Branches without a PR run via workflow_dispatch.
   push:
+    branches: [refactor]
     paths:
       - ".github/workflows/rust-quality.yml"
       - "rust/**"
