@@ -1105,6 +1105,9 @@ pub struct SemanticSearchResult {
     /// As [`SearchResult::text_status`]: anything but `Ok` leaves `snippet_html`
     /// unpainted (`Stale`) or empty (`Unavailable`).
     pub text_status: TextStatus,
+    /// The window of a long line the semantic hit matched (0: the line's first); past 0,
+    /// `snippet_html` shows that window. Pass it on as [`SemanticHighlightTarget::window`].
+    pub matched_window: u8,
 }
 
 /// Result envelope for semantic/hybrid searches. `lexical_total_count` is the
@@ -1155,6 +1158,9 @@ pub struct SemanticSearchResponse {
 pub struct SemanticHighlightTarget {
     pub file_path: String,
     pub id: u64,
+    /// [`SemanticSearchResult::matched_window`]: the window of the line that is marked.
+    #[frb(default = 0)]
+    pub window: u8,
 }
 
 /// A target's line centred on its clause nearest the query, escaped, the clause in `<mark>`; empty
@@ -1318,6 +1324,7 @@ pub struct SemanticQueryTypeAlphas {
 /// | `candidate_window_multiplier` | 2 | 1 to 10 |
 /// | `foundational_bonus` | 0.002 | 0 to 1 |
 /// | `foundational_candidate_share` | 0.5 | 0 to 1 |
+/// | `window_penalty` | 0.04 | 0 to 0.2 |
 ///
 /// A value outside its range, or one that is not a number, is refused before the search runs,
 /// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
@@ -1380,6 +1387,10 @@ pub struct SemanticRankingOptions {
     /// the main query's candidates; 0 runs none. Skipped when the facets already name `/base`.
     #[frb(default = 0.5)]
     pub foundational_candidate_share: f64,
+    /// Taken off the cosine of a vector of a long line's window past its first, before the
+    /// scan keeps its best: such a window matches a part of a line rather than the line.
+    #[frb(default = 0.04)]
+    pub window_penalty: f64,
 }
 
 impl SemanticRankingOptions {
@@ -1410,6 +1421,7 @@ impl SemanticRankingOptions {
             candidate_window_multiplier: 2.0,
             foundational_bonus: 0.002,
             foundational_candidate_share: 0.5,
+            window_penalty: 0.04,
         }
     }
 }
@@ -1681,24 +1693,27 @@ fn parse_model_identity(json: &str) -> Result<ModelIdentity, SemanticError> {
     })
 }
 
-/// Refuses vectors built under another chunking than the one this build keys the index's
-/// lines under, the one compiled in: none of their keys could resolve, so they are refused
-/// by name rather than opened, or installed, to answer nothing.
+/// Refuses vectors whose chunking this build cannot resolve: only the compiled-in one, with
+/// long-line windows or without them (the column's), is accepted.
 #[cfg(feature = "semantic-integration")]
 fn ensure_keyed_chunking(
     model: &ModelIdentity,
     refused: &dyn Fn(&dyn std::fmt::Display) -> String,
 ) -> Result<(), SemanticError> {
-    let keyed_under = ChunkKeyRecipe::current().chunking_identity;
-    if model.chunking_identity == keyed_under {
+    if semantic_keys::keyed_chunking(model.chunking_identity).is_some() {
         return Ok(());
     }
+    let keyed_under: Vec<String> = semantic_keys::keyed_chunkings()
+        .iter()
+        .map(|chunking| chunking.identity().to_string())
+        .collect();
     Err(SemanticError::new(
         SemanticErrorKind::ArtifactIncompatible,
         refused(&format!(
-            "model.chunking_identity is {}, and this build keys the index's lines under \
-             chunking {keyed_under}, so no line could be resolved",
-            model.chunking_identity
+            "model.chunking_identity is {}, and this build resolves lines under chunking {}, \
+             so no line could be resolved",
+            model.chunking_identity,
+            keyed_under.join(" or ")
         )),
     )
     .with_field("model.chunking_identity"))
@@ -2186,6 +2201,7 @@ fn ranking_profile(options: &SemanticRankingOptions) -> Result<RankingProfile, S
         candidate_window_multiplier: options.candidate_window_multiplier as f32,
         foundational_bonus: options.foundational_bonus as f32,
         foundational_candidate_share: options.foundational_candidate_share as f32,
+        window_penalty: options.window_penalty as f32,
         query_cache_enabled: preset.query_cache_enabled,
         embedding_cache_enabled: preset.embedding_cache_enabled,
         telemetry_enabled: preset.telemetry_enabled,
@@ -2361,6 +2377,8 @@ struct SessionEntry {
     siblings: Vec<Option<DocAddress>>,
     /// The text status of a lexical candidate's line.
     text_status: TextStatus,
+    /// See [`SemanticSearchResult::matched_window`].
+    window: u8,
 }
 
 /// What a session keeps besides its results: the last expansion's envelope, and how to
@@ -2551,6 +2569,23 @@ struct SemanticSnippetPainter {
 
 #[cfg(feature = "semantic-integration")]
 impl SemanticSnippetPainter {
+    /// [`Self::paint`] of the embedded `window` a result shows in place of its `line`; the
+    /// whole line instead when a lexical match marks nothing in the window.
+    fn paint_shown(
+        &self,
+        line: &str,
+        window: Option<&str>,
+        lexically_confirmed: bool,
+    ) -> (String, bool) {
+        if let Some(window) = window {
+            let painted = self.paint(window, lexically_confirmed);
+            if painted.1 || !lexically_confirmed {
+                return painted;
+            }
+        }
+        self.paint(line, lexically_confirmed)
+    }
+
     /// Returns the display markup for `text` and whether it carries highlights.
     ///
     /// Mirrors [`SearchEngine::build_results_with_generator`]: tantivy's
@@ -2605,6 +2640,28 @@ impl SemanticSnippetPainter {
             _ => (bounded_plain_snippet(text, self.hl.max_chars), false),
         }
     }
+}
+
+/// A shown line for `embedded_window_texts`: address, book, id, stored text, matched window.
+#[cfg(feature = "semantic-integration")]
+type EmbeddedLine<'a> = (DocAddress, &'a str, u64, &'a str, u8);
+
+/// Window `window` of a long line, spaces collapsed, with `…` where the line goes on before
+/// and after it; `None` for the first window and for one the line does not embed.
+#[cfg(feature = "semantic-integration")]
+fn long_line_window_text(text: &str, window: u8) -> Option<String> {
+    let (span, length) = semantic_keys::window_span(text, window)?;
+    let piece: String = text
+        .trim()
+        .chars()
+        .skip(span.start)
+        .take(span.len())
+        .collect();
+    let mut shown = format!("…{}", hebrew_query::collapse_whitespace(piece.trim()));
+    if span.end < length {
+        shown.push('…');
+    }
+    Some(shown)
 }
 
 /// A display-safe stand-in for a snippet: a bounded, HTML-escaped prefix, so a
@@ -6383,30 +6440,30 @@ impl SearchEngine {
                 .iter()
                 .filter_map(|entry| entry.hydrated.as_ref().map(|(address, _)| *address))
                 .collect();
-            let mut page_texts = self.texts_at(&session.searcher, &page_addresses)?;
-            let page_lines: Vec<(DocAddress, &str, u64, &str)> = page
+            let page_texts = self.texts_at(&session.searcher, &page_addresses)?;
+            let page_lines: Vec<EmbeddedLine<'_>> = page
                 .iter()
                 .filter_map(|entry| {
                     let (address, document) = entry.hydrated.as_ref()?;
-                    Some((*address, document.file_path.as_str(), entry.item.id))
+                    Some((
+                        *address,
+                        document.file_path.as_str(),
+                        entry.item.id,
+                        entry.window,
+                    ))
                 })
                 .zip(&page_texts)
-                .map(|((address, book, id), (text, status))| {
+                .map(|((address, book, id, window), (text, status))| {
                     let text = if *status == TextStatus::Ok {
                         text.as_str()
                     } else {
                         ""
                     };
-                    (address, book, id, text)
+                    (address, book, id, text, window)
                 })
                 .collect();
             let windows = self.embedded_window_texts(&session.searcher, &page_lines)?;
-            for ((text, _), window) in page_texts.iter_mut().zip(windows) {
-                if let Some(window) = window {
-                    *text = window;
-                }
-            }
-            let mut page_texts = page_texts.into_iter();
+            let mut page_texts = page_texts.into_iter().zip(windows);
             // Same budget the lexical API's default highlight uses, so both
             // paths bound the display string identically.
             let snippet_budget = HighlightConfig::default().max_chars;
@@ -6446,16 +6503,17 @@ impl SearchEngine {
                 stale_siblings_dropped = stale_siblings_dropped.saturating_add(page_stale_siblings);
 
                 // Tantivy's copy for a hydrated item, the lexical candidate's otherwise.
-                let (title, reference, text, segment, is_pdf, file_path, text_status) =
+                let (title, reference, text, window, segment, is_pdf, file_path, text_status) =
                     match &entry.hydrated {
                         Some((_, document)) => {
-                            let (text, status) = page_texts
+                            let ((text, status), window) = page_texts
                                 .next()
-                                .unwrap_or((String::new(), TextStatus::Unavailable));
+                                .unwrap_or(((String::new(), TextStatus::Unavailable), None));
                             (
                                 document.title.clone(),
                                 document.reference.clone(),
                                 text,
+                                window,
                                 document.segment,
                                 document.is_pdf,
                                 document.file_path.clone(),
@@ -6466,6 +6524,7 @@ impl SearchEngine {
                             item.title.clone(),
                             item.reference.clone(),
                             item.text.clone(),
+                            None,
                             item.segment,
                             item.is_pdf,
                             item.file_path.clone(),
@@ -6477,14 +6536,22 @@ impl SearchEngine {
                         // A BM25 score is present exactly when Tantivy returned this
                         // line for the lexical query, which is what licenses the
                         // phrase-fallback term painting inside `paint`.
-                        (Some(painter), TextStatus::Ok) => {
-                            painter.paint(&text, item.lexical_score.is_some())
-                        }
+                        (Some(painter), TextStatus::Ok) => painter.paint_shown(
+                            &text,
+                            window.as_deref(),
+                            item.lexical_score.is_some(),
+                        ),
                         (_, TextStatus::Unavailable) => (String::new(), false),
                         // `SemanticOnly` runs no lexical query, so there is nothing
                         // to paint with — the line still crosses FFI bounded. A stale
                         // line is never painted.
-                        _ => (bounded_plain_snippet(&text, snippet_budget), false),
+                        _ => (
+                            bounded_plain_snippet(
+                                window.as_deref().unwrap_or(&text),
+                                snippet_budget,
+                            ),
+                            false,
+                        ),
                     };
 
                 results.push(SemanticSearchResult {
@@ -6511,6 +6578,7 @@ impl SearchEngine {
                     },
                     needs_hydration: false,
                     text_status,
+                    matched_window: entry.window,
                 });
             }
 
@@ -6656,7 +6724,7 @@ impl SearchEngine {
             }));
         }
         let mut texts = self.texts_at(&searcher, &addresses)?;
-        let lines: Vec<(DocAddress, &str, u64, &str)> = targets
+        let lines: Vec<EmbeddedLine<'_>> = targets
             .iter()
             .zip(&slots)
             .filter_map(|(target, slot)| {
@@ -6667,7 +6735,13 @@ impl SearchEngine {
                 } else {
                     ""
                 };
-                Some((addresses[slot], target.file_path.as_str(), target.id, text))
+                Some((
+                    addresses[slot],
+                    target.file_path.as_str(),
+                    target.id,
+                    text,
+                    target.window,
+                ))
             })
             .collect();
         let windows = self.embedded_window_texts(&searcher, &lines)?;
@@ -7016,11 +7090,13 @@ impl SearchEngine {
                 .unwrap_or(TextStatus::Ok);
             // Its fields are the item's own, and its text a second copy of the line.
             item.provenance = None;
+            let window = records.get(&line).map_or(0, |record| record.window);
             let entry = SessionEntry {
                 item,
                 hydrated,
                 siblings: sibling_addresses,
                 text_status,
+                window,
             };
             SemanticSearchSession::take(additions, line, &siblings, group, Some(entry));
         }
@@ -7373,6 +7449,7 @@ impl SearchEngine {
                     source: SemanticResultSource::Lexical,
                     needs_hydration: false,
                     text_status: item.text_status,
+                    matched_window: 0,
                 }
             })
             .collect();
@@ -8778,13 +8855,13 @@ impl SearchEngine {
         )
     }
 
-    /// For each `(address, book, id, text)`, a line too short to stand alone: its window joined
-    /// and capped as the chunker embedded it, spaces collapsed for display; `None` otherwise.
+    /// The embedded text to show, spaces collapsed: a short line's capped context, or a long
+    /// line's matched window past its first (see `long_line_window_text`); `None` otherwise.
     #[cfg(feature = "semantic-integration")]
     fn embedded_window_texts(
         &self,
         searcher: &Searcher,
-        lines: &[(DocAddress, &str, u64, &str)],
+        lines: &[EmbeddedLine<'_>],
     ) -> Result<Vec<Option<String>>> {
         use otzaria_semantic_search::semantic::chunker::truncate_to_chars;
         let chunking = semantic_keys::production_chunking();
@@ -8794,7 +8871,10 @@ impl SearchEngine {
                 (chunking.min_embeddable_chars..chunking.min_meaningful_chars).contains(&length)
             })
             .collect();
-        let mut out = vec![None; lines.len()];
+        let mut out: Vec<Option<String>> = lines
+            .iter()
+            .map(|&(_, _, _, text, window)| long_line_window_text(text, window))
+            .collect();
         if short.is_empty() {
             return Ok(out);
         }
@@ -16518,6 +16598,27 @@ mod tests {
             let (semantic_html, painted) = painter.paint("משה לבדו ואהרן", false);
             assert!(!painted);
             assert_eq!(semantic_html, "משה לבדו ואהרן");
+
+            // A shown window the lexical match is not in gives way to the whole line; a
+            // window it is in, or a hit no lexical search confirmed, keeps the window.
+            let window = "…שלום שלום שלום…";
+            let (shown, painted) = painter.paint_shown(&text, Some(window), true);
+            assert!(painted);
+            assert!(shown.contains("ואהרן"), "{shown}");
+            assert_eq!(
+                painter.paint_shown(&text, Some(window), false),
+                painter.paint(window, false)
+            );
+            let marked = "…שלום משה ואהרן שלום…";
+            assert_eq!(
+                painter.paint_shown(&text, Some(marked), true),
+                painter.paint(marked, true)
+            );
+            assert!(painter.paint(marked, true).1);
+            assert_eq!(
+                painter.paint_shown(&text, None, true),
+                painter.paint(&text, true)
+            );
         }
     }
 
@@ -17214,6 +17315,34 @@ mod tests {
         }
         values.sort_unstable();
         values.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// An index the engine before long-line windows wrote, its column keyed under the
+    /// published chunking, is read by its column; one recording the windows chunking is not.
+    #[test]
+    fn an_index_written_before_the_windows_keeps_its_column() {
+        for (identity, used) in [
+            (2_685_558_872_390_372_738u64, true),
+            (
+                crate::semantic_keys::production_chunking().identity(),
+                false,
+            ),
+        ] {
+            let (engine, dir) = make_engine();
+            drop(engine);
+            let mut metadata = index_metadata(
+                INDEX_SCHEMA_VERSION,
+                Some(ChunkKeyRecipe {
+                    line_text_version: 1,
+                    key_version: 1,
+                    chunking_identity: identity,
+                }),
+            );
+            metadata.engine_version = "3.1.0".to_string();
+            write_index_metadata(dir.path(), &metadata).unwrap();
+            let engine = SearchEngine::new(dir.path().to_str().unwrap());
+            assert_eq!(engine.chunk_key_field.is_some(), used, "{identity}");
+        }
     }
 
     /// A new index is version 5: it has the column, its metadata records the recipe the
@@ -25983,6 +26112,7 @@ mod tests {
                 candidate_window_multiplier: 3.0,
                 foundational_bonus: 0.004,
                 foundational_candidate_share: 0.25,
+                window_penalty: 0.03,
             };
             let preset = RankingProfile::from_profile(SearchProfile::Balanced);
             assert_eq!(
@@ -26010,6 +26140,7 @@ mod tests {
                     candidate_window_multiplier: 3.0,
                     foundational_bonus: 0.004,
                     foundational_candidate_share: 0.25,
+                    window_penalty: 0.03,
                     query_cache_enabled: preset.query_cache_enabled,
                     embedding_cache_enabled: preset.embedding_cache_enabled,
                     telemetry_enabled: preset.telemetry_enabled,
@@ -26033,7 +26164,7 @@ mod tests {
         #[test]
         fn an_option_out_of_range_is_refused_by_its_name() {
             type Spoil = fn(&mut SemanticRankingOptions);
-            let cases: [(&str, Spoil); 22] = [
+            let cases: [(&str, Spoil); 24] = [
                 ("rrf_k", |o| {
                     o.fusion_strategy = SemanticFusionStrategy::Rrf;
                     o.rrf_k = 0;
@@ -26080,6 +26211,8 @@ mod tests {
                 ("foundational_candidate_share", |o| {
                     o.foundational_candidate_share = 1.5
                 }),
+                ("window_penalty", |o| o.window_penalty = 0.25),
+                ("window_penalty", |o| o.window_penalty = f64::NAN),
             ];
             for (field, spoil) in cases {
                 let mut options = defaults();
@@ -26125,6 +26258,7 @@ mod tests {
                 candidate_window_multiplier: 10.0,
                 foundational_bonus: 1.0,
                 foundational_candidate_share: 0.0,
+                window_penalty: 0.2,
             };
             ranking_profile(&ends)
                 .expect("the ends of every range are values a calibration may land on");
@@ -26387,6 +26521,7 @@ mod tests {
             SemanticHighlightTarget {
                 file_path: file_path.to_string(),
                 id,
+                window: 0,
             }
         }
 
@@ -27315,6 +27450,25 @@ mod tests {
             storage: TextStorage,
             library: Option<&Path>,
         ) -> Built {
+            built_under(
+                dir,
+                without_column,
+                books,
+                storage,
+                library,
+                production_chunking(),
+            )
+        }
+
+        /// [`built_with`], the vectors built under `chunking`.
+        fn built_under(
+            dir: &TempDir,
+            without_column: bool,
+            books: &[(&str, String)],
+            storage: TextStorage,
+            library: Option<&Path>,
+            chunking: otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+        ) -> Built {
             let index = dir.path().join("index");
             fs::create_dir_all(&index).unwrap();
             if without_column {
@@ -27340,7 +27494,6 @@ mod tests {
             }
             engine.commit().unwrap();
 
-            let chunking = production_chunking();
             let model_file = mock::write_stub_onnx_package(&dir.path().join("model"));
             let model = ModelIdentity {
                 family_id: "test-mock@0000000".to_string(),
@@ -27992,6 +28145,7 @@ mod tests {
                 .expect("the heading's vector is a result");
             assert_eq!(heading.source, SemanticResultSource::Semantic);
             assert_eq!(heading.snippet_html, embedded);
+            assert_eq!(heading.matched_window, 0);
 
             let marked = engine
                 .semantic_passage_highlights(
@@ -27999,6 +28153,7 @@ mod tests {
                     vec![SemanticHighlightTarget {
                         file_path: BOOK.to_string(),
                         id: heading.id,
+                        window: heading.matched_window,
                     }],
                     &SemanticCancellationToken::new(),
                 )
@@ -28010,6 +28165,152 @@ mod tests {
                 "{}",
                 marked[0].snippet_html
             );
+        }
+
+        /// A line of 300 distinct words, some 1,500 characters.
+        fn long_line() -> String {
+            let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+            (0..300)
+                .map(|n| format!("{}{}ים", letters[n % 22], letters[(n / 22) % 22]))
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        fn long_book(long: &str) -> String {
+            format!("בראשית ברא אלהים את השמים ואת הארץ\n{long}\n{PROBE}")
+        }
+
+        /// What the long line's window `window` is in its text.
+        fn window_piece(long: &str, window: u8) -> String {
+            let (span, _) = crate::semantic_keys::window_span(long, window).unwrap();
+            long.chars().skip(span.start).take(span.len()).collect()
+        }
+
+        /// A query quoting a long line's middle finds it by that window, which is named, shown
+        /// and marked; the column holds only the first window.
+        #[test]
+        fn a_long_lines_middle_is_found_shown_and_marked_by_its_window() {
+            use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
+            use otzaria_semantic_search::semantic::chunker::Chunker;
+            let long = long_line();
+            let piece = window_piece(&long, 2);
+            let first_word = long.split(' ').next().unwrap().to_string();
+            assert!(!piece.contains(&first_word));
+            for without_column in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let engine = open(&dir, built_of(&dir, without_column, long_book(&long)));
+                if !without_column {
+                    let searcher = engine.index_reader.searcher();
+                    let address = engine
+                        .address_in_book(&searcher, BOOK, (1u64 << 32) + 2)
+                        .unwrap()
+                        .unwrap();
+                    let column = searcher
+                        .segment_reader(address.segment_ord)
+                        .fast_fields()
+                        .u64(CHUNK_KEY_FIELD)
+                        .unwrap()
+                        .first(address.doc_id);
+                    let alone = [LineRef {
+                        text: &long,
+                        section: 0,
+                    }];
+                    let chunker = Chunker::new(production_chunking()).unwrap();
+                    let first = chunker.embedded_text(&alone, 0).unwrap();
+                    assert_eq!(column, Some(ChunkKey::of(&first).column_value()));
+                }
+
+                let response = semantic_page(&engine, &piece, 10);
+                assert!(
+                    response.fallback_reason.is_none(),
+                    "{:?}",
+                    response.fallback_reason
+                );
+                let top = &response.results[0];
+                assert_eq!(top.segment, 1, "without column: {without_column}");
+                assert_eq!(top.source, SemanticResultSource::Semantic);
+                assert_eq!(top.matched_window, 2, "without column: {without_column}");
+                // Shown within the snippet budget, as every semantic result's line is.
+                let shown = format!("…{piece}…");
+                assert_eq!(
+                    top.snippet_html,
+                    bounded_plain_snippet(&shown, HighlightConfig::default().max_chars)
+                );
+                assert!(
+                    response
+                        .results
+                        .iter()
+                        .filter(|result| result.segment == 1)
+                        .count()
+                        == 1,
+                    "the line is one result, whichever of its windows match"
+                );
+
+                let target = |window| SemanticHighlightTarget {
+                    file_path: BOOK.to_string(),
+                    id: top.id,
+                    window,
+                };
+                let query: String = piece
+                    .split(' ')
+                    .skip(20)
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let marked = engine
+                    .semantic_passage_highlights(
+                        query,
+                        vec![target(top.matched_window), target(0)],
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap();
+                assert!(marked[0].is_highlighted, "{marked:?}");
+                assert!(marked[0].snippet_html.contains("<mark>"));
+                assert!(
+                    !marked[0].snippet_html.contains(&first_word),
+                    "{}",
+                    marked[0].snippet_html
+                );
+                assert_ne!(marked[0].snippet_html, marked[1].snippet_html);
+            }
+        }
+
+        /// A set built without windows — the published family's — opens with this build and
+        /// resolves as before: one vector a line, every hit its line's first window.
+        #[test]
+        fn a_set_without_windows_opens_and_resolves_as_before() {
+            let long = long_line();
+            let mut counts = Vec::new();
+            for chunking in [production_chunking().anchor(), production_chunking()] {
+                let dir = TempDir::new().unwrap();
+                let built = built_under(
+                    &dir,
+                    false,
+                    &[(BOOK, long_book(&long))],
+                    TextStorage::InIndex,
+                    None,
+                    chunking.clone(),
+                );
+                let engine = open(&dir, built);
+                let status = engine.semantic_status();
+                assert!(status.available, "{:?}", status.last_error);
+                counts.push(status.vector_count);
+                let top = search(&engine, SemanticRetrievalMode::SemanticOnly);
+                let top = top.results.first().expect("a semantic hit");
+                assert_eq!(top.snippet_html, PROBE);
+                assert_eq!(top.matched_window, 0);
+                if chunking.window_chars == 0 {
+                    let response = semantic_page(&engine, &window_piece(&long, 2), 10);
+                    assert!(response.fallback_reason.is_none());
+                    assert!(response
+                        .results
+                        .iter()
+                        .all(|result| result.matched_window == 0
+                            && !result.snippet_html.starts_with('…')));
+                }
+            }
+            let windows = crate::semantic_keys::window_keys(&long).len() as u32;
+            assert_eq!(counts, [3, 3 + windows]);
         }
 
         /// The shown window is the embedded one: capped at `max_chunk_chars`, a blank line's
@@ -28038,7 +28339,7 @@ mod tests {
                     .address_in_book(&searcher, BOOK, id)
                     .unwrap()
                     .unwrap();
-                (address, BOOK, id, text)
+                (address, BOOK, id, text, 0)
             };
             let asked = [line(1, "סימן כה"), line(5, around[0]), line(7, around[2])];
             let shown = engine.embedded_window_texts(&searcher, &asked).unwrap();
@@ -28237,6 +28538,142 @@ mod tests {
             assert_eq!(capped, [(BOOK.to_string(), 1)]);
             add_copy(&mut engine, "/books/fourth.txt", 3);
             assert_eq!(probe_lines(&engine).len(), 4);
+        }
+
+        /// Changed-book windows have a bounded discovery budget. Exceeding it never
+        /// exposes a partial arrival set as complete: unfiltered planning backs off and
+        /// filtered planning reports why an update is needed.
+        #[test]
+        fn changed_window_discovery_overflow_backs_off_without_partial_results() {
+            use crate::semantic_resolver::LiveResolver;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let long = (0..600)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            engine.delete_documents_by_file_path(BOOK).unwrap();
+            engine
+                .add_text_book(
+                    "ספר".into(),
+                    "/root".into(),
+                    BOOK.into(),
+                    0,
+                    0,
+                    long,
+                    None,
+                    TextStorage::InIndex,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let cancel = CancellationToken::new();
+            let unfiltered = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            let filtered = SidecarSearchFilters {
+                book_paths: None,
+                facets: Some(vec!["/root".into()]),
+                include_pdf: None,
+            };
+            let previous = crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(1));
+            let unfiltered = resolver.plan(&unfiltered, &view, &cancel);
+            let filtered = resolver.plan(&filtered, &view, &cancel);
+            crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+            assert!(
+                unfiltered.unwrap().is_none(),
+                "no truncated unfiltered plan"
+            );
+            let error = filtered
+                .err()
+                .expect("a filter cannot silently omit discovered windows");
+            assert!(
+                error
+                    .to_string()
+                    .contains("changed-book window occurrences"),
+                "{error}"
+            );
+        }
+
+        /// The working-set cap is shared across Rayon workers and changed books,
+        /// rather than allowing each book to allocate the complete budget independently.
+        #[test]
+        fn changed_window_discovery_budget_is_shared_across_books() {
+            use crate::semantic_resolver::LiveResolver;
+            let dir = TempDir::new().unwrap();
+            let mut engine = open(
+                &dir,
+                built_of_books(
+                    &dir,
+                    false,
+                    &[
+                        (BOOK, "ספר ראשון עם שורה ארוכה מספיק לחיפוש".into()),
+                        (OTHER, "ספר שני עם שורה אחרת ארוכה מספיק לחיפוש".into()),
+                    ],
+                ),
+            );
+            let long = (0..180)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let windows = crate::semantic_keys::window_keys(&long).len();
+            assert!(windows > 1);
+            for (order, path) in [BOOK, OTHER].into_iter().enumerate() {
+                engine.delete_documents_by_file_path(path).unwrap();
+                engine
+                    .add_text_book(
+                        "ספר".into(),
+                        "/root".into(),
+                        path.into(),
+                        order as u32,
+                        0,
+                        long.clone(),
+                        None,
+                        TextStorage::InIndex,
+                        None,
+                    )
+                    .unwrap();
+            }
+            engine.commit().unwrap();
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let mut resolver = LiveResolver::new(
+                engine.index_reader.searcher(),
+                engine.chunk_key_field,
+                &engine.semantic_resolver,
+            )
+            .unwrap();
+            let filters = SidecarSearchFilters {
+                book_paths: None,
+                facets: None,
+                include_pdf: None,
+            };
+            let previous =
+                crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(windows + 1));
+            let planned = resolver.plan(&filters, &view, &CancellationToken::new());
+            crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+            assert!(
+                planned.unwrap().is_none(),
+                "each book fits, but their combined window working set exceeds the cap"
+            );
         }
 
         fn lookups(engine: &SearchEngine) -> u64 {

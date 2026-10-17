@@ -171,6 +171,14 @@ fn build_library() -> Library {
 /// [`build_library`] of `books`, into an index without the column when `without_column`
 /// asks.
 fn build_library_of(books: &[Book], without_column: bool) -> Library {
+    build_library_under(books, without_column, production_chunking())
+}
+
+fn build_library_under(
+    books: &[Book],
+    without_column: bool,
+    chunking: otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+) -> Library {
     let root = TempDir::new().unwrap();
     let index = root.path().join("tantivy");
     let work = root.path().join("work");
@@ -185,7 +193,6 @@ fn build_library_of(books: &[Book], without_column: bool) -> Library {
     // The chunking this build keys the index's lines under, as the library's vectors are
     // built with it. The stand-in embeds a bag of words, so a query still ranks first the
     // line whose words it repeats, role prefixes aside.
-    let chunking = production_chunking();
     let model = ModelIdentity {
         family_id: "test-mock@0000000".to_string(),
         tokenizer_checksum: mock::stub_tokenizer_checksum(),
@@ -923,13 +930,12 @@ fn a_line_inserted_above_is_found_where_it_moved() {
     }
 }
 
-/// What an index without a `chunkKey` column this build uses does not find, as the README
-/// says: a line the set recorded, once it is more than 16 lines from there, and a text that
+/// What a legacy anchor-family set cannot find without a `chunkKey` column this build uses: a line the set recorded, once it is more than 16 lines from there, and a text that
 /// moved to another book, filtered or not. The same changes are found with the column (the
 /// tests around this one).
 #[test]
-fn an_index_without_the_column_finds_a_line_only_near_where_the_set_recorded_it() {
-    let library = build_library_of(&default_books(), true);
+fn a_legacy_anchor_set_without_the_column_finds_a_line_only_near_its_recorded_hint() {
+    let library = build_library_under(&default_books(), true, production_chunking().anchor());
     let mut engine = library.engine();
     engine.open_semantic_artifact(library.input()).unwrap();
     let probe_found = |engine: &SearchEngine, facets: &[&str]| {
@@ -978,6 +984,39 @@ fn an_index_without_the_column_finds_a_line_only_near_where_the_set_recorded_it(
         !probe_found(&engine, &["/חדש"]),
         "a text in another book, under its filter"
     );
+}
+
+/// New occurrence metadata enables a complete book search by its parent anchor even
+/// when the index has no compatible column. This capability belongs to the v2 family;
+/// legacy anchor-family records retain their bounded text fallback above.
+#[test]
+fn a_window_family_anchor_without_the_column_is_found_after_a_far_shift() {
+    let library = build_library_of(&default_books(), true);
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let above = (0..40)
+        .map(|n| format!("שורה חדשה בראש הספר מספר {n} ארוכה דיה לעמוד לבדה"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    replace_book(
+        &mut engine,
+        (
+            "בראשית",
+            "/מקרא/תורה",
+            GENESIS,
+            0,
+            format!("{above}\n{GENESIS_TEXT}"),
+        ),
+    );
+    for facets in [&[][..], &["/מקרא"][..]] {
+        let found = semantic_lines(&engine, PROBE_LINE, facets);
+        assert!(
+            found.iter().any(|(book, text, ordinal)| book == GENESIS
+                && text == PROBE_LINE
+                && *ordinal == 43),
+            "the v2 anchor is found across the book without a column: {found:?}"
+        );
+    }
 }
 
 /// A text that left its book for another is found in the other one: the column is passed
@@ -3305,4 +3344,256 @@ fn the_validator_finds_every_record_at_its_hint_until_lines_move() {
     assert_eq!(moved.keyed_lines, embedded + 1);
     assert!(moved.moved >= 1, "{moved:?}");
     assert_eq!(moved.at_hint + moved.moved + moved.gone, moved.records);
+}
+
+fn qa_window_copy_line() -> String {
+    let letters: Vec<char> = "אבגדהוזחטיכלמנסעפצקרשת".chars().collect();
+    (0..1000)
+        .map(|n| {
+            let mut value = n + 23;
+            (0..6)
+                .map(|_| {
+                    let letter = letters[value % letters.len()];
+                    value /= letters.len();
+                    letter
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// An inner-window vector recorded only in A must be weighed and highlighted in B
+/// after its parent line is copied there, both under B's filter and without a filter.
+#[test]
+fn qa_inner_windows_copied_to_another_book_are_found_filtered_and_unfiltered() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    let long = qa_window_copy_line();
+    let windows = Chunker::new(production_chunking())
+        .unwrap()
+        .embedded_windows(
+            &[LineRef {
+                text: &long,
+                section: 0,
+            }],
+            0,
+        );
+    let target = &windows[2];
+    let query = target.text.strip_prefix(PASSAGE_PREFIX).unwrap();
+    let library = build_library_of(
+        &[("מקור", "/מקור", "/books/window-source.txt", 0, long.clone())],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    add_books(
+        &mut engine,
+        &[("העתק", "/העתק", "/books/window-copy.txt", 1, long)],
+    );
+    for facets in [&["/העתק"][..], &[][..]] {
+        let response = search(&engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        let copied = response
+            .results
+            .iter()
+            .find(|hit| hit.file_path == "/books/window-copy.txt")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the copy must resolve; returned {} results",
+                    response.results.len()
+                )
+            });
+        assert_eq!(
+            copied.matched_window,
+            target.ordinal,
+            "copied source must use its inner-window vector: {:?}",
+            response
+                .results
+                .iter()
+                .map(|hit| (&hit.file_path, hit.matched_window, hit.semantic_score))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// B can already record the parent's anchor while gaining its inner windows later.
+/// Discovery must compare the full window occurrences, rather than only new anchor keys.
+#[test]
+fn qa_inner_windows_arrive_under_an_anchor_already_recorded_in_the_target_book() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    let long = qa_window_copy_line();
+    let windows = Chunker::new(production_chunking())
+        .unwrap()
+        .embedded_windows(
+            &[LineRef {
+                text: &long,
+                section: 0,
+            }],
+            0,
+        );
+    let target = &windows[2];
+    let query = target.text.strip_prefix(PASSAGE_PREFIX).unwrap();
+    let first = windows[0]
+        .text
+        .strip_prefix(PASSAGE_PREFIX)
+        .unwrap()
+        .to_string();
+    let library = build_library_of(
+        &[
+            ("מקור", "/מקור", "/books/window-source.txt", 0, long.clone()),
+            ("העתק", "/העתק", "/books/window-copy.txt", 1, first),
+        ],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    replace_book(
+        &mut engine,
+        ("העתק", "/העתק", "/books/window-copy.txt", 1, long),
+    );
+    for facets in [&["/העתק"][..], &[][..]] {
+        let response = search(&engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        let copied = response
+            .results
+            .iter()
+            .find(|hit| hit.file_path == "/books/window-copy.txt")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the copy must resolve; returned {} results",
+                    response.results.len()
+                )
+            });
+        assert_eq!(
+            copied.matched_window,
+            target.ordinal,
+            "an existing anchor must not hide newly arrived inner windows: {:?}",
+            response
+                .results
+                .iter()
+                .map(|hit| (&hit.file_path, hit.matched_window, hit.semantic_score))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A key already recorded in B can gain a second occurrence beneath another anchor.
+/// Its new ordinal must survive changed-book discovery and per-key arrival deduplication.
+#[test]
+fn qa_shared_inner_window_copied_under_a_new_parent_within_the_same_book_is_found() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    let common = qa_window_copy_line();
+    let original = format!("{}{common}", "אחד ".repeat(96));
+    let additional = format!("{}{common}", "שני ".repeat(96));
+    let chunker = Chunker::new(production_chunking()).unwrap();
+    let windows = chunker.embedded_windows(
+        &[LineRef {
+            text: &original,
+            section: 0,
+        }],
+        0,
+    );
+    let other_windows = chunker.embedded_windows(
+        &[LineRef {
+            text: &additional,
+            section: 0,
+        }],
+        0,
+    );
+    assert_ne!(windows[0].text, other_windows[0].text);
+    let target = &windows[2];
+    assert_eq!(target.text, other_windows[2].text);
+    let query = target.text.strip_prefix(PASSAGE_PREFIX).unwrap();
+    let library = build_library_of(
+        &[
+            (
+                "מקור",
+                "/מקור",
+                "/books/window-source.txt",
+                0,
+                original.clone(),
+            ),
+            (
+                "העתק",
+                "/העתק",
+                "/books/window-copy.txt",
+                1,
+                original.clone(),
+            ),
+        ],
+        false,
+    );
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    replace_book(
+        &mut engine,
+        (
+            "העתק",
+            "/העתק",
+            "/books/window-copy.txt",
+            1,
+            format!("{original}\n{additional}"),
+        ),
+    );
+    let response = search(
+        &engine,
+        query,
+        &["/העתק"],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(
+        response.fallback_reason.is_none(),
+        "{:?}",
+        response.fallback_reason
+    );
+    let copied: Vec<_> = response
+        .results
+        .iter()
+        .filter(|hit| hit.file_path == "/books/window-copy.txt")
+        .map(|hit| (hit.segment, hit.matched_window))
+        .collect();
+    assert_eq!(
+        copied.len(),
+        2,
+        "both old and new parent must resolve: {copied:?}"
+    );
+    assert!(copied.contains(&(0, target.ordinal)));
+    assert!(copied.contains(&(1, target.ordinal)));
+}
+
+#[test]
+fn qa_published_book_hashes_match_the_live_index_source() {
+    use otzaria_semantic_search::semantic::segment_set::SegmentSet;
+    let library = build_library();
+    let engine = library.engine();
+    let set = SegmentSet::open(&library.vectors).unwrap();
+    // Current indexes stamp textHash on one document per book. Compare fingerprints
+    // through the public book collector, which also supports older dense columns.
+    // These fixtures are text books; a missing/zero fingerprint must not be skipped.
+    for (_, _, path, _, _) in default_books() {
+        let hash = engine.get_book_text_fingerprint(path.to_string()).unwrap();
+        assert_ne!(
+            hash, 0,
+            "the text book has a verifiable source fingerprint: {path}"
+        );
+        assert_eq!(
+            set.book_source_hash(path),
+            Some(hash),
+            "published metadata must allow unchanged-book detection: {path}"
+        );
+    }
 }

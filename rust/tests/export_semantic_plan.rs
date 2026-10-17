@@ -445,3 +445,141 @@ fn a_warehouse_vector_is_not_embedded_and_a_column_off_its_text_fails_the_gate()
         "no reader accepts a plan that failed its gate"
     );
 }
+
+/// One book whose second line is some 2,000 characters long, in an index of its own.
+fn long_line_library(dir: &Path) -> PathBuf {
+    let index = dir.join("index");
+    std::fs::create_dir_all(&index).unwrap();
+    let long = (0..300)
+        .map(|word| format!("word{word}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut engine = SearchEngine::new(index.to_str().unwrap());
+    engine
+        .add_text_book(
+            "Book L".to_string(),
+            "/test".to_string(),
+            "/books/l.txt".to_string(),
+            0,
+            0,
+            format!("{REPEATED}\n{long}\nThe line after the long one, long enough to embed."),
+            None,
+            TextStorage::InIndex,
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    index
+}
+
+/// The same binary plans either family by the identity it is given: the windows family a
+/// record per window of the long line, in `OXVREC2`, and the published one a record per line,
+/// in `OXVREC1`, as the sidecar's own planner does; both hold the column to the first window.
+#[test]
+fn the_family_given_chooses_whether_a_long_line_plans_its_windows() {
+    let dir = TempDir::new().unwrap();
+    let index = long_line_library(dir.path());
+    let mut records = Vec::new();
+    for chunking in [production_chunking(), production_chunking().anchor()] {
+        let model = ModelIdentity {
+            chunking_identity: chunking.identity(),
+            ..model()
+        };
+        let root = dir.path().join(chunking.identity().to_string());
+        let model_file = root.join("model.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&model_file, serde_json::to_vec(&model).unwrap()).unwrap();
+        let out = root.join("plan");
+        let output = run_export(&index, &out, &model_file, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan = Plan::open(&out).unwrap();
+        assert_eq!(plan.manifest.parity.checked, 3);
+        assert_eq!(plan.manifest.parity.mismatches, 0);
+        assert_eq!(
+            plan.manifest.identity.model.chunking_identity,
+            chunking.identity()
+        );
+        let windows: Vec<(u32, u8)> = plan
+            .records
+            .iter()
+            .map(|record| (record.ordinal, record.window))
+            .collect();
+        assert_eq!(plan.records.is_windowed(), chunking.window_chars > 0);
+        if plan.records.is_windowed() {
+            // Current indexes store one textHash value per book, leaving other text
+            // documents sparse. Missing entries must not invalidate the present hash.
+            let engine = SearchEngine::new(index.to_str().unwrap());
+            let expected = engine
+                .get_book_text_fingerprint("/books/l.txt".into())
+                .unwrap();
+            assert_ne!(expected, 0);
+            let hashes = plan.book_source_hashes().unwrap().unwrap();
+            assert_eq!(hashes.get("/books/l.txt"), Some(&expected));
+        } else {
+            assert!(
+                plan.book_source_hashes().unwrap().is_none(),
+                "legacy family metadata stays unchanged"
+            );
+        }
+
+        let corpus = TantivyCorpus::from_index_path(
+            &index,
+            None,
+            LIBRARY_VERSION,
+            RELEASE_TAG,
+            chunking.clone(),
+        )
+        .unwrap();
+        let reference = root.join("reference");
+        plan_from_corpus(
+            &corpus,
+            PlanRequest {
+                out_dir: reference.clone(),
+                model: model.clone(),
+                chunking,
+                passage_package: model.query_packages[0].clone(),
+                previous: None,
+                warehouse: None,
+                created_at: CREATED_AT.to_string(),
+            },
+        )
+        .unwrap();
+        for name in [RECORDS_FILE, EMBED_PLAN_FILE, EMBED_MANIFEST_FILE] {
+            assert_eq!(bytes(&out, name), bytes(&reference, name), "{name}");
+        }
+        records.push(windows);
+    }
+    let [windowed, published] = <[_; 2]>::try_from(records).unwrap();
+    assert_eq!(published, [(0, 0), (1, 0), (2, 0)]);
+    assert!(windowed.len() >= 6, "{windowed:?}");
+    assert!(windowed
+        .iter()
+        .all(|&(ordinal, window)| window == 0 || ordinal == 1));
+    assert_eq!(
+        windowed
+            .iter()
+            .filter(|(_, window)| *window == 0)
+            .copied()
+            .collect::<Vec<_>>(),
+        published
+    );
+
+    // A family under any other chunking is refused before the index is read.
+    let other = ModelIdentity {
+        chunking_identity: production_chunking().identity() ^ 1,
+        ..model()
+    };
+    let model_file = dir.path().join("other.json");
+    std::fs::write(&model_file, serde_json::to_vec(&other).unwrap()).unwrap();
+    let output = run_export(&index, &dir.path().join("other"), &model_file, None);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("chunking_identity"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

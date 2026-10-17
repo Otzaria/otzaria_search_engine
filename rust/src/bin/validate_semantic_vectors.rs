@@ -13,14 +13,17 @@
 //! removed after (the sidecar's `simulate_device`); or a set installed already, `--vectors`.
 //!
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
-//!   recorded by the set in its own book, by all 128 bits of the key recomputed from the
-//!   stored text; and with `--plan`, every record of the plan the set was assembled from is
-//!   one a scan of the installed set reaches, by the sidecar's own count.
-//! * **G4, resolution**: every record of the set resolves on the release index —
-//!   its book is there, and holds its text, by all 128 bits of the key recomputed from the
-//!   stored text — and every line's `chunkKey` column, which a device resolves by, is its
-//!   text's. A record whose text is elsewhere in its book than its hint is stale: reported,
-//!   and fatal only past `--max-stale-hints`.
+//!   reached by the runtime resolver at that exact source occurrence, using the set's
+//!   parent-anchor and window metadata and all 128 bits of the recomputed key. The same
+//!   applies to every further window the recipe emits. Standalone source character coverage is
+//!   reported separately: a bounded recipe can pass G3 while omitting long-line tails;
+//!   and with `--plan`, every record of the plan the set was assembled from is one a scan
+//!   of the installed set reaches, by the sidecar's own count.
+//! * **G4, resolution**: every record of the set resolves on the release index — its book
+//!   is there, and the runtime verifies its own occurrence metadata against the text,
+//!   including its parent anchor and window — and every line's `chunkKey` column, which a device
+//!   resolves by, is its text's. A record whose text is elsewhere in its book than its hint
+//!   is stale: reported, and fatal only past `--max-stale-hints`.
 //! * **G6, retrieval** (with `--warehouse`, `--model` and `--model-identity`): recall@10 and
 //!   recall@50 of the set's scan, as a device runs it, against the exact `f32` scan of the
 //!   same keys in the warehouse the set was assembled from (the sidecar's
@@ -29,7 +32,8 @@
 //!   3–10 words of the index's lines, drawn with a fixed seed: the same queries for the same
 //!   index. Recall is counted over keys — distinct texts — since that is what a scan returns:
 //!   a text repeated in many books is one hit however many lines it resolves to, so lines
-//!   that repeat a text cannot crowd the top 50 here as they do on a results page.
+//!   that repeat a text cannot crowd the top 50 here as they do on a results page. The scan
+//!   takes nothing off a long line's further windows: what is measured is the encoding.
 //!
 //! A release passes when every gate ran and passed. A gate with nothing to measure — an
 //! index with no keyed line, a plan or a set with no record, no live key to recall — fails.
@@ -459,26 +463,51 @@ mod gates {
         }
     }
 
-    /// G3: every keyed line of the index is covered by the set; with a plan, every record of
-    /// the plan is reachable in the set.
+    /// G3: every source occurrence the recipe emits is reachable by the runtime resolver;
+    /// with a plan, every record of the plan is reachable in the set. Physical source
+    /// character coverage is informational and does not turn recipe coverage into recall.
     fn g3(set: &SegmentSet, validation: &Validation, plan: Option<&Path>) -> Result<Gate> {
         let uncovered = validation.keyed_lines - validation.covered_lines;
+        let uncovered_windows = validation.keyed_windows - validation.covered_windows;
         let mut faults = Vec::new();
         if validation.keyed_lines == 0 {
             faults.push("the index has no keyed line, so there is no coverage to measure".into());
         }
         if uncovered > 0 {
             faults.push(format!(
-                "{uncovered} keyed line(s) of the index have no record of their text in their \
-                 book"
+                "{uncovered} keyed line occurrence(s) of the index cannot be reached by the \
+                 runtime resolver"
+            ));
+        }
+        if uncovered_windows > 0 {
+            faults.push(format!(
+                "{uncovered_windows} further window occurrence(s) of long lines cannot be \
+                 reached by the runtime resolver"
             ));
         }
         let mut detail = format!(
-            "{} of the index's {} keyed line(s) recorded in their book ({})",
+            "{} of the index's {} keyed line occurrence(s) reached by the runtime ({})",
             validation.covered_lines,
             validation.keyed_lines,
             percent(validation.covered_lines, validation.keyed_lines)
         );
+        if validation.keyed_windows > 0 {
+            detail.push_str(&format!(
+                ", and {} of {} further window(s) of long lines ({})",
+                validation.covered_windows,
+                validation.keyed_windows,
+                percent(validation.covered_windows, validation.keyed_windows)
+            ));
+        }
+        detail.push_str(&format!(
+            "; emitted spans cover {} of {} normalized standalone source characters ({}); {} partially windowed standalone line(s), {} standalone line(s) with no window, {} context-borrowing line(s) excluded",
+            validation.windowed_standalone_chars,
+            validation.standalone_text_chars,
+            percent(validation.windowed_standalone_chars, validation.standalone_text_chars),
+            validation.partially_windowed_standalone_lines,
+            validation.unwindowed_standalone_lines,
+            validation.borrowed_context_lines,
+        ));
         let plan_metrics = match plan {
             Some(plan) => {
                 let plan = Plan::open(plan)
@@ -527,6 +556,16 @@ mod gates {
                 "keyedLines": validation.keyed_lines,
                 "coveredLines": validation.covered_lines,
                 "uncoveredLines": uncovered,
+                "keyedWindows": validation.keyed_windows,
+                "coveredWindows": validation.covered_windows,
+                "uncoveredWindows": uncovered_windows,
+                "standaloneTextChars": validation.standalone_text_chars,
+                "windowedStandaloneChars": validation.windowed_standalone_chars,
+                "unwindowedStandaloneChars": validation.standalone_text_chars - validation.windowed_standalone_chars,
+                "partiallyWindowedStandaloneLines": validation.partially_windowed_standalone_lines,
+                "unwindowedStandaloneLines": validation.unwindowed_standalone_lines,
+                "borrowedContextLines": validation.borrowed_context_lines,
+                "textCoverageDefinition": "union of emitted spans over normalized standalone non-PDF source characters; excludes passage prefixes and short context-borrowing lines; duplicate-window suppression can make this conservative; not semantic recall or whole-library text coverage",
                 "plan": plan_metrics,
             }),
         })
@@ -709,6 +748,7 @@ mod gates {
                         top_k: 50,
                         books: None,
                         threads: request.threads,
+                        window_penalty: 0.0,
                     },
                     &cancel,
                 )

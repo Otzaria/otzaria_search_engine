@@ -10,8 +10,8 @@
 //! The key is a function of three things, and an index's metadata records all three beside
 //! the column ([`ChunkKeyRecipe`]): the line recipe that turned the book into the text the
 //! index stores ([`LINE_TEXT_VERSION`]), the key function
-//! ([`KEY_VERSION`]), and the chunking the library's vectors are built with
-//! ([`production_chunking`]). A column written under any other recipe counts as absent.
+//! ([`KEY_VERSION`]), and the chunking a line's first window is built with
+//! ([`production_chunking`]'s anchor). A column written under any other recipe counts as absent.
 //!
 //! Where an index has no column this build uses, the key of a line is computed again from
 //! what the index stores, by [`recompute_chunk_key`]; and that is also how a result is checked
@@ -40,24 +40,42 @@ use std::collections::HashMap;
 use tantivy::schema::Value;
 use tantivy::{DocAddress, Searcher, TantivyDocument};
 
-/// The chunking the library's vectors are built with: Meivin Round 2's, the sidecar's
-/// `config/models/meivin-round2-onnx/chunking.json`.
+/// The chunking the library's vectors are built with: Meivin Round 2's with long-line
+/// windows, the sidecar's `config/models/meivin-round2-windows-onnx/chunking.json`.
 ///
 /// Compiled in, because indexing runs with no model configured: every build computes a
 /// line's key, whether or not it can embed. The model family the vectors are published
 /// under names this configuration by its hash, [`ChunkerConfig::identity`], so a copy that
 /// drifted from the file would be another `chunking_identity`, and the tests pin it to the
-/// published one.
+/// published one. The column is keyed under its [`ChunkerConfig::anchor`] (no windows).
 pub fn production_chunking() -> ChunkerConfig {
     ChunkerConfig {
         min_meaningful_chars: 20,
         context_window_lines: 2,
         max_chunk_chars: 512,
         min_embeddable_chars: 5,
-        chunking_version: 1,
+        chunking_version: 2,
         embedding_text_version: 2,
         normalization_version: 1,
+        window_chars: 512,
+        window_overlap_chars: 128,
+        max_windows_per_line: 6,
     }
+}
+
+/// Every chunking whose vectors this build resolves: [`production_chunking`], and its anchor,
+/// whose sets are the same lines without windows.
+pub fn keyed_chunkings() -> [ChunkerConfig; 2] {
+    let production = production_chunking();
+    let anchor = production.anchor();
+    [production, anchor]
+}
+
+/// The one of [`keyed_chunkings`] whose identity is `identity`.
+pub fn keyed_chunking(identity: u64) -> Option<ChunkerConfig> {
+    keyed_chunkings()
+        .into_iter()
+        .find(|chunking| chunking.identity() == identity)
 }
 
 /// [`production_chunking`], resolved once to the code that applies it.
@@ -106,8 +124,10 @@ static STREAMED_KEYS: Lazy<bool> = Lazy::new(|| {
     use otzaria_semantic_search::semantic::recipe::{
         ChunkingAlgorithm, EmbeddingTextRecipe, TextNormalizationRecipe,
     };
-    let config = production_chunking();
-    PRODUCTION_CHUNKER.recipe()
+    let config = production_chunking().anchor();
+    Chunker::new(config.clone())
+        .expect("the production anchor recipe is supported")
+        .recipe()
         == (
             ChunkingAlgorithm::AnchoredLine,
             EmbeddingTextRecipe::RolePrefixedLineOrNeighbourContext,
@@ -446,6 +466,81 @@ pub(crate) fn recompute_chunk_keys_at(
         .collect())
 }
 
+/// Each window past the first a stored line embeds, with its key: only a line longer than the
+/// cap has any, and it is keyed from its own text alone.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn window_keys(text: &str) -> Vec<(u8, ChunkKey)> {
+    if text.trim().chars().count() <= production_chunking().max_chunk_chars {
+        return Vec::new();
+    }
+    let alone = [LineRef { text, section: 0 }];
+    PRODUCTION_CHUNKER
+        .embedded_windows(&alone, 0)
+        .into_iter()
+        .skip(1)
+        .map(|window| (window.ordinal, ChunkKey::of(&window.text)))
+        .collect()
+}
+
+/// Where window `window` of a line is in `text.trim()`, in characters, with the length of
+/// that trimmed text; `None` for the first window, and for one the line does not embed.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn window_span(text: &str, window: u8) -> Option<(std::ops::Range<usize>, usize)> {
+    if window == 0 {
+        return None;
+    }
+    let length = text.trim().chars().count();
+    if length <= production_chunking().max_chunk_chars {
+        return None;
+    }
+    let alone = [LineRef { text, section: 0 }];
+    PRODUCTION_CHUNKER
+        .embedded_windows(&alone, 0)
+        .into_iter()
+        .find(|found| found.ordinal == window)
+        .map(|found| (found.chars.start as usize..found.chars.end as usize, length))
+}
+
+/// A line's windows past the first, each with its key: see [`window_keys`].
+#[cfg(feature = "semantic-integration")]
+pub(crate) type WindowKeys = std::sync::Arc<[(u8, ChunkKey)]>;
+
+/// [`window_keys`] of the line at each of `addresses`, each document read once; `None` for a
+/// line whose text cannot be read now, and nothing for a PDF's.
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn recompute_window_keys_at(
+    searcher: &Searcher,
+    addresses: &[DocAddress],
+) -> Result<Vec<Option<WindowKeys>>> {
+    let is_pdf_field = searcher.schema().get_field("isPdf")?;
+    let documents = addresses
+        .par_iter()
+        .with_min_len(8)
+        .map(|&address| {
+            let document: TantivyDocument = searcher
+                .doc(address)
+                .with_context(|| format!("reading the document at {address:?}"))?;
+            Ok((address, document))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let texts = indexed_texts(searcher, &documents)?;
+    Ok(documents
+        .par_iter()
+        .zip(texts)
+        .map(|((_, document), line)| {
+            let pdf = document
+                .get_first(is_pdf_field)
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            match line.status {
+                _ if pdf => Some(std::sync::Arc::from([])),
+                TextStatus::Ok | TextStatus::Stale => Some(window_keys(&line.text).into()),
+                TextStatus::Unavailable => None,
+            }
+        })
+        .collect())
+}
+
 /// The positions the key of a short line at `position` of a book of `len` lines is computed
 /// over: the line, and up to the recipe's `context_window_lines` on each side for as long as
 /// its section runs unbroken — the sidecar's chunker for a line under `min_meaningful_chars`.
@@ -620,7 +715,7 @@ impl ChunkKeyRecipe {
         Self {
             line_text_version: LINE_TEXT_VERSION,
             key_version: KEY_VERSION,
-            chunking_identity: production_chunking().identity(),
+            chunking_identity: production_chunking().anchor().identity(),
         }
     }
 }
@@ -700,12 +795,26 @@ mod tests {
     /// the sidecar's `config/models/meivin-round2-onnx/model.json` at the pinned revision.
     const PUBLISHED_CHUNKING_IDENTITY: u64 = 2_685_558_872_390_372_738;
 
+    /// `chunking_identity` of the sidecar's `meivin-round2-windows-onnx/model.json`.
+    const WINDOWS_CHUNKING_IDENTITY: u64 = 320_260_894_818_558_297;
+
+    /// The compiled-in chunking is the windows family's; the column stays the published one's.
     #[test]
     fn the_compiled_in_chunking_is_the_one_meivin_round_2_publishes() {
+        assert_eq!(production_chunking().identity(), WINDOWS_CHUNKING_IDENTITY);
         assert_eq!(
-            production_chunking().identity(),
+            production_chunking().anchor().identity(),
             PUBLISHED_CHUNKING_IDENTITY
         );
+        assert_eq!(
+            keyed_chunkings().map(|chunking| chunking.identity()),
+            [WINDOWS_CHUNKING_IDENTITY, PUBLISHED_CHUNKING_IDENTITY]
+        );
+        assert_eq!(
+            keyed_chunking(PUBLISHED_CHUNKING_IDENTITY),
+            Some(production_chunking().anchor())
+        );
+        assert_eq!(keyed_chunking(PUBLISHED_CHUNKING_IDENTITY ^ 1), None);
         assert_eq!(
             ChunkKeyRecipe::current(),
             ChunkKeyRecipe {
@@ -714,6 +823,41 @@ mod tests {
                 chunking_identity: PUBLISHED_CHUNKING_IDENTITY,
             }
         );
+    }
+
+    /// A long line's further windows are the chunker's past the first; a short line has none.
+    #[cfg(feature = "semantic-integration")]
+    #[test]
+    fn a_long_lines_further_windows_are_the_chunkers() {
+        let long = (0..300)
+            .map(|word| format!("מילה{word}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let alone = [LineRef {
+            text: &long,
+            section: 0,
+        }];
+        let chunker = Chunker::new(production_chunking()).unwrap();
+        let expected: Vec<(u8, ChunkKey)> = chunker
+            .embedded_windows(&alone, 0)
+            .into_iter()
+            .skip(1)
+            .map(|window| (window.ordinal, ChunkKey::of(&window.text)))
+            .collect();
+        assert!(expected.len() >= 3, "{}", expected.len());
+        assert_eq!(window_keys(&long), expected);
+        assert_eq!(window_keys(&format!("  {long}  ")), expected);
+
+        let within: String = long.chars().take(512).collect();
+        assert!(window_keys(&within).is_empty());
+        assert_eq!(window_span(&long, 0), None);
+        let (span, length) = window_span(&long, 2).unwrap();
+        assert_eq!(length, long.chars().count());
+        let shown: String = long.chars().skip(span.start).take(span.len()).collect();
+        let window = &chunker.embedded_windows(&alone, 0)[2];
+        assert_eq!(window.ordinal, 2);
+        assert!(window.text.ends_with(shown.as_str()), "{shown}");
+        assert_eq!(window_span(&long, 200), None);
     }
 
     /// A synthetic book, raw as `add_text_book` receives it, with a line on every branch of

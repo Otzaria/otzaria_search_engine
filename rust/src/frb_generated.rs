@@ -9576,9 +9576,11 @@ impl SseDecode for crate::api::search_engine::SemanticHighlightTarget {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_filePath = <String>::sse_decode(deserializer);
         let mut var_id = <u64>::sse_decode(deserializer);
+        let mut var_window = <u8>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticHighlightTarget {
             file_path: var_filePath,
             id: var_id,
+            window: var_window,
         };
     }
 }
@@ -9695,6 +9697,7 @@ impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
         let mut var_candidateWindowMultiplier = <f64>::sse_decode(deserializer);
         let mut var_foundationalBonus = <f64>::sse_decode(deserializer);
         let mut var_foundationalCandidateShare = <f64>::sse_decode(deserializer);
+        let mut var_windowPenalty = <f64>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticRankingOptions {
             fusion_strategy: var_fusionStrategy,
             rrf_k: var_rrfK,
@@ -9711,6 +9714,7 @@ impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
             candidate_window_multiplier: var_candidateWindowMultiplier,
             foundational_bonus: var_foundationalBonus,
             foundational_candidate_share: var_foundationalCandidateShare,
+            window_penalty: var_windowPenalty,
         };
     }
 }
@@ -9828,6 +9832,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResult {
             <crate::api::search_engine::SemanticResultSource>::sse_decode(deserializer);
         let mut var_needsHydration = <bool>::sse_decode(deserializer);
         let mut var_textStatus = <crate::api::search_engine::TextStatus>::sse_decode(deserializer);
+        let mut var_matchedWindow = <u8>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticSearchResult {
             title: var_title,
             reference: var_reference,
@@ -9845,6 +9850,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResult {
             source: var_source,
             needs_hydration: var_needsHydration,
             text_status: var_textStatus,
+            matched_window: var_matchedWindow,
         };
     }
 }
@@ -11609,6 +11615,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticHighli
         [
             self.file_path.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
+            self.window.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -11768,6 +11775,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticRankin
             self.foundational_candidate_share
                 .into_into_dart()
                 .into_dart(),
+            self.window_penalty.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -11923,6 +11931,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticSearch
             self.source.into_into_dart().into_dart(),
             self.needs_hydration.into_into_dart().into_dart(),
             self.text_status.into_into_dart().into_dart(),
+            self.matched_window.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -13728,6 +13737,7 @@ impl SseEncode for crate::api::search_engine::SemanticHighlightTarget {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.file_path, serializer);
         <u64>::sse_encode(self.id, serializer);
+        <u8>::sse_encode(self.window, serializer);
     }
 }
 
@@ -13819,6 +13829,7 @@ impl SseEncode for crate::api::search_engine::SemanticRankingOptions {
         <f64>::sse_encode(self.candidate_window_multiplier, serializer);
         <f64>::sse_encode(self.foundational_bonus, serializer);
         <f64>::sse_encode(self.foundational_candidate_share, serializer);
+        <f64>::sse_encode(self.window_penalty, serializer);
     }
 }
 
@@ -13924,6 +13935,7 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResult {
         <crate::api::search_engine::SemanticResultSource>::sse_encode(self.source, serializer);
         <bool>::sse_encode(self.needs_hydration, serializer);
         <crate::api::search_engine::TextStatus>::sse_encode(self.text_status, serializer);
+        <u8>::sse_encode(self.matched_window, serializer);
     }
 }
 

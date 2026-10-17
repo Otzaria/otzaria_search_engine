@@ -516,8 +516,9 @@ fn assert_each_query_ranks_its_line_first(engine: &SearchEngine) {
 }
 
 /// The chunking this crate compiles in, to key every line it indexes, is the one the model
-/// family publishes: its `chunking.json`, whose hash is `chunking_identity` in the family's
-/// `model.json`. A key computed under any other would name no vector built from the family's.
+/// family publishes, with long-line windows or without them: its `chunking.json`, whose hash
+/// is `chunking_identity` in the family's `model.json`. A key computed under any other would
+/// name no vector built from the family's.
 #[test]
 #[ignore = "needs the model's identity files; set OTZARIA_TEST_ONNX_IDENTITY and pass --ignored"]
 fn the_compiled_in_chunking_is_the_one_the_model_publishes() {
@@ -531,13 +532,15 @@ fn the_compiled_in_chunking_is_the_one_the_model_publishes() {
     let read = |name: &str| -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(identity.join(name)).unwrap()).unwrap()
     };
-    let compiled = search_engine::semantic_keys::production_chunking();
     let published: otzaria_semantic_search::semantic::chunker::ChunkerConfig =
         serde_json::from_value(read("chunking.json")).unwrap();
-    assert_eq!(compiled, published);
+    assert!(
+        search_engine::semantic_keys::keyed_chunkings().contains(&published),
+        "{published:?}"
+    );
     assert_eq!(
         read("model.json")["chunking_identity"].as_u64(),
-        Some(compiled.identity())
+        Some(published.identity())
     );
 }
 
