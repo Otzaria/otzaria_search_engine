@@ -130,11 +130,15 @@ jobs:
       - name: Run on an iOS simulator
         if: matrix.platform == 'ios'
         working-directory: probe
+        timeout-minutes: 40
         run: |
           set -euo pipefail
+          # An iPhone on the newest runtime: an old, never-booted one boots for minutes.
           udid=$(xcrun simctl list devices available -j \
-            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for r,l in d.items() if "iOS" in r for x in l if x["name"].startswith("iPhone")))')
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; v=lambda r: [int(n) for n in r.rsplit(".",1)[-1].split("-")[1:]]; phones={r: [x for x in l if x["name"].startswith("iPhone")] for r,l in d.items() if ".iOS-" in r}; r=max((r for r in phones if phones[r]), key=v); print(phones[r][0]["udid"])')
           xcrun simctl boot "$udid"
+          # Launching before the boot completes leaves flutter waiting for the VM service.
+          xcrun simctl bootstatus "$udid" -b
           flutter test integration_test -d "$udid"
 
       - name: Prepare the Android emulator
