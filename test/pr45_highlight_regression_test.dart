@@ -1,3 +1,9 @@
+// This file contains one regex stress test over 1,000 near misses. Give the
+// debug VM headroom on shared CI runners with concurrent hook and FFI suites;
+// the input, assertions and engine behavior remain unchanged.
+@Timeout(Duration(minutes: 2))
+library;
+
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
