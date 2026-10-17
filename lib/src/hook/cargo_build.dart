@@ -131,6 +131,8 @@ Future<File> cargoBuild({
     cargo,
     [
       'build',
+      // Only the library ships; [[bin]] targets would each go through LTO.
+      '--lib',
       '--release',
       '--locked',
       '--manifest-path',
