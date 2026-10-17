@@ -130,7 +130,7 @@ jobs:
       - name: Run on an iOS simulator
         if: matrix.platform == 'ios'
         working-directory: probe
-        timeout-minutes: 40
+        timeout-minutes: 75
         run: |
           set -euo pipefail
           # An iPhone on the newest runtime: an old, never-booted one boots for minutes.
@@ -139,7 +139,19 @@ jobs:
           xcrun simctl boot "$udid"
           # Launching before the boot completes leaves flutter waiting for the VM service.
           xcrun simctl bootstatus "$udid" -b
-          flutter test integration_test -d "$udid"
+          # Compiles the crate once, so a timed-out attempt below costs only the launch.
+          flutter build ios --simulator --debug -t integration_test/search_test.dart
+          # flutter at times never finds a simulator app's VM service: retry instead of waiting.
+          for attempt in 1 2 3; do
+            if perl -e 'alarm shift; exec @ARGV' 900 flutter test integration_test -d "$udid"; then
+              exit 0
+            fi
+            echo "::warning::Attempt $attempt did not pass"
+            xcrun simctl spawn "$udid" log show --last 15m --style compact \
+              --predicate 'process == "Runner"' | tail -n 60 || true
+            ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -n 5 || true
+          done
+          exit 1
 
       - name: Prepare the Android emulator
         if: matrix.platform == 'android'
