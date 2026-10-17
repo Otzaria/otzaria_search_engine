@@ -81,130 +81,134 @@ class PrecompileBinaries {
     final String tagName = 'precompiled_$hash';
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
-    final repo = github.repositories;
-    final release = await getOrCreateRelease(
-      repo: repo,
-      repositorySlug: repositorySlug,
-      tagName: tagName,
-      packageName: crateInfo.packageName,
-      hash: hash,
-    );
-
-    final tempDir = this.tempDir != null
-        ? Directory(this.tempDir!)
-        : Directory.systemTemp.createTempSync('precompiled_');
-
-    tempDir.createSync(recursive: true);
-
-    final crateOptions = CargokitCrateOptions.load(
-      manifestDir: manifestDir,
-    );
-
-    final buildEnvironment = BuildEnvironment(
-      configuration: BuildConfiguration.release,
-      crateOptions: crateOptions,
-      targetTempDir: tempDir.path,
-      manifestDir: manifestDir,
-      crateInfo: crateInfo,
-      isAndroid: androidSdkLocation != null,
-      androidSdkPath: androidSdkLocation,
-      androidNdkVersion: androidNdkVersion,
-      androidMinSdkVersion: androidMinSdkVersion,
-    );
-
-    final rustup = Rustup();
-
-    for (final target in targets) {
-      final artifactNames = getArtifactNames(
-        target: target,
-        libraryName: crateInfo.packageName,
-        remote: true,
+    try {
+      final repo = github.repositories;
+      final release = await getOrCreateRelease(
+        repo: repo,
+        repositorySlug: repositorySlug,
+        tagName: tagName,
+        packageName: crateInfo.packageName,
+        hash: hash,
       );
-      final expectedAssetNames = <String>{
-        for (final name in artifactNames) ...{
-          PrecompileBinaries.fileName(target, name),
-          PrecompileBinaries.signatureFileName(target, name),
-        },
-      };
-      final existingAssets = (release.assets ?? [])
-          .where((asset) => expectedAssetNames.contains(asset.name))
-          .toList(growable: false);
 
-      if (existingAssets.length == expectedAssetNames.length) {
-        _log.info("All artifacts for $target already exist - skipping");
-        continue;
-      }
+      final tempDir = this.tempDir != null
+          ? Directory(this.tempDir!)
+          : Directory.systemTemp.createTempSync('precompiled_');
 
-      // A failed upload may leave only a binary or only its signature. Delete
-      // the target's partial set before rebuilding so a signature can never be
-      // paired with bytes from a different build.
-      for (final asset in existingAssets) {
-        _log.warning('Deleting incomplete release asset ${asset.name}');
-        await repo.deleteReleaseAsset(repositorySlug, asset);
-      }
+      tempDir.createSync(recursive: true);
 
-      _log.info('Building for $target');
+      final crateOptions = CargokitCrateOptions.load(
+        manifestDir: manifestDir,
+      );
 
-      final builder =
-          RustBuilder(target: target, environment: buildEnvironment);
-      builder.prepare(rustup);
-      final res = await builder.build();
+      final buildEnvironment = BuildEnvironment(
+        configuration: BuildConfiguration.release,
+        crateOptions: crateOptions,
+        targetTempDir: tempDir.path,
+        manifestDir: manifestDir,
+        crateInfo: crateInfo,
+        isAndroid: androidSdkLocation != null,
+        androidSdkPath: androidSdkLocation,
+        androidNdkVersion: androidNdkVersion,
+        androidMinSdkVersion: androidMinSdkVersion,
+      );
 
-      final assets = <CreateReleaseAsset>[];
-      for (final name in artifactNames) {
-        final file =
-            name == androidCxxSharedRuntimeName && target.android != null
-                ? buildEnvironment
-                    .androidEnvironmentFor(target)
-                    .packageCxxSharedRuntime(res)
-                : File(path.join(res, name));
-        if (!file.existsSync()) {
-          throw Exception('Missing artifact: ${file.path}');
-        }
-        _verifyLinuxGlibcFloor(target, file);
+      final rustup = Rustup();
 
-        final data = file.readAsBytesSync();
-        final create = CreateReleaseAsset(
-          name: PrecompileBinaries.fileName(target, name),
-          contentType: "application/octet-stream",
-          assetData: data,
+      for (final target in targets) {
+        final artifactNames = getArtifactNames(
+          target: target,
+          libraryName: crateInfo.packageName,
+          remote: true,
         );
-        final signature = sign(privateKey, data);
-        final signatureCreate = CreateReleaseAsset(
-          name: signatureFileName(target, name),
-          contentType: "application/octet-stream",
-          assetData: signature,
-        );
-        bool verified = verify(public(privateKey), data, signature);
-        if (!verified) {
-          throw Exception('Signature verification failed');
+        final expectedAssetNames = <String>{
+          for (final name in artifactNames) ...{
+            PrecompileBinaries.fileName(target, name),
+            PrecompileBinaries.signatureFileName(target, name),
+          },
+        };
+        final existingAssets = (release.assets ?? [])
+            .where((asset) => expectedAssetNames.contains(asset.name))
+            .toList(growable: false);
+
+        if (existingAssets.length == expectedAssetNames.length) {
+          _log.info("All artifacts for $target already exist - skipping");
+          continue;
         }
-        assets.add(create);
-        assets.add(signatureCreate);
-      }
-      _log.info('Uploading assets: ${assets.map((e) => e.name)}');
-      for (final asset in assets) {
-        // This seems to be failing on CI so do it one by one
-        int retryCount = 0;
-        while (true) {
-          try {
-            await repo.uploadReleaseAssets(release, [asset]);
-            break;
-          } on Exception catch (e) {
-            if (retryCount == 10) {
-              rethrow;
+
+        // A failed upload may leave only a binary or only its signature.
+        // Delete the target's partial set before rebuilding so a signature can
+        // never be paired with bytes from a different build.
+        for (final asset in existingAssets) {
+          _log.warning('Deleting incomplete release asset ${asset.name}');
+          await repo.deleteReleaseAsset(repositorySlug, asset);
+        }
+
+        _log.info('Building for $target');
+
+        final builder =
+            RustBuilder(target: target, environment: buildEnvironment);
+        builder.prepare(rustup);
+        final res = await builder.build();
+
+        final assets = <CreateReleaseAsset>[];
+        for (final name in artifactNames) {
+          final file =
+              name == androidCxxSharedRuntimeName && target.android != null
+                  ? buildEnvironment
+                      .androidEnvironmentFor(target)
+                      .packageCxxSharedRuntime(res)
+                  : File(path.join(res, name));
+          if (!file.existsSync()) {
+            throw Exception('Missing artifact: ${file.path}');
+          }
+          _verifyLinuxGlibcFloor(target, file);
+
+          final data = file.readAsBytesSync();
+          final create = CreateReleaseAsset(
+            name: PrecompileBinaries.fileName(target, name),
+            contentType: "application/octet-stream",
+            assetData: data,
+          );
+          final signature = sign(privateKey, data);
+          final signatureCreate = CreateReleaseAsset(
+            name: signatureFileName(target, name),
+            contentType: "application/octet-stream",
+            assetData: signature,
+          );
+          bool verified = verify(public(privateKey), data, signature);
+          if (!verified) {
+            throw Exception('Signature verification failed');
+          }
+          assets.add(create);
+          assets.add(signatureCreate);
+        }
+        _log.info('Uploading assets: ${assets.map((e) => e.name)}');
+        for (final asset in assets) {
+          // This seems to be failing on CI so do it one by one
+          int retryCount = 0;
+          while (true) {
+            try {
+              await repo.uploadReleaseAssets(release, [asset]);
+              break;
+            } on Exception catch (e) {
+              if (retryCount == 10) {
+                rethrow;
+              }
+              ++retryCount;
+              _log.shout(
+                  'Upload failed (attempt $retryCount, will retry): ${e.toString()}');
+              await Future.delayed(Duration(seconds: 2));
             }
-            ++retryCount;
-            _log.shout(
-                'Upload failed (attempt $retryCount, will retry): ${e.toString()}');
-            await Future.delayed(Duration(seconds: 2));
           }
         }
       }
-    }
 
-    _log.info('Cleaning up');
-    tempDir.deleteSync(recursive: true);
+      _log.info('Cleaning up');
+      tempDir.deleteSync(recursive: true);
+    } finally {
+      github.dispose();
+    }
   }
 
   static void _verifyLinuxGlibcFloor(Target target, File file) {

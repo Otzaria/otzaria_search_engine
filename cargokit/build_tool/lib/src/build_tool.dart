@@ -252,13 +252,17 @@ class PrepareReleaseCommand extends Command {
     log.info('Tag: $tagName');
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
-    await PrecompileBinaries.getOrCreateRelease(
-      repo: github.repositories,
-      repositorySlug: repositorySlug,
-      tagName: tagName,
-      packageName: crateInfo.packageName,
-      hash: hash,
-    );
+    try {
+      await PrecompileBinaries.getOrCreateRelease(
+        repo: github.repositories,
+        repositorySlug: repositorySlug,
+        tagName: tagName,
+        packageName: crateInfo.packageName,
+        hash: hash,
+      );
+    } finally {
+      github.dispose();
+    }
     log.info('Release ready');
   }
 }
