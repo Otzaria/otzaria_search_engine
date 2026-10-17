@@ -67,14 +67,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Apple
+          # One target per runner keeps release builds parallel, as in #54.
+          - name: macOS arm64
             runs_on: macos-15
-            targets: >-
-              aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios
-              aarch64-apple-ios-sim x86_64-apple-ios
-          - name: Android
+            targets: aarch64-apple-darwin
+          - name: macOS x64
+            runs_on: macos-15
+            targets: x86_64-apple-darwin
+          - name: iOS device
+            runs_on: macos-15
+            targets: aarch64-apple-ios
+          - name: iOS simulator arm64
+            runs_on: macos-15
+            targets: aarch64-apple-ios-sim
+          - name: iOS simulator x64
+            runs_on: macos-15
+            targets: x86_64-apple-ios
+          - name: Android arm64
             runs_on: ubuntu-24.04
-            targets: aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+            targets: aarch64-linux-android
+          - name: Android arm
+            runs_on: ubuntu-24.04
+            targets: armv7-linux-androideabi
+          - name: Android x64
+            runs_on: ubuntu-24.04
+            targets: x86_64-linux-android
           # Debian bookworm, so the library runs on its glibc and newer.
           - name: Linux x64
             runs_on: ubuntu-24.04

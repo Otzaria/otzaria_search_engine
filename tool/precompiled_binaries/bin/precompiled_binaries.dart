@@ -6,6 +6,7 @@ import 'package:code_assets/code_assets.dart';
 import 'package:ed25519_edwards/ed25519_edwards.dart' as ed;
 import 'package:path/path.dart' as p;
 
+import '../../../lib/src/hook/ios_deployment_target.dart';
 import '../../../lib/src/hook/package_build.dart';
 import '../../../lib/src/hook/cargo_build.dart';
 import '../../../lib/src/hook/crate_hash.dart';
@@ -27,7 +28,7 @@ Future<void> main(List<String> args) async {
         ..addMultiOption('target')
         ..addOption('out', mandatory: true)
         ..addOption('android-api', defaultsTo: '21')
-        ..addOption('ios-version', defaultsTo: '15.0')
+        ..addOption('ios-version', defaultsTo: precompiledIosVersion)
         ..addOption('macos-version', defaultsTo: '12.0'),
     )
     ..addCommand('verify');
@@ -74,7 +75,11 @@ Future<void> _build(
         ndkClangDir: _ndkClangDir(),
         androidApi: int.parse(command.option('android-api')!),
       ),
-      OS.iOS => TargetToolchain(appleVersion: command.option('ios-version')),
+      OS.iOS => TargetToolchain(
+        appleVersion: target.triple == 'aarch64-apple-ios-sim'
+            ? precompiledIosArm64SimulatorVersion
+            : command.option('ios-version'),
+      ),
       OS.macOS => TargetToolchain(
         appleVersion: command.option('macos-version'),
       ),
@@ -88,6 +93,16 @@ Future<void> _build(
       targetDir: p.join(packageRoot, nativeBuild.cargo.crateDir, 'target'),
       log: stdout.writeln,
     );
+    if (target.os == OS.iOS) {
+      // Check the final Mach-O too: a linked dependency can raise its minimum
+      // even when our own compiler flags requested an older deployment target.
+      await checkIosDeploymentTarget(
+        library,
+        maximumVersion: target.triple == 'aarch64-apple-ios-sim'
+            ? precompiledIosArm64SimulatorVersion
+            : precompiledIosVersion,
+      );
+    }
     final data = library.readAsBytesSync();
     final signature = ed.sign(privateKey, data);
     if (!ed.verify(publicKey, data, signature)) {
