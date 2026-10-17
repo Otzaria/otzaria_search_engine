@@ -1,0 +1,15 @@
+# Builds, signs and verifies the precompiled binaries the build hook downloads.
+# A separate package so running it never triggers the package's own build hook.
+name: precompiled_binaries
+publish_to: none
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  args: ^2.7.0
+  code_assets: ^2.1.0
+  crypto: ^3.0.7
+  ed25519_edwards: ^0.3.2
+  hooks: ^2.2.0
+  path: ^1.9.1

@@ -1,5 +1,5 @@
 # כופה LF בקבצי סקריפט גם בצ'קאאוט על Windows (autocrlf) —
-# פרסום ל-pub.dev עם CRLF שובר את בניית macOS/Linux/Android (cargokit).
+# סקריפט shell עם CRLF לא רץ ב-macOS/Linux.
 * text=auto
 *.sh text eol=lf
 .githooks/* text eol=lf

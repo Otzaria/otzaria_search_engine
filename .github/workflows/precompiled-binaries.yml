@@ -1,7 +1,8 @@
 name: Precompiled Binaries
 
-# Release publishing calls this workflow before uploading to pub.dev. Regular
-# code pushes do not spend runners on every platform; manual builds stay available.
+# Publishes the signed libraries the build hook downloads, one release per
+# crate hash. Release publishing calls this before uploading to pub.dev;
+# regular pushes do not spend runners on every platform.
 on:
   workflow_call:
     secrets:
@@ -16,275 +17,149 @@ concurrency:
   group: precompiled-binaries-${{ github.sha }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+    working-directory: tool/precompiled_binaries
+
 jobs:
   prepare-release:
     name: Prepare release
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      complete: ${{ steps.release.outputs.complete }}
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
-      - name: Install build tool dependencies
-        working-directory: cargokit/build_tool
-        run: dart pub get
+      - run: dart pub get
 
-      - name: Ensure precompiled-binaries release exists
-        working-directory: cargokit/build_tool
+      - run: dart analyze --fatal-infos
+
+      - name: Ensure the release of this crate hash exists
+        id: release
         run: |
-          dart run bin/build_tool.dart prepare-release \
-            --repository "${{ github.repository }}" \
-            --manifest-dir ../../rust
+          set -euo pipefail
+          tag="precompiled_$(dart run bin/precompiled_binaries.dart hash)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if dart run bin/precompiled_binaries.dart verify; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "complete=false" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$tag" --prerelease \
+              --notes "Precompiled binaries for crate hash ${tag#precompiled_}."
+          fi
 
-  # One target per runner: a macOS runner has few cores, and even two targets
-  # in sequence on one made it the long pole of the release.
-  publish-apple:
-    name: Publish Apple (${{ matrix.name }})
+  publish:
+    name: Publish ${{ matrix.name }}
     needs: prepare-release
-    runs-on: macos-15
+    if: needs.prepare-release.outputs.complete != 'true'
+    runs-on: ${{ matrix.runs_on }}
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS x86_64
-            targets: x86_64-apple-darwin
+          # One target per runner keeps release builds parallel, as in #54.
           - name: macOS arm64
+            runs_on: macos-15
             targets: aarch64-apple-darwin
-          - name: iOS
+          - name: macOS x64
+            runs_on: macos-15
+            targets: x86_64-apple-darwin
+          - name: iOS device
+            runs_on: macos-15
             targets: aarch64-apple-ios
           - name: iOS simulator arm64
+            runs_on: macos-15
             targets: aarch64-apple-ios-sim
-          - name: iOS simulator x86_64
+          - name: iOS simulator x64
+            runs_on: macos-15
             targets: x86_64-apple-ios
+          - name: Android arm64
+            runs_on: ubuntu-24.04
+            targets: aarch64-linux-android
+          - name: Android arm
+            runs_on: ubuntu-24.04
+            targets: armv7-linux-androideabi
+          - name: Android x64
+            runs_on: ubuntu-24.04
+            targets: x86_64-linux-android
+          # Debian bookworm, so the library runs on its glibc and newer.
+          - name: Linux x64
+            runs_on: ubuntu-24.04
+            container: debian:bookworm
+            targets: x86_64-unknown-linux-gnu
+          - name: Linux arm64
+            runs_on: ubuntu-24.04-arm
+            container: debian:bookworm
+            targets: aarch64-unknown-linux-gnu
+          - name: Windows x64
+            runs_on: windows-2022
+            targets: x86_64-pc-windows-msvc
+          - name: Windows arm64
+            runs_on: windows-11-arm
+            targets: aarch64-pc-windows-msvc
     env:
-      # Unset, cc-rs compiles the C deps at the runner SDK's default while
-      # rustc uses its own much lower one, so both minimums land in the same
-      # .a - warning on every consumer, and on iOS failing the link outright
-      # (rustc's default has no __chkstk_darwin in libSystem).
-      IPHONEOS_DEPLOYMENT_TARGET: "15.0"
-      MACOSX_DEPLOYMENT_TARGET: "12.0"
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-
-      - uses: dart-lang/setup-dart@v1
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install build tool dependencies
-        working-directory: cargokit/build_tool
-        run: dart pub get
-
-      - name: Publish Apple artifacts
-        working-directory: cargokit/build_tool
-        shell: bash
-        env:
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGETS: ${{ matrix.targets }}
-        run: |
-          set -euo pipefail
-          target_args=()
-          for target in $TARGETS; do
-            target_args+=(--target "$target")
-          done
-          dart run bin/build_tool.dart precompile-binaries \
-            --repository "${{ github.repository }}" \
-            --manifest-dir ../../rust \
-            "${target_args[@]}"
-
-  # The NDK cross-compiles from Linux, on a cheaper and faster runner than
-  # macOS, one ABI per runner. The hosted image ships the SDK and an NDK, and
-  # precompiling never installs one, so no Java is needed.
-  publish-android:
-    name: Publish Android (${{ matrix.target }})
-    needs: prepare-release
-    # The NDK's Linux toolchain is linux-x86_64 only.
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - armv7-linux-androideabi
-          - aarch64-linux-android
-          - i686-linux-android
-          - x86_64-linux-android
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-
-      - uses: dart-lang/setup-dart@v1
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install build tool dependencies
-        working-directory: cargokit/build_tool
-        run: dart pub get
-
-      - name: Publish Android artifacts
-        working-directory: cargokit/build_tool
-        shell: bash
-        # Secrets are scoped to this step only so earlier steps (and any
-        # third-party actions) never see them in their environment.
-        env:
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "${PRIVATE_KEY:-}" ]]; then
-            echo "Missing PRIVATE_KEY secret"
-            exit 1
-          fi
-
-          ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          if [[ -z "${ANDROID_SDK_ROOT}" ]]; then
-            echo "ANDROID_SDK_ROOT/ANDROID_HOME is not set"
-            exit 1
-          fi
-          if [[ ! -d "${ANDROID_SDK_ROOT}/ndk" ]]; then
-            echo "No Android NDK installations found under ${ANDROID_SDK_ROOT}/ndk"
-            exit 1
-          fi
-
-          ANDROID_NDK_VERSION="$(find "${ANDROID_SDK_ROOT}/ndk" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort -V | tail -n1)"
-          if [[ -z "${ANDROID_NDK_VERSION}" ]]; then
-            echo "Unable to determine Android NDK version"
-            exit 1
-          fi
-
-          dart run bin/build_tool.dart precompile-binaries \
-            --repository "${{ github.repository }}" \
-            --manifest-dir ../../rust \
-            --android-sdk-location "${ANDROID_SDK_ROOT}" \
-            --android-ndk-version "${ANDROID_NDK_VERSION}" \
-            --android-min-sdk-version 21 \
-            --target "${{ matrix.target }}"
-
-  publish-linux:
-    name: Publish Linux (${{ matrix.target }})
-    needs: prepare-release
-    runs-on: ${{ matrix.runs_on }}
-    container:
-      image: debian:bookworm
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs_on: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - runs_on: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.prepare-release.outputs.tag }}
     steps:
       - name: Install container build dependencies
-        shell: bash
+        if: matrix.container
+        working-directory: /
         run: |
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            binutils build-essential ca-certificates curl git pkg-config unzip \
-            xz-utils
+            binutils build-essential ca-certificates curl git pkg-config unzip             xz-utils gh
           git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install build tool dependencies
-        working-directory: cargokit/build_tool
-        run: dart pub get
-
-      - name: Publish Linux artifacts
-        working-directory: cargokit/build_tool
-        env:
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          dart run bin/build_tool.dart precompile-binaries \
-            --repository "${{ github.repository }}" \
-            --manifest-dir ../../rust \
-            --target "${{ matrix.target }}"
-
-  publish-windows:
-    name: Publish Windows (${{ matrix.target }})
-    needs: prepare-release
-    runs-on: ${{ matrix.runs_on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs_on: windows-2022
-            target: x86_64-pc-windows-msvc
-          - runs_on: windows-11-arm
-            target: aarch64-pc-windows-msvc
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-
-      - uses: dart-lang/setup-dart@v1
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      # The C dependencies (the bundled SQLite, zstd) are compiled by cc-rs
-      # with the hosted ARM image's clang-cl rather than its MSVC default, the
-      # compiler the published Windows ARM binaries have always been built
-      # with. Nothing in the build is C++ or goes through CMake any more, so
-      # the C compiler is all there is to choose.
       - name: Configure clang-cl for Windows ARM
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          clang-cl --version
-          "CC=clang-cl" >> $env:GITHUB_ENV
+        if: matrix.name == 'Windows arm64'
+        run: echo "CC=clang-cl" >> "$GITHUB_ENV"
 
-      - name: Install build tool dependencies
-        working-directory: cargokit/build_tool
-        run: dart pub get
+      - run: dart pub get
 
-      - name: Publish Windows artifacts
-        working-directory: cargokit/build_tool
-        shell: pwsh
+      - name: Build and sign
         env:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >
-          dart run bin/build_tool.dart precompile-binaries
-          --repository "${{ github.repository }}"
-          --manifest-dir "../../rust"
-          --target ${{ matrix.target }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ANDROID_NDK_LATEST_HOME:-}" ]; then
+            export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          fi
+          args=()
+          for target in $TARGETS; do args+=(--target "$target"); done
+          dart run bin/precompiled_binaries.dart build --out out "${args[@]}"
+
+      # --clobber: a rerun replaces what an interrupted run left behind.
+      - name: Upload
+        run: gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
 
   verify:
     name: Verify published binaries
-    permissions:
-      contents: read
+    needs: [prepare-release, publish]
+    if: always() && needs.prepare-release.result == 'success'
     runs-on: ubuntu-24.04
-    needs:
-      - publish-apple
-      - publish-android
-      - publish-linux
-      - publish-windows
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
 
       - uses: dart-lang/setup-dart@v1
 
-      - name: Install build tool dependencies
-        working-directory: cargokit/build_tool
-        run: dart pub get
+      - run: dart pub get
 
-      - name: Verify all signed artifacts are downloadable
-        working-directory: cargokit/build_tool
-        run: dart run bin/build_tool.dart verify-binaries --manifest-dir ../../rust
+      - run: dart run bin/precompiled_binaries.dart verify
