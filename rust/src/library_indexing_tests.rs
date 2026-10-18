@@ -1000,6 +1000,7 @@ fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries
             input.extra_facets,
             TextStorage::InIndex,
             Some(vec![3]),
+            input.source_hash,
         )
         .unwrap();
     from_source.commit().unwrap();
