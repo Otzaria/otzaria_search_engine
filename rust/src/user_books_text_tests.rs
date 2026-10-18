@@ -64,7 +64,7 @@ fn add_book(
     storage: TextStorage,
 ) {
     let added = engine
-        .add_text_book(
+        .add_text_book_placed(
             "ספר".to_string(),
             "/אישי".to_string(),
             file_path.to_string(),
@@ -302,7 +302,7 @@ fn user_book_keys_must_be_canonical() {
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
     for bad in ["uid:", "uid:x", "uid:-1", "uid:007", "uid:1 ", "UID:1"] {
         let err = engine
-            .add_text_book(
+            .add_text_book_placed(
                 "t".to_string(),
                 "/a".to_string(),
                 bad.to_string(),

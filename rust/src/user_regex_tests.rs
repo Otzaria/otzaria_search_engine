@@ -215,7 +215,7 @@ fn stored_engine(dir: &Path, books: &[TestBook<'_>]) -> SearchEngine {
     let mut engine = SearchEngine::new(dir.to_str().unwrap());
     for book in books {
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 book.title.to_string(),
                 book.topics.to_string(),
                 book.path.clone(),
@@ -474,6 +474,7 @@ fn hits_beyond_the_cap_truncate_the_search() {
     let regex = parse(r"/^\S+\s\S+$/").unwrap();
     let searcher = engine.searcher_for_tests();
     let cancel = AtomicBool::new(false);
+    let (order_epoch, order) = engine.order_tables_for_tests();
     let ctx = LineSearch {
         searcher: &searcher,
         schema: searcher.schema(),
@@ -481,6 +482,8 @@ fn hits_beyond_the_cap_truncate_the_search() {
         facets: Vec::new(),
         cancel: &cancel,
         max_hits: 3,
+        order,
+        order_epoch,
     };
     let mut updates = Vec::new();
     let outcome = run_line_search(&ctx, &regex, None, &mut |u| {
@@ -846,7 +849,7 @@ fn library_engine(dir: &Path, books: &[(i64, &[&str])]) -> SearchEngine {
     for (n, (book, rows)) in books.iter().enumerate() {
         let text: Vec<&str> = rows.iter().map(|r| r.trim_start_matches('*')).collect();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 format!("ספר {book}"),
                 format!("/lib/{book}"),
                 format!("id:{book}"),
@@ -952,7 +955,7 @@ fn a_cross_space_pattern_reads_attached_databases() {
         }
         let text: Vec<&str> = rows.iter().map(|r| r.trim_start_matches('*')).collect();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 format!("ספר {slug}"),
                 format!("/att/{slug}"),
                 format!("db:{slug}:7"),
@@ -1408,7 +1411,7 @@ fn line_search_cache_observes_commits_to_every_source() {
             std::fs::create_dir_all(&index).unwrap();
             let mut engine = SearchEngine::new(index.to_str().unwrap());
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "ספר".into(),
                     "/root".into(),
                     file_path.into(),

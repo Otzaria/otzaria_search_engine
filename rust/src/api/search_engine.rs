@@ -32,11 +32,12 @@ use tantivy_fst::Automaton;
 use crate::api::library_indexing::{
     IndexingCancellationToken, LibraryBookInput, LibraryBookResult,
 };
-use crate::cross_line;
-use crate::derived_columns::{
-    generation_value, section_offset, GenerationSort, GenerationSortColumn, SectionIdColumn,
-    GENERATION_FIELD, SECTION_OFFSET_FIELD,
+use crate::book_order::{
+    self, BookNumbers, BookOrderColumn, BookOrderSort, BookPlace, OrderKind, OrderMapping,
+    OrderTables,
 };
+use crate::cross_line;
+use crate::derived_columns::{section_offset, SectionIdColumn, SECTION_OFFSET_FIELD};
 use crate::display_highlight;
 use crate::doc_store::{load_document, segment_to_store, DocumentLoader};
 use crate::gap_phrase::{GapVerifiedPhraseQuery, Proximity, TermListPhraseQuery, WordWindows};
@@ -96,7 +97,6 @@ use otzaria_semantic_search::semantic::types::{
 };
 #[cfg(feature = "semantic-integration")]
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage, TextIdentity};
-#[cfg(feature = "semantic-integration")]
 use std::sync::{PoisonError, RwLock};
 
 // ── Public data types ──────────────────────────────────────────────────────────
@@ -228,7 +228,9 @@ pub struct LineSourceStatus {
 }
 
 pub struct DocumentInput {
-    pub id: u64,
+    /// The 0-based position of the line in its book. The engine composes the document id
+    /// from it and the book's number: `(bookNumber << 32) + ordinal + 1`.
+    pub ordinal: u32,
     pub title: String,
     pub reference: String,
     pub topics: String,
@@ -238,8 +240,7 @@ pub struct DocumentInput {
     pub file_path: String,
     /// Book-level **canonical** fingerprint for the `contentHash` column —
     /// [`compute_book_fingerprint`]: the raw text *plus* the metadata baked
-    /// into the index (title, topics, catalogue order, generation order,
-    /// extra facets). The same value is stamped on every document of a book,
+    /// into the index (title, topics, extra facets). Recorded once for the book,
     /// so [`SearchEngine::get_book_fingerprints`] can compare an index
     /// against the current library source, including metadata-only changes.
     /// Never compare it against [`compute_content_fingerprint`] (text only) —
@@ -248,21 +249,22 @@ pub struct DocumentInput {
     pub content_hash: Option<u64>,
     /// Text-only fingerprint ([`compute_content_fingerprint`] over the raw
     /// book text) for the `textHash` column — unlike `content_hash` it does
-    /// not shift when catalogue order or other metadata changes, so
+    /// not shift when metadata changes, so
     /// [`SearchEngine::get_book_text_fingerprints`] detects content drift
     /// only. `None`/`0` means "no fingerprint recorded".
     pub text_hash: Option<u64>,
+    /// An opaque hash of the book's source (the library database's `book.contentHash`),
+    /// stored as given for [`SearchEngine::get_book_stamps`]. `None`/`0`: none.
+    pub source_hash: Option<u64>,
     /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
     /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
     /// פשוט לא תשתתף בחיפוש מנוקד. מסלול [`SearchEngine::add_text_book`]
     /// מחשב זאת בעצמו; השדה קיים לצינורות שמוסיפים מסמכים מוכנים.
     pub text_vocalized: Option<String>,
-    /// מזהה הסעיף (בלוק הכותרת) של השורה — ראו השדה `sectionId` בסכימה.
-    /// `None` = השורה סעיף לעצמה (`id` משמש כמזהה), כך שחיפוש "תחת אותה
-    /// כותרת" מתנהג כמו "באותה פסקה" עבור מסמכים שהוזנו בלי מזהה סעיף.
-    pub section_id: Option<u64>,
-    /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
-    pub generation_order: Option<u32>,
+    /// The section (heading block) of the line, as the 0-based ordinal of the line that
+    /// opens it. `None`: the line is a section of its own, so "under the same heading"
+    /// behaves as "in the same line" for documents given no section.
+    pub section_ordinal: Option<u32>,
     /// נתיבי facet נוספים לצד `topics` — ממדי סינון (מחבר/תקופה/ספר-יסוד),
     /// למשל `"/author/רש\"י"`, `"/era/ראשונים"`, `"/base"`. ראו
     /// [`FACET_DIMENSION_ROOTS`] לסמנטיקת הסינון (OR בתוך ממד, AND בין
@@ -272,6 +274,35 @@ pub struct DocumentInput {
     /// `LibraryDb` is refused here — only [`SearchEngine::add_text_book`] can tie a
     /// line to its library row.
     pub text_storage: Option<TextStorage>,
+}
+
+/// One book's place for [`SearchEngine::set_book_order`]: by `catalogue_order`, and by
+/// `generation_order` then `catalogue_order` (low first).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookOrderEntry {
+    pub file_path: String,
+    pub catalogue_order: u32,
+    pub generation_order: u32,
+}
+
+/// What the index records about one book: [`SearchEngine::get_book_stamps`]. A stamp is 0
+/// when the book was written without it, or when its documents disagree on it (a partial
+/// rewrite): either way it proves nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookStamps {
+    pub file_path: String,
+    /// The high half of the book's document ids, assigned by the engine.
+    pub book_number: u32,
+    /// Live documents of the book.
+    pub documents: u32,
+    /// [`compute_book_fingerprint`]: text and metadata.
+    pub content_hash: u64,
+    /// [`compute_content_fingerprint`] of the book's raw text.
+    pub text_hash: u64,
+    /// [`compute_book_metadata_fingerprint`].
+    pub metadata_hash: u64,
+    /// The caller's `source_hash`, stored as given.
+    pub source_hash: u64,
 }
 
 /// One extracted PDF page for [`SearchEngine::add_pdf_book`]: the page's
@@ -3093,11 +3124,16 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // fingerprints sit on one document of a book; `sectionId`/`generationSort` are derived
 // (see `derived_columns`); and the fields no longer index a quote-free twin beside a
 // quoted word (see `quote_expansion`). A version 5 index is rebuilt.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 6;
+//
+// v7: stable book ids. The high half of an id is a book number the engine assigns (see
+// `book_order`), not the catalogue position, which with the generations is a mapping applied
+// at query time; each book carries `metadataHash` and `sourceHash` beside its fingerprints,
+// and library books index their `line_note` bodies. A version 6 index is rebuilt.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 7;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 6;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 7;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -3119,7 +3155,6 @@ pub(crate) const LINE_TEXT_VERSION: u32 = 1;
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
 /// גרשיים וניקוד), ומתחת לכל ריצת-זבל אמיתית (base64 שזלג לקורפוס).
 const MAX_TOKEN_BYTES: usize = 128;
-const DEFAULT_GENERATION_ORDER: u32 = 5;
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
@@ -3169,12 +3204,8 @@ const LEXICAL_FUZZY_EXPANDED_PHRASE_BOOST: bool = false;
 
 /// The schema fields resolved together by [`SearchEngine::all_fields`]:
 /// `(title, reference, text, id, segment, isPdf, filePath, topics,
-/// contentHash, textHash, textVocalized, sectionId, generationSort,
-/// lineHash)`.
+/// textVocalized, sectionOffset, lineHash)`. The stamps are [`StampFields`].
 type SchemaFields = (
-    Field,
-    Field,
-    Field,
     Field,
     Field,
     Field,
@@ -3188,37 +3219,49 @@ type SchemaFields = (
     Field,
 );
 
-/// The high half of every document id in one book: `(catalogue_order + 1) << 32`.
-///
-/// Refuses the last catalogue position rather than computing it. `u32::MAX + 1` is `2^32`,
-/// and shifting that left by 32 overflows a `u64` — wrapping to a base of **zero** in
-/// release, which is not a catalogue position at all: every book at position 0 would share
-/// its prefix with the raw ordinals, and `semantic_corpus` would refuse the whole index for
-/// an id scheme it could not order. One unusable position out of four billion, named here
-/// instead of discovered there.
-fn catalogue_id_base(catalogue_order: u32) -> Result<u64> {
-    if catalogue_order == u32::MAX {
-        anyhow::bail!(
-            "catalogue_order {catalogue_order} is the one value that cannot form a document \
-             id: (catalogue_order + 1) << 32 overflows u64"
-        );
-    }
-    Ok((u64::from(catalogue_order) + 1) << 32)
+/// The stamp columns of a book: the values it was written with, on one of its documents.
+#[derive(Clone, Copy)]
+struct StampFields {
+    content: Field,
+    text: Field,
+    metadata: Field,
+    source: Field,
 }
 
-/// Records a book's `(contentHash, textHash)` on one of its documents, the columns' only
-/// value for the book: a value repeated on every line cost 64 bits a line once blocks of
-/// the column straddle two books. 0, "no fingerprint", is not written.
-fn stamp_book_fingerprints(
-    document: &mut TantivyDocument,
-    (content_field, text_field): (Field, Field),
-    (content_hash, text_hash): (u64, u64),
-) {
-    if content_hash != 0 {
-        document.add_u64(content_field, content_hash);
+impl StampFields {
+    fn of(schema: &Schema) -> Result<Self> {
+        Ok(Self {
+            content: schema.get_field("contentHash")?,
+            text: schema.get_field("textHash")?,
+            metadata: schema.get_field(METADATA_HASH_FIELD)?,
+            source: schema.get_field(SOURCE_HASH_FIELD)?,
+        })
     }
-    if text_hash != 0 {
-        document.add_u64(text_field, text_hash);
+}
+
+/// A book's stamps as written: 0 is "none".
+#[frb(ignore)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Stamps {
+    content: u64,
+    text: u64,
+    metadata: u64,
+    source: u64,
+}
+
+/// Records a book's stamps on one of its documents, the columns' only value for the book: a
+/// value repeated on every line cost 64 bits a line once blocks of the column straddle two
+/// books. 0, "none", is not written.
+fn stamp_book(document: &mut TantivyDocument, fields: StampFields, stamps: Stamps) {
+    for (field, value) in [
+        (fields.content, stamps.content),
+        (fields.text, stamps.text),
+        (fields.metadata, stamps.metadata),
+        (fields.source, stamps.source),
+    ] {
+        if value != 0 {
+            document.add_u64(field, value);
+        }
     }
 }
 
@@ -3589,7 +3632,7 @@ pub fn is_probably_garbage_pdf_text(normalized_text: String) -> bool {
 /// to detect books whose *content* changed without reindexing everything.
 ///
 /// שימו לב: [`SearchEngine::get_book_fingerprints`] מחזיר את החתימה
-/// **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata (סדר קטלוגי
+/// **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata (כותרת
 /// וכו') — השוואה שלה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
 ///
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
@@ -3625,10 +3668,9 @@ fn content_fingerprint(text: &str) -> u64 {
 }
 
 /// חתימת האינדוקס הקנונית לספר טקסט: הטקסט הגולמי + כל ה-metadata שמוטבע
-/// באינדקס — כותרת, נתיב קטגוריה, סדר קטלוגי, סדר דורות וממדי הסינון.
-/// שינוי בכל אחד מהם, גם ללא שינוי טקסט, משנה את החתימה — כך שהשוואה מול
-/// [`SearchEngine::get_book_fingerprints`] מזהה גם ספר שרק ה-metadata שלו
-/// התעדכן (אחרת האינדקס נשאר עם facets/מיון/כותרת ישנים).
+/// במסמכי הספר — כותרת, נתיב קטגוריה וממדי הסינון. שינוי בכל אחד מהם, גם ללא
+/// שינוי טקסט, משנה את החתימה. מקום הספר בקטלוג ובדורות אינו בה: הוא מיפוי
+/// ([`SearchEngine::set_book_order`]) ששינויו אינו מצריך אינדוקס מחדש.
 ///
 /// ה-extra_facets ממוינים ומנוקי-כפילויות — סדרם אינו משפיע על האינדקס.
 /// Never returns 0. Pure string computation — safe to call synchronously.
@@ -3637,42 +3679,47 @@ pub fn compute_book_fingerprint(
     text: String,
     title: String,
     topics: String,
-    catalogue_order: u32,
-    generation_order: u32,
     extra_facets: Option<Vec<String>>,
 ) -> u64 {
-    book_fingerprint(
-        &text,
-        &title,
-        &topics,
-        catalogue_order,
-        generation_order,
-        extra_facets.unwrap_or_default(),
-    )
+    book_fingerprint(&text, &title, &topics, extra_facets.unwrap_or_default())
 }
 
 /// Borrowing form of [`compute_book_fingerprint`] so the indexing path
 /// never clones a whole book to hash it.
-fn book_fingerprint(
-    text: &str,
-    title: &str,
-    topics: &str,
-    catalogue_order: u32,
-    generation_order: u32,
-    mut extra_facets: Vec<String>,
-) -> u64 {
-    extra_facets.sort_unstable();
-    extra_facets.dedup();
+fn book_fingerprint(text: &str, title: &str, topics: &str, extra_facets: Vec<String>) -> u64 {
     let mut fnv = Fnv::new();
     fnv.feed_field(text.as_bytes());
+    feed_metadata(&mut fnv, title, topics, extra_facets);
+    fnv.finish()
+}
+
+/// The `metadataHash` of a book: everything its documents carry besides its text — title,
+/// category path and the extra facets, sorted and deduplicated as the index keeps them.
+/// [`SearchEngine::get_book_stamps`] returns the value each book was written with, so a
+/// book whose metadata changed is found without reading its text. Never returns 0.
+#[frb(sync)]
+pub fn compute_book_metadata_fingerprint(
+    title: String,
+    topics: String,
+    extra_facets: Option<Vec<String>>,
+) -> u64 {
+    metadata_fingerprint(&title, &topics, extra_facets.unwrap_or_default())
+}
+
+fn metadata_fingerprint(title: &str, topics: &str, extra_facets: Vec<String>) -> u64 {
+    let mut fnv = Fnv::new();
+    feed_metadata(&mut fnv, title, topics, extra_facets);
+    fnv.finish()
+}
+
+fn feed_metadata(fnv: &mut Fnv, title: &str, topics: &str, mut extra_facets: Vec<String>) {
+    extra_facets.sort_unstable();
+    extra_facets.dedup();
     fnv.feed_field(title.as_bytes());
     fnv.feed_field(topics.as_bytes());
-    fnv.feed_field(&catalogue_order.to_le_bytes());
-    fnv.feed_field(&generation_order.to_le_bytes());
     for facet in &extra_facets {
         fnv.feed_field(facet.as_bytes());
     }
-    fnv.finish()
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -3851,19 +3898,24 @@ pub(crate) struct TextBookMeta {
     pub title: String,
     pub topics: String,
     pub file_path: String,
-    pub catalogue_order: u32,
-    pub generation_order: u32,
     pub extra_facets: Vec<String>,
+    /// The caller's `sourceHash`, 0 for none.
+    pub source_hash: u64,
 }
 
 /// A text book's documents, built by [`SearchEngine::prepare_text_book`].
 #[frb(ignore)]
 pub(crate) struct PreparedTextBook {
     pub documents: Vec<TantivyDocument>,
+    /// The book's number: the high half of its ids.
+    pub book_number: u32,
     /// The book's `contentHash` ([`book_fingerprint`]).
     pub content_hash: u64,
     /// The book's `textHash` ([`content_fingerprint`]).
     pub text_hash: u64,
+    /// The book's `metadataHash` ([`metadata_fingerprint`]).
+    pub metadata_hash: u64,
+    pub source_hash: u64,
     pub text_storage: TextStorage,
     pub prepare_time: std::time::Duration,
     pub keys_time: std::time::Duration,
@@ -3935,8 +3987,8 @@ fn refuse_library_storage(docs: &[DocumentInput]) -> Result<()> {
     {
         anyhow::bail!(
             "TextStorage::LibraryDb is only accepted by add_text_book/add_text_book_bytes \
-             (document {} of {:?})",
-            doc.id,
+             (line {} of {:?})",
+            doc.ordinal,
             doc.file_path
         );
     }
@@ -4445,15 +4497,19 @@ fn index_schema() -> Schema {
     // חתימת טקסט-בלבד של הספר (content_fingerprint על הטקסט הגולמי), זהה על
     // כל מסמכי הספר. FAST בלבד — נקראת עמודתית ע"י get_book_text_fingerprints.
     schema_builder.add_u64_field("textHash", FAST);
+    // The book's metadata (`compute_book_metadata_fingerprint`) and the caller's opaque
+    // source hash, on the same one document as the fingerprints.
+    schema_builder.add_u64_field(METADATA_HASH_FIELD, FAST);
+    schema_builder.add_u64_field(SOURCE_HASH_FIELD, FAST);
     // מזהה סעיף: כל השורות שתחת אותה כותרת (אותו בלוק reference) נושאות
     // אותו ערך, ייחודי גלובלית — id_base של הספר + אינדקס בלוק הכותרת
     // (ב-PDF: מספר העמוד). FAST בלבד: מסלול "תחת אותה כותרת"
     // (SearchScope::SameSection) קורא אותו עמודתית לחיתוך סעיפים; אינו
     // מאוחסן ואינו מחופש ישירות.
-    // `sectionId` and `generationSort` are derived from `id` and these (see
-    // `derived_columns`): a value relative to the book compresses to a few bits.
+    // `sectionId` is derived from `id` and this (see `derived_columns`): a value relative
+    // to the book compresses to a few bits. The generation of a book is not in the index:
+    // see `book_order`.
     schema_builder.add_u64_field(SECTION_OFFSET_FIELD, FAST);
-    schema_builder.add_u64_field(GENERATION_FIELD, FAST);
     // חתימת דה-דופליקציה של גוף השורה (ראו line_dedup_hash). FAST בלבד:
     // נקראת עמודתית ע"י קיבוץ IdenticalText; אינה מאוחסנת ואינה מחופשת.
     schema_builder.add_u64_field("lineHash", FAST);
@@ -4490,6 +4546,8 @@ fn index_schema() -> Schema {
 }
 
 pub(crate) const TEXT_STORED_FIELD: &str = "textStored";
+const METADATA_HASH_FIELD: &str = "metadataHash";
+const SOURCE_HASH_FIELD: &str = "sourceHash";
 pub(crate) const LINE_CHECK_FIELD: &str = "lineCheck";
 const TEXT_VOCALIZED_STORED_FIELD: &str = "textVocalizedStored";
 
@@ -4647,6 +4705,48 @@ pub struct SearchEngine {
     highlight_cache: HighlightCache,
     /// Request ids of running lexical searches: see [`crate::lexical_cancellation`].
     lexical_cancellations: LexicalCancellations,
+    /// Which book holds which number (see [`crate::book_order`]): read from the index when
+    /// first needed.
+    book_numbers: Mutex<Option<BookNumbers>>,
+    /// The order mapping [`Self::set_book_order`] stores.
+    book_order: RwLock<BookOrderState>,
+    /// The rank tables of the current mapping and book numbers.
+    order_tables: Mutex<Option<CachedOrderTables>>,
+}
+
+/// How [`SearchEngine::write_inputs_with`] makes a document's id.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ids {
+    /// From the book's number and the line's ordinal.
+    Composed,
+    /// This id, for the one document written: tests written before book numbers existed,
+    /// and tests of ids the engine never composes.
+    #[cfg(test)]
+    Raw(u64),
+}
+
+/// The order mapping as an engine holds it.
+struct BookOrderState {
+    revision: u64,
+    places: Arc<HashMap<String, BookPlace>>,
+    /// Process-unique, so a cache entry ranked under another mapping is never served.
+    epoch: u64,
+}
+
+impl BookOrderState {
+    fn of(mapping: OrderMapping) -> Self {
+        Self {
+            revision: mapping.revision,
+            places: Arc::new(mapping.places),
+            epoch: book_order::next_epoch(),
+        }
+    }
+}
+
+struct CachedOrderTables {
+    epoch: u64,
+    numbers_version: u32,
+    tables: Arc<OrderTables>,
 }
 
 /// Analyzers that keep the quote-free twin of a quoted word (`רמב"ם` → `רמבם` at the
@@ -4788,6 +4888,9 @@ impl SearchEngine {
             page_cache: PageCache::default(),
             highlight_cache: HighlightCache::default(),
             lexical_cancellations: LexicalCancellations::default(),
+            book_numbers: Mutex::new(None),
+            book_order: RwLock::new(BookOrderState::of(OrderMapping::load(Path::new(path)))),
+            order_tables: Mutex::new(None),
         }
     }
 
@@ -4848,7 +4951,286 @@ impl SearchEngine {
             page_cache: PageCache::default(),
             highlight_cache: HighlightCache::default(),
             lexical_cancellations: LexicalCancellations::default(),
+            book_numbers: Mutex::new(None),
+            book_order: RwLock::new(BookOrderState::of(OrderMapping::load(path))),
+            order_tables: Mutex::new(None),
         })
+    }
+
+    /// Adds `file_path` at `catalogue_order`/`generation_order` to the order mapping, keeping
+    /// every other book's place: how tests written against catalogue-composed ids place
+    /// their books.
+    #[cfg(test)]
+    pub(crate) fn place_book_for_tests(
+        &self,
+        file_path: &str,
+        catalogue_order: u32,
+        generation_order: u32,
+    ) {
+        let places = Arc::clone(
+            &self
+                .book_order
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .places,
+        );
+        let place = BookPlace {
+            catalogue_order,
+            generation_order,
+        };
+        if places.get(file_path) == Some(&place) {
+            return;
+        }
+        let mut entries: Vec<BookOrderEntry> = places
+            .iter()
+            .filter(|entry| entry.0.as_str() != file_path)
+            .map(|(path, place)| BookOrderEntry {
+                file_path: path.clone(),
+                catalogue_order: place.catalogue_order,
+                generation_order: place.generation_order,
+            })
+            .collect();
+        entries.push(BookOrderEntry {
+            file_path: file_path.to_owned(),
+            catalogue_order,
+            generation_order,
+        });
+        self.set_book_order(entries).unwrap();
+    }
+
+    /// [`Self::add_text_book`] for a test written against catalogue-composed ids: the book
+    /// gets number `catalogue_order + 1`, and is placed as [`Self::place_book_for_tests`]
+    /// does.
+    #[cfg(test)]
+    pub(crate) fn add_text_book_placed(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        generation_order: u32,
+        text: String,
+        extra_facets: Option<Vec<String>>,
+        text_storage: TextStorage,
+        stored_lines: Option<Vec<u32>>,
+    ) -> Result<u32> {
+        self.force_book_number_for_tests(&file_path, catalogue_order + 1);
+        self.place_book_for_tests(&file_path, catalogue_order, generation_order);
+        self.add_text_book(
+            title,
+            topics,
+            file_path,
+            text,
+            extra_facets,
+            text_storage,
+            stored_lines,
+            None,
+        )
+    }
+
+    /// [`Self::add_text_book_bytes`] with the book placed as [`Self::place_book_for_tests`]
+    /// does.
+    #[cfg(test)]
+    pub(crate) fn add_text_book_bytes_placed(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        generation_order: u32,
+        text: Vec<u8>,
+        extra_facets: Option<Vec<String>>,
+        text_storage: TextStorage,
+        stored_lines: Option<Vec<u32>>,
+    ) -> Result<u32> {
+        self.force_book_number_for_tests(&file_path, catalogue_order + 1);
+        self.place_book_for_tests(&file_path, catalogue_order, generation_order);
+        self.add_text_book_bytes(
+            title,
+            topics,
+            file_path,
+            text,
+            extra_facets,
+            text_storage,
+            stored_lines,
+            None,
+        )
+    }
+
+    /// [`Self::add_pdf_book`] with the book placed as [`Self::place_book_for_tests`] does.
+    #[cfg(test)]
+    pub(crate) fn add_pdf_book_placed(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        catalogue_order: u32,
+        generation_order: u32,
+        pages: Vec<PdfPageInput>,
+        extra_facets: Option<Vec<String>>,
+    ) -> Result<u32> {
+        self.force_book_number_for_tests(&file_path, catalogue_order + 1);
+        self.place_book_for_tests(&file_path, catalogue_order, generation_order);
+        self.add_pdf_book(title, topics, file_path, pages, extra_facets)
+    }
+
+    /// [`Self::add_document`] for a test written against a caller-composed `id`, which the
+    /// document gets: the id's high half becomes the book's number, and a `generation_order`
+    /// places the book (catalogue = that number). An id below `1 << 32` has no book number,
+    /// as before numbers existed: it is written as it is, sorting before every book, and
+    /// cannot carry a generation.
+    #[cfg(test)]
+    pub(crate) fn add_document_at(
+        &mut self,
+        id: u64,
+        title: &str,
+        reference: &str,
+        topics: &str,
+        text: &str,
+        segment: u64,
+        is_pdf: bool,
+        file_path: &str,
+        section_id: Option<u64>,
+        generation_order: Option<u32>,
+        extra_facets: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.write_document_at(
+            false,
+            id,
+            title,
+            reference,
+            topics,
+            text,
+            segment,
+            is_pdf,
+            file_path,
+            section_id,
+            generation_order,
+            extra_facets,
+        )
+    }
+
+    /// [`Self::upsert_document`] by the id [`Self::add_document_at`] gives.
+    #[cfg(test)]
+    pub(crate) fn upsert_document_at(
+        &mut self,
+        id: u64,
+        title: &str,
+        reference: &str,
+        topics: &str,
+        text: &str,
+        segment: u64,
+        is_pdf: bool,
+        file_path: &str,
+        section_id: Option<u64>,
+        generation_order: Option<u32>,
+        extra_facets: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.write_document_at(
+            true,
+            id,
+            title,
+            reference,
+            topics,
+            text,
+            segment,
+            is_pdf,
+            file_path,
+            section_id,
+            generation_order,
+            extra_facets,
+        )
+    }
+
+    #[cfg(test)]
+    fn write_document_at(
+        &mut self,
+        upsert: bool,
+        id: u64,
+        title: &str,
+        reference: &str,
+        topics: &str,
+        text: &str,
+        segment: u64,
+        is_pdf: bool,
+        file_path: &str,
+        section_id: Option<u64>,
+        generation_order: Option<u32>,
+        extra_facets: Option<Vec<String>>,
+    ) -> Result<()> {
+        let number = (id >> 32) as u32;
+        if number == 0 {
+            assert!(
+                generation_order.is_none(),
+                "a raw id below 1 << 32 has no book to place in a generation"
+            );
+            let document = Self::single_input(
+                0,
+                title,
+                reference,
+                topics,
+                text,
+                segment,
+                is_pdf,
+                file_path,
+                section_id.map(|section| section as u32),
+                extra_facets,
+            );
+            return self.write_inputs_with(vec![document], upsert, Ids::Raw(id));
+        }
+        self.force_book_number_for_tests(file_path, number);
+        if let Some(generation_order) = generation_order {
+            self.place_book_for_tests(file_path, number, generation_order);
+        }
+        let line = |id: u64| ((id & 0xFFFF_FFFF) as u32).saturating_sub(1);
+        let document = Self::single_input(
+            line(id),
+            title,
+            reference,
+            topics,
+            text,
+            segment,
+            is_pdf,
+            file_path,
+            section_id.map(line),
+            extra_facets,
+        );
+        self.write_inputs(vec![document], upsert)
+    }
+
+    /// A one-line document of `file_path` with exactly `id`, whatever the book's number: for
+    /// tests of indexes whose ids the engine did not compose.
+    #[cfg(test)]
+    pub(crate) fn add_raw_document_for_tests(&mut self, id: u64, file_path: &str, text: &str) {
+        let document =
+            Self::single_input(0, "t", "r", "/root", text, 0, false, file_path, None, None);
+        self.write_inputs_with(vec![document], false, Ids::Raw(id))
+            .unwrap();
+    }
+
+    /// Gives `file_path` book number `number`, as a test written against catalogue-composed
+    /// ids expects it (`catalogue_order + 1`).
+    #[cfg(test)]
+    pub(crate) fn force_book_number_for_tests(&self, file_path: &str, number: u32) {
+        let mut numbers = self
+            .book_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.loaded_numbers(&mut numbers)
+            .unwrap()
+            .force_for_tests(file_path, number);
+    }
+
+    /// The order searches rank by, for tests that build a line search themselves.
+    #[cfg(test)]
+    pub(crate) fn order_tables_for_tests(&self) -> (u64, Arc<OrderTables>) {
+        self.order_tables().unwrap()
+    }
+
+    /// The number the engine gave `file_path`, for tests that compose expected ids.
+    #[cfg(test)]
+    pub(crate) fn book_number_for_tests(&self, file_path: &str) -> u32 {
+        self.book_number(file_path).unwrap()
     }
 
     /// Forget every semantic session, so the next search computes its first page afresh.
@@ -7477,27 +7859,102 @@ impl SearchEngine {
 
     // ── Write API ──────────────────────────────────────────────────────────────
 
-    /// Add a single document. Does not commit.
-    /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
-    /// [`Self::add_documents_batch`] is the fingerprint-aware path.
+    /// Add a single line of a book. Does not commit. The id is the engine's: line `ordinal`
+    /// (0-based) of the book `file_path`, whose number is assigned on its first write.
+    /// Records the book's `metadataHash`, and no fingerprint (`contentHash` = 0): batch
+    /// ingestion via [`Self::add_documents_batch`] is the fingerprint-aware path.
     ///
-    /// `_text` is normalized here ([`normalize_text_for_indexing`]) — the API
+    /// `text` is normalized here ([`normalize_text_for_indexing`]) — the API
     /// is exposed over FFI, so the "input is already normalized" assumption
     /// is enforced rather than documented. Already-normalized text passes
     /// through the fast paths at negligible cost.
     pub fn add_document(
         &mut self,
-        _id: u64,
-        _title: &str,
-        _reference: &str,
-        _topics: &str,
-        _text: &str,
-        _segment: u64,
-        _is_pdf: bool,
-        _file_path: &str,
-        _section_id: Option<u64>,
-        _generation_order: Option<u32>,
-        _extra_facets: Option<Vec<String>>,
+        ordinal: u32,
+        title: &str,
+        reference: &str,
+        topics: &str,
+        text: &str,
+        segment: u64,
+        is_pdf: bool,
+        file_path: &str,
+        section_ordinal: Option<u32>,
+        extra_facets: Option<Vec<String>>,
+    ) -> Result<()> {
+        let document = Self::single_input(
+            ordinal,
+            title,
+            reference,
+            topics,
+            text,
+            segment,
+            is_pdf,
+            file_path,
+            section_ordinal,
+            extra_facets,
+        );
+        self.write_inputs(vec![document], false)
+    }
+
+    /// The [`DocumentInput`] of [`Self::add_document`]: a line carrying marks also gets its
+    /// vocalized copy, normalized from the raw text.
+    #[allow(clippy::too_many_arguments)]
+    fn single_input(
+        ordinal: u32,
+        title: &str,
+        reference: &str,
+        topics: &str,
+        text: &str,
+        segment: u64,
+        is_pdf: bool,
+        file_path: &str,
+        section_ordinal: Option<u32>,
+        extra_facets: Option<Vec<String>>,
+    ) -> DocumentInput {
+        DocumentInput {
+            ordinal,
+            title: title.to_owned(),
+            reference: reference.to_owned(),
+            topics: topics.to_owned(),
+            text: text.to_owned(),
+            segment,
+            is_pdf,
+            file_path: file_path.to_owned(),
+            content_hash: None,
+            text_hash: None,
+            source_hash: None,
+            text_vocalized: hebrew_query::contains_attached_marks(text).then(|| text.to_owned()),
+            section_ordinal,
+            extra_facets,
+            text_storage: None,
+        }
+    }
+
+    /// Add many documents in a single FFI call. Does not commit.
+    /// For initial bulk loads – no duplicate checking. Each document's id is composed by the
+    /// engine from its book's number and `ordinal`, as for [`Self::add_document`]; the
+    /// stamps of a book are recorded on its first document in the batch.
+    ///
+    /// `text` is normalized here ([`normalize_text_for_indexing`]) and a
+    /// supplied `text_vocalized` through its vocalized counterpart — the API
+    /// is exposed over FFI, so the "input is already normalized" assumption
+    /// is enforced rather than documented. Already-normalized input passes
+    /// through the fast paths at negligible cost.
+    pub fn add_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
+        self.write_inputs(docs, false)
+    }
+
+    /// Writes ready-made documents; `upsert` first deletes the documents holding their ids
+    /// (of two documents with one id the later wins, as when each deleted its own id).
+    fn write_inputs(&mut self, docs: Vec<DocumentInput>, upsert: bool) -> Result<()> {
+        self.write_inputs_with(docs, upsert, Ids::Composed)
+    }
+
+    fn write_inputs_with(
+        &mut self,
+        docs: Vec<DocumentInput>,
+        upsert: bool,
+        ids: Ids,
     ) -> Result<()> {
         let (
             title_f,
@@ -7508,113 +7965,90 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            _content_hash_f,
-            _text_hash_f,
             text_vocalized_f,
             section_id_f,
-            generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
-        let topics_facet = Facet::from_text(_topics)?;
-        let normalized_text = hebrew_query::normalize_text_for_indexing(_text);
-        let mut document = doc!(
-            title_f        => _title,
-            reference_f    => _reference,
-            text_f         => normalized_text.as_str(),
-            id_f           => _id,
-            is_pdf_f       => _is_pdf,
-            file_path_f    => _file_path,
-            topics_f       => topics_facet,
-            section_id_f   => section_offset(_id, _section_id.unwrap_or(_id)),
-            generation_sort_f => generation_value(
-                _generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
-            ),
-            line_hash_f    => line_dedup_hash(&normalized_text)
-        );
-        if let Some(stored) = segment_to_store(_id, _segment) {
-            document.add_u64(segment_f, stored);
-        }
-        // Not a line of a book, so no key: only `add_text_book` knows a line's neighbours.
-        set_chunk_key(&mut document, self.chunk_key_field, 0);
-        for facet in _extra_facets.iter().flatten() {
-            document.add_facet(topics_f, Facet::from_text(facet)?);
-        }
-        // שורה שנושאת סימנים משתתפת גם בחיפוש המנוקד; הבדיקה על הקלט הגולמי
-        // (הנרמול הרגיל מסיר את הסימנים) והעותק המנוקד מנורמל בנפרד.
-        let vocalized = hebrew_query::contains_attached_marks(_text)
-            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(_text));
-        if let Some(vocalized) = &vocalized {
-            document.add_text(text_vocalized_f, vocalized);
-        }
-        add_stored_text(
-            &mut document,
-            self.stored_text_fields()?,
-            &normalized_text,
-            vocalized.as_deref(),
-        );
-        self.writer_mut()?.add_document(document)?;
-        Ok(())
-    }
-
-    /// Add many documents in a single FFI call. Does not commit.
-    /// For initial bulk loads – no duplicate checking.
-    ///
-    /// `text` is normalized here ([`normalize_text_for_indexing`]) and a
-    /// supplied `text_vocalized` through its vocalized counterpart — the API
-    /// is exposed over FFI, so the "input is already normalized" assumption
-    /// is enforced rather than documented. Already-normalized input passes
-    /// through the fast paths at negligible cost.
-    pub fn add_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
-        let (
-            title_f,
-            reference_f,
-            text_f,
-            id_f,
-            segment_f,
-            is_pdf_f,
-            file_path_f,
-            topics_f,
-            content_hash_f,
-            text_hash_f,
-            text_vocalized_f,
-            section_id_f,
-            generation_sort_f,
-            line_hash_f,
-        ) = self.all_fields()?;
+        let stamp_fields = StampFields::of(&self.schema)?;
         let chunk_key_f = self.chunk_key_field;
         let stored_fields = self.stored_text_fields()?;
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
         refuse_library_storage(&docs)?;
-        let hash_fields = (content_hash_f, text_hash_f);
-        let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
+        let mut bases: HashMap<String, u64> = HashMap::new();
+        let mut docs: Vec<(u64, DocumentInput)> = docs
+            .into_iter()
+            .map(|doc| {
+                #[cfg(test)]
+                if let Ids::Raw(id) = ids {
+                    return Ok((id, doc));
+                }
+                let base = match bases.get(&doc.file_path) {
+                    Some(&base) => base,
+                    None => {
+                        let base = self.id_base(&doc.file_path)?;
+                        bases.insert(doc.file_path.clone(), base);
+                        base
+                    }
+                };
+                Ok((base + u64::from(doc.ordinal) + 1, doc))
+            })
+            .collect::<Result<_>>()?;
+        if upsert {
+            // One deletion for the batch, which scans the `id` column once.
+            let mut seen = HashSet::new();
+            docs.reverse();
+            docs.retain(|(id, _)| seen.insert(*id));
+            docs.reverse();
+            if !seen.is_empty() {
+                self.writer_mut()?
+                    .delete_query(Box::new(IdSetQuery::new(seen)))?;
+            }
+        }
+        let mut stamped: HashMap<String, Stamps> = HashMap::new();
         let writer = self.writer_mut()?;
-        for doc in docs {
+        for (id, doc) in docs {
+            let base = id & !0xFFFF_FFFF;
             let topics_facet = Facet::from_text(&doc.topics)?;
             let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
             let line_hash = line_dedup_hash(&normalized_text);
+            let section_id = match ids {
+                Ids::Composed => doc
+                    .section_ordinal
+                    .map_or(id, |section| base + u64::from(section) + 1),
+                #[cfg(test)]
+                Ids::Raw(_) => doc.section_ordinal.map_or(id, u64::from),
+            };
+            let stamps = Stamps {
+                content: doc.content_hash.unwrap_or(0),
+                text: doc.text_hash.unwrap_or(0),
+                metadata: metadata_fingerprint(
+                    &doc.title,
+                    &doc.topics,
+                    doc.extra_facets.clone().unwrap_or_default(),
+                ),
+                source: doc.source_hash.unwrap_or(0),
+            };
             let mut document = doc!(
                 title_f        => doc.title,
                 reference_f    => doc.reference,
                 text_f         => normalized_text.as_str(),
-                id_f           => doc.id,
+                id_f           => id,
                 is_pdf_f       => doc.is_pdf,
-                file_path_f    => doc.file_path,
+                file_path_f    => doc.file_path.as_str(),
                 topics_f       => topics_facet,
-                section_id_f   => section_offset(doc.id, doc.section_id.unwrap_or(doc.id)),
-                generation_sort_f => generation_value(
-                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
-                ),
+                section_id_f   => section_offset(id, section_id),
                 line_hash_f    => line_hash
             );
-            if let Some(stored) = segment_to_store(doc.id, doc.segment) {
+            if let Some(stored) = segment_to_store(id, doc.segment) {
                 document.add_u64(segment_f, stored);
             }
+            // Not a line of a book's text, so no key: only `add_text_book` knows a line's
+            // neighbours.
             set_chunk_key(&mut document, chunk_key_f, 0);
-            let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
-            if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
-                stamp_book_fingerprints(&mut document, hash_fields, fingerprints);
-                stamped.insert(doc.file_path.clone(), fingerprints);
+            if stamped.get(doc.file_path.as_str()) != Some(&stamps) {
+                stamp_book(&mut document, stamp_fields, stamps);
+                stamped.insert(doc.file_path.clone(), stamps);
             }
             for facet in doc.extra_facets.iter().flatten() {
                 document.add_facet(topics_f, Facet::from_text(facet)?);
@@ -7640,16 +8074,19 @@ impl SearchEngine {
     /// Indexes a whole text book in ONE FFI call. Does not commit.
     ///
     /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
-    /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
-    /// book's canonical fingerprint ([`compute_book_fingerprint`] — text +
-    /// metadata) on every document, and adds one document per line. Returns the number of documents added (0 for empty
-    /// text — the caller writes its empty-book marker in that case).
+    /// normalizes each line ([`normalize_text_for_indexing`]), records the
+    /// book's stamps ([`compute_book_fingerprint`] — text + metadata,
+    /// [`compute_content_fingerprint`], [`compute_book_metadata_fingerprint`] and
+    /// `source_hash` as given) on its first document, and adds one document per line.
+    /// Returns the number of documents added (0 for empty text — the caller writes its
+    /// empty-book marker in that case).
     ///
     /// This is the whole-book replacement for the app's per-line pipeline
     /// (Dart isolate → per-batch FFI normalize → SendPort copy → batch add):
     /// the raw text crosses the bridge exactly once and only a count comes
-    /// back. Document ids encode catalogue order exactly like the Dart
-    /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+    /// back. Document ids are `(bookNumber << 32) + ordinal+1`, the book's number
+    /// assigned by the engine on its first write (see [`Self::get_book_stamps`]); the
+    /// book's place in the catalogue is [`Self::set_book_order`]'s.
     ///
     /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
     /// newline-joined rows of an official book read from the library database
@@ -7666,26 +8103,29 @@ impl SearchEngine {
     /// in the index anyway, as for `InIndex` — the rows that held embedded `data:` images,
     /// which a result would otherwise read back raw (megabytes) on every window. Ignored
     /// for `InIndex`; ordinals past the last line are ignored.
+    ///
+    /// `source_hash`: an opaque hash of the book's source (the library database's
+    /// `book.contentHash`), stored as given; `None`/0 for none.
     pub fn add_text_book(
         &mut self,
         title: String,
         topics: String,
         file_path: String,
-        catalogue_order: u32,
-        generation_order: u32,
         text: String,
         extra_facets: Option<Vec<String>>,
         text_storage: TextStorage,
         stored_lines: Option<Vec<u32>>,
+        source_hash: Option<u64>,
     ) -> Result<u32> {
         self.add_text_book_impl(
-            title,
-            topics,
-            file_path,
-            catalogue_order,
-            generation_order,
+            TextBookMeta {
+                title,
+                topics,
+                file_path,
+                extra_facets: extra_facets.unwrap_or_default(),
+                source_hash: source_hash.unwrap_or(0),
+            },
             &text,
-            extra_facets.unwrap_or_default(),
             text_storage,
             stored_lines.unwrap_or_default(),
         )
@@ -7702,12 +8142,11 @@ impl SearchEngine {
         title: String,
         topics: String,
         file_path: String,
-        catalogue_order: u32,
-        generation_order: u32,
         text: Vec<u8>,
         extra_facets: Option<Vec<String>>,
         text_storage: TextStorage,
         stored_lines: Option<Vec<u32>>,
+        source_hash: Option<u64>,
     ) -> Result<u32> {
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
@@ -7717,33 +8156,28 @@ impl SearchEngine {
             std::borrow::Cow::Owned(fixed) => fixed,
         };
         self.add_text_book_impl(
-            title,
-            topics,
-            file_path,
-            catalogue_order,
-            generation_order,
+            TextBookMeta {
+                title,
+                topics,
+                file_path,
+                extra_facets: extra_facets.unwrap_or_default(),
+                source_hash: source_hash.unwrap_or(0),
+            },
             &text,
-            extra_facets.unwrap_or_default(),
             text_storage,
             stored_lines.unwrap_or_default(),
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn add_text_book_impl(
         &mut self,
-        title: String,
-        topics: String,
-        file_path: String,
-        catalogue_order: u32,
-        generation_order: u32,
+        book: TextBookMeta,
         text: &str,
-        extra_facets: Vec<String>,
         text_storage: TextStorage,
         stored_lines: Vec<u32>,
     ) -> Result<u32> {
         let library_book = match text_storage {
-            TextStorage::LibraryDb => Some(require_library_book_id(&file_path)?),
+            TextStorage::LibraryDb => Some(require_library_book_id(&book.file_path)?),
             TextStorage::InIndex => None,
         };
         if text.is_empty() {
@@ -7751,16 +8185,8 @@ impl SearchEngine {
         }
         let started = Instant::now();
         let text_storage = match library_book {
-            Some(book) => library_storage_or_fallback(book, line_count(text), &title),
+            Some(source) => library_storage_or_fallback(source, line_count(text), &book.title),
             None => TextStorage::InIndex,
-        };
-        let book = TextBookMeta {
-            title,
-            topics,
-            file_path,
-            catalogue_order,
-            generation_order,
-            extra_facets,
         };
         let mut prepared = self.prepare_text_book(&book, text, text_storage, &stored_lines)?;
         let writer = self.writer_mut()?;
@@ -7792,11 +8218,9 @@ impl SearchEngine {
             title,
             topics,
             file_path,
-            catalogue_order,
-            generation_order,
             extra_facets,
+            source_hash,
         } = book;
-        let (catalogue_order, generation_order) = (*catalogue_order, *generation_order);
         let lines: Vec<&str> = text.split('\n').collect();
         let (
             title_f,
@@ -7807,13 +8231,11 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            content_hash_f,
-            text_hash_f,
             text_vocalized_f,
             section_id_f,
-            generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let stamp_fields = StampFields::of(&self.schema)?;
         let topics_facet = Facet::from_text(&topics)?;
         // נתיבי הממדים (מחבר/תקופה/יסוד) נפרסים פעם אחת לספר ומוטבעים
         // כערכי facet נוספים על כל שורה.
@@ -7821,16 +8243,14 @@ impl SearchEngine {
             .iter()
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
-        let content_hash = book_fingerprint(
-            text,
-            title,
-            topics,
-            catalogue_order,
-            generation_order,
-            extra_facets.clone(),
-        );
-        let text_hash = content_fingerprint(text);
-        let id_base = catalogue_id_base(catalogue_order)?;
+        let stamps = Stamps {
+            content: book_fingerprint(text, title, topics, extra_facets.clone()),
+            text: content_fingerprint(text),
+            metadata: metadata_fingerprint(title, topics, extra_facets.clone()),
+            source: *source_hash,
+        };
+        let book_number = self.book_number(file_path)?;
+        let id_base = u64::from(book_number) << 32;
         let chunk_key_f = self.chunk_key_field;
         let library = text_storage == TextStorage::LibraryDb;
         let mut kept_in_index = Vec::new();
@@ -7948,7 +8368,6 @@ impl SearchEngine {
                 // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
                 // בין ספרים, אז sectionId הנגזר ייחודי גלובלית.
                 section_id_f   => u64::from(reference_of_line[segment]),
-                generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
             if let Some(stored) = segment_to_store(id, segment as u64) {
@@ -7957,11 +8376,7 @@ impl SearchEngine {
             let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
             set_chunk_key(&mut document, chunk_key_f, chunk_key);
             if segment == 0 {
-                stamp_book_fingerprints(
-                    &mut document,
-                    (content_hash_f, text_hash_f),
-                    (content_hash, text_hash),
-                );
+                stamp_book(&mut document, stamp_fields, stamps);
             }
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
@@ -7986,8 +8401,11 @@ impl SearchEngine {
         }
         Ok(PreparedTextBook {
             documents,
-            content_hash,
-            text_hash,
+            book_number,
+            content_hash: stamps.content,
+            text_hash: stamps.text,
+            metadata_hash: stamps.metadata,
+            source_hash: stamps.source,
             text_storage,
             prepare_time,
             keys_time,
@@ -8037,9 +8455,9 @@ impl SearchEngine {
     /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
     /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
     /// added per surviving line, with `segment` = the page's `page_index` and
-    /// ids encoding catalogue order like [`Self::add_text_book`]. PDFs record
-    /// no content fingerprint (`contentHash` = 0, their text is not in the
-    /// library DB).
+    /// ids composed like [`Self::add_text_book`]'s. PDFs record their
+    /// `metadataHash` and no content fingerprint (`contentHash` = 0, their text is
+    /// not in the library DB).
     ///
     /// Returns the number of documents added; 0 means the PDF yielded no
     /// usable text (scanned/garbage) — the caller falls back to a sidecar or
@@ -8050,8 +8468,6 @@ impl SearchEngine {
         title: String,
         topics: String,
         file_path: String,
-        catalogue_order: u32,
-        generation_order: u32,
         pages: Vec<PdfPageInput>,
         extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
@@ -8070,22 +8486,24 @@ impl SearchEngine {
             is_pdf_f,
             file_path_f,
             topics_f,
-            _content_hash_f,
-            _text_hash_f,
             // PDF אינו משתתף בחיפוש מנוקד: ניקוד שמגיע מ-OCR אינו אמין,
             // והנרמול של PDF ממילא מוחק אותו.
             _text_vocalized_f,
             section_id_f,
-            generation_sort_f,
             line_hash_f,
         ) = self.all_fields()?;
+        let stamp_fields = StampFields::of(&self.schema)?;
+        let extra_facets = extra_facets.unwrap_or_default();
+        let stamps = Stamps {
+            metadata: metadata_fingerprint(&title, &topics, extra_facets.clone()),
+            ..Stamps::default()
+        };
         let topics_facet = Facet::from_text(&topics)?;
         let extra_facet_values: Vec<Facet> = extra_facets
-            .unwrap_or_default()
             .iter()
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
-        let id_base = catalogue_id_base(catalogue_order)?;
+        let id_base = self.id_base(&file_path)?;
         let chunk_key_f = self.chunk_key_field;
         let stored_fields = self.stored_text_fields()?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
@@ -8142,9 +8560,11 @@ impl SearchEngine {
                 topics_f       => topics_facet.clone(),
                 // ב-PDF אין שרשרת כותרות — עמוד = סעיף.
                 section_id_f   => u64::from(page.page_index),
-                generation_sort_f => generation_value(generation_order),
                 line_hash_f    => line_hash
             );
+            if ordinal == 0 {
+                stamp_book(&mut document, stamp_fields, stamps);
+            }
             if let Some(stored) = segment_to_store(id, u64::from(page.page_index)) {
                 document.add_u64(segment_f, stored);
             }
@@ -8172,127 +8592,44 @@ impl SearchEngine {
         Ok(ordinal as u32)
     }
 
-    /// Delete then re-insert a single document by id. Does not commit.
+    /// Delete then re-insert a single line, by the id [`Self::add_document`] composes for
+    /// it. Does not commit.
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_document(
         &mut self,
-        _id: u64,
-        _title: &str,
-        _reference: &str,
-        _topics: &str,
-        _text: &str,
-        _segment: u64,
-        _is_pdf: bool,
-        _file_path: &str,
-        _section_id: Option<u64>,
-        _generation_order: Option<u32>,
-        _extra_facets: Option<Vec<String>>,
+        ordinal: u32,
+        title: &str,
+        reference: &str,
+        topics: &str,
+        text: &str,
+        segment: u64,
+        is_pdf: bool,
+        file_path: &str,
+        section_ordinal: Option<u32>,
+        extra_facets: Option<Vec<String>>,
     ) -> Result<()> {
-        self.delete_document_by_id(_id)?;
-        self.add_document(
-            _id,
-            _title,
-            _reference,
-            _topics,
-            _text,
-            _segment,
-            _is_pdf,
-            _file_path,
-            _section_id,
-            _generation_order,
-            _extra_facets,
-        )
+        let document = Self::single_input(
+            ordinal,
+            title,
+            reference,
+            topics,
+            text,
+            segment,
+            is_pdf,
+            file_path,
+            section_ordinal,
+            extra_facets,
+        );
+        self.write_inputs(vec![document], true)
     }
 
     /// Upsert many documents in a single FFI call. Does not commit.
     /// Normalizes `text`/`text_vocalized` exactly like
     /// [`Self::add_documents_batch`].
     pub fn upsert_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
-        let (
-            title_f,
-            reference_f,
-            text_f,
-            id_f,
-            segment_f,
-            is_pdf_f,
-            file_path_f,
-            topics_f,
-            content_hash_f,
-            text_hash_f,
-            text_vocalized_f,
-            section_id_f,
-            generation_sort_f,
-            line_hash_f,
-        ) = self.all_fields()?;
-        let chunk_key_f = self.chunk_key_field;
-        let stored_fields = self.stored_text_fields()?;
-        // Validated before anything is written, so a bad document cannot leave half
-        // a batch in the writer.
-        refuse_library_storage(&docs)?;
-        let hash_fields = (content_hash_f, text_hash_f);
-        let mut stamped: HashMap<String, (u64, u64)> = HashMap::new();
-        // One deletion for the batch, which scans the `id` column once; of two documents
-        // with one id the later wins, as when each deleted its own id.
-        let mut seen = HashSet::new();
-        let mut docs: Vec<DocumentInput> = docs
-            .into_iter()
-            .rev()
-            .filter(|doc| seen.insert(doc.id))
-            .collect();
-        docs.reverse();
-        let writer = self.writer_mut()?;
-        if !seen.is_empty() {
-            writer.delete_query(Box::new(IdSetQuery::new(seen)))?;
-        }
-        for doc in docs {
-            let topics_facet = Facet::from_text(&doc.topics)?;
-            let normalized_text = hebrew_query::normalize_text_for_indexing(&doc.text);
-            let line_hash = line_dedup_hash(&normalized_text);
-            let mut document = doc!(
-                title_f        => doc.title,
-                reference_f    => doc.reference,
-                text_f         => normalized_text.as_str(),
-                id_f           => doc.id,
-                is_pdf_f       => doc.is_pdf,
-                file_path_f    => doc.file_path,
-                topics_f       => topics_facet,
-                section_id_f   => section_offset(doc.id, doc.section_id.unwrap_or(doc.id)),
-                generation_sort_f => generation_value(
-                    doc.generation_order.unwrap_or(DEFAULT_GENERATION_ORDER)
-                ),
-                line_hash_f    => line_hash
-            );
-            if let Some(stored) = segment_to_store(doc.id, doc.segment) {
-                document.add_u64(segment_f, stored);
-            }
-            set_chunk_key(&mut document, chunk_key_f, 0);
-            let fingerprints = (doc.content_hash.unwrap_or(0), doc.text_hash.unwrap_or(0));
-            if stamped.get(doc.file_path.as_str()) != Some(&fingerprints) {
-                stamp_book_fingerprints(&mut document, hash_fields, fingerprints);
-                stamped.insert(doc.file_path.clone(), fingerprints);
-            }
-            for facet in doc.extra_facets.iter().flatten() {
-                document.add_facet(topics_f, Facet::from_text(facet)?);
-            }
-            let vocalized = doc
-                .text_vocalized
-                .filter(|vocalized| !vocalized.is_empty())
-                .map(|vocalized| hebrew_query::normalize_vocalized_text_for_indexing(&vocalized));
-            if let Some(vocalized) = &vocalized {
-                document.add_text(text_vocalized_f, vocalized);
-            }
-            add_stored_text(
-                &mut document,
-                stored_fields,
-                &normalized_text,
-                vocalized.as_deref(),
-            );
-            writer.add_document(document)?;
-        }
-        Ok(())
+        self.write_inputs(docs, true)
     }
 
-    /// Delete a document by its numeric id. Does not commit.
     /// Whether the index this engine opened is one this build reads.
     ///
     /// `pub(crate)`: the FFI already exposes [`check_index_compatibility`] by path. This is
@@ -8428,6 +8765,126 @@ impl SearchEngine {
     pub fn rollback(&mut self) -> Result<()> {
         self.writer_mut()?.rollback()?;
         Ok(())
+    }
+
+    // ── Book numbers and order ─────────────────────────────────────────────────
+
+    /// Replaces the whole order mapping: the catalogue and generation position of each book,
+    /// by its `filePath`. Catalogue and generation searches sort by it from the next call on,
+    /// with no reindexing; a book absent from it sorts after every book in it. Stored in the
+    /// index directory, so every engine that opens the index sorts the same way.
+    ///
+    /// Returns the mapping's revision, which grows on every change; the same mapping again
+    /// changes nothing. A `file_path` given twice is an error, and the mapping is kept.
+    pub fn set_book_order(&self, entries: Vec<BookOrderEntry>) -> Result<u64> {
+        let mut places = HashMap::with_capacity(entries.len());
+        for entry in entries {
+            let place = BookPlace {
+                catalogue_order: entry.catalogue_order,
+                generation_order: entry.generation_order,
+            };
+            if places.insert(entry.file_path.clone(), place).is_some() {
+                anyhow::bail!("set_book_order: {:?} is given twice", entry.file_path);
+            }
+        }
+        let mut state = self
+            .book_order
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *state.places == places {
+            return Ok(state.revision);
+        }
+        let mapping = OrderMapping {
+            revision: state.revision + 1,
+            places,
+        };
+        mapping.save(&self.index_path)?;
+        *state = BookOrderState::of(mapping);
+        let revision = state.revision;
+        drop(state);
+        self.page_cache.clear();
+        Ok(revision)
+    }
+
+    /// The revision of the order mapping: 0 before any [`Self::set_book_order`].
+    #[frb(sync)]
+    pub fn book_order_revision(&self) -> u64 {
+        self.book_order
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .revision
+    }
+
+    /// The number of `file_path`, handed out on the book's first write.
+    pub(crate) fn book_number(&self, file_path: &str) -> Result<u32> {
+        let mut numbers = self
+            .book_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.loaded_numbers(&mut numbers)?.number_for(file_path)
+    }
+
+    /// The high half of every id of the book `file_path`.
+    fn id_base(&self, file_path: &str) -> Result<u64> {
+        Ok(u64::from(self.book_number(file_path)?) << 32)
+    }
+
+    fn loaded_numbers<'a>(
+        &self,
+        numbers: &'a mut Option<BookNumbers>,
+    ) -> Result<&'a mut BookNumbers> {
+        if numbers.is_none() {
+            // The last commit: this engine's reader may not have reloaded onto it yet.
+            let reader: IndexReader = self
+                .index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?;
+            *numbers = Some(BookNumbers::load(&reader.searcher(), &self.index_path)?);
+        }
+        Ok(numbers.as_mut().expect("loaded above"))
+    }
+
+    /// The epoch of the current order mapping.
+    fn order_epoch(&self) -> u64 {
+        self.book_order
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .epoch
+    }
+
+    /// The rank tables catalogue and generation searches sort by, with the epoch of the
+    /// mapping they were built from.
+    pub(crate) fn order_tables(&self) -> Result<(u64, Arc<OrderTables>)> {
+        let (epoch, places) = {
+            let state = self
+                .book_order
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            (state.epoch, Arc::clone(&state.places))
+        };
+        let mut numbers = self
+            .book_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let numbers = self.loaded_numbers(&mut numbers)?;
+        let mut cached = self
+            .order_tables
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(cached) = cached
+            .as_ref()
+            .filter(|c| c.epoch == epoch && c.numbers_version == numbers.version())
+        {
+            return Ok((epoch, Arc::clone(&cached.tables)));
+        }
+        let tables = Arc::new(OrderTables::build(numbers.paths(), &places));
+        *cached = Some(CachedOrderTables {
+            epoch,
+            numbers_version: numbers.version(),
+            tables: Arc::clone(&tables),
+        });
+        Ok((epoch, tables))
     }
 
     // ── Search API ─────────────────────────────────────────────────────────────
@@ -8740,6 +9197,39 @@ impl SearchEngine {
         );
         let searcher = self.index_reader.searcher();
         Ok(searcher.search(&query, &SingleBookFingerprintCollector)?)
+    }
+
+    /// Every book of the index with its number, live documents and stamps, read columnar in
+    /// one pass, by `file_path`. What a check after a library update compares against: the
+    /// metadata and source stamps need no book text.
+    pub fn get_book_stamps(&self) -> Result<Vec<BookStamps>> {
+        let searcher = self.index_reader.searcher();
+        let collector = book_order::BookStampsCollector {
+            columns: [
+                "contentHash",
+                "textHash",
+                METADATA_HASH_FIELD,
+                SOURCE_HASH_FIELD,
+            ],
+        };
+        let mut books: Vec<BookStamps> = searcher
+            .search(&AllQuery, &collector)?
+            .into_iter()
+            .map(|(file_path, book)| {
+                let [content_hash, text_hash, metadata_hash, source_hash] = book.stamps;
+                BookStamps {
+                    file_path,
+                    book_number: book.number,
+                    documents: book.documents,
+                    content_hash,
+                    text_hash,
+                    metadata_hash,
+                    source_hash,
+                }
+            })
+            .collect();
+        books.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+        Ok(books)
     }
 
     /// Fetch a single document by its numeric id. Returns None if not found.
@@ -10623,11 +11113,8 @@ impl SearchEngine {
             self.schema.get_field("isPdf")?,
             self.schema.get_field("filePath")?,
             self.schema.get_field("topics")?,
-            self.schema.get_field("contentHash")?,
-            self.schema.get_field("textHash")?,
             self.schema.get_field("textVocalized")?,
             self.schema.get_field(SECTION_OFFSET_FIELD)?,
-            self.schema.get_field(GENERATION_FIELD)?,
             self.schema.get_field("lineHash")?,
         ))
     }
@@ -12701,7 +13188,7 @@ impl SearchEngine {
     {
         let searcher = self.index_reader.searcher();
         if let Some(grouping) = grouping {
-            let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
+            let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
             return Self::build_grouped_results(
                 &self.schema,
                 &searcher,
@@ -12749,7 +13236,7 @@ impl SearchEngine {
     {
         let searcher = self.index_reader.searcher();
         if let Some(grouping) = grouping {
-            let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
+            let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
             let results = Self::build_grouped_results(
                 &self.schema,
                 &searcher,
@@ -12816,7 +13303,11 @@ impl SearchEngine {
 
     fn run_count_by_book(&self, query: Box<dyn Query>) -> Result<HashMap<String, u32>> {
         let searcher = self.index_reader.searcher();
-        let key = PageKey::new(page_cache::snapshot_of(&searcher), &*query);
+        let key = PageKey::new(
+            page_cache::snapshot_of(&searcher),
+            self.order_epoch(),
+            &*query,
+        );
         if let Some(counts) = key
             .as_ref()
             .and_then(|key| self.page_cache.book_counts(key))
@@ -12833,7 +13324,7 @@ impl SearchEngine {
 
     /// The hit count of `query`, from the page cache when a search counted it.
     fn count_on(&self, searcher: &Searcher, query: &dyn Query) -> Result<u32> {
-        let key = PageKey::new(page_cache::snapshot_of(searcher), query);
+        let key = PageKey::new(page_cache::snapshot_of(searcher), self.order_epoch(), query);
         if let Some(total) = key.as_ref().and_then(|key| self.page_cache.total(key)) {
             return Ok(total);
         }
@@ -12920,7 +13411,7 @@ impl SearchEngine {
         let query = request.wrap(query);
         let chunk_size = (chunk_size.max(1)) as usize;
         if let Some(grouping) = grouping {
-            let page = Self::collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
+            let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
             let results = Self::build_grouped_results(
                 &self.schema,
                 &searcher,
@@ -12999,7 +13490,8 @@ impl SearchEngine {
 
         if let Some(grouping) = grouping {
             // מעבר אינדקס אחד: קיבוץ + ספירות פר-ספר יחד, כמו המסלול השטוח.
-            let collectors = (GroupCollector::new(grouping, order), BookCountCollector);
+            let sort = self.group_sort(order)?;
+            let collectors = (GroupCollector::new(grouping, sort), BookCountCollector);
             let ((), book_counts) = searcher.search(&*query, &collectors)?;
             let page = Self::finalize_grouped(collectors.0.take_hits(), limit, offset);
             request.check()?;
@@ -13137,7 +13629,8 @@ impl SearchEngine {
             ResultsOrder::Generation => 1,
             ResultsOrder::Relevance => 2,
         };
-        let key = PageKey::new(page_cache::snapshot_of(searcher), query);
+        let (epoch, sort) = self.order_sort(order)?;
+        let key = PageKey::new(page_cache::snapshot_of(searcher), epoch, query);
         if let Some(page) = key
             .as_ref()
             .and_then(|key| self.page_cache.page(key, slot, offset, limit))
@@ -13158,22 +13651,11 @@ impl SearchEngine {
             None => (offset as usize, limit as usize),
         };
         let top = TopDocs::with_limit(take).and_offset(from);
-        let (mut addresses, total, book_counts) = match order {
-            ResultsOrder::Catalogue => collect_ranked(
-                searcher,
-                query,
-                top.order_by_fast_field::<u64>("id", Order::Asc),
-                counts,
-            )?,
-            ResultsOrder::Generation => collect_ranked(
-                searcher,
-                query,
-                top.order_by((GenerationSort, Order::Asc)),
-                counts,
-            )?,
-            ResultsOrder::Relevance => {
-                collect_ranked(searcher, query, top.order_by_score(), counts)?
+        let (mut addresses, total, book_counts) = match sort {
+            Some(sort) => {
+                collect_ranked(searcher, query, top.order_by((sort, Order::Asc)), counts)?
             }
+            None => collect_ranked(searcher, query, top.order_by_score(), counts)?,
         };
         if let (Some(key), Some(window)) = (key, window) {
             if let Some(total) = total {
@@ -13196,12 +13678,32 @@ impl SearchEngine {
         })
     }
 
+    fn group_sort(&self, order: &ResultsOrder) -> Result<GroupSort> {
+        Ok(match self.order_sort(order)?.1 {
+            Some(sort) => GroupSort::Book(sort.tables, sort.kind),
+            None => GroupSort::ScoreDesc,
+        })
+    }
+
+    /// The epoch of the order mapping `order` ranks by, and the sort it ranks with (`None`:
+    /// by score).
+    fn order_sort(&self, order: &ResultsOrder) -> Result<(u64, Option<BookOrderSort>)> {
+        let kind = match order {
+            ResultsOrder::Catalogue => OrderKind::Catalogue,
+            ResultsOrder::Generation => OrderKind::Generation,
+            ResultsOrder::Relevance => return Ok((self.order_epoch(), None)),
+        };
+        let (epoch, tables) = self.order_tables()?;
+        Ok((epoch, Some(BookOrderSort { tables, kind })))
+    }
+
     /// מריץ את שאילתת החיפוש עם [`GroupCollector`] וגוזר את עמוד הקבוצות
     /// המבוקש (`limit`/`offset` בקבוצות). CPU: מעבר אינדקס מלא אחד — אותה
     /// מחלקת עלות כמו ספירת-כל/ספירה-פר-ספר שהמסך ממילא מריץ. זיכרון:
     /// O(קבוצות), קצוץ ב-[`GROUP_COLLECTOR_MAX_GROUPS`] — בניגוד לספירות,
     /// שמחזיקות מונה-לספר בלבד.
     fn collect_grouped(
+        &self,
         searcher: &Searcher,
         query: &dyn Query,
         grouping: &ResultGrouping,
@@ -13209,7 +13711,7 @@ impl SearchEngine {
         offset: u32,
         order: &ResultsOrder,
     ) -> Result<GroupedPage> {
-        let collector = GroupCollector::new(grouping, order);
+        let collector = GroupCollector::new(grouping, self.group_sort(order)?);
         searcher.search(query, &collector)?;
         Ok(Self::finalize_grouped(collector.take_hits(), limit, offset))
     }
@@ -15300,6 +15802,7 @@ impl SearchEngine {
         facets: &[String],
         cancel: &'a std::sync::atomic::AtomicBool,
     ) -> Result<crate::user_regex::LineSearch<'a>> {
+        let (order_epoch, order) = self.order_tables()?;
         Ok(crate::user_regex::LineSearch {
             searcher,
             schema: &self.schema,
@@ -15309,6 +15812,8 @@ impl SearchEngine {
             facets: facets.to_vec(),
             cancel,
             max_hits: crate::user_regex::MAX_LINE_HITS,
+            order,
+            order_epoch,
         })
     }
 
@@ -15437,9 +15942,9 @@ impl SearchEngine {
         let (query, truncated, sets) = built?;
         let text_field = self.schema.get_field("text")?;
         let top = TopDocs::with_limit(limit.max(1) as usize).and_offset(offset as usize);
-        let collected = match order {
-            ResultsOrder::Catalogue => {
-                let top = top.order_by_fast_field::<u64>("id", Order::Asc);
+        let collected = match self.order_sort(order)?.1 {
+            Some(sort) => {
+                let top = top.order_by((sort, Order::Asc));
                 let (docs, count, by_book) =
                     searcher.search(&*query, &(top, Count, BookCountCollector))?;
                 (
@@ -15448,13 +15953,7 @@ impl SearchEngine {
                     by_book,
                 )
             }
-            ResultsOrder::Generation => {
-                let top = top.order_by((GenerationSort, Order::Asc));
-                let (docs, count, by_book) =
-                    searcher.search(&*query, &(top, Count, BookCountCollector))?;
-                (docs.into_iter().map(|(_, a)| a).collect(), count, by_book)
-            }
-            ResultsOrder::Relevance => {
+            None => {
                 let top = top.order_by_score();
                 let (docs, count, by_book) =
                     searcher.search(&*query, &(top, Count, BookCountCollector))?;
@@ -15612,13 +16111,12 @@ impl SegmentCollector for BookCountSegmentCollector {
 
 // ── GroupCollector ─────────────────────────────────────────────────────────────
 
-/// מפתח המיון של מסמך בקיבוץ, כ-u64 עולה: `id` (קטלוג), `generationSort`
-/// (דורות), או היפוך ביטי הציון (רלוונטיות — ציון BM25 אי-שלילי, כך
-/// שהיפוך הביטים הופך "ציון גבוה" ל"ערך נמוך" והמיון נשאר עולה).
-#[derive(Clone, Copy)]
+/// מפתח המיון של מסמך בקיבוץ, כ-u64 עולה: מפתח סדר הספרים (קטלוג/דורות), או
+/// היפוך ביטי הציון (רלוונטיות — ציון BM25 אי-שלילי, כך שהיפוך הביטים הופך
+/// "ציון גבוה" ל"ערך נמוך" והמיון נשאר עולה).
+#[derive(Clone)]
 enum GroupSort {
-    IdAsc,
-    GenerationAsc,
+    Book(Arc<OrderTables>, OrderKind),
     ScoreDesc,
 }
 
@@ -15797,14 +16295,10 @@ struct GroupCollector {
 }
 
 impl GroupCollector {
-    fn new(grouping: &ResultGrouping, order: &ResultsOrder) -> Self {
+    fn new(grouping: &ResultGrouping, sort: GroupSort) -> Self {
         Self {
             mode: *grouping,
-            sort: match order {
-                ResultsOrder::Catalogue => GroupSort::IdAsc,
-                ResultsOrder::Generation => GroupSort::GenerationAsc,
-                ResultsOrder::Relevance => GroupSort::ScoreDesc,
-            },
+            sort,
             shared: Arc::new(Mutex::new(SharedGroupedAcc {
                 raw_total: 0,
                 groups: BoundedGroups::new(),
@@ -15842,8 +16336,8 @@ struct GroupSegmentCollector {
     mode: ResultGrouping,
     sort: GroupSort,
     id_col: tantivy::columnar::Column<u64>,
-    /// עמודת המיון (`generationSort`); `None` במיון לפי id או ציון.
-    sort_col: Option<GenerationSortColumn>,
+    /// עמודת מפתח הסדר; `None` במיון לפי ציון.
+    sort_col: Option<BookOrderColumn>,
     /// עמודת מפתח הקבוצה: `sectionId` או `lineHash` לפי המצב.
     key_col: GroupKeyColumn,
     shared: Arc<Mutex<SharedGroupedAcc>>,
@@ -15874,9 +16368,10 @@ impl Collector for GroupCollector {
     ) -> tantivy::Result<GroupSegmentCollector> {
         let fast = reader.fast_fields();
         let id_col = fast.u64("id")?;
-        let sort_col = match self.sort {
-            GroupSort::IdAsc => None, // עמודת ה-id כבר בידינו
-            GroupSort::GenerationAsc => Some(GenerationSortColumn::open(reader)?),
+        let sort_col = match &self.sort {
+            GroupSort::Book(tables, kind) => {
+                Some(BookOrderColumn::open(reader, Arc::clone(tables), *kind)?)
+            }
             GroupSort::ScoreDesc => None,
         };
         let key_col = match self.mode {
@@ -15886,7 +16381,7 @@ impl Collector for GroupCollector {
         Ok(GroupSegmentCollector {
             seg_ord,
             mode: self.mode,
-            sort: self.sort,
+            sort: self.sort.clone(),
             id_col,
             sort_col,
             key_col,
@@ -15910,8 +16405,7 @@ impl SegmentCollector for GroupSegmentCollector {
     fn collect(&mut self, doc_id: DocId, score: Score) {
         let id = self.id_col.first(doc_id).unwrap_or_default();
         let sort_val = match self.sort {
-            GroupSort::IdAsc => id,
-            GroupSort::GenerationAsc => self
+            GroupSort::Book(..) => self
                 .sort_col
                 .as_ref()
                 .and_then(|c| c.first(doc_id))
@@ -15945,7 +16439,7 @@ impl SegmentCollector for GroupSegmentCollector {
 
 /// Collects a u64 fast-field value (`hash_column`) per `filePath` fast field.
 /// Per-segment work uses term ordinals; strings are decoded only in harvest().
-/// Only the document [`stamp_book_fingerprints`] wrote holds a book's value: a book
+/// Only the document [`stamp_book`] wrote holds a book's value: a book
 /// whose documents hold none is 0, and two that disagree collapse to 0
 /// ("unverifiable"), which wins over any value when merging segments.
 struct BookFingerprintCollector {
@@ -16263,6 +16757,9 @@ mod quality_bench;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The generation a test book is placed at when it names none.
+    const DEFAULT_GENERATION_ORDER: u32 = 5;
 
     #[test]
     fn crop_keeps_the_whole_first_occurrence_and_whole_words() {
@@ -17050,7 +17547,7 @@ mod tests {
 
     fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {
         engine
-            .add_document(
+            .add_document_at(
                 id, "title", "ref", "/root", text, 0, false, file_path, None, None, None,
             )
             .unwrap();
@@ -17115,10 +17612,10 @@ mod tests {
         {"name": "lineEdge", "type": "text", "options": {"indexing": {"record": "basic", "fieldnorms": false, "tokenizer": "raw"}, "stored": false, "fast": false}}
     ]"#;
 
-    /// The version 5 fields version 6 changes, and how; every other version 5 field is
+    /// The version 5 fields versions 6 and 7 change, and how; every other version 5 field is
     /// unchanged. No other version is one this engine reads.
     #[test]
-    fn version_6_is_version_5_with_its_disk_savings() {
+    fn version_7_is_version_5_with_its_disk_savings_and_stamps() {
         let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
@@ -17145,14 +17642,18 @@ mod tests {
                 name => assert_eq!(entry(name), old, "{name}"),
             }
         }
-        // Derived at query time from `id` and the two small columns that replace them.
+        // `sectionId` is derived at query time from `id` and the small column that replaces
+        // it; the generation is the order mapping's (`book_order`), not the index's.
         assert_eq!(removed, ["sectionId", "generationSort"]);
         let added: Vec<&str> = current
             .fields()
             .map(|(_, entry)| entry.name())
             .filter(|name| released.get_field(name).is_err())
             .collect();
-        assert_eq!(added, [SECTION_OFFSET_FIELD, GENERATION_FIELD]);
+        assert_eq!(
+            added,
+            [METADATA_HASH_FIELD, SOURCE_HASH_FIELD, SECTION_OFFSET_FIELD]
+        );
         for name in added {
             let added = entry(name);
             assert!(added.is_fast() && !added.is_indexed() && !added.is_stored());
@@ -17216,7 +17717,33 @@ mod tests {
             assert!(!compatibility.compatible, "{version:?}");
             assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
             assert_eq!(compatibility.found_schema_version, version);
-            assert_eq!(compatibility.required_schema_version, 6);
+            assert_eq!(compatibility.required_schema_version, INDEX_SCHEMA_VERSION);
+        }
+    }
+
+    /// A version 6 index — ids composed from the catalogue position, a `generation` column,
+    /// no metadata or source stamps — is rebuilt, with its metadata or without, and so is
+    /// one whose metadata claims this version over that schema.
+    #[test]
+    fn a_version_6_index_is_rebuilt() {
+        let mut fields = serde_json::to_value(current_schema()).unwrap();
+        let list = fields.as_array_mut().unwrap();
+        list.retain(|field| {
+            ![METADATA_HASH_FIELD, SOURCE_HASH_FIELD].contains(&field["name"].as_str().unwrap())
+        });
+        let offset = list
+            .iter()
+            .position(|field| field["name"] == SECTION_OFFSET_FIELD)
+            .unwrap();
+        let mut generation = list[offset].clone();
+        generation["name"] = JsonValue::from("generation");
+        list.insert(offset + 1, generation);
+        for version in [Some(6), None, Some(INDEX_SCHEMA_VERSION)] {
+            let dir = index_of_schema(fields.clone(), version);
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version:?}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
+            assert_eq!(compatibility.required_schema_version, INDEX_SCHEMA_VERSION);
         }
     }
 
@@ -17365,7 +17892,7 @@ mod tests {
         );
 
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "בראשית".to_string(),
                 "/root".to_string(),
                 "/books/genesis.txt".to_string(),
@@ -17391,8 +17918,8 @@ mod tests {
     fn every_other_add_path_writes_zero() {
         let (mut engine, _dir) = make_engine();
         let line = "שורה ארוכה דיה כדי לעמוד בפני עצמה";
-        let input = |id: u64| DocumentInput {
-            id,
+        let input = |ordinal: u32| DocumentInput {
+            ordinal,
             title: "t".to_string(),
             reference: "r".to_string(),
             topics: "/root".to_string(),
@@ -17402,18 +17929,18 @@ mod tests {
             file_path: "/books/loose.txt".to_string(),
             content_hash: None,
             text_hash: None,
-            section_id: None,
-            generation_order: None,
+            source_hash: None,
+            section_ordinal: None,
             text_vocalized: None,
             extra_facets: None,
             text_storage: None,
         };
         add(&mut engine, 1, line, "/books/loose.txt");
-        engine.add_documents_batch(vec![input(2)]).unwrap();
-        engine.upsert_documents_batch(vec![input(3)]).unwrap();
+        engine.add_documents_batch(vec![input(1)]).unwrap();
+        engine.upsert_documents_batch(vec![input(2)]).unwrap();
         engine
             .upsert_document(
-                4,
+                3,
                 "t",
                 "r",
                 "/root",
@@ -17421,7 +17948,6 @@ mod tests {
                 0,
                 false,
                 "/books/loose.txt",
-                None,
                 None,
                 None,
             )
@@ -17445,7 +17971,7 @@ mod tests {
         for (field, value) in other_recipes {
             let (mut engine, dir) = make_engine();
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "בראשית".to_string(),
                     "/root".to_string(),
                     "/books/genesis.txt".to_string(),
@@ -17475,7 +18001,7 @@ mod tests {
             let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
             assert_eq!(engine.chunk_key_field, None, "{field}={value}");
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "שמות".to_string(),
                     "/root".to_string(),
                     "/books/exodus.txt".to_string(),
@@ -17746,54 +18272,30 @@ mod tests {
     #[test]
     fn generation_order_can_prioritize_sources_before_commentaries() {
         let (mut engine, _dir) = make_engine();
-        engine
-            .add_document(
-                10,
-                "פירוש מוקדם בקטלוג",
-                "ref",
-                "/root",
-                "שלום",
-                0,
-                false,
-                "/books/commentary.txt",
-                None,
-                Some(65),
-                None,
-            )
-            .unwrap();
-        engine
-            .add_document(
-                30,
-                "מקור שני",
-                "ref",
-                "/root",
-                "שלום",
-                0,
-                false,
-                "/books/source-b.txt",
-                None,
-                Some(2),
-                None,
-            )
-            .unwrap();
-        engine
-            .add_document(
-                20,
-                "מקור ראשון",
-                "ref",
-                "/root",
-                "שלום",
-                0,
-                false,
-                "/books/source-a.txt",
-                None,
-                Some(2),
-                None,
-            )
-            .unwrap();
+        for (title, path) in [
+            ("פירוש מוקדם בקטלוג", "/books/commentary.txt"),
+            ("מקור שני", "/books/source-b.txt"),
+            ("מקור ראשון", "/books/source-a.txt"),
+        ] {
+            engine
+                .add_document(0, title, "ref", "/root", "שלום", 0, false, path, None, None)
+                .unwrap();
+        }
         engine.commit().unwrap();
+        let place = |path: &str, catalogue_order, generation_order| BookOrderEntry {
+            file_path: path.to_string(),
+            catalogue_order,
+            generation_order,
+        };
+        engine
+            .set_book_order(vec![
+                place("/books/commentary.txt", 10, 65),
+                place("/books/source-b.txt", 30, 2),
+                place("/books/source-a.txt", 20, 2),
+            ])
+            .unwrap();
 
-        let by_generation: Vec<u64> = engine
+        let by_generation: Vec<String> = engine
             .search_exact(
                 "שלום".to_string(),
                 vec!["/root".to_string()],
@@ -17806,10 +18308,18 @@ mod tests {
             )
             .unwrap()
             .into_iter()
-            .map(|result| result.id)
+            .map(|result| result.file_path)
             .collect();
 
-        assert_eq!(by_generation, vec![20, 30, 10]);
+        // Within a generation, the catalogue decides.
+        assert_eq!(
+            by_generation,
+            [
+                "/books/source-a.txt",
+                "/books/source-b.txt",
+                "/books/commentary.txt"
+            ]
+        );
     }
 
     #[test]
@@ -17822,12 +18332,11 @@ mod tests {
                 "בראשית".to_string(),
                 "/root".to_string(),
                 "/books/bereshit.txt".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
                 text.to_string(),
                 None,
                 TextStorage::InIndex,
                 None,
+                Some(77),
             )
             .unwrap();
         assert_eq!(added, 5);
@@ -17850,8 +18359,8 @@ mod tests {
         // הכותרת החדשה של פרק ב החליפה את פרק א ב-trail (אותו prefix "<h2>").
         assert_eq!(hit.reference, "ספר בראשית, פרק ב");
         assert_eq!(hit.segment, 4);
-        // id = ((catalogue_order+1) << 32) + ordinal+1, כמו ב-Dart.
-        assert_eq!(hit.id, ((5u64 + 1) << 32) + 5);
+        // id = (bookNumber << 32) + ordinal+1; the first book of an index is number 1.
+        assert_eq!(hit.id, (1u64 << 32) + 5);
         assert_eq!(hit.title, "בראשית");
         assert!(!hit.is_pdf);
 
@@ -17879,28 +18388,22 @@ mod tests {
                 text.to_string(),
                 "בראשית".to_string(),
                 "/root".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
                 None,
             ))
         );
-        // שינוי metadata בלבד (סדר דורות) משנה את החתימה — הספר יזוהה
+        // שינוי metadata בלבד (כותרת) משנה את החתימה — הספר יזוהה
         // כדורש אינדוקס-מחדש.
         assert_ne!(
             compute_book_fingerprint(
                 text.to_string(),
                 "בראשית".to_string(),
                 "/root".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
                 None,
             ),
             compute_book_fingerprint(
                 text.to_string(),
-                "בראשית".to_string(),
+                "ספר בראשית".to_string(),
                 "/root".to_string(),
-                5,
-                7,
                 None,
             ),
         );
@@ -17910,8 +18413,6 @@ mod tests {
                 text.to_string(),
                 "בראשית".to_string(),
                 "/root".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
                 Some(vec![
                     "/author/רש\"י".to_string(),
                     "/era/ראשונים".to_string()
@@ -17921,8 +18422,6 @@ mod tests {
                 text.to_string(),
                 "בראשית".to_string(),
                 "/root".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
                 Some(vec![
                     "/era/ראשונים".to_string(),
                     "/author/רש\"י".to_string()
@@ -17931,11 +18430,29 @@ mod tests {
         );
 
         // חתימת הטקסט-בלבד נחתמה גם היא, זהה לחישוב הציבורי — ובניגוד
-        // לקנונית, אינה תלויה בסדר הקטלוגי או בשאר ה-metadata.
+        // לקנונית, אינה תלויה ב-metadata.
         let text_fingerprints = engine.get_book_text_fingerprints().unwrap();
         assert_eq!(
             text_fingerprints.get("/books/bereshit.txt"),
             Some(&compute_content_fingerprint(text.to_string()))
+        );
+
+        // All the book's stamps in one call: the metadata alone, and the source as given.
+        assert_eq!(
+            engine.get_book_stamps().unwrap(),
+            vec![BookStamps {
+                file_path: "/books/bereshit.txt".to_string(),
+                book_number: 1,
+                documents: 5,
+                content_hash: fingerprints["/books/bereshit.txt"],
+                text_hash: compute_content_fingerprint(text.to_string()),
+                metadata_hash: compute_book_metadata_fingerprint(
+                    "בראשית".to_string(),
+                    "/root".to_string(),
+                    None,
+                ),
+                source_hash: 77,
+            }]
         );
     }
 
@@ -17946,7 +18463,7 @@ mod tests {
         // אחת מהן החטיא.
         let (mut engine, _dir) = make_engine();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "חוזק יד".to_string(),
                 "/root".to_string(),
                 "/books/chozek.txt".to_string(),
@@ -17992,7 +18509,7 @@ mod tests {
         let (mut engine, _dir) = make_engine();
         for (id, text) in [(1, line), (2, "כי [אם] עונותיכם היו מבדילים")] {
             engine
-                .add_document(
+                .add_document_at(
                     id,
                     "title",
                     "ref",
@@ -18216,7 +18733,7 @@ mod tests {
         let raw = "<b>בְּרֵאשִׁית</b>  בָּרָא אלהים";
         let (mut engine, _dir) = make_engine();
         engine
-            .add_document(
+            .add_document_at(
                 1,
                 "title",
                 "ref",
@@ -18232,7 +18749,7 @@ mod tests {
             .unwrap();
         engine
             .add_documents_batch(vec![DocumentInput {
-                id: 2,
+                ordinal: 1,
                 title: "title".to_string(),
                 reference: "ref".to_string(),
                 topics: "/root".to_string(),
@@ -18242,16 +18759,16 @@ mod tests {
                 file_path: "/books/b.txt".to_string(),
                 content_hash: None,
                 text_hash: None,
+                source_hash: None,
                 text_vocalized: Some("<b>בְּרֵאשִׁית</b>  בָּרָא אלהים".to_string()),
-                section_id: None,
-                generation_order: None,
+                section_ordinal: None,
                 extra_facets: None,
                 text_storage: None,
             }])
             .unwrap();
         engine
             .upsert_documents_batch(vec![DocumentInput {
-                id: 3,
+                ordinal: 2,
                 title: "title".to_string(),
                 reference: "ref".to_string(),
                 topics: "/root".to_string(),
@@ -18261,9 +18778,9 @@ mod tests {
                 file_path: "/books/c.txt".to_string(),
                 content_hash: None,
                 text_hash: None,
+                source_hash: None,
                 text_vocalized: Some("<b>בְּרֵאשִׁית</b>  בָּרָא אלהים".to_string()),
-                section_id: None,
-                generation_order: None,
+                section_ordinal: None,
                 extra_facets: None,
                 text_storage: None,
             }])
@@ -18349,7 +18866,7 @@ mod tests {
             "<h1>ספר בראשית</h1>\n<h2>פרק א</h2>\nבְּרֵאשִׁית ברא אלהים\n<h2>פרק ב</h2>\nויכלו השמים";
         let (mut engine, _dir) = make_engine();
         let added = engine
-            .add_text_book_bytes(
+            .add_text_book_bytes_placed(
                 "בראשית".to_string(),
                 "/root".to_string(),
                 "/books/bereshit.txt".to_string(),
@@ -18387,8 +18904,6 @@ mod tests {
                 text.to_string(),
                 "בראשית".to_string(),
                 "/root".to_string(),
-                5,
-                DEFAULT_GENERATION_ORDER,
                 None,
             ))
         );
@@ -18403,7 +18918,7 @@ mod tests {
     fn add_text_book_empty_text_adds_nothing() {
         let (mut engine, _dir) = make_engine();
         let added = engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ריק".to_string(),
                 "/root".to_string(),
                 "/books/empty.txt".to_string(),
@@ -18436,7 +18951,7 @@ mod tests {
             },
         ];
         let added = engine
-            .add_pdf_book(
+            .add_pdf_book_placed(
                 "ספר".to_string(),
                 "/root".to_string(),
                 "C:/books/sefer.pdf".to_string(),
@@ -19138,7 +19653,7 @@ mod tests {
     fn add_pdf_book_all_garbage_adds_nothing() {
         let (mut engine, _dir) = make_engine();
         let added = engine
-            .add_pdf_book(
+            .add_pdf_book_placed(
                 "סרוק".to_string(),
                 "/root".to_string(),
                 "C:/books/scanned.pdf".to_string(),
@@ -20777,7 +21292,7 @@ mod tests {
         engine.commit().unwrap();
 
         engine
-            .upsert_document(
+            .upsert_document_at(
                 1,
                 "title",
                 "ref",
@@ -20841,9 +21356,10 @@ mod tests {
         );
     }
 
-    fn fingerprint_doc(id: u64, text: &str, file_path: &str, hash: Option<u64>) -> DocumentInput {
+    /// Line `id - 1` of `file_path`.
+    fn fingerprint_doc(id: u32, text: &str, file_path: &str, hash: Option<u64>) -> DocumentInput {
         DocumentInput {
-            id,
+            ordinal: id - 1,
             title: "ספר".to_string(),
             reference: "ref".to_string(),
             topics: "/root".to_string(),
@@ -20853,9 +21369,9 @@ mod tests {
             file_path: file_path.to_string(),
             content_hash: hash,
             text_hash: hash,
+            source_hash: None,
             text_vocalized: None,
-            section_id: None,
-            generation_order: None,
+            section_ordinal: None,
             extra_facets: None,
             text_storage: None,
         }
@@ -20946,7 +21462,7 @@ mod tests {
     fn the_doc_store_keeps_only_what_no_column_answers() {
         let (mut engine, _dir) = make_engine();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר טקסט".to_string(),
                 "/root".to_string(),
                 "id:1".to_string(),
@@ -20961,7 +21477,7 @@ mod tests {
             )
             .unwrap();
         engine
-            .add_pdf_book(
+            .add_pdf_book_placed(
                 "ספר סרוק".to_string(),
                 "/root".to_string(),
                 "/pdf/a.pdf".to_string(),
@@ -21058,7 +21574,9 @@ mod tests {
                 .unwrap();
             engine.commit().unwrap();
         }
-        engine.delete_document_by_id(2).unwrap();
+        // "id:1" is the index's first book: number 1.
+        let id = |line: u64| (1u64 << 32) + line;
+        engine.delete_document_by_id(id(2)).unwrap();
         engine
             .upsert_documents_batch(vec![
                 fingerprint_doc(3, "ראשונה", "id:1", None),
@@ -21069,16 +21587,19 @@ mod tests {
         engine.commit().unwrap();
         engine.index_reader.reload().unwrap();
 
-        assert!(engine.get_document_by_id(2).unwrap().is_none());
+        assert!(engine.get_document_by_id(id(2)).unwrap().is_none());
         assert_eq!(
-            engine.get_document_by_id(1).unwrap().unwrap().text,
+            engine.get_document_by_id(id(1)).unwrap().unwrap().text,
             "שורה 1"
         );
         assert_eq!(
-            engine.get_document_by_id(3).unwrap().unwrap().text,
+            engine.get_document_by_id(id(3)).unwrap().unwrap().text,
             "אחרונה"
         );
-        assert_eq!(engine.get_document_by_id(5).unwrap().unwrap().text, "חדשה");
+        assert_eq!(
+            engine.get_document_by_id(id(5)).unwrap().unwrap().text,
+            "חדשה"
+        );
         assert_eq!(engine.get_document_count(), 4);
     }
 
@@ -21092,7 +21613,7 @@ mod tests {
 שורה שנייה
 שורה שלישית";
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר".to_string(),
                 "/root".to_string(),
                 "id:1".to_string(),
@@ -21172,7 +21693,7 @@ mod tests {
         let text_b = "<h1>ספר ב</h1>\nשורה אחרת";
         for (order, path, text) in [(1u32, "id:1", text_a), (2, "id:2", text_b)] {
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "ספר".to_string(),
                     "/root".to_string(),
                     path.to_string(),
@@ -21233,40 +21754,50 @@ mod tests {
 
     #[test]
     fn text_fingerprint_survives_catalogue_order_change() {
-        // מהות ההפרדה בין החתימות: אינדוקס-מחדש בסדר קטלוגי אחר (ספר נוסף
-        // לספרייה) משנה את הקנונית אך לא את חתימת הטקסט — כך אימות דריפט
-        // תוכן אינו נפסל משינויי קטלוג (issue Otzaria#828).
-        let text = "<h1>ספר</h1>\nשורה של תוכן";
+        // מקום הספר בקטלוג אינו באינדקס כלל: הזזתו אינה משנה אף חתימה ואף מזהה,
+        // ואינדוקס-מחדש של הספר שומר על מספרו (issue Otzaria#828).
+        let text = "<h1>ספר</h1>
+שורה של תוכן";
         let (mut engine, _dir) = make_engine();
-        let index = |engine: &mut SearchEngine, order: u32| {
+        let index = |engine: &mut SearchEngine| {
             engine
                 .add_text_book(
                     "ספר".to_string(),
                     "/root".to_string(),
                     "id:1".to_string(),
-                    order,
-                    DEFAULT_GENERATION_ORDER,
                     text.to_string(),
                     None,
                     TextStorage::InIndex,
+                    None,
                     None,
                 )
                 .unwrap();
             engine.commit().unwrap();
         };
+        let place = |engine: &SearchEngine, catalogue_order| {
+            engine
+                .set_book_order(vec![BookOrderEntry {
+                    file_path: "id:1".to_string(),
+                    catalogue_order,
+                    generation_order: 0,
+                }])
+                .unwrap()
+        };
 
-        index(&mut engine, 5);
-        let canonical_before = engine.get_book_fingerprints().unwrap()["id:1"];
-        let text_before = engine.get_book_text_fingerprints().unwrap()["id:1"];
+        index(&mut engine);
+        place(&engine, 5);
+        let before = engine.get_book_stamps().unwrap();
+        assert_eq!(place(&engine, 6), 2);
+        assert_eq!(engine.get_book_stamps().unwrap(), before);
 
         engine.delete_documents_by_file_path("id:1").unwrap();
-        index(&mut engine, 6);
-        let canonical_after = engine.get_book_fingerprints().unwrap()["id:1"];
-        let text_after = engine.get_book_text_fingerprints().unwrap()["id:1"];
-
-        assert_ne!(canonical_before, canonical_after);
-        assert_eq!(text_before, text_after);
-        assert_eq!(text_after, compute_content_fingerprint(text.to_string()));
+        index(&mut engine);
+        assert_eq!(engine.get_book_stamps().unwrap(), before);
+        assert_eq!(before[0].book_number, 1);
+        assert_eq!(
+            before[0].text_hash,
+            compute_content_fingerprint(text.to_string())
+        );
     }
 
     #[test]
@@ -22182,7 +22713,7 @@ mod tests {
         engine.optimize().unwrap();
 
         engine
-            .upsert_document(
+            .upsert_document_at(
                 1,
                 "title",
                 "ref",
@@ -22231,7 +22762,7 @@ mod tests {
             engine.index.writer(DEFAULT_WRITER_HEAP_SIZE).unwrap();
 
         let err = engine
-            .add_document(
+            .add_document_at(
                 1,
                 "title",
                 "ref",
@@ -22364,7 +22895,7 @@ mod tests {
         let stored = crate::hebrew_query::normalize_text_for_indexing(raw);
         assert_eq!(stored, "ובזה יובן ש\"ס (עא:) הממלא גרונם, מים וכו'");
         engine
-            .add_document(
+            .add_document_at(
                 1,
                 "title",
                 "ref",
@@ -23855,7 +24386,7 @@ mod tests {
                     וַיֹּ\u{05A3}אמֶר אֱלֹהִים יְהִי אוֹר\n\
                     וּבָרָא עוֹלָם";
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "בראשית".to_string(),
                 "/tanakh".to_string(),
                 "/books/b.txt".to_string(),
@@ -24160,7 +24691,7 @@ mod tests {
                     כאן נדון רק במלאכת שבת\n\
                     מתעסק וגם אינו מתכוין באותה שורה";
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר הבדיקה".to_string(),
                 "/root".to_string(),
                 "/books/scope.txt".to_string(),
@@ -24625,7 +25156,7 @@ mod tests {
             "תֵּדַע יָדֹעַ זַרְעֲךָ",
         ];
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר הבדיקה".to_string(),
                 "/root".to_string(),
                 "/books/highlight_parity.txt".to_string(),
@@ -24703,7 +25234,7 @@ mod tests {
     fn lines_engine(lines: &[&str]) -> (SearchEngine, TempDir) {
         let (mut engine, dir) = make_engine();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר הסדר".to_string(),
                 "/root".to_string(),
                 "/books/any_order.txt".to_string(),
@@ -25279,7 +25810,7 @@ mod tests {
         extra: &[&str],
     ) {
         engine
-            .add_document(
+            .add_document_at(
                 id,
                 "title",
                 "ref",
@@ -25374,7 +25905,7 @@ mod tests {
                     המלך דוד לא אמר כאן דבר"
             .to_string();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "תהלים".to_string(),
                 "/root".to_string(),
                 "book:a".to_string(),
@@ -26691,7 +27222,7 @@ mod tests {
                 for (index, text) in lines.iter().enumerate() {
                     id += 1;
                     engine
-                        .add_document(
+                        .add_document_at(
                             id, "title", "ref", topics, text, 0, false, path, None, None, None,
                         )
                         .unwrap();
@@ -27479,7 +28010,7 @@ mod tests {
             assert_eq!(engine.chunk_key_field.is_none(), without_column);
             for (order, (path, text)) in books.iter().enumerate() {
                 engine
-                    .add_text_book(
+                    .add_text_book_placed(
                         "בראשית".to_string(),
                         "/root".to_string(),
                         path.to_string(),
@@ -27583,7 +28114,6 @@ mod tests {
                 field("contentHash") => 0u64,
                 field("textHash") => 0u64,
                 field(SECTION_OFFSET_FIELD) => 0u64,
-                field(GENERATION_FIELD) => 0u64,
                 field("lineHash") => 0u64
             );
             document.add_u64(field(CHUNK_KEY_FIELD), column);
@@ -28388,7 +28918,7 @@ mod tests {
             assert_eq!(filtered(&engine).results[0].snippet_html, PROBE);
             assert_eq!(walks(&engine), 1, "the first plan reads the book");
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "ספר אחר".to_string(),
                     "/other".to_string(),
                     "/books/other.txt".to_string(),
@@ -28459,7 +28989,7 @@ mod tests {
         /// A book that holds the probe at its line 1, committed.
         fn add_copy(engine: &mut SearchEngine, book: &str, order: u32) {
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "ספר אחר".to_string(),
                     "/other".to_string(),
                     book.to_string(),
@@ -28554,7 +29084,7 @@ mod tests {
                 .join(" ");
             engine.delete_documents_by_file_path(BOOK).unwrap();
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "ספר".into(),
                     "/root".into(),
                     BOOK.into(),
@@ -28635,7 +29165,7 @@ mod tests {
             for (order, path) in [BOOK, OTHER].into_iter().enumerate() {
                 engine.delete_documents_by_file_path(path).unwrap();
                 engine
-                    .add_text_book(
+                    .add_text_book_placed(
                         "ספר".into(),
                         "/root".into(),
                         path.into(),

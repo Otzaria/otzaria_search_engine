@@ -9,7 +9,9 @@ use otzaria_semantic_search::distribution::plan::{
     EMBED_MANIFEST_FILE, EMBED_PLAN_FILE, RECORDS_FILE, TOMBSTONES_FILE,
 };
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
-use search_engine::api::search_engine::{configure_line_source, SearchEngine, TextStorage};
+use search_engine::api::search_engine::{
+    configure_line_source, BookOrderEntry, SearchEngine, TextStorage,
+};
 use search_engine::semantic_corpus::TantivyCorpus;
 use search_engine::semantic_keys::production_chunking;
 use search_engine::semantic_plan::{export_plan, PlanExport};
@@ -96,7 +98,7 @@ fn library(dir: &Path, without_column: bool) -> PathBuf {
             index.join("otzaria_index_meta.json"),
             serde_json::json!({
                 "format": "otzaria-search-index",
-                "schema_version": 6,
+                "schema_version": 7,
                 "engine_version": "0.9.0",
                 "tantivy_version": "0.26.2",
                 "created_at_unix_seconds": 0
@@ -106,21 +108,27 @@ fn library(dir: &Path, without_column: bool) -> PathBuf {
         .unwrap();
     }
     let mut engine = SearchEngine::new(index.to_str().unwrap());
+    let mut places = Vec::new();
     for (title, path, order, text) in books() {
+        places.push(BookOrderEntry {
+            file_path: path.to_string(),
+            catalogue_order: order,
+            generation_order: 0,
+        });
         engine
             .add_text_book(
                 title.to_string(),
                 "/test".to_string(),
                 path.to_string(),
-                order,
-                0,
                 text,
                 None,
                 TextStorage::InIndex,
                 None,
+                None,
             )
             .unwrap();
     }
+    engine.set_book_order(places).unwrap();
     engine.commit().unwrap();
     index
 }
@@ -304,21 +312,27 @@ fn official_library(dir: &Path, storage: TextStorage) -> PathBuf {
     let index = dir.join("index");
     std::fs::create_dir_all(&index).unwrap();
     let mut engine = SearchEngine::new(index.to_str().unwrap());
+    let mut places = Vec::new();
     for (book, (title, _, order, text)) in books().into_iter().enumerate() {
+        places.push(BookOrderEntry {
+            file_path: format!("id:{}", book + 1),
+            catalogue_order: order,
+            generation_order: 0,
+        });
         engine
             .add_text_book(
                 title.to_string(),
                 "/test".to_string(),
                 format!("id:{}", book + 1),
-                order,
-                0,
                 text,
                 None,
                 storage,
                 None,
+                None,
             )
             .unwrap();
     }
+    engine.set_book_order(places).unwrap();
     engine.commit().unwrap();
     index
 }
@@ -409,7 +423,7 @@ fn a_warehouse_vector_is_not_embedded_and_a_column_off_its_text_fails_the_gate()
     let mut engine = SearchEngine::new(index.to_str().unwrap());
     engine
         .add_document(
-            (4u64 << 32) + 1,
+            0,
             "Book D",
             "Book D 1",
             "/test",
@@ -417,7 +431,6 @@ fn a_warehouse_vector_is_not_embedded_and_a_column_off_its_text_fails_the_gate()
             0,
             false,
             "/books/d.txt",
-            Some(0),
             Some(0),
             None,
         )
@@ -460,11 +473,10 @@ fn long_line_library(dir: &Path) -> PathBuf {
             "Book L".to_string(),
             "/test".to_string(),
             "/books/l.txt".to_string(),
-            0,
-            0,
             format!("{REPEATED}\n{long}\nThe line after the long one, long enough to embed."),
             None,
             TextStorage::InIndex,
+            None,
             None,
         )
         .unwrap();

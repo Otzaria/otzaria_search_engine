@@ -14,7 +14,16 @@ fn make_engine() -> (SearchEngine, TempDir) {
 fn add(engine: &mut SearchEngine, id: u64, text: &str, file_path: &str) {
     engine
         .add_document(
-            id, "title", "ref", "/root", text, 0, false, file_path, None, None, None,
+            (id - 1) as u32,
+            "title",
+            "ref",
+            "/root",
+            text,
+            0,
+            false,
+            file_path,
+            None,
+            None,
         )
         .unwrap();
 }

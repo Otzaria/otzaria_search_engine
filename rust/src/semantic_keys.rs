@@ -930,7 +930,7 @@ mod tests {
     fn indexed(dir: &TempDir, text: String) -> Searcher {
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר בדיקה".to_string(),
                 "/בדיקה".to_string(),
                 "/books/test.txt".to_string(),
@@ -1051,7 +1051,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
         engine
-            .add_pdf_book(
+            .add_pdf_book_placed(
                 "ספר סרוק".to_string(),
                 "/בדיקה".to_string(),
                 "/books/scan.pdf".to_string(),

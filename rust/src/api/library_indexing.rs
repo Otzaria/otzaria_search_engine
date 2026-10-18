@@ -36,9 +36,10 @@ pub struct LibraryBookInput {
     pub title: String,
     pub topics: String,
     pub file_path: String,
-    pub catalogue_order: u32,
-    pub generation_order: u32,
     pub extra_facets: Option<Vec<String>>,
+    /// The book's `sourceHash` (the database's `book.contentHash`), stored as given;
+    /// `None`/0 for none.
+    pub source_hash: Option<u64>,
     /// As for `add_text_book_bytes`. `LibraryDb` is kept only when every row is one line
     /// (no row holds `\n`) and, in the library, the book has no `line_note` rows (their
     /// bodies are indexed back in their lines, as the app does); `file_path` must then be `id:<bookId>` (library),
@@ -71,11 +72,18 @@ pub struct LibraryBookResult {
     pub docs: u32,
     /// The storage the book was indexed with (`InIndex` when `LibraryDb` was refused).
     pub text_storage: TextStorage,
+    /// The number the engine gave the book (0 unless `Indexed`).
+    pub book_number: u32,
     /// The book's `contentHash`, as `compute_book_fingerprint` gives it (0 unless `Indexed`).
     pub content_hash: u64,
     /// The book's `textHash`, as `compute_content_fingerprint_bytes` gives it (0 unless
     /// `Indexed`).
     pub text_hash: u64,
+    /// The book's `metadataHash`, as `compute_book_metadata_fingerprint` gives it (0 unless
+    /// `Indexed`).
+    pub metadata_hash: u64,
+    /// The `source_hash` it was given (0 unless `Indexed`).
+    pub source_hash: u64,
     pub error: Option<String>,
 }
 

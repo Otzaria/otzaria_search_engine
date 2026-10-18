@@ -40,9 +40,15 @@ struct Line {
     segment: u64,
 }
 
-fn line(id: u64, reference: &str, text: &str, segment: u64) -> Line {
+/// The id the engine gives line `n` (1-based) of [`BOOK_KEY`], the only book of these
+/// indexes and so book number 1.
+fn line_id(n: u64) -> u64 {
+    (1u64 << 32) + n
+}
+
+fn line(n: u64, reference: &str, text: &str, segment: u64) -> Line {
     Line {
-        id,
+        id: line_id(n),
         reference: reference.to_owned(),
         text: text.to_owned(),
         segment,
@@ -59,7 +65,7 @@ fn lexical_engine(lines: &[Line]) -> (SearchEngine, TempDir) {
     for line in lines {
         engine
             .add_document(
-                line.id,
+                ((line.id & 0xFFFF_FFFF) - 1) as u32,
                 "בראשית",
                 &line.reference,
                 TOPICS,
@@ -67,8 +73,7 @@ fn lexical_engine(lines: &[Line]) -> (SearchEngine, TempDir) {
                 line.segment,
                 false,
                 BOOK_KEY,
-                Some(SECTION),
-                None,
+                Some(SECTION as u32 - 1),
                 None,
             )
             .unwrap();
@@ -151,7 +156,7 @@ fn try_index_books(
             .iter()
             .map(|line| SemanticBookLineInput {
                 line_id: line.id,
-                section_id: SECTION,
+                section_id: line_id(SECTION),
                 text: line.text.clone(),
                 line_hash: 100 + line.id,
                 reference: line.reference.clone(),
@@ -236,7 +241,7 @@ fn hybrid_fuses_real_bm25_candidates_with_semantic_ones() {
     assert_eq!(engine.semantic_status().state, SemanticState::Ready);
     assert_eq!(response.results.len(), 1);
     let hit = &response.results[0];
-    assert_eq!(hit.id, 9_001);
+    assert_eq!(hit.id, line_id(9_001));
     // Proves the BM25 collector ran and its score survived fusion: only the
     // lexical half can populate this, and only `Hybrid`/`LexicalOnly` run it.
     assert!(
@@ -290,7 +295,7 @@ fn fuzzy_lexical_mode_collects_candidates_within_edit_distance() {
 
     assert_eq!(response.executed_mode, SemanticExecutedMode::LexicalOnly);
     assert_eq!(response.results.len(), 1);
-    assert_eq!(response.results[0].id, 9_001);
+    assert_eq!(response.results[0].id, line_id(9_001));
     assert!(response.results[0].lexical_score.is_some());
     assert_eq!(response.lexical_total_count, 1);
 }
@@ -304,7 +309,7 @@ fn semantic_only_hydrates_a_real_tantivy_document() {
 
     assert!(response.semantic_available);
     assert_eq!(response.results.len(), 1);
-    assert_eq!(response.results[0].id, 9_001);
+    assert_eq!(response.results[0].id, line_id(9_001));
     assert_eq!(response.results[0].snippet_html, "בראשית ברא אלהים");
     assert!(!response.results[0].needs_hydration);
     assert!(!response.counts_are_exact);
@@ -473,7 +478,7 @@ fn stale_primaries_and_grouped_siblings_are_dropped_and_reported_apart() {
 
     // Keep the better-scored group representative live while making its grouped
     // sibling stale in the semantic sidecar.
-    engine.delete_document_by_id(9_002).unwrap();
+    engine.delete_document_by_id(line_id(9_002)).unwrap();
     engine.commit().unwrap();
 
     let first_page = search(
@@ -520,7 +525,7 @@ fn stale_primaries_and_grouped_siblings_are_dropped_and_reported_apart() {
         Some(SemanticGroupingMode::SameSection),
     );
     assert_eq!(grouped.results.len(), 1);
-    assert_eq!(grouped.results[0].id, 9_001);
+    assert_eq!(grouped.results[0].id, line_id(9_001));
     assert_eq!(grouped.results[0].merged_count, 1);
     assert!(grouped.results[0].merged.is_empty());
     // The sibling was dropped from a card on this page, not from the window, and
@@ -533,7 +538,7 @@ fn stale_primaries_and_grouped_siblings_are_dropped_and_reported_apart() {
 
     // Once the representative also disappears, no stale semantic record may
     // resurrect either deleted Tantivy document.
-    engine.delete_document_by_id(9_001).unwrap();
+    engine.delete_document_by_id(line_id(9_001)).unwrap();
     engine.commit().unwrap();
     let deleted = exact(&engine, "בראשית ברא", SemanticRetrievalMode::SemanticOnly);
     assert!(deleted.results.is_empty());
@@ -1259,12 +1264,11 @@ fn library_text_reaches_the_sidecar_path_like_stored_text() {
                 "בראשית".to_string(),
                 TOPICS.to_string(),
                 "id:1".to_string(),
-                0,
-                0,
                 rows.join("\n"),
                 None,
                 storage,
                 stored_lines,
+                None,
             )
             .unwrap();
         assert_eq!(added as usize, rows.len());

@@ -17,17 +17,7 @@ fn engine(lines: &[&str], dictionary: bool) -> (SearchEngine, TempDir) {
     for (i, text) in lines.iter().enumerate() {
         engine
             .add_document(
-                i as u64 + 1,
-                "book",
-                "ref",
-                "/quotes",
-                text,
-                0,
-                false,
-                BOOK,
-                None,
-                None,
-                None,
+                i as u32, "book", "ref", "/quotes", text, 0, false, BOOK, None, None,
             )
             .unwrap();
     }
@@ -76,7 +66,12 @@ fn search(
 }
 
 fn ids(response: &SemanticSearchResponse) -> Vec<u64> {
-    let mut ids: Vec<_> = response.results.iter().map(|hit| hit.id).collect();
+    // Line `i` is written at ordinal `i`, so the low half of its id is the old `i + 1`.
+    let mut ids: Vec<_> = response
+        .results
+        .iter()
+        .map(|hit| hit.id & 0xFFFF_FFFF)
+        .collect();
     ids.sort_unstable();
     ids
 }
@@ -255,7 +250,7 @@ fn ordinary_approximate_quoted_phrases_keep_dictionary_expansion() {
             None,
         )
         .unwrap();
-    let mut got: Vec<_> = results.iter().map(|hit| hit.id).collect();
+    let mut got: Vec<_> = results.iter().map(|hit| hit.id & 0xFFFF_FFFF).collect();
     got.sort_unstable();
     assert_eq!(got, [1, 2]);
     assert_eq!(

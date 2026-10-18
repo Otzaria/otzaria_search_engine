@@ -1,4 +1,10 @@
 pub mod api;
+// מספרי הספרים וסדר הקטלוג/הדורות — מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור לו bindings.
+mod book_order;
+#[cfg(test)]
+mod book_order_bench;
+#[cfg(test)]
+mod book_order_tests;
 // ביטוי שנמשך משורה לשורה הבאה — מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור לו bindings.
 mod cross_line;
 #[cfg(test)]

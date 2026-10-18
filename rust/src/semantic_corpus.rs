@@ -61,8 +61,9 @@ use tantivy::{DocAddress, Index, ReloadPolicy, Searcher, TantivyDocument};
 
 /// The id scheme this crate builds, and the only one this adapter can order a book under.
 ///
-/// `add_text_book` composes an id as `((catalogue_order + 1) << 32) + (ordinal + 1)`, so
-/// within one book ascending ids are the lines in corpus order. That is not a convention
+/// `add_text_book` composes an id as `(book_number << 32) + (ordinal + 1)`, the book's
+/// number assigned by the engine and never 0 or shared, so within one book ascending ids
+/// are the lines in corpus order. That is not a convention
 /// this module is trusting — it is arithmetic performed a few hundred lines away in
 /// [`crate::api::search_engine`] — but it stops being true the moment the scheme changes,
 /// which is why the version is pinned here rather than assumed.
@@ -794,14 +795,13 @@ fn ensure_ids_encode_positions(books: &BTreeMap<String, Vec<u64>>) -> Result<()>
     let mut owner: HashMap<u32, &str> = HashMap::new();
     for (book_key, lines) in books {
         let high = (lines[0] >> 32) as u32;
-        // Scheme 1 composes the high half as `catalogue_order + 1`, so zero is not a
-        // catalogue position at all — it is what a raw ordinal looks like when nothing
-        // composed it, and `line_id = 1` would otherwise be accepted and stamped as
-        // scheme 1.
+        // Scheme 1 composes the high half as the book's number, never zero: zero is what a
+        // raw ordinal looks like when nothing composed it, and `line_id = 1` would otherwise
+        // be accepted and stamped as scheme 1.
         if high == 0 {
             anyhow::bail!(
                 "book {book_key:?} holds line {} with an id prefix of 0, and prefixes are \
-                 catalogue_order + 1 under document_id_scheme_version \
+                 book numbers, never 0, under document_id_scheme_version \
                  {DOCUMENT_ID_SCHEME_VERSION}",
                 lines[0]
             );
@@ -848,7 +848,7 @@ mod tests {
     fn engine_with_books(dir: &TempDir) -> SearchEngine {
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "בראשית".to_string(),
                 "/מקרא/תורה".to_string(),
                 GENESIS.to_string(),
@@ -861,7 +861,7 @@ mod tests {
             )
             .unwrap();
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "משנה ברכות".to_string(),
                 "/משנה/זרעים".to_string(),
                 BERACHOT.to_string(),
@@ -998,7 +998,7 @@ mod tests {
         let count_before = snapshot.line_count();
 
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר נוסף".to_string(),
                 "/מקרא/נביאים".to_string(),
                 "/books/joshua.txt".to_string(),
@@ -1134,7 +1134,7 @@ mod tests {
         maimed.add_u64(field("segment"), 1);
         // Everything else present, so the refusal below can only be about the one field
         // that is not — otherwise this would pass for the wrong reason.
-        for name in ["sectionOffset", "lineHash", "contentHash", "generation"] {
+        for name in ["sectionOffset", "lineHash", "contentHash", "metadataHash"] {
             maimed.add_u64(field(name), 1);
         }
         // `isPdf` deliberately absent. Defaulted it would read as `false` — a filterable
@@ -1197,7 +1197,7 @@ mod tests {
             doubled.add_bool(field("isPdf"), false);
             doubled.add_u64(field("id"), next_id);
             doubled.add_u64(field("segment"), 1);
-            for name in ["sectionOffset", "lineHash", "contentHash", "generation"] {
+            for name in ["sectionOffset", "lineHash", "contentHash", "metadataHash"] {
                 doubled.add_u64(field(name), 1);
             }
             // The second value, on the field under test.
@@ -1219,55 +1219,38 @@ mod tests {
         }
     }
 
-    /// The one catalogue position that cannot form an id is refused where the id is formed.
-    ///
-    /// `(u32::MAX + 1) << 32` overflows a `u64` and wraps to a base of zero in release —
-    /// which the corpus would then refuse as "no catalogue prefix", for a whole index,
-    /// blaming the reader for something the writer did.
+    /// The one book number that cannot form an id is never handed out: the engine refuses
+    /// the book where the id is composed, instead of the corpus refusing a whole index.
     #[test]
-    fn the_last_catalogue_position_is_refused_where_the_id_is_composed() {
+    fn the_last_book_number_is_refused_where_the_id_is_composed() {
         let dir = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        engine.force_book_number_for_tests(BERACHOT, u32::MAX - 1);
         let refused = engine.add_text_book(
             "ספר אחרון".to_string(),
             "/מקרא".to_string(),
             GENESIS.to_string(),
-            u32::MAX,
-            0,
             "שורה ארוכה דיה לעמוד בפני עצמה".to_string(),
             None,
             TextStorage::InIndex,
             None,
+            None,
         );
-        let error = refused.expect_err("the last catalogue position cannot form an id");
-        assert!(format!("{error}").contains("overflows u64"), "{error}");
+        let error = refused.expect_err("the last book number cannot form an id");
+        assert!(format!("{error}").contains("handed out"), "{error}");
     }
 
-    /// Scheme 1 composes the high half as `catalogue_order + 1`, so a prefix of zero is not
-    /// a catalogue position — it is what a bare ordinal looks like when nothing composed
-    /// it. `line_id = 1` would otherwise be accepted and stamped as scheme 1.
+    /// Scheme 1 composes the high half as the book's number, which is never 0, so a prefix of
+    /// zero is what a bare ordinal looks like when nothing composed it. `line_id = 1` would
+    /// otherwise be accepted and stamped as scheme 1.
     #[test]
     fn an_id_with_no_catalogue_prefix_is_refused() {
         let dir = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
-        engine
-            .add_document(
-                1,
-                "t",
-                "r",
-                "/root",
-                "שורה ארוכה דיה לעמוד בפני עצמה",
-                0,
-                false,
-                GENESIS,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+        engine.add_raw_document_for_tests(1, GENESIS, "שורה ארוכה דיה לעמוד בפני עצמה");
         engine.commit().unwrap();
 
-        let error = expect_refusal(&engine, "an id with no catalogue prefix must be refused");
+        let error = expect_refusal(&engine, "an id with no book prefix must be refused");
         assert!(error.contains("id prefix of 0"), "{error}");
     }
 
@@ -1288,7 +1271,7 @@ mod tests {
     }
 
     /// The ordering this adapter performs is only correct because the ids encode a
-    /// position — and the public `add_document` accepts any `u64` at all.
+    /// position — and an index written by another build may hold any `u64` at all.
     ///
     /// Without this check a caller could hand the engine ids from another scheme (or none),
     /// and a build would sort a book's lines into an order nobody chose, hand the chunker
@@ -1301,21 +1284,7 @@ mod tests {
         let shared = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(shared.path().to_str().unwrap());
         for (id, path) in [(1u64 << 32 | 1, GENESIS), (1u64 << 32 | 2, BERACHOT)] {
-            engine
-                .add_document(
-                    id,
-                    "t",
-                    "r",
-                    "/root",
-                    "שורה ארוכה דיה לעמוד בפני עצמה",
-                    0,
-                    false,
-                    path,
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
+            engine.add_raw_document_for_tests(id, path, "שורה ארוכה דיה לעמוד בפני עצמה");
         }
         engine.commit().unwrap();
         let error = expect_refusal(&engine, "two books cannot share an id prefix");
@@ -1326,21 +1295,7 @@ mod tests {
         let mixed = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(mixed.path().to_str().unwrap());
         for id in [1u64 << 32 | 1, 2u64 << 32 | 1] {
-            engine
-                .add_document(
-                    id,
-                    "t",
-                    "r",
-                    "/root",
-                    "שורה ארוכה דיה לעמוד בפני עצמה",
-                    0,
-                    false,
-                    GENESIS,
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
+            engine.add_raw_document_for_tests(id, GENESIS, "שורה ארוכה דיה לעמוד בפני עצמה");
         }
         engine.commit().unwrap();
         let error = expect_refusal(&engine, "a book's ids must share one prefix");
@@ -1349,21 +1304,7 @@ mod tests {
         // Position zero: ids are 1-based, so a zero low half is not a position at all.
         let zero = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(zero.path().to_str().unwrap());
-        engine
-            .add_document(
-                1u64 << 32,
-                "t",
-                "r",
-                "/root",
-                "שורה ארוכה דיה לעמוד בפני עצמה",
-                0,
-                false,
-                GENESIS,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+        engine.add_raw_document_for_tests(1u64 << 32, GENESIS, "שורה ארוכה דיה לעמוד בפני עצמה");
         engine.commit().unwrap();
         let error = expect_refusal(&engine, "position 0 does not exist under scheme 1");
         assert!(error.contains("position 0"), "{error}");

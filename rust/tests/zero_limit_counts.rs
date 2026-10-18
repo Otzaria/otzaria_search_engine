@@ -18,7 +18,7 @@ fn fixture(lines: &[&str]) -> (SearchEngine, TempDir) {
     for (i, text) in lines.iter().enumerate() {
         engine
             .add_document(
-                i as u64 + 1,
+                i as u32,
                 "QA",
                 "ref",
                 "/qa",
@@ -26,8 +26,7 @@ fn fixture(lines: &[&str]) -> (SearchEngine, TempDir) {
                 i as u64,
                 false,
                 "/qa/book",
-                Some((i / 2) as u64),
-                Some(i as u32),
+                Some((i / 2) as u32),
                 None,
             )
             .unwrap();

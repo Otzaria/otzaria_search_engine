@@ -20,7 +20,7 @@ fn setup(sidecar: bool) -> (SearchEngine, TempDir) {
     let mut e = SearchEngine::new(index.to_str().unwrap());
     for (n, (text, facet, section)) in ROWS.iter().enumerate() {
         e.add_document(
-            n as u64 + 1,
+            n as u32,
             "QA",
             "ref",
             facet,
@@ -28,8 +28,7 @@ fn setup(sidecar: bool) -> (SearchEngine, TempDir) {
             n as u64,
             false,
             facet,
-            Some(*section),
-            None,
+            Some((*section) as u32),
             None,
         )
         .unwrap();
@@ -102,8 +101,10 @@ fn page(
     )
     .unwrap()
 }
+/// The rows' numbers: an id's low half is its line ordinal + 1, and each row is written at
+/// ordinal `n`.
 fn ids(r: &SemanticSearchResponse) -> Vec<u64> {
-    let mut out: Vec<_> = r.results.iter().map(|h| h.id).collect();
+    let mut out: Vec<_> = r.results.iter().map(|h| h.id & 0xFFFF_FFFF).collect();
     out.sort_unstable();
     out
 }
@@ -221,20 +222,8 @@ fn vocalized_quotes_forbid_other_marks_order_gap_and_spelling() {
     .iter()
     .enumerate()
     {
-        e.add_document(
-            n as u64 + 1,
-            "QA",
-            "ref",
-            "/qa",
-            s,
-            0,
-            false,
-            "/qa",
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        e.add_document(n as u32, "QA", "ref", "/qa", s, 0, false, "/qa", None, None)
+            .unwrap();
     }
     e.commit().unwrap();
     for mode in [
@@ -269,7 +258,7 @@ fn partial_quote_highlight_expands_only_outside_and_paints_only_literal_spans() 
     for configured in [false, true] {
         let (mut e, _dir) = setup(configured);
         e.add_document(
-            9,
+            8,
             "QA",
             "ref",
             "/qa/a",
@@ -277,7 +266,6 @@ fn partial_quote_highlight_expands_only_outside_and_paints_only_literal_spans() 
             9,
             false,
             "/qa/a",
-            None,
             None,
             None,
         )
@@ -294,7 +282,7 @@ fn partial_quote_highlight_expands_only_outside_and_paints_only_literal_spans() 
         let hit = r
             .results
             .iter()
-            .find(|h| h.id == 9)
+            .find(|h| h.id & 0xFFFF_FFFF == 9)
             .expect("outside typo must not remove literal hit");
         assert!(hit.is_highlighted);
         assert!(
@@ -335,20 +323,8 @@ fn teamim_inside_quote_are_literal_when_requested() {
         .iter()
         .enumerate()
     {
-        e.add_document(
-            n as u64 + 1,
-            "QA",
-            "ref",
-            "/qa",
-            s,
-            0,
-            false,
-            "/qa",
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        e.add_document(n as u32, "QA", "ref", "/qa", s, 0, false, "/qa", None, None)
+            .unwrap();
     }
     e.commit().unwrap();
     let r = e
@@ -378,7 +354,7 @@ fn independent_quote_highlighting_keeps_each_quote_literal_and_handles_repeated_
     std::fs::create_dir(&p).unwrap();
     let mut e = SearchEngine::new(p.to_str().unwrap());
     e.add_document(
-        1,
+        0,
         "QA",
         "ref",
         "/qa",
@@ -386,7 +362,6 @@ fn independent_quote_highlighting_keeps_each_quote_literal_and_handles_repeated_
         0,
         false,
         "/qa",
-        None,
         None,
         None,
     )
@@ -456,7 +431,7 @@ fn vocalized_partial_quote_highlights_literal_marks_and_outside_typo() {
     std::fs::create_dir(&p).unwrap();
     let mut e = SearchEngine::new(p.to_str().unwrap());
     e.add_document(
-        1,
+        0,
         "QA",
         "ref",
         "/qa",
@@ -464,7 +439,6 @@ fn vocalized_partial_quote_highlights_literal_marks_and_outside_typo() {
         0,
         false,
         "/qa",
-        None,
         None,
         None,
     )

@@ -948,7 +948,7 @@ impl<'a> LiveResolver<'a> {
             while doc != TERMINATED {
                 if !reader.is_deleted(doc) {
                     if let Some(id) = ids.first(doc) {
-                        // Ids compose `(catalogue_order + 1) << 32` and `ordinal + 1`.
+                        // Ids compose `bookNumber << 32` and `ordinal + 1`.
                         let ordinal = (id & 0xFFFF_FFFF).saturating_sub(1) as u32;
                         found.push((ordinal, DocAddress::new(segment_ord as u32, doc)));
                     }
@@ -1745,7 +1745,7 @@ impl<'a> LiveResolver<'a> {
                         book
                     }
                 };
-                // Ids compose `(catalogue_order + 1) << 32` and `ordinal + 1`.
+                // Ids compose `bookNumber << 32` and `ordinal + 1`.
                 let ordinal = self.columns[segment_ord]
                     .id
                     .first(doc)
@@ -2325,7 +2325,7 @@ impl LiveResolver<'_> {
                     let value = columns.chunk_key.as_ref().and_then(|keys| keys.first(doc));
                     if let (Some(value), Some(id)) = (value, columns.id.first(doc)) {
                         if value != 0 {
-                            // Ids compose `(catalogue_order + 1) << 32` and `ordinal + 1`.
+                            // Ids compose `bookNumber << 32` and `ordinal + 1`.
                             live.push((value, (id & 0xFFFF_FFFF).saturating_sub(1) as u32));
                         }
                     }
@@ -2987,7 +2987,7 @@ mod tests {
             ),
         ] {
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     "ספר".into(),
                     "/א".into(),
                     key.into(),
@@ -3064,7 +3064,7 @@ mod tests {
     fn windowed_index(dir: &tempfile::TempDir, lines: &[String]) -> (Index, tantivy::IndexReader) {
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 "ספר".into(),
                 "/א".into(),
                 "/books/long.txt".into(),
