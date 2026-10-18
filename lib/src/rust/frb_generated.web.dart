@@ -11,12 +11,9 @@ import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
 import 'api/library_indexing.dart';
 import 'api/search_engine.dart';
-
 import 'dart:async';
 import 'dart:convert';
-
 import 'frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {

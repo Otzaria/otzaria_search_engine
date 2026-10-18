@@ -261,7 +261,10 @@ mapping (`BookOrderEntry { filePath, catalogueOrder, generationOrder }`), stored
 `otzaria_book_order.json` beside the index, and `ResultsOrder.catalogue` /
 `ResultsOrder.generation` sort by it from the next call on — no reindexing. A book absent
 from the mapping sorts after every book in it, by number. The same mapping again changes
-nothing; every change bumps `bookOrderRevision()`.
+nothing; every change bumps `bookOrderRevision()`. An engine that does not write (another
+window) picks up the books and the mapping another engine writes on its next sorted search.
+The first catalogue or generation search reads every book's number from the index; call
+`warmBookOrder()` after the window is shown so no search waits for it.
 
 `getBookStamps()` returns per book: `bookNumber`, live `documents`, `contentHash`
 (`computeBookFingerprint`: text and metadata), `textHash` (`computeContentFingerprint`),
@@ -275,6 +278,7 @@ when absent or when the book's documents disagree on it.
 Future<void> addDocumentsBatch({required List<DocumentInput> docs}) // bulk add, no commit
 Future<BigInt> setBookOrder({required List<BookOrderEntry> entries}) // the order mapping
 BigInt bookOrderRevision()
+Future<void> warmBookOrder()                      // read numbers + build rank tables ahead
 Future<List<BookStamps>> getBookStamps()          // number, documents and stamps per book
 Future<void> upsertDocument({...})                // delete-by-id + re-insert, no commit
 Future<void> upsertDocumentsBatch({required List<DocumentInput> docs})
