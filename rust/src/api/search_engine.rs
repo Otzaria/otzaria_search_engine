@@ -5200,7 +5200,7 @@ impl SearchEngine {
 
     /// A one-line document of `file_path` with exactly `id`, whatever the book's number: for
     /// tests of indexes whose ids the engine did not compose.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "semantic-integration"))]
     pub(crate) fn add_raw_document_for_tests(&mut self, id: u64, file_path: &str, text: &str) {
         let document =
             Self::single_input(0, "t", "r", "/root", text, 0, false, file_path, None, None);
