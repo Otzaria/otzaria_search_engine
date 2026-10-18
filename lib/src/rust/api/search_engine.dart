@@ -1511,8 +1511,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// recomputed from its stored text, which reads the whole store. Cancellable.
   ///
   /// A line is covered when any slot of the set holds its text's key, including a slot a
-  /// later delta deleted; a release deletes only texts no line of its library holds, so
-  /// that counts a line of an index older than the set at most.
+  /// later delta deleted, or an alias shares a neighbour's vector with it; a release
+  /// deletes only texts no line of its library holds, so that counts a line of an index
+  /// older than the set at most.
   Future<SemanticCoverage> semanticCoverage({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,
@@ -3859,7 +3860,9 @@ class SemanticSearchResult {
   final TextStatus textStatus;
 
   /// The window of a long line the semantic hit matched (0: the line's first); past 0,
-  /// `snippet_html` shows that window. Pass it on as [`SemanticHighlightTarget::window`].
+  /// `snippet_html` shows that window. 255 is no window: a short line found through the
+  /// neighbour whose vector it shares, shown whole. Pass it on as
+  /// [`SemanticHighlightTarget::window`].
   final int matchedWindow;
 
   const SemanticSearchResult({

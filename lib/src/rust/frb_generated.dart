@@ -13,7 +13,6 @@ import 'dart:convert';
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -17791,8 +17790,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// recomputed from its stored text, which reads the whole store. Cancellable.
   ///
   /// A line is covered when any slot of the set holds its text's key, including a slot a
-  /// later delta deleted; a release deletes only texts no line of its library holds, so
-  /// that counts a line of an index older than the set at most.
+  /// later delta deleted, or an alias shares a neighbour's vector with it; a release
+  /// deletes only texts no line of its library holds, so that counts a line of an index
+  /// older than the set at most.
   Future<SemanticCoverage> semanticCoverage({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,

@@ -528,9 +528,6 @@ fn a_release_in_the_rotated_codec_is_gated_at_its_key_width_and_floors() {
         records.iter().any(|(_, record)| record.window == u8::MAX),
         "the short line is an alias"
     );
-    drop(set);
-    let set =
-        otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&release.vectors).unwrap();
     assert_eq!(
         (
             set.identity().store.store_format_version,

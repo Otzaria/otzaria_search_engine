@@ -6246,9 +6246,10 @@ impl SearchEngine {
     /// column, one pass over it; on an index without the column, every book's keys are
     /// recomputed from its stored text, which reads the whole store. Cancellable.
     ///
-    /// A line is covered when any slot of the set holds its text's key, or an alias shares a
-    /// neighbour's vector with it, including a slot a later delta deleted; a release deletes only texts no line of its library holds, so
-    /// that counts a line of an index older than the set at most.
+    /// A line is covered when any slot of the set holds its text's key, including a slot a
+    /// later delta deleted, or an alias shares a neighbour's vector with it; a release
+    /// deletes only texts no line of its library holds, so that counts a line of an index
+    /// older than the set at most.
     pub fn semantic_coverage(
         &self,
         vectors_dir: String,
@@ -7370,6 +7371,7 @@ impl SearchEngine {
         )
         .map_err(unreadable)?;
         resolver.share_keys(session.state.library_generation);
+        resolver.set_alias_penalty(request.ranking.alias_penalty);
         let filters = SidecarSearchFilters {
             book_paths: None,
             facets: (!request.facets.is_empty()).then(|| request.facets.to_vec()),

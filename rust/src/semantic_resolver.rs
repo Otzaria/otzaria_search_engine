@@ -43,6 +43,8 @@
 //! A short line that shares a neighbour's vector (a format-3 alias) is a record of the
 //! neighbour's hit, window `ALIAS_WINDOW`, whose anchor is the short line's own key: it
 //! resolves as a first-window record of that key, and comes back as window `ALIAS_WINDOW`.
+//! Its line counts toward [`MAX_LINES_PER_HIT`] like any other, and one that moved to another
+//! book is looked for there only when the hit resolved no line at all.
 //!
 //! # A filtered search
 //!
@@ -438,6 +440,9 @@ pub(crate) struct LiveResolver<'a> {
     /// The plan of each filter this search planned, by [`plan_key`]: a search can query
     /// the foundational books besides its own filter, and each query reads its own plan.
     plans: Vec<(String, Arc<ScanPlan>)>,
+    /// What the ranking takes off a short line found through an alias, so that the best
+    /// hit of a line is chosen as the coordinator will score it.
+    alias_penalty: f32,
     /// Why this search's filter could not be planned, when it could not: the semantic half
     /// of the search fails with it, as it would had the resolver failed to read the index.
     failed: Option<ResolveError>,
@@ -512,6 +517,7 @@ impl<'a> LiveResolver<'a> {
             recomputed_anchors: Mutex::new(HashMap::new()),
             library: None,
             plans: Vec::new(),
+            alias_penalty: otzaria_semantic_search::config::profiles::DEFAULT_ALIAS_PENALTY,
             failed: None,
         })
     }
@@ -522,6 +528,11 @@ impl<'a> LiveResolver<'a> {
 
     /// Share recomputed keys with the other searches made while the library database is in
     /// `library`, the state the caller's session was keyed by.
+    /// Score alias lines with the search's own `RankingProfile::alias_penalty`.
+    pub(crate) fn set_alias_penalty(&mut self, penalty: f32) {
+        self.alias_penalty = penalty;
+    }
+
     pub(crate) fn share_keys(&mut self, library: LibraryGeneration) {
         self.library = Some(library);
     }
@@ -2810,7 +2821,19 @@ impl CandidateResolver for LiveResolver<'_> {
                     if place.is_none() {
                         place = self.at_hint(&book, hit.key, 1, *ordinal)?;
                     }
-                    for record in &hit.records {
+                    // A short line arrived through its alias: that alias first, before a record
+                    // of the hit's own text in another book could take the line next to it.
+                    let held = book
+                        .position(*ordinal)
+                        .and_then(|position| self.column_value(book.docs[position]));
+                    let (aliases, others): (Vec<&RecordRef>, Vec<&RecordRef>) =
+                        hit.records.iter().partition(|record| {
+                            record.window == ALIAS_WINDOW
+                                && record
+                                    .anchor
+                                    .is_some_and(|anchor| Some(anchor.column_value()) == held)
+                        });
+                    for record in aliases.into_iter().chain(others) {
                         if place.is_some() {
                             break;
                         }
@@ -3050,10 +3073,10 @@ impl CandidateResolver for LiveResolver<'_> {
                 } else {
                     0.0
                 }
-                - if line.window > 0 {
-                    hit.window_penalty
-                } else {
-                    0.0
+                - match line.window {
+                    0 => 0.0,
+                    ALIAS_WINDOW => self.alias_penalty,
+                    _ => hit.window_penalty,
                 }
         };
         lines.sort_by(|a, b| score(b).total_cmp(&score(a)));
