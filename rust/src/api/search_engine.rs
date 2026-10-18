@@ -15,6 +15,7 @@ use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
+use tantivy::directory::{Directory, Lock};
 use tantivy::index::{SegmentId, SegmentMeta};
 use tantivy::indexer::{MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::query::{
@@ -8823,18 +8824,30 @@ impl SearchEngine {
             .book_order
             .write()
             .unwrap_or_else(PoisonError::into_inner);
-        if *state.places == places {
-            return Ok(state.revision);
+        // Independent of the index writer: a reader may replace catalogue order while
+        // another engine indexes. All instances/processes serialize the whole transaction.
+        // Lock order is local book_order, then this file lock; refreshing takes only the
+        // local lock, and neither operation takes book_numbers or the index writer.
+        let directory = IndexDirectory::open(&self.index_path)?;
+        let _order_lock = directory.acquire_lock(&Lock {
+            filepath: PathBuf::from("otzaria_book_order.lock"),
+            is_blocking: true,
+        })?;
+        let mut mapping = OrderMapping::load(&self.index_path);
+        if mapping.places != places {
+            mapping.revision = mapping
+                .revision
+                .checked_add(1)
+                .context("book order revision exhausted")?;
+            mapping.places = places;
+            mapping.save(&self.index_path)?;
         }
-        let mapping = OrderMapping {
-            revision: state.revision + 1,
-            places,
-        };
-        mapping.save(&self.index_path)?;
-        *state = BookOrderState::of(mapping, order_file_stamp(&self.index_path));
-        let revision = state.revision;
-        drop(state);
-        self.page_cache.clear();
+        let revision = mapping.revision;
+        if state.revision != revision || *state.places != mapping.places {
+            *state = BookOrderState::of(mapping, order_file_stamp(&self.index_path));
+            drop(state);
+            self.page_cache.clear();
+        }
         Ok(revision)
     }
 
@@ -8866,11 +8879,13 @@ impl SearchEngine {
         if stamp == current {
             return;
         }
-        let read = BookOrderState::read(&self.index_path);
         let mut state = self
             .book_order
             .write()
             .unwrap_or_else(PoisonError::into_inner);
+        // Read under the local write guard: a delayed refresh must not install an older
+        // mapping after this engine's set_book_order has successfully saved a newer one.
+        let read = BookOrderState::read(&self.index_path);
         if read.revision == state.revision && read.places == state.places {
             state.stamp = read.stamp;
             return;
@@ -8892,9 +8907,11 @@ impl SearchEngine {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let numbers = numbers.get_or_insert_with(|| BookNumbers::new(&self.index_path));
-        if self.numbers_stale.swap(false, Ordering::AcqRel) {
+        if self.numbers_stale.load(Ordering::Acquire) {
             self.index_reader.reload()?;
             numbers.catch_up(&self.index_reader.searcher())?;
+            // Keep the takeover pending if either read fails: retry before using an id.
+            self.numbers_stale.store(false, Ordering::Release);
         }
         numbers.number_for(file_path)
     }

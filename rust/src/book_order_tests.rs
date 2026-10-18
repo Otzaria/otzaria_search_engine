@@ -755,3 +755,412 @@ fn equal_relevance_in_a_grouped_search_goes_by_the_catalogue() {
         ["c", "a", "b"]
     );
 }
+
+#[test]
+fn stale_writer_upsert_uses_the_readded_books_committed_number() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = open(dir.path());
+    add_book(&mut writer, "x", 1);
+    writer.commit().unwrap();
+    let mut stale = open(dir.path());
+    stale.warm_book_order().unwrap();
+    writer.delete_documents_by_file_path("x").unwrap();
+    writer.commit().unwrap();
+    drop(writer);
+    let mut replacement = open(dir.path());
+    add_book(&mut replacement, "x", 1);
+    replacement.commit().unwrap();
+    let current_number = number_of(&replacement, "x");
+    drop(replacement);
+    stale
+        .upsert_document(
+            0,
+            "ספר x",
+            "r",
+            "/root",
+            "שלום חדש",
+            0,
+            false,
+            "x",
+            None,
+            None,
+        )
+        .unwrap();
+    stale.commit().unwrap();
+    let stamps = stale.get_book_stamps().unwrap();
+    assert_eq!(stamps[0].documents, 1, "upsert must replace existing line rather than adding a second document; current prefix {current_number}, reported stamps {stamps:?}");
+    assert_eq!(stamps[0].book_number, current_number);
+}
+
+#[test]
+fn set_book_order_compares_with_the_current_disk_mapping() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = open(dir.path());
+    add_book(&mut writer, "a", 1);
+    add_book(&mut writer, "b", 1);
+    writer.commit().unwrap();
+    writer
+        .set_book_order(vec![place("a", 0, 0), place("b", 1, 0)])
+        .unwrap();
+    let stale = open(dir.path());
+    assert_eq!(books_in(&stale, ResultsOrder::Catalogue), ["a", "b"]);
+    writer
+        .set_book_order(vec![place("b", 0, 0), place("a", 1, 0)])
+        .unwrap();
+    // Push the old mapping intentionally: success must mean this mapping is active.
+    stale
+        .set_book_order(vec![place("a", 0, 0), place("b", 1, 0)])
+        .unwrap();
+    assert_eq!(books_in(&stale, ResultsOrder::Catalogue), ["a", "b"]);
+}
+
+#[test]
+fn stale_reader_sorts_a_readded_book_by_its_current_number() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = open(dir.path());
+    add_book(&mut writer, "a", 1);
+    add_book(&mut writer, "x", 1);
+    writer.commit().unwrap();
+    writer
+        .set_book_order(vec![place("x", 0, 0), place("a", 1, 0)])
+        .unwrap();
+    let stale = open(dir.path());
+    stale.warm_book_order().unwrap();
+    writer.delete_documents_by_file_path("x").unwrap();
+    writer.commit().unwrap();
+    drop(writer);
+    let mut replacement = open(dir.path());
+    add_book(&mut replacement, "x", 1);
+    replacement.commit().unwrap();
+    drop(replacement);
+    stale.reload_reader_for_tests();
+    assert_eq!(books_in(&stale, ResultsOrder::Catalogue), ["x", "a"]);
+}
+
+#[test]
+fn numbers_from_old_and_new_search_snapshots_can_finish_in_either_order() {
+    use crate::book_order::{numbers_in_segments, BookNumbers, OrderKind, OrderTables};
+
+    let dir = TempDir::new().unwrap();
+    let mut writer = open(dir.path());
+    add_book(&mut writer, "x", 1);
+    add_book(&mut writer, "a", 1);
+    writer.commit().unwrap();
+    let old = writer.searcher_for_tests();
+    let old_number = number_of(&writer, "x");
+    writer.delete_documents_by_file_path("x").unwrap();
+    writer.commit().unwrap();
+    drop(writer);
+    let mut replacement = open(dir.path());
+    add_book(&mut replacement, "x", 1);
+    replacement.commit().unwrap();
+    let new = replacement.searcher_for_tests();
+    let new_number = number_of(&replacement, "x");
+    assert!(new_number > old_number);
+
+    for snapshots in [[&old, &new], [&new, &old]] {
+        let mut numbers = BookNumbers::new(dir.path());
+        // Both reads can begin before either one takes the mutex to absorb its result.
+        let reads = snapshots.map(|searcher| {
+            let unread = numbers.unread_segments(searcher);
+            let found = numbers_in_segments(searcher, &unread).unwrap();
+            (searcher, unread, found)
+        });
+        for (searcher, unread, found) in reads {
+            numbers.absorb(searcher, &unread, found);
+        }
+        // Acquiring the writer reconciles against its latest committed snapshot,
+        // independently of the order asynchronous search reads finished in.
+        assert_eq!(&*numbers.paths()[&old_number], "x");
+        assert_eq!(&*numbers.paths()[&new_number], "x");
+        numbers.catch_up(&new).unwrap();
+        assert_eq!(numbers.number_for("x").unwrap(), new_number);
+        let tables = OrderTables::build(
+            numbers.paths(),
+            &HashMap::from([(
+                "x".into(),
+                crate::book_order::BookPlace {
+                    catalogue_order: 0,
+                    generation_order: 0,
+                },
+            )]),
+        );
+        let rank = |number| tables.key(OrderKind::Catalogue, u64::from(number) << 32);
+        let a = number_of(&replacement, "a");
+        assert!(rank(old_number) < rank(a));
+        assert!(rank(new_number) < rank(a));
+    }
+}
+
+#[test]
+fn reading_an_old_commit_keeps_a_higher_local_uncommitted_allocation() {
+    use crate::book_order::{numbers_in_segments, BookNumbers};
+
+    let dir = TempDir::new().unwrap();
+    let mut engine = open(dir.path());
+    add_book(&mut engine, "x", 1);
+    engine.commit().unwrap();
+    let old = engine.searcher_for_tests();
+    // Simulate a new writer allocating after the old x was deleted. The pending new
+    // document is not visible in the old search snapshot whose read is finishing now.
+    let mut numbers = BookNumbers::new(dir.path());
+    let pending = numbers.number_for("x").unwrap();
+    assert!(pending > number_of(&engine, "x"));
+    let unread = numbers.unread_segments(&old);
+    let found = numbers_in_segments(&old, &unread).unwrap();
+    numbers.absorb(&old, &unread, found);
+    assert_eq!(numbers.number_for("x").unwrap(), pending);
+    // After releasing and reacquiring the writer, even an already-read live segment
+    // overrides the prior allocation. Snapshot reads alone must not do that.
+    assert!(numbers.unread_segments(&old).is_empty());
+    numbers.catch_up(&old).unwrap();
+    assert_eq!(numbers.number_for("x").unwrap(), number_of(&engine, "x"));
+}
+
+#[test]
+fn simultaneous_mapping_writers_serialize_revisions_across_engine_instances() {
+    use std::sync::{Arc, Barrier};
+
+    let dir = TempDir::new().unwrap();
+    const WRITERS: usize = 4;
+    const UPDATES: usize = 8;
+    let engines: Vec<_> = (0..WRITERS).map(|_| open(dir.path())).collect();
+    let barrier = Arc::new(Barrier::new(WRITERS));
+    let mut revisions = std::thread::scope(|scope| {
+        let handles: Vec<_> = engines
+            .iter()
+            .enumerate()
+            .map(|(writer, engine)| {
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    (0..UPDATES)
+                        .map(|update| {
+                            engine
+                                .set_book_order(vec![place(
+                                    "a",
+                                    (writer * UPDATES + update) as u32,
+                                    0,
+                                )])
+                                .unwrap()
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    revisions.sort_unstable();
+    assert_eq!(
+        revisions,
+        (1..=(WRITERS * UPDATES) as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        open(dir.path()).book_order_revision(),
+        (WRITERS * UPDATES) as u64
+    );
+}
+
+#[test]
+fn simultaneous_identical_mappings_are_one_change_and_refreshes_do_not_undo_writes() {
+    use std::sync::Barrier;
+
+    let dir = TempDir::new().unwrap();
+    let first = open(dir.path());
+    let second = open(dir.path());
+    let barrier = Barrier::new(2);
+    let write = |engine: &SearchEngine| {
+        barrier.wait();
+        engine.set_book_order(vec![place("a", 1, 0)]).unwrap()
+    };
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| write(&first));
+        let b = scope.spawn(|| write(&second));
+        assert_eq!((a.join().unwrap(), b.join().unwrap()), (1, 1));
+    });
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for n in 2..=40 {
+                assert_eq!(
+                    first.set_book_order(vec![place("a", n, 0)]).unwrap(),
+                    u64::from(n)
+                );
+            }
+        });
+        scope.spawn(|| {
+            for _ in 0..80 {
+                first.book_order_revision();
+                second.book_order_revision();
+            }
+        });
+    });
+    assert_eq!(first.set_book_order(vec![place("a", 40, 0)]).unwrap(), 40);
+    assert_eq!(second.book_order_revision(), 40);
+}
+
+#[test]
+fn mapping_updates_are_serialized_between_processes() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::{Command, Stdio};
+
+    const CHILD_DIR: &str = "OTZARIA_BOOK_ORDER_TEST_DIR";
+    const CHILD_ID: &str = "OTZARIA_BOOK_ORDER_TEST_WRITER";
+    const UPDATES: u32 = 8;
+    if let (Ok(dir), Ok(id)) = (std::env::var(CHILD_DIR), std::env::var(CHILD_ID)) {
+        let engine = open(Path::new(&dir));
+        println!("ORDER_WRITER_READY");
+        std::io::stdout().flush().unwrap();
+        // Both processes have loaded the original revision before the parent releases us.
+        std::io::stdin().read_exact(&mut [0]).unwrap();
+        let id: u32 = id.parse().unwrap();
+        let revisions: Vec<_> = (0..UPDATES)
+            .map(|n| {
+                engine
+                    .set_book_order(vec![place("a", id * UPDATES + n, 0)])
+                    .unwrap()
+            })
+            .collect();
+        println!(
+            "ORDER_REVISIONS={}",
+            serde_json::to_string(&revisions).unwrap()
+        );
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    drop(open(dir.path()));
+    let mut children: Vec<_> = (0..2)
+        .map(|id| {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "book_order_tests::mapping_updates_are_serialized_between_processes",
+                    "--nocapture",
+                ])
+                .env(CHILD_DIR, dir.path())
+                .env(CHILD_ID, id.to_string())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert_ne!(
+                    output.read_line(&mut line).unwrap(),
+                    0,
+                    "writer exited before ready"
+                );
+                if line.trim() == "ORDER_WRITER_READY" {
+                    break;
+                }
+            }
+            (child, output)
+        })
+        .collect();
+    for (child, _) in &mut children {
+        child.stdin.take().unwrap().write_all(&[1]).unwrap();
+    }
+    let mut revisions = Vec::<u64>::new();
+    for (mut child, mut output) in children {
+        let mut text = String::new();
+        output.read_to_string(&mut text).unwrap();
+        assert!(child.wait().unwrap().success(), "{text}");
+        let json = text
+            .lines()
+            .find_map(|line| line.strip_prefix("ORDER_REVISIONS="))
+            .unwrap();
+        revisions.extend(serde_json::from_str::<Vec<u64>>(json).unwrap());
+    }
+    revisions.sort_unstable();
+    assert_eq!(revisions, (1..=u64::from(2 * UPDATES)).collect::<Vec<_>>());
+    assert_eq!(
+        open(dir.path()).book_order_revision(),
+        u64::from(2 * UPDATES)
+    );
+}
+
+#[test]
+fn a_later_commit_can_reintroduce_a_lower_historical_number() {
+    let dir = TempDir::new().unwrap();
+    let mut first = open(dir.path());
+    add_book(&mut first, "x", 1);
+    first.commit().unwrap();
+    let original = number_of(&first, "x");
+    let mut old = open(dir.path());
+    old.warm_book_order().unwrap();
+    first.delete_documents_by_file_path("x").unwrap();
+    first.commit().unwrap();
+    drop(first);
+
+    let mut replacement = open(dir.path());
+    add_book(&mut replacement, "x", 1);
+    replacement.commit().unwrap();
+    let higher = number_of(&replacement, "x");
+    assert!(higher > original);
+    let mut observer = open(dir.path());
+    observer.warm_book_order().unwrap();
+    replacement.delete_documents_by_file_path("x").unwrap();
+    replacement.commit().unwrap();
+    drop(replacement);
+
+    // old never saw the intermediate higher number. Its historical number is still
+    // reserved for x, and it can reuse it when no live x exists in the latest commit.
+    add_book(&mut old, "x", 1);
+    old.commit().unwrap();
+    assert_eq!(number_of(&old, "x"), original);
+    drop(old);
+    observer
+        .upsert_document(
+            0,
+            "ספר x",
+            "r",
+            "/root",
+            "שלום חדש",
+            0,
+            false,
+            "x",
+            None,
+            None,
+        )
+        .unwrap();
+    observer.commit().unwrap();
+    let stamps = observer.get_book_stamps().unwrap();
+    assert_eq!(stamps[0].book_number, original);
+    assert_eq!(stamps[0].documents, 1);
+}
+
+#[test]
+fn failed_takeover_synchronization_is_retried_before_a_number_is_used() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = open(dir.path());
+    add_book(&mut writer, "x", 1);
+    writer.commit().unwrap();
+    let mut stale = open(dir.path());
+    stale.warm_book_order().unwrap();
+    writer.delete_documents_by_file_path("x").unwrap();
+    writer.commit().unwrap();
+    drop(writer);
+    let mut replacement = open(dir.path());
+    add_book(&mut replacement, "x", 1);
+    replacement.commit().unwrap();
+    let current = number_of(&replacement, "x");
+    drop(replacement);
+    stale.open_index_writer().unwrap();
+
+    let meta = dir.path().join("meta.json");
+    let backup = dir.path().join("meta.saved");
+    std::fs::rename(&meta, &backup).unwrap();
+    let failed = stale.book_number("x");
+    std::fs::rename(&backup, &meta).unwrap();
+    assert!(
+        failed.is_err(),
+        "a failed reader reload cannot hand out a stale number"
+    );
+    assert_eq!(stale.book_number("x").unwrap(), current);
+}

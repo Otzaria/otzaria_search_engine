@@ -204,17 +204,26 @@ impl BookNumbers {
         self.segments
             .extend(read.iter().map(|&ordinal| readers[ordinal].segment_id()));
         for (path, number) in found {
-            if !self.by_path.contains_key(&path) {
-                self.record(path, number);
-            }
+            self.record(path, number);
         }
     }
 
     fn record(&mut self, path: String, number: u32) {
-        self.paths.insert(number, Arc::from(path.as_str()));
-        self.by_path.insert(path, number);
+        // Search snapshots may finish in either order. Record every alias for sorting,
+        // but leave the writer's current choice alone: catch_up reconciles it against the
+        // latest commit when this engine takes the exclusive index writer.
+        let new_number =
+            if let std::collections::btree_map::Entry::Vacant(entry) = self.paths.entry(number) {
+                entry.insert(Arc::from(path.as_str()));
+                true
+            } else {
+                false
+            };
+        self.by_path.entry(path).or_insert(number);
         self.next = self.next.max(number.saturating_add(1));
-        self.version += 1;
+        if new_number {
+            self.version += 1;
+        }
     }
 
     /// The number of `file_path`, handing out a new one to a book not seen before. Called
@@ -245,9 +254,17 @@ impl BookNumbers {
     /// Takes in what another writer may have done before this engine held the writer: the
     /// books of `searcher` (the last commit) and the numbers reserved on disk.
     pub(crate) fn catch_up(&mut self, searcher: &Searcher) -> Result<()> {
-        let unread = self.unread_segments(searcher);
-        let found = numbers_in_segments(searcher, &unread)?;
-        self.absorb(searcher, &unread, found);
+        // Only a newly acquired writer calls this. Previously read segments can now be
+        // authoritative again (an old engine may reuse its original number for a deleted
+        // path), so reconcile all live books, not only segments unseen by a search. This
+        // scans book terms once per acquisition, skipping deleted postings until the
+        // first live one per book/segment, without decoding stored line text.
+        let read: Vec<_> = (0..searcher.segment_readers().len()).collect();
+        let found = numbers_in_segments(searcher, &read)?;
+        for (path, number) in &found {
+            self.by_path.insert(path.clone(), *number);
+        }
+        self.absorb(searcher, &read, found);
         let reserved = read_reservation(&self.index_dir);
         self.next = self.next.max(reserved);
         self.reserved = self.reserved.max(reserved);
