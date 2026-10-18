@@ -379,18 +379,41 @@ fn collect_aliases(
     segments: &[Segment],
     cancel: &CancellationToken,
 ) -> Option<Vec<(u64, ChunkKey)>> {
-    let mut aliases = Vec::new();
-    for (index, segment) in segments.iter().enumerate() {
+    // Track only keys that have ever had an alias, rather than every vector key.
+    // This bounds the temporary index by the alias population and avoids probing
+    // every later segment for each alias when there are many deltas.
+    let mut pending = HashSet::new();
+    for segment in segments {
         for (at, row) in segment.occurrences().enumerate() {
             if at.is_multiple_of(4096) && cancel.is_cancelled() {
                 return None;
             }
-            // A newer complete snapshot replaces all old roles of this key.
-            if row.is_alias()
-                && !segments[index + 1..]
-                    .iter()
-                    .any(|newer| newer.key_occurrences(row.key).is_some())
-            {
+            if row.is_alias() {
+                pending.insert(row.key);
+            }
+        }
+    }
+    let mut aliases = Vec::new();
+    for segment in segments.iter().rev() {
+        if pending.is_empty() {
+            break;
+        }
+        let mut previous = None;
+        let mut keep = false;
+        for (at, row) in segment.occurrences().enumerate() {
+            if at.is_multiple_of(4096) && cancel.is_cancelled() {
+                return None;
+            }
+            // Occurrences are sorted by key. A key's newest group is its complete
+            // snapshot, even when it contains no aliases any more.
+            if previous != Some(row.key) {
+                if pending.is_empty() {
+                    break;
+                }
+                previous = Some(row.key);
+                keep = pending.remove(&row.key);
+            }
+            if keep && row.is_alias() {
                 aliases.push((row.anchor.column_value(), row.key));
             }
         }
@@ -415,6 +438,7 @@ mod tests {
         let target = key("shared vector");
         let old = key("old short line");
         let fresh = key("new short line");
+        let fresh_too = key("another new short line");
         let other = key("another vector");
         let write = |version, rows: &[(ChunkKey, ChunkKey, u8)]| {
             let path = dir.path().join(format!("{version}.oxv"));
@@ -454,10 +478,20 @@ mod tests {
                 1,
                 &[(target, old, ALIAS_WINDOW), (other, old, ALIAS_WINDOW)],
             ),
-            write(2, &[(target, fresh, ALIAS_WINDOW)]),
+            write(
+                2,
+                &[
+                    (target, fresh, ALIAS_WINDOW),
+                    (target, fresh_too, ALIAS_WINDOW),
+                ],
+            ),
         ];
         let cancel = CancellationToken::new();
-        let mut expected = vec![(old.column_value(), other), (fresh.column_value(), target)];
+        let mut expected = vec![
+            (old.column_value(), other),
+            (fresh.column_value(), target),
+            (fresh_too.column_value(), target),
+        ];
         expected.sort_unstable();
         assert_eq!(collect_aliases(&segments, &cancel).unwrap(), expected);
         // Replacing the alias with a normal occurrence withdraws the old mapping.
