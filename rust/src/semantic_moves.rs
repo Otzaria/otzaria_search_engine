@@ -45,6 +45,7 @@ use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::distribution::gates::book_records;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
 use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+use otzaria_semantic_search::semantic::oxv::reader::Segment;
 use otzaria_semantic_search::semantic::resolve::SlotRef;
 use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
 use rayon::prelude::*;
@@ -66,7 +67,11 @@ pub(crate) struct SetView {
     set: SegmentSet,
     /// Each book's arrivals, and what they were computed for.
     arrivals: Mutex<HashMap<Arc<str>, Arrivals>>,
+    /// Reverse alias lookup, built once for this immutable set generation.
+    aliases: Mutex<Option<AliasMappings>>,
 }
+
+type AliasMappings = Arc<[(u64, ChunkKey)]>;
 
 /// Where a book's lines are in the index: every segment that holds one, with how many
 /// documents of that segment are deleted. The same postings are the same lines.
@@ -125,6 +130,7 @@ impl SetView {
             dir: dir.to_path_buf(),
             set,
             arrivals: Mutex::default(),
+            aliases: Mutex::default(),
         }))
     }
 
@@ -174,21 +180,29 @@ impl SetView {
         values: &HashSet<u64>,
         cancel: &CancellationToken,
     ) -> Option<Vec<(u64, ChunkKey)>> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let mut cached = self.aliases.lock().unwrap_or_else(PoisonError::into_inner);
+        if cached.is_none() {
+            *cached = Some(collect_aliases(self.set.segments(), cancel)?.into());
+        }
+        let aliases = Arc::clone(cached.as_ref().expect("initialized above"));
+        drop(cached);
         let mut targets = Vec::new();
-        for segment in self.set.segments() {
-            if cancel.is_cancelled() {
+        for (at, &value) in values.iter().enumerate() {
+            if at.is_multiple_of(4096) && cancel.is_cancelled() {
                 return None;
             }
+            let start = aliases.partition_point(|&(anchor, _)| anchor < value);
             targets.extend(
-                segment
-                    .occurrences()
-                    .filter(|row| row.is_alias())
-                    .map(|row| (row.anchor.column_value(), row.key))
-                    .filter(|(value, _)| values.contains(value)),
+                aliases[start..]
+                    .iter()
+                    .take_while(|&&(anchor, _)| anchor == value)
+                    .copied(),
             );
         }
         targets.sort_unstable();
-        targets.dedup();
         Some(targets)
     }
 
@@ -356,5 +370,107 @@ impl SetView {
                     known,
                 },
             );
+    }
+}
+
+/// Sorted reverse lookup of the generation's effective alias snapshots. Dead targets
+/// are excluded by `live_slots` when the caller looks up the returned vector keys.
+fn collect_aliases(
+    segments: &[Segment],
+    cancel: &CancellationToken,
+) -> Option<Vec<(u64, ChunkKey)>> {
+    let mut aliases = Vec::new();
+    for (index, segment) in segments.iter().enumerate() {
+        for (at, row) in segment.occurrences().enumerate() {
+            if at.is_multiple_of(4096) && cancel.is_cancelled() {
+                return None;
+            }
+            // A newer complete snapshot replaces all old roles of this key.
+            if row.is_alias()
+                && !segments[index + 1..]
+                    .iter()
+                    .any(|newer| newer.key_occurrences(row.key).is_some())
+            {
+                aliases.push((row.anchor.column_value(), row.key));
+            }
+        }
+    }
+    aliases.sort_unstable();
+    aliases.dedup();
+    (!cancel.is_cancelled()).then_some(aliases)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otzaria_semantic_search::distribution::package::PackageKind;
+    use otzaria_semantic_search::semantic::oxv::codec::Codec;
+    use otzaria_semantic_search::semantic::oxv::occurrence::Occurrence;
+    use otzaria_semantic_search::semantic::oxv::writer::{SegmentBuilder, SegmentSpec};
+
+    #[test]
+    fn reverse_alias_lookup_uses_only_the_latest_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key = |value| ChunkKey::of(value).narrowed();
+        let target = key("shared vector");
+        let old = key("old short line");
+        let fresh = key("new short line");
+        let other = key("another vector");
+        let write = |version, rows: &[(ChunkKey, ChunkKey, u8)]| {
+            let path = dir.path().join(format!("{version}.oxv"));
+            let mut builder = SegmentBuilder::new(
+                SegmentSpec {
+                    kind: PackageKind::Base,
+                    identity_digest: [1; 32],
+                    from_library_version: 0,
+                    to_library_version: version,
+                    library_release_tag: format!("v{version}"),
+                },
+                Codec::i8_sym_vec(2).unwrap(),
+            );
+            builder.set_format_version(3).unwrap();
+            builder
+                .add_book("book", &[(target, 0), (other, 1)], &[], &[])
+                .unwrap();
+            let rows: Vec<_> = rows
+                .iter()
+                .map(|&(key, anchor, window)| Occurrence {
+                    key,
+                    book: 0,
+                    hint: 0,
+                    anchor,
+                    window,
+                })
+                .collect();
+            builder.add_occurrences("book", &rows).unwrap();
+            let mut sink = builder.write(&path).unwrap();
+            sink.push_f32(&[1.0, 0.0]).unwrap();
+            sink.push_f32(&[0.0, 1.0]).unwrap();
+            sink.finish().unwrap();
+            Segment::open(&path).unwrap()
+        };
+        let segments = [
+            write(
+                1,
+                &[(target, old, ALIAS_WINDOW), (other, old, ALIAS_WINDOW)],
+            ),
+            write(2, &[(target, fresh, ALIAS_WINDOW)]),
+        ];
+        let cancel = CancellationToken::new();
+        let mut expected = vec![(old.column_value(), other), (fresh.column_value(), target)];
+        expected.sort_unstable();
+        assert_eq!(collect_aliases(&segments, &cancel).unwrap(), expected);
+        // Replacing the alias with a normal occurrence withdraws the old mapping.
+        let normal = write(3, &[(target, target, 0)]);
+        assert_eq!(
+            collect_aliases(
+                &[Segment::open(&dir.path().join("2.oxv")).unwrap(), normal],
+                &cancel
+            )
+            .unwrap(),
+            []
+        );
+        cancel.cancel();
+        assert!(collect_aliases(&segments, &cancel).is_none());
     }
 }

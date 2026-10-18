@@ -4319,3 +4319,222 @@ fn a_release_declaring_a_mixed_store_is_refused_by_its_store_field() {
         );
     }
 }
+
+#[test]
+fn repeated_alias_in_public_search() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    const BOOK: &str = "/books/short.txt";
+    let block: Vec<String> = [
+        "הלכות שבת פרק ראשון בדיני הוצאה",
+        "יציאות השבת שתים שהן ארבע בפנים",
+        "ושתים שהן ארבע בחוץ כיצד העני עומד",
+        "בחוץ ובעל הבית",
+        "בפנים פשט העני את ידו לפנים ונתן",
+        "לתוך ידו של בעל הבית או שנטל מתוכה",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let lines = [block.clone(), block].concat();
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.5);
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("שבת", "/משנה", BOOK, 0, lines.join("\n"))],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    assert_eq!(aliases.len(), 1, "writer deduplicates equal alias anchors");
+    let vectors = pipeline.root.path().join("vectors");
+    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+    let refs: Vec<LineRef<'_>> = lines
+        .iter()
+        .map(|text| LineRef { text, section: 0 })
+        .collect();
+    let embedded = Chunker::new(production_chunking())
+        .unwrap()
+        .embedded_text(&refs, 3)
+        .unwrap();
+    let query = embedded.strip_prefix(PASSAGE_PREFIX).unwrap_or(&embedded);
+    let response = engine
+        .search_semantic(
+            query.to_string(),
+            vec![],
+            100,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            SemanticRetrievalMode::SemanticOnly,
+            None,
+            false,
+            false,
+            None,
+            &token,
+        )
+        .unwrap();
+    assert!(
+        response.fallback_reason.is_none(),
+        "{:?}",
+        response.fallback_reason
+    );
+    let mut found: Vec<_> = response
+        .results
+        .iter()
+        .filter(|hit| hit.file_path == BOOK && hit.matched_window == ALIAS_WINDOW)
+        .map(|hit| hit.segment)
+        .collect();
+    found.sort_unstable();
+    assert_eq!(
+        found,
+        [3, 9],
+        "both repeated short lines should be displayed"
+    );
+}
+
+#[test]
+fn compaction_preserves_alias_after_neighbour_tail_changes() {
+    use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef};
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    const BOOK: &str = "/books/short.txt";
+    let before = "תורה ".repeat(94).trim().to_string();
+    let mut words = vec!["תורה"; 101];
+    words.splice(93..93, ["דבר", "מה"]);
+    let after = words.join(" ");
+    let lines = vec![
+        before,
+        "דבר מה".to_string(),
+        after.clone(),
+        "או".to_string(),
+    ];
+    let chunker = Chunker::new(production_chunking()).unwrap();
+    let key = |texts: &[String], at: usize| {
+        let refs: Vec<_> = texts
+            .iter()
+            .map(|text| LineRef { text, section: 0 })
+            .collect();
+        ChunkKey::of(&chunker.embedded_text(&refs, at).unwrap()).narrowed()
+    };
+    assert_ne!(key(&lines, 1), key(&lines, 2));
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.99);
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("ספר", "/משנה", BOOK, 0, lines.join("\n"))],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(
+        aliases[0].key,
+        key(&lines, 2),
+        "the short line shares the following neighbour"
+    );
+    let mut changed = lines.clone();
+    words[20] = "משה";
+    changed[2] = words.join(" ");
+    assert_eq!(
+        key(&lines, 1),
+        key(&changed, 1),
+        "the short line's capped context is unchanged"
+    );
+    assert_ne!(
+        key(&lines, 2),
+        key(&changed, 2),
+        "the neighbour's own key changed"
+    );
+    let device = pipeline.root.path().join("device");
+    std::fs::create_dir_all(&device).unwrap();
+    add_books(
+        &mut SearchEngine::new(device.to_str().unwrap()),
+        &[("ספר", "/משנה", BOOK, 0, changed.join("\n"))],
+    );
+    let engine = SearchEngine::new(device.to_str().unwrap());
+    let vectors = pipeline.root.path().join("vectors");
+    let token = SemanticCancellationToken::new();
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+    let has_short = || {
+        engine
+            .search_semantic(
+                after.clone(),
+                vec![],
+                100,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &token,
+            )
+            .unwrap()
+            .results
+            .iter()
+            .any(|hit| {
+                hit.file_path == BOOK && hit.segment == 1 && hit.matched_window == ALIAS_WINDOW
+            })
+    };
+    assert!(
+        has_short(),
+        "the unchanged short line is found before compaction"
+    );
+    let result = engine
+        .compact_semantic_vectors(
+            dir_string(&vectors),
+            Some(LIBRARY_VERSION),
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        )
+        .unwrap();
+    assert!(result.compacted, "{}", result.reason);
+    assert!(has_short(), "compaction must preserve the still-live alias");
+    let set = otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&vectors).unwrap();
+    let mut records = Vec::new();
+    set.book_occurrences(BOOK, &mut records);
+    let shared: Vec<_> = records
+        .iter()
+        .filter(|(target, _)| *target == aliases[0].key)
+        .collect();
+    assert_eq!(
+        shared.len(),
+        1,
+        "no normal occurrence is invented for the old neighbour"
+    );
+    assert_eq!(shared[0].1.window, ALIAS_WINDOW);
+    assert_eq!(shared[0].1.anchor, Some(aliases[0].anchor));
+}

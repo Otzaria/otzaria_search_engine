@@ -2867,9 +2867,33 @@ impl CandidateResolver for LiveResolver<'_> {
                 if room == 0 {
                     break;
                 }
-                // The short line an alias found holds its own text, not the hit's.
+                // A short line may have no lineHash in legacy indexes. Find its
+                // repeats by its own first-window key, using the cached anchor index
+                // (recomputed from text without the chunkKey column).
                 if *window == ALIAS_WINDOW {
-                    repeats.push((Vec::new(), Vec::new()));
+                    let held = if let Some(anchor) = self.key_at(book, *position)? {
+                        self.search_record(
+                            book,
+                            anchor,
+                            &RecordRef {
+                                book: Arc::clone(&book.name),
+                                hint: book.ordinals[*position],
+                                window: 0,
+                                anchor: Some(anchor),
+                            },
+                            room,
+                            &taken,
+                            cancel,
+                        )?
+                        .into_iter()
+                        .map(|(position, _)| position)
+                        .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    taken.extend(held.iter().map(|&other| book.docs[other]));
+                    room -= held.len();
+                    repeats.push((held, Vec::new()));
                     continue;
                 }
                 let (held, later) =
@@ -2893,6 +2917,7 @@ impl CandidateResolver for LiveResolver<'_> {
                     // A repeat holds the line's text, and with it the same windows.
                     let window = match *window {
                         0 => 0,
+                        ALIAS_WINDOW => ALIAS_WINDOW,
                         _ => self.window_of(book, other, hit.key)?.unwrap_or(*window),
                     };
                     lines.push(self.describe(hit_index, book, other, window)?);
@@ -3727,6 +3752,51 @@ mod tests {
                 assert!(audit.reached.contains(&(hint, 0, anchor.0)));
                 assert!(audit.reached.contains(&(hint, window, inner.0)));
             }
+        }
+    }
+    #[test]
+    fn repeated_alias_lines_all_resolve() {
+        let block: Vec<String> = [
+            "השורה הראשונה של הספר כולו",
+            "השורה השנייה של הספר כולו",
+            "שורה ארוכה דיה לעמוד לבדה בספר",
+            "קצרה מאד",
+            "עוד שורה ארוכה שאחריה בספר",
+            "והאחרונה שבשורות הספר כולו",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let mut changed = block.clone();
+        changed[1] = "הקשר אחר משנה את מפתח השורה הקצרה".to_string();
+        let lines = [block.clone(), block, changed].concat();
+        let key = key_in(&lines, 2).narrowed();
+        let anchor = key_in(&lines, 3).narrowed();
+        assert_eq!(key_in(&lines, 9).narrowed(), anchor);
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &lines);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+            let mut hit = window_hit(key, 0, "/books/long.txt", 2);
+            hit.records
+                .push(occurrence("/books/long.txt", 3, ALIAS_WINDOW, anchor));
+            let found = resolver
+                .resolve(&[hit], None, &CancellationToken::new())
+                .unwrap();
+            let mut aliases: Vec<_> = found
+                .iter()
+                .filter(|line| line.window == ALIAS_WINDOW)
+                .map(|line| (line.segment, line.window))
+                .collect();
+            aliases.sort_unstable();
+            assert_eq!(
+                aliases,
+                [(3, ALIAS_WINDOW), (9, ALIAS_WINDOW)],
+                "column: {}",
+                column.is_some()
+            );
         }
     }
 }
