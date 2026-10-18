@@ -16747,7 +16747,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Text-only fingerprint per distinct `filePath` — the `textHash` column
   /// ([`compute_content_fingerprint`] over the raw book text). Unlike
   /// [`Self::get_book_fingerprints`] (the canonical fingerprint, which also
-  /// covers metadata such as catalogue order), this value shifts only when
+  /// covers the title, topics and extra facets), this value shifts only when
   /// the book's text itself changed — the right signal for content-drift
   /// checks that must not be invalidated by adding/removing other books.
   ///

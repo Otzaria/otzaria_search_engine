@@ -866,8 +866,9 @@ Enum specifying the sort order for search results.
 **Values:**
 ```dart
 enum ResultsOrder {
-  Catalogue,   // Sort by document ID (ascending)
-  Relevance    // Sort by search relevance score (descending)
+  Catalogue,   // Sort by the catalogue order of setBookOrder, then line
+  Relevance,   // Sort by search relevance score (descending)
+  Generation   // Sort by the generation order of setBookOrder, then line
 }
 ```
 
