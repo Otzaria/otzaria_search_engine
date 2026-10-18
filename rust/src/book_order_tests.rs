@@ -564,3 +564,194 @@ fn stamps_that_disagree_prove_nothing() {
     assert_ne!(stamps[0].metadata_hash, 0, "the metadata agrees");
     assert_eq!(stamps[0].documents, 2);
 }
+
+/// The book number of `path` in `engine`'s index.
+fn number_of(engine: &SearchEngine, path: &str) -> u32 {
+    numbers(engine)[path]
+}
+
+#[test]
+fn engines_that_take_turns_with_the_writer_never_share_a_number() {
+    let dir = TempDir::new().unwrap();
+    let mut first = open(dir.path());
+    let mut second = open(dir.path());
+    assert!(first.holds_writer_for_tests());
+    assert!(!second.holds_writer_for_tests());
+    // The second engine reads the (empty) numbers before the first one writes.
+    second.warm_book_order().unwrap();
+
+    add_book(&mut first, "x", 1);
+    first.commit().unwrap();
+    drop(first);
+    add_book(&mut second, "y", 1);
+    second.commit().unwrap();
+    second.reload_reader_for_tests();
+    assert_ne!(number_of(&second, "x"), number_of(&second, "y"));
+
+    // A number handed out and never committed is not handed out again either.
+    let third = open(dir.path());
+    drop(second);
+    let fourth = open(dir.path());
+    assert!(!third.holds_writer_for_tests() || !fourth.holds_writer_for_tests());
+    let (mut writer, mut other) = if third.holds_writer_for_tests() {
+        (third, fourth)
+    } else {
+        (fourth, third)
+    };
+    add_book(&mut writer, "z", 1);
+    let lost = writer.book_number_for_tests("z");
+    drop(writer);
+    add_book(&mut other, "w", 1);
+    other.commit().unwrap();
+    other.reload_reader_for_tests();
+    let taken: Vec<u32> = numbers(&other).into_values().collect();
+    assert_eq!(taken.len(), 3, "{taken:?}");
+    assert!(!taken.contains(&lost), "{lost} handed out twice: {taken:?}");
+    let mut sorted = taken.clone();
+    sorted.dedup();
+    assert_eq!(sorted.len(), 3);
+}
+
+#[test]
+fn a_reader_follows_the_books_and_the_mapping_another_engine_writes() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = open(dir.path());
+    for path in ["a", "b"] {
+        add_book(&mut writer, path, 2);
+    }
+    writer.commit().unwrap();
+    writer
+        .set_book_order(vec![place("b", 0, 0), place("a", 1, 0)])
+        .unwrap();
+    let reader = open(dir.path());
+    assert!(!reader.holds_writer_for_tests());
+    assert_eq!(books_in(&reader, ResultsOrder::Catalogue), ["b", "a"]);
+
+    add_book(&mut writer, "c", 2);
+    writer.commit().unwrap();
+    writer
+        .set_book_order(vec![place("c", 0, 0), place("b", 1, 0), place("a", 2, 0)])
+        .unwrap();
+    reader.reload_reader_for_tests();
+    assert_eq!(books_in(&reader, ResultsOrder::Catalogue), ["c", "b", "a"]);
+    assert_eq!(reader.book_order_revision(), writer.book_order_revision());
+
+    // A book only the reader's new segment holds, absent from the mapping, sorts last.
+    add_book(&mut writer, "d", 1);
+    writer.commit().unwrap();
+    reader.reload_reader_for_tests();
+    assert_eq!(
+        books_in(&reader, ResultsOrder::Catalogue),
+        ["c", "b", "a", "d"]
+    );
+}
+
+#[test]
+fn warming_prepares_the_order_without_a_search() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = open(dir.path());
+    for path in ["a", "b"] {
+        add_book(&mut engine, path, 1);
+    }
+    engine.commit().unwrap();
+    engine
+        .set_book_order(vec![place("b", 0, 0), place("a", 1, 0)])
+        .unwrap();
+    drop(engine);
+    let reader = open(dir.path());
+    reader.warm_book_order().unwrap();
+    let (_, warmed) = reader.order_tables_for_tests();
+    let (_, again) = reader.order_tables_for_tests();
+    assert!(
+        std::sync::Arc::ptr_eq(&warmed, &again),
+        "the warmed tables are reused"
+    );
+    assert_eq!(books_in(&reader, ResultsOrder::Catalogue), ["b", "a"]);
+}
+
+#[test]
+fn lines_written_one_at_a_time_stamp_their_book_once() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = open(dir.path());
+    for ordinal in 0..4 {
+        engine
+            .add_document(
+                ordinal, "ספר", "r", "/root", "שורה", 0, false, "book", None, None,
+            )
+            .unwrap();
+    }
+    engine
+        .upsert_document(
+            2,
+            "ספר",
+            "r",
+            "/root",
+            "שורה חדשה",
+            0,
+            false,
+            "book",
+            None,
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    let searcher = engine.searcher_for_tests();
+    let stamped: usize = searcher
+        .segment_readers()
+        .iter()
+        .map(|reader| {
+            let column = reader.fast_fields().u64("metadataHash").unwrap();
+            reader
+                .doc_ids_alive()
+                .filter(|&doc| column.first(doc).is_some())
+                .count()
+        })
+        .sum();
+    assert_eq!(stamped, 1);
+    let stamps = engine.get_book_stamps().unwrap();
+    assert_eq!(stamps[0].documents, 4);
+    assert_eq!(
+        stamps[0].metadata_hash,
+        compute_book_metadata_fingerprint("ספר".to_string(), "/root".to_string(), None)
+    );
+}
+
+#[test]
+fn equal_relevance_in_a_grouped_search_goes_by_the_catalogue() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = open(dir.path());
+    for path in ["a", "b", "c"] {
+        engine
+            .add_text_book(
+                "ספר".to_string(),
+                "/root".to_string(),
+                path.to_string(),
+                format!("{WORD} עולם"),
+                None,
+                TextStorage::InIndex,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    engine.commit().unwrap();
+    engine
+        .set_book_order(vec![place("c", 0, 0), place("a", 1, 0), place("b", 2, 0)])
+        .unwrap();
+    let grouped = engine
+        .search_and_count_exact(
+            WORD.to_string(),
+            vec![],
+            10,
+            0,
+            ResultsOrder::Relevance,
+            false,
+            false,
+            Some(ResultGrouping::SameSection),
+        )
+        .unwrap();
+    assert_eq!(
+        first_seen(grouped.results.iter().map(|hit| hit.file_path.clone())),
+        ["c", "a", "b"]
+    );
+}

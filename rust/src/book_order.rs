@@ -6,7 +6,7 @@
 //! ids at all: they are a mapping from `filePath` the application pushes
 //! ([`BOOK_ORDER_FILE`]), applied at query time through [`OrderTables`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tantivy::collector::sort_key::NaturalComparator;
 use tantivy::collector::{Collector, SegmentCollector, SegmentSortKeyComputer, SortKeyComputer};
 use tantivy::columnar::Column;
+use tantivy::index::SegmentId;
 use tantivy::schema::IndexRecordOption;
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentOrdinal, SegmentReader, TERMINATED};
 
@@ -127,53 +128,104 @@ impl OrderMapping {
     }
 }
 
+/// When and how large the mapping file in `index_dir` is: a cheap way to tell that another
+/// engine replaced it.
+pub(crate) fn order_file_stamp(index_dir: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = std::fs::metadata(index_dir.join(BOOK_ORDER_FILE)).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
 #[derive(Serialize, Deserialize)]
 struct NumbersFile {
     reserved: u32,
 }
 
-/// Which book holds which number, as far as this engine knows: every book of the index when
-/// it was first needed, and every number handed out since.
+/// Which book holds which number, as far as this engine knows: the books of every segment it
+/// has read, and every number it handed out since.
 pub(crate) struct BookNumbers {
     index_dir: PathBuf,
     by_path: HashMap<String, u32>,
     /// The book holding each number.
     paths: BTreeMap<u32, Arc<str>>,
+    /// The segments whose books are recorded; a new one is read on its own.
+    segments: HashSet<SegmentId>,
     /// The next number to hand out.
     next: u32,
     /// Every number below it may have been handed out, so none is handed out again.
     reserved: u32,
+    /// Changes whenever a book is recorded.
+    version: u64,
 }
 
 impl BookNumbers {
-    /// The numbers of the books `searcher` holds, and the reservation stored in `index_dir`.
-    pub(crate) fn load(searcher: &Searcher, index_dir: &Path) -> Result<Self> {
-        let reserved = read_reservation(index_dir);
-        let found = numbers_in_index(searcher)?;
-        let mut numbers = Self {
+    /// No book yet, and the reservation stored in `index_dir`.
+    pub(crate) fn new(index_dir: &Path) -> Self {
+        let reserved = read_reservation(index_dir).max(1);
+        Self {
             index_dir: index_dir.to_path_buf(),
-            by_path: HashMap::with_capacity(found.len()),
+            by_path: HashMap::new(),
             paths: BTreeMap::new(),
-            next: 1,
-            reserved: reserved.max(1),
-        };
-        for (path, number) in found {
-            numbers.record(path, number);
+            segments: HashSet::new(),
+            next: reserved,
+            reserved,
+            version: 0,
         }
-        numbers.next = numbers.next.max(numbers.reserved);
+    }
+
+    /// The numbers of the books `searcher` holds, and the reservation stored in `index_dir`.
+    #[cfg(test)]
+    pub(crate) fn load(searcher: &Searcher, index_dir: &Path) -> Result<Self> {
+        let mut numbers = Self::new(index_dir);
+        let unread = numbers.unread_segments(searcher);
+        let found = numbers_in_segments(searcher, &unread)?;
+        numbers.absorb(searcher, &unread, found);
         Ok(numbers)
+    }
+
+    /// The segments of `searcher` whose books are not recorded yet, by ordinal.
+    pub(crate) fn unread_segments(&self, searcher: &Searcher) -> Vec<usize> {
+        searcher
+            .segment_readers()
+            .iter()
+            .enumerate()
+            .filter(|(_, reader)| !self.segments.contains(&reader.segment_id()))
+            .map(|(ordinal, _)| ordinal)
+            .collect()
+    }
+
+    /// Records the books `numbers_in_segments` found in the segments `read` of `searcher`.
+    pub(crate) fn absorb(
+        &mut self,
+        searcher: &Searcher,
+        read: &[usize],
+        found: Vec<(String, u32)>,
+    ) {
+        let readers = searcher.segment_readers();
+        self.segments
+            .extend(read.iter().map(|&ordinal| readers[ordinal].segment_id()));
+        for (path, number) in found {
+            if !self.by_path.contains_key(&path) {
+                self.record(path, number);
+            }
+        }
     }
 
     fn record(&mut self, path: String, number: u32) {
         self.paths.insert(number, Arc::from(path.as_str()));
         self.by_path.insert(path, number);
         self.next = self.next.max(number.saturating_add(1));
+        self.version += 1;
     }
 
-    /// The number of `file_path`, handing out a new one to a book not seen before.
+    /// The number of `file_path`, handing out a new one to a book not seen before. Called
+    /// only while this engine holds the index writer, so no other writer hands out numbers.
     pub(crate) fn number_for(&mut self, file_path: &str) -> Result<u32> {
         if let Some(&number) = self.by_path.get(file_path) {
             return Ok(number);
+        }
+        if self.next >= self.reserved {
+            // Another engine may have reserved numbers since this one last looked.
+            self.next = self.next.max(read_reservation(&self.index_dir));
         }
         let number = self.next;
         if number == u32::MAX {
@@ -190,6 +242,18 @@ impl BookNumbers {
         Ok(number)
     }
 
+    /// Takes in what another writer may have done before this engine held the writer: the
+    /// books of `searcher` (the last commit) and the numbers reserved on disk.
+    pub(crate) fn catch_up(&mut self, searcher: &Searcher) -> Result<()> {
+        let unread = self.unread_segments(searcher);
+        let found = numbers_in_segments(searcher, &unread)?;
+        self.absorb(searcher, &unread, found);
+        let reserved = read_reservation(&self.index_dir);
+        self.next = self.next.max(reserved);
+        self.reserved = self.reserved.max(reserved);
+        Ok(())
+    }
+
     /// Records `file_path` at `number`, which it must not already have another of.
     #[cfg(test)]
     pub(crate) fn force_for_tests(&mut self, file_path: &str, number: u32) {
@@ -199,9 +263,9 @@ impl BookNumbers {
         }
     }
 
-    /// A count that changes whenever a number is handed out.
-    pub(crate) fn version(&self) -> u32 {
-        self.next
+    /// A count that changes whenever a book is recorded.
+    pub(crate) fn version(&self) -> u64 {
+        self.version
     }
 
     /// The book holding each number.
@@ -217,13 +281,17 @@ fn read_reservation(index_dir: &Path) -> u32 {
         .map_or(0, |file| file.reserved)
 }
 
-/// Every book of `searcher` with its number: one live document of each `filePath` term, so
-/// the work is per book, not per line.
-fn numbers_in_index(searcher: &Searcher) -> Result<Vec<(String, u32)>> {
+/// Every book of the segments `ordinals` of `searcher` with its number: one live document
+/// of each `filePath` term, so the work is per book, not per line.
+pub(crate) fn numbers_in_segments(
+    searcher: &Searcher,
+    ordinals: &[usize],
+) -> Result<Vec<(String, u32)>> {
     let schema = searcher.schema();
     let file_path_f = schema.get_field("filePath")?;
     let mut found: HashMap<String, u32> = HashMap::new();
-    for reader in searcher.segment_readers() {
+    for &ordinal in ordinals {
+        let reader = searcher.segment_reader(ordinal as SegmentOrdinal);
         let ids = reader.fast_fields().u64("id")?;
         let inverted = reader.inverted_index(file_path_f)?;
         let mut terms = inverted.terms().stream()?;

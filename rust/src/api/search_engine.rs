@@ -10,6 +10,7 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -33,8 +34,8 @@ use crate::api::library_indexing::{
     IndexingCancellationToken, LibraryBookInput, LibraryBookResult,
 };
 use crate::book_order::{
-    self, BookNumbers, BookOrderColumn, BookOrderSort, BookPlace, OrderKind, OrderMapping,
-    OrderTables,
+    self, numbers_in_segments, order_file_stamp, BookNumbers, BookOrderColumn, BookOrderSort,
+    BookPlace, OrderKind, OrderMapping, OrderTables,
 };
 use crate::cross_line;
 use crate::derived_columns::{section_offset, SectionIdColumn, SECTION_OFFSET_FIELD};
@@ -3124,11 +3125,6 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // fingerprints sit on one document of a book; `sectionId`/`generationSort` are derived
 // (see `derived_columns`); and the fields no longer index a quote-free twin beside a
 // quoted word (see `quote_expansion`). A version 5 index is rebuilt.
-//
-// v7: stable book ids. The high half of an id is a book number the engine assigns (see
-// `book_order`), not the catalogue position, which with the generations is a mapping applied
-// at query time; each book carries `metadataHash` and `sourceHash` beside its fingerprints,
-// and library books index their `line_note` bodies. A version 6 index is rebuilt.
 pub(crate) const INDEX_SCHEMA_VERSION: u32 = 7;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
@@ -4708,6 +4704,9 @@ pub struct SearchEngine {
     /// Which book holds which number (see [`crate::book_order`]): read from the index when
     /// first needed.
     book_numbers: Mutex<Option<BookNumbers>>,
+    /// Set whenever this engine (re)takes the writer: another engine may have written and
+    /// handed out numbers while it did not hold it.
+    numbers_stale: AtomicBool,
     /// The order mapping [`Self::set_book_order`] stores.
     book_order: RwLock<BookOrderState>,
     /// The rank tables of the current mapping and book numbers.
@@ -4725,27 +4724,45 @@ enum Ids {
     Raw(u64),
 }
 
+/// Which documents [`SearchEngine::write_inputs_with`] records a book's stamps on.
+#[derive(Clone, Copy)]
+enum Stamping {
+    /// The first of each book in the batch (again when its stamps differ).
+    FirstInBatch,
+    /// Line 0 only: one line written at a time would otherwise stamp every line.
+    LineZero,
+}
+
 /// The order mapping as an engine holds it.
 struct BookOrderState {
     revision: u64,
     places: Arc<HashMap<String, BookPlace>>,
     /// Process-unique, so a cache entry ranked under another mapping is never served.
     epoch: u64,
+    /// The mapping file as it was read or written, to notice another engine replacing it.
+    stamp: Option<(SystemTime, u64)>,
 }
 
 impl BookOrderState {
-    fn of(mapping: OrderMapping) -> Self {
+    fn of(mapping: OrderMapping, stamp: Option<(SystemTime, u64)>) -> Self {
         Self {
             revision: mapping.revision,
             places: Arc::new(mapping.places),
             epoch: book_order::next_epoch(),
+            stamp,
         }
+    }
+
+    fn read(index_dir: &Path) -> Self {
+        // Stamped first: a file replaced after the read is read again next time.
+        let stamp = order_file_stamp(index_dir);
+        Self::of(OrderMapping::load(index_dir), stamp)
     }
 }
 
 struct CachedOrderTables {
     epoch: u64,
-    numbers_version: u32,
+    numbers_version: u64,
     tables: Arc<OrderTables>,
 }
 
@@ -4889,7 +4906,8 @@ impl SearchEngine {
             highlight_cache: HighlightCache::default(),
             lexical_cancellations: LexicalCancellations::default(),
             book_numbers: Mutex::new(None),
-            book_order: RwLock::new(BookOrderState::of(OrderMapping::load(Path::new(path)))),
+            numbers_stale: AtomicBool::new(true),
+            book_order: RwLock::new(BookOrderState::read(Path::new(path))),
             order_tables: Mutex::new(None),
         }
     }
@@ -4952,7 +4970,8 @@ impl SearchEngine {
             highlight_cache: HighlightCache::default(),
             lexical_cancellations: LexicalCancellations::default(),
             book_numbers: Mutex::new(None),
-            book_order: RwLock::new(BookOrderState::of(OrderMapping::load(path))),
+            numbers_stale: AtomicBool::new(true),
+            book_order: RwLock::new(BookOrderState::read(path)),
             order_tables: Mutex::new(None),
         })
     }
@@ -5176,7 +5195,12 @@ impl SearchEngine {
                 section_id.map(|section| section as u32),
                 extra_facets,
             );
-            return self.write_inputs_with(vec![document], upsert, Ids::Raw(id));
+            return self.write_inputs_with(
+                vec![document],
+                upsert,
+                Ids::Raw(id),
+                Stamping::LineZero,
+            );
         }
         self.force_book_number_for_tests(file_path, number);
         if let Some(generation_order) = generation_order {
@@ -5195,7 +5219,7 @@ impl SearchEngine {
             section_id.map(line),
             extra_facets,
         );
-        self.write_inputs(vec![document], upsert)
+        self.write_inputs_with(vec![document], upsert, Ids::Composed, Stamping::LineZero)
     }
 
     /// A one-line document of `file_path` with exactly `id`, whatever the book's number: for
@@ -5204,7 +5228,7 @@ impl SearchEngine {
     pub(crate) fn add_raw_document_for_tests(&mut self, id: u64, file_path: &str, text: &str) {
         let document =
             Self::single_input(0, "t", "r", "/root", text, 0, false, file_path, None, None);
-        self.write_inputs_with(vec![document], false, Ids::Raw(id))
+        self.write_inputs_with(vec![document], false, Ids::Raw(id), Stamping::LineZero)
             .unwrap();
     }
 
@@ -5216,8 +5240,8 @@ impl SearchEngine {
             .book_numbers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        self.loaded_numbers(&mut numbers)
-            .unwrap()
+        numbers
+            .get_or_insert_with(|| BookNumbers::new(&self.index_path))
             .force_for_tests(file_path, number);
     }
 
@@ -7861,7 +7885,7 @@ impl SearchEngine {
 
     /// Add a single line of a book. Does not commit. The id is the engine's: line `ordinal`
     /// (0-based) of the book `file_path`, whose number is assigned on its first write.
-    /// Records the book's `metadataHash`, and no fingerprint (`contentHash` = 0): batch
+    /// Line 0 records the book's `metadataHash`; no fingerprint (`contentHash` = 0): batch
     /// ingestion via [`Self::add_documents_batch`] is the fingerprint-aware path.
     ///
     /// `text` is normalized here ([`normalize_text_for_indexing`]) — the API
@@ -7893,7 +7917,7 @@ impl SearchEngine {
             section_ordinal,
             extra_facets,
         );
-        self.write_inputs(vec![document], false)
+        self.write_inputs_with(vec![document], false, Ids::Composed, Stamping::LineZero)
     }
 
     /// The [`DocumentInput`] of [`Self::add_document`]: a line carrying marks also gets its
@@ -7947,7 +7971,7 @@ impl SearchEngine {
     /// Writes ready-made documents; `upsert` first deletes the documents holding their ids
     /// (of two documents with one id the later wins, as when each deleted its own id).
     fn write_inputs(&mut self, docs: Vec<DocumentInput>, upsert: bool) -> Result<()> {
-        self.write_inputs_with(docs, upsert, Ids::Composed)
+        self.write_inputs_with(docs, upsert, Ids::Composed, Stamping::FirstInBatch)
     }
 
     fn write_inputs_with(
@@ -7955,6 +7979,7 @@ impl SearchEngine {
         docs: Vec<DocumentInput>,
         upsert: bool,
         ids: Ids,
+        stamping: Stamping,
     ) -> Result<()> {
         let (
             title_f,
@@ -7975,6 +8000,7 @@ impl SearchEngine {
         // Validated before anything is written, so a bad document cannot leave half
         // a batch in the writer.
         refuse_library_storage(&docs)?;
+        self.ensure_writer()?;
         let mut bases: HashMap<String, u64> = HashMap::new();
         let mut docs: Vec<(u64, DocumentInput)> = docs
             .into_iter()
@@ -8046,7 +8072,11 @@ impl SearchEngine {
             // Not a line of a book's text, so no key: only `add_text_book` knows a line's
             // neighbours.
             set_chunk_key(&mut document, chunk_key_f, 0);
-            if stamped.get(doc.file_path.as_str()) != Some(&stamps) {
+            let stamp_here = match stamping {
+                Stamping::FirstInBatch => stamped.get(doc.file_path.as_str()) != Some(&stamps),
+                Stamping::LineZero => doc.ordinal == 0,
+            };
+            if stamp_here {
                 stamp_book(&mut document, stamp_fields, stamps);
                 stamped.insert(doc.file_path.clone(), stamps);
             }
@@ -8183,6 +8213,7 @@ impl SearchEngine {
         if text.is_empty() {
             return Ok(0);
         }
+        self.ensure_writer()?;
         let started = Instant::now();
         let text_storage = match library_book {
             Some(source) => library_storage_or_fallback(source, line_count(text), &book.title),
@@ -8503,6 +8534,7 @@ impl SearchEngine {
             .iter()
             .map(|f| Facet::from_text(f))
             .collect::<std::result::Result<_, _>>()?;
+        self.ensure_writer()?;
         let id_base = self.id_base(&file_path)?;
         let chunk_key_f = self.chunk_key_field;
         let stored_fields = self.stored_text_fields()?;
@@ -8620,7 +8652,7 @@ impl SearchEngine {
             section_ordinal,
             extra_facets,
         );
-        self.write_inputs(vec![document], true)
+        self.write_inputs_with(vec![document], true, Ids::Composed, Stamping::LineZero)
     }
 
     /// Upsert many documents in a single FFI call. Does not commit.
@@ -8799,7 +8831,7 @@ impl SearchEngine {
             places,
         };
         mapping.save(&self.index_path)?;
-        *state = BookOrderState::of(mapping);
+        *state = BookOrderState::of(mapping, order_file_stamp(&self.index_path));
         let revision = state.revision;
         drop(state);
         self.page_cache.clear();
@@ -8809,40 +8841,67 @@ impl SearchEngine {
     /// The revision of the order mapping: 0 before any [`Self::set_book_order`].
     #[frb(sync)]
     pub fn book_order_revision(&self) -> u64 {
+        self.refresh_book_order();
         self.book_order
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .revision
     }
 
-    /// The number of `file_path`, handed out on the book's first write.
+    /// Prepares the order catalogue and generation searches sort by — reading the book
+    /// numbers of the index and building the rank tables — so the first such search does
+    /// not pay for it. For after the window is shown; searches do it themselves otherwise.
+    pub fn warm_book_order(&self) -> Result<()> {
+        self.order_tables().map(|_| ())
+    }
+
+    /// Takes in the mapping file when another engine replaced it.
+    fn refresh_book_order(&self) {
+        let stamp = order_file_stamp(&self.index_path);
+        let current = self
+            .book_order
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stamp;
+        if stamp == current {
+            return;
+        }
+        let read = BookOrderState::read(&self.index_path);
+        let mut state = self
+            .book_order
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if read.revision == state.revision && read.places == state.places {
+            state.stamp = read.stamp;
+            return;
+        }
+        *state = read;
+        drop(state);
+        self.page_cache.clear();
+    }
+
+    /// The number of `file_path`, handed out on the book's first write. Only while this
+    /// engine holds the writer, which no other engine can then hold.
     pub(crate) fn book_number(&self, file_path: &str) -> Result<u32> {
+        anyhow::ensure!(
+            self.index_writer.is_some(),
+            "a book number is handed out only while the index writer is held"
+        );
         let mut numbers = self
             .book_numbers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        self.loaded_numbers(&mut numbers)?.number_for(file_path)
+        let numbers = numbers.get_or_insert_with(|| BookNumbers::new(&self.index_path));
+        if self.numbers_stale.swap(false, Ordering::AcqRel) {
+            self.index_reader.reload()?;
+            numbers.catch_up(&self.index_reader.searcher())?;
+        }
+        numbers.number_for(file_path)
     }
 
     /// The high half of every id of the book `file_path`.
     fn id_base(&self, file_path: &str) -> Result<u64> {
         Ok(u64::from(self.book_number(file_path)?) << 32)
-    }
-
-    fn loaded_numbers<'a>(
-        &self,
-        numbers: &'a mut Option<BookNumbers>,
-    ) -> Result<&'a mut BookNumbers> {
-        if numbers.is_none() {
-            // The last commit: this engine's reader may not have reloaded onto it yet.
-            let reader: IndexReader = self
-                .index
-                .reader_builder()
-                .reload_policy(ReloadPolicy::Manual)
-                .try_into()?;
-            *numbers = Some(BookNumbers::load(&reader.searcher(), &self.index_path)?);
-        }
-        Ok(numbers.as_mut().expect("loaded above"))
     }
 
     /// The epoch of the current order mapping.
@@ -8854,8 +8913,10 @@ impl SearchEngine {
     }
 
     /// The rank tables catalogue and generation searches sort by, with the epoch of the
-    /// mapping they were built from.
+    /// mapping they were built from. The segments not read yet are read, and the tables
+    /// built, without holding the locks writers take.
     pub(crate) fn order_tables(&self) -> Result<(u64, Arc<OrderTables>)> {
+        self.refresh_book_order();
         let (epoch, places) = {
             let state = self
                 .book_order
@@ -8863,25 +8924,44 @@ impl SearchEngine {
                 .unwrap_or_else(PoisonError::into_inner);
             (state.epoch, Arc::clone(&state.places))
         };
-        let mut numbers = self
-            .book_numbers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let numbers = self.loaded_numbers(&mut numbers)?;
-        let mut cached = self
+        let searcher = self.index_reader.searcher();
+        let lock_numbers = || {
+            self.book_numbers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        };
+        let unread = lock_numbers()
+            .get_or_insert_with(|| BookNumbers::new(&self.index_path))
+            .unread_segments(&searcher);
+        if !unread.is_empty() {
+            let found = numbers_in_segments(&searcher, &unread)?;
+            lock_numbers()
+                .get_or_insert_with(|| BookNumbers::new(&self.index_path))
+                .absorb(&searcher, &unread, found);
+        }
+        let (version, paths) = {
+            let numbers = lock_numbers();
+            let numbers = numbers.as_ref().expect("created above");
+            let version = numbers.version();
+            let cached = self
+                .order_tables
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(cached) = cached
+                .as_ref()
+                .filter(|c| c.epoch == epoch && c.numbers_version == version)
+            {
+                return Ok((epoch, Arc::clone(&cached.tables)));
+            }
+            (version, numbers.paths().clone())
+        };
+        let tables = Arc::new(OrderTables::build(&paths, &places));
+        *self
             .order_tables
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(cached) = cached
-            .as_ref()
-            .filter(|c| c.epoch == epoch && c.numbers_version == numbers.version())
-        {
-            return Ok((epoch, Arc::clone(&cached.tables)));
-        }
-        let tables = Arc::new(OrderTables::build(numbers.paths(), &places));
-        *cached = Some(CachedOrderTables {
+            .unwrap_or_else(PoisonError::into_inner) = Some(CachedOrderTables {
             epoch,
-            numbers_version: numbers.version(),
+            numbers_version: version,
             tables: Arc::clone(&tables),
         });
         Ok((epoch, tables))
@@ -11040,6 +11120,19 @@ impl SearchEngine {
         self.index_reader.searcher()
     }
 
+    /// Reloads the reader now, as `OnCommitWithDelay` does shortly after another engine's
+    /// commit.
+    #[cfg(test)]
+    pub(crate) fn reload_reader_for_tests(&self) {
+        self.index_reader.reload().unwrap();
+    }
+
+    /// Whether this engine holds the index writer.
+    #[cfg(test)]
+    pub(crate) fn holds_writer_for_tests(&self) -> bool {
+        self.index_writer.is_some()
+    }
+
     /// The exact query, or the advanced one at `distance` when given, with or
     /// without its cross-line part.
     #[cfg(test)]
@@ -11123,6 +11216,7 @@ impl SearchEngine {
         if self.index_writer.is_none() {
             debug!("writer: reopening lazily");
             self.index_writer = Some(self.open_writer()?);
+            self.numbers_stale.store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -11185,6 +11279,7 @@ impl SearchEngine {
 
     fn restore_writer(&mut self) -> Result<()> {
         self.index_writer = Some(self.open_writer()?);
+        self.numbers_stale.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -13681,7 +13776,7 @@ impl SearchEngine {
     fn group_sort(&self, order: &ResultsOrder) -> Result<GroupSort> {
         Ok(match self.order_sort(order)?.1 {
             Some(sort) => GroupSort::Book(sort.tables, sort.kind),
-            None => GroupSort::ScoreDesc,
+            None => GroupSort::ScoreDesc(self.order_tables()?.1),
         })
     }
 
@@ -13726,7 +13821,7 @@ impl SearchEngine {
             .skip(offset as usize)
             .take(limit as usize)
             .map(|g| GroupedRep {
-                id: g.best.1,
+                id: g.best.3,
                 address: g.best.2,
                 count: g.count,
                 siblings: g.siblings.iter().map(|s| s.2).collect(),
@@ -16117,12 +16212,13 @@ impl SegmentCollector for BookCountSegmentCollector {
 #[derive(Clone)]
 enum GroupSort {
     Book(Arc<OrderTables>, OrderKind),
-    ScoreDesc,
+    /// Equal scores, which are common, go by the catalogue.
+    ScoreDesc(Arc<OrderTables>),
 }
 
-/// `(sort_val, id, address)` — ה-id ייחודי גלובלית ומשמש שובר-שוויון
-/// דטרמיניסטי (בציוני רלוונטיות שוויון שכיח).
-type GroupEntry = (u64, u64, DocAddress);
+/// `(sort_val, tie, address, id)`: `tie` is unique per document and breaks ties
+/// deterministically; `id` names the representative.
+type GroupEntry = (u64, u64, DocAddress, u64);
 
 /// צבירת קבוצה אחת: מונה, הנציג הטוב ביותר, ועד [`MERGED_SIBLINGS_CAP`]
 /// חברות נוספות ממוינות לפי אותו סדר.
@@ -16372,7 +16468,7 @@ impl Collector for GroupCollector {
             GroupSort::Book(tables, kind) => {
                 Some(BookOrderColumn::open(reader, Arc::clone(tables), *kind)?)
             }
-            GroupSort::ScoreDesc => None,
+            GroupSort::ScoreDesc(_) => None,
         };
         let key_col = match self.mode {
             ResultGrouping::SameSection => GroupKeyColumn::Section(SectionIdColumn::open(reader)?),
@@ -16391,7 +16487,7 @@ impl Collector for GroupCollector {
     }
 
     fn requires_scoring(&self) -> bool {
-        matches!(self.sort, GroupSort::ScoreDesc)
+        matches!(self.sort, GroupSort::ScoreDesc(_))
     }
 
     fn merge_fruits(&self, _per_segment: Vec<()>) -> tantivy::Result<()> {
@@ -16404,13 +16500,18 @@ impl SegmentCollector for GroupSegmentCollector {
 
     fn collect(&mut self, doc_id: DocId, score: Score) {
         let id = self.id_col.first(doc_id).unwrap_or_default();
-        let sort_val = match self.sort {
-            GroupSort::Book(..) => self
-                .sort_col
-                .as_ref()
-                .and_then(|c| c.first(doc_id))
-                .unwrap_or(u64::MAX),
-            GroupSort::ScoreDesc => u64::from(!score.to_bits()),
+        let (sort_val, tie) = match &self.sort {
+            GroupSort::Book(..) => (
+                self.sort_col
+                    .as_ref()
+                    .and_then(|c| c.first(doc_id))
+                    .unwrap_or(u64::MAX),
+                id,
+            ),
+            GroupSort::ScoreDesc(tables) => (
+                u64::from(!score.to_bits()),
+                tables.key(OrderKind::Catalogue, id),
+            ),
         };
         let key = match self.mode {
             ResultGrouping::SameSection => (0u8, self.key_col.first(doc_id).unwrap_or(id)),
@@ -16423,7 +16524,7 @@ impl SegmentCollector for GroupSegmentCollector {
                 }
             }
         };
-        let entry: GroupEntry = (sort_val, id, DocAddress::new(self.seg_ord, doc_id));
+        let entry: GroupEntry = (sort_val, tie, DocAddress::new(self.seg_ord, doc_id), id);
         self.buffer.push((key, entry));
         if self.buffer.len() >= GROUP_FLUSH_BUFFER {
             self.flush();
@@ -26213,11 +26314,11 @@ mod tests {
         let mut bounded = BoundedGroups::new();
         let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
         for i in 0..cap {
-            bounded.add_entry((1u8, i), (i, i, DocAddress::new(0, i as u32)));
+            bounded.add_entry((1u8, i), (i, i, DocAddress::new(0, i as u32), i));
         }
-        bounded.add_entry((1u8, 0), (0, 0, DocAddress::new(1, 0)));
+        bounded.add_entry((1u8, 0), (0, 0, DocAddress::new(1, 0), 0));
         for i in cap..cap + 10 {
-            bounded.add_entry((1u8, i), (i, i, DocAddress::new(2, (i % 1000) as u32)));
+            bounded.add_entry((1u8, i), (i, i, DocAddress::new(2, (i % 1000) as u32), i));
         }
         assert!(bounded.truncated);
         assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
@@ -26234,9 +26335,9 @@ mod tests {
         let cap = GROUP_COLLECTOR_MAX_GROUPS as u64;
         let high_base = 1_000_000u64;
         for i in high_base..high_base + cap {
-            bounded.add_entry((1u8, i), (i, i, DocAddress::new(0, (i % 1000) as u32)));
+            bounded.add_entry((1u8, i), (i, i, DocAddress::new(0, (i % 1000) as u32), i));
         }
-        bounded.add_entry((1u8, 1), (1, 1, DocAddress::new(1, 1)));
+        bounded.add_entry((1u8, 1), (1, 1, DocAddress::new(1, 1), 1));
         assert!(bounded.truncated);
         assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
         // הטובה נכנסה, הגרועה ביותר פונתה.
@@ -26274,19 +26375,25 @@ mod tests {
         let mut bounded = BoundedGroups::new();
         for i in 0..GROUP_COLLECTOR_MAX_GROUPS as u64 {
             let sort = 1000 + i;
-            bounded.add_entry((1u8, sort), (sort, sort, DocAddress::new(0, i as u32)));
+            bounded.add_entry(
+                (1u8, sort),
+                (sort, sort, DocAddress::new(0, i as u32), sort),
+            );
         }
         assert!(!bounded.truncated);
-        bounded.add_entry((1u8, 5), (5, 5, DocAddress::new(0, 1)));
+        bounded.add_entry((1u8, 5), (5, 5, DocAddress::new(0, 1), 5));
         assert!(bounded.truncated);
         assert!(bounded.groups.contains_key(&(1u8, 5)));
         let worst_key = (1u8, 1000 + GROUP_COLLECTOR_MAX_GROUPS as u64 - 1);
         assert!(!bounded.groups.contains_key(&worst_key));
         // מסמך לקבוצה קיימת נצבר גם בתקרה, והמונה מדויק.
-        bounded.add_entry((1u8, 5), (6, 6, DocAddress::new(0, 2)));
+        bounded.add_entry((1u8, 5), (6, 6, DocAddress::new(0, 2), 6));
         assert_eq!(bounded.groups[&(1u8, 5)].count, 2);
         // קבוצה חדשה גרועה מכולן — נדחית.
-        bounded.add_entry((1u8, 999_999), (999_999, 999_999, DocAddress::new(0, 3)));
+        bounded.add_entry(
+            (1u8, 999_999),
+            (999_999, 999_999, DocAddress::new(0, 3), 999_999),
+        );
         assert!(!bounded.groups.contains_key(&(1u8, 999_999)));
         assert_eq!(bounded.groups.len(), GROUP_COLLECTOR_MAX_GROUPS);
     }
