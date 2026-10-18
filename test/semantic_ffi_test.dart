@@ -220,10 +220,7 @@ Future<void> main() async {
       expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
       expect(response.results, hasLength(1));
       expect(response.groupCount, 1);
-      expect(
-        response.results.single.id,
-        (BigInt.one << 32) + BigInt.from(41),
-      );
+      expect(response.results.single.id, (BigInt.one << 32) + BigInt.from(41));
     });
 
     test(
