@@ -63,6 +63,8 @@ mod sqlite_host;
 #[cfg(test)]
 mod user_books_text_tests;
 mod user_regex;
+// Snippets painted onto the line's nikud — outside `api` so FRB ignores it.
+mod vocalized_snippet;
 // Books of attached databases (`db:<slug>:<bookId>`) read from those databases.
 #[cfg(test)]
 mod attached_text_tests;

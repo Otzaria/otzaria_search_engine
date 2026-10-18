@@ -3355,6 +3355,14 @@ pub fn configure_line_source(db_path: String) -> Result<()> {
     crate::line_source::configure(&db_path)
 }
 
+/// Whether results of a search on the mark-free text show the line with its nikud and
+/// cantillation (highlights unchanged), for lines that have them. Off by default; applies
+/// to every engine of the process. Vocalized searches always show them.
+#[frb(sync)]
+pub fn set_vocalized_snippets(enabled: bool) {
+    crate::vocalized_snippet::set_enabled(enabled);
+}
+
 /// Closes the library database so it can be renamed or replaced, waiting for a
 /// window that is reading it (milliseconds). Returns once the file handle is
 /// released. Calls nest; while suspended, `LibraryDb` results come back
@@ -9436,7 +9444,8 @@ impl SearchEngine {
         if with_text {
             let documents = [(address, doc)];
             if let Some(hit) =
-                Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?.pop()
+                Self::resolve_hit_texts(&self.schema, searcher, &documents, HitRendering::Plain)?
+                    .pop()
             {
                 result.text = hit.plain;
                 result.text_status = hit.status;
@@ -9459,7 +9468,7 @@ impl SearchEngine {
             .map(|&address| Ok((address, loader.load(address)?)))
             .collect::<Result<Vec<_>>>()?;
         Ok(
-            Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?
+            Self::resolve_hit_texts(&self.schema, searcher, &documents, HitRendering::Plain)?
                 .into_iter()
                 .map(|hit| (hit.plain, hit.status))
                 .collect(),
@@ -9822,7 +9831,8 @@ impl SearchEngine {
             .map(|&(_, address)| Ok((address, loader.load(address)?)))
             .collect::<Result<Vec<_>>>()?;
         // The whole candidate window's library rows in one transaction.
-        let texts = Self::resolve_hit_texts(&self.schema, searcher, &documents, false)?;
+        let texts =
+            Self::resolve_hit_texts(&self.schema, searcher, &documents, HitRendering::Plain)?;
 
         let mut candidates = Vec::with_capacity(hits.len());
         let mut text_status = HashMap::new();
@@ -14848,6 +14858,19 @@ impl SearchEngine {
         hl: &HighlightConfig,
         window: Option<usize>,
     ) -> Option<String> {
+        Self::phrase_filtered_snippet(searcher, fragment, phrase, hl, window).map(|(_, html)| html)
+    }
+
+    /// [`Self::phrase_filtered_snippet_html`] with the byte offset in `fragment` where
+    /// the painted text starts.
+    fn phrase_filtered_snippet(
+        searcher: &Searcher,
+        fragment: &str,
+        phrase: &PhraseHighlight,
+        hl: &HighlightConfig,
+        window: Option<usize>,
+    ) -> Option<(usize, String)> {
+        let whole = fragment;
         phrase
             .variants()
             .enumerate()
@@ -14871,7 +14894,8 @@ impl SearchEngine {
                         );
                     }
                 }
-                Some(Self::paint_ranges(fragment, ranges, hl))
+                let offset = fragment.as_ptr() as usize - whole.as_ptr() as usize;
+                Some((offset, Self::paint_ranges(fragment, ranges, hl)))
             })
     }
 
@@ -15125,7 +15149,14 @@ impl SearchEngine {
                 }
             }
         }
-        let texts = Self::resolve_hit_texts(schema, searcher, &documents, vocalized_field)?;
+        let rendering = if vocalized_field {
+            HitRendering::Vocalized
+        } else if crate::vocalized_snippet::enabled() {
+            HitRendering::PlainAndVocalized
+        } else {
+            HitRendering::Plain
+        };
+        let texts = Self::resolve_hit_texts(schema, searcher, &documents, rendering)?;
         let next_lines = match phrase {
             Some(pf) if pf.cross_line && !vocalized_field => {
                 Self::cross_line_next_lines(schema, searcher, &documents, &texts, pf)?
@@ -15169,7 +15200,10 @@ impl SearchEngine {
                     .to_string();
 
                 let text_status = hit_text.status;
-                let text = hit_text.display(vocalized_field);
+                let (text, shown_vocalized) = match rendering {
+                    HitRendering::PlainAndVocalized => (hit_text.plain, hit_text.vocalized),
+                    _ => (hit_text.display(vocalized_field), None),
+                };
                 let cross_line_html = match (next_lines.get(slot), phrase) {
                     (Some(Some(next)), Some(pf)) => {
                         Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
@@ -15180,8 +15214,21 @@ impl SearchEngine {
                 let result_text = match (text_status, cross_line_html) {
                     (TextStatus::Ok, Some(html)) => html,
                     (TextStatus::Ok, None) => {
-                        Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
-                            .unwrap_or(text)
+                        match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase) {
+                            Some((offset, html)) => shown_vocalized
+                                .and_then(|vocalized| {
+                                    crate::vocalized_snippet::vocalize_snippet_html(
+                                        &html,
+                                        &text,
+                                        offset,
+                                        &vocalized,
+                                        &hl.highlight_prefix,
+                                        &hl.highlight_postfix,
+                                    )
+                                })
+                                .unwrap_or(html),
+                            None => shown_vocalized.unwrap_or(text),
+                        }
                     }
                     // The line no longer matches what was indexed: painting the query's
                     // terms into it would claim a match the index never saw.
@@ -15296,7 +15343,8 @@ impl SearchEngine {
         if next_documents.is_empty() {
             return Ok(out);
         }
-        let next_texts = Self::resolve_hit_texts(schema, searcher, &next_documents, false)?;
+        let next_texts =
+            Self::resolve_hit_texts(schema, searcher, &next_documents, HitRendering::Plain)?;
         for (slot, text) in slots.into_iter().zip(next_texts) {
             if text.status == TextStatus::Ok {
                 out[slot] = Some(text.plain);
@@ -15305,15 +15353,15 @@ impl SearchEngine {
         Ok(out)
     }
 
-    /// The highlighted snippet of `text`, or `None` when the generator found nothing
-    /// to show (the caller then shows the line as is).
+    /// The highlighted snippet of `text` and the byte offset in `text` where it starts,
+    /// or `None` when the generator found nothing to show (the caller then shows the line as is).
     fn snippet_html(
         searcher: &Searcher,
         snippet_generator: &SnippetGenerator,
         text: &str,
         hl: &HighlightConfig,
         phrase: Option<&PhraseHighlight>,
-    ) -> Option<String> {
+    ) -> Option<(usize, String)> {
         let mut snippet = snippet_generator.snippet(text);
         snippet.set_snippet_prefix_postfix(&hl.highlight_prefix, &hl.highlight_postfix);
         // For multi-word phrase queries, tantivy's term-based highlighter
@@ -15324,15 +15372,18 @@ impl SearchEngine {
         // context than before).
         let (lead, tail) = glued_punctuation(text, snippet.fragment_range());
         let fragment = [lead, snippet.fragment(), tail].concat();
+        let fragment_start = snippet.fragment_range().start - lead.len();
         let term_html = || {
-            htmlescape::encode_minimal(lead)
+            let html = htmlescape::encode_minimal(lead)
                 + &snippet.to_html()
-                + &htmlescape::encode_minimal(tail)
+                + &htmlescape::encode_minimal(tail);
+            (fragment_start, html)
         };
-        let snippet_html = match phrase {
-            Some(pf) => Self::phrase_filtered_snippet_html(searcher, &fragment, pf, hl, None)
+        let (offset, snippet_html) = match phrase {
+            Some(pf) => Self::phrase_filtered_snippet(searcher, &fragment, pf, hl, None)
+                .map(|(offset, html)| (fragment_start + offset, html))
                 .or_else(|| {
-                    Self::phrase_filtered_snippet_html(
+                    Self::phrase_filtered_snippet(
                         searcher,
                         text,
                         pf,
@@ -15344,25 +15395,24 @@ impl SearchEngine {
                     if pf.allow_term_fallback {
                         term_html()
                     } else {
-                        bounded_plain_snippet(text, hl.max_chars)
+                        (0, bounded_plain_snippet(text, hl.max_chars))
                     }
                 }),
             None => term_html(),
         };
-        (!snippet_html.is_empty()).then_some(snippet_html)
+        (!snippet_html.is_empty()).then_some((offset, snippet_html))
     }
 
     /// The display text of each document, in order: the stored copy for
     /// [`TextStorage::InIndex`] documents, the library-database row for the rest.
     /// Every library row of the call is read in one transaction.
     ///
-    /// `vocalized`: also derive the vocalized rendering of library rows (what the
-    /// `textVocalized` field was indexed from).
+    /// `rendering`: which renderings of library rows to derive.
     fn resolve_hit_texts(
         schema: &Schema,
         searcher: &Searcher,
         documents: &[(DocAddress, TantivyDocument)],
-        vocalized: bool,
+        rendering: HitRendering,
     ) -> Result<Vec<HitText>> {
         let text_stored_f = schema.get_field(TEXT_STORED_FIELD)?;
         let vocalized_stored_f = schema.get_field(TEXT_VOCALIZED_STORED_FIELD)?;
@@ -15452,7 +15502,7 @@ impl SearchEngine {
                 .zip(rows.into_par_iter())
                 .with_min_len(LIBRARY_ROWS_PER_TASK)
                 .map(|(p, row)| {
-                    HitText::from_library_row(row, p.line_check, p.line_hash, vocalized)
+                    HitText::from_library_row(row, p.line_check, p.line_hash, rendering)
                 })
                 .collect();
             for (p, hit) in pending.iter().zip(hits) {
@@ -15465,6 +15515,16 @@ impl SearchEngine {
 
 /// Library rows normalized per parallel task in [`SearchEngine::resolve_hit_texts`].
 const LIBRARY_ROWS_PER_TASK: usize = 8;
+
+/// Which renderings [`SearchEngine::resolve_hit_texts`] derives from a library row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HitRendering {
+    Plain,
+    /// The vocalized one where the row has marks (what `textVocalized` was indexed from).
+    Vocalized,
+    /// Both: the snippet is built on the plain one and shown on the vocalized one.
+    PlainAndVocalized,
+}
 
 /// One hit's display text before snippeting — see [`SearchEngine::resolve_hit_texts`].
 struct HitText {
@@ -15489,7 +15549,7 @@ impl HitText {
         row: crate::line_source::RowText,
         line_check: Option<u32>,
         line_hash: u64,
-        vocalized: bool,
+        rendering: HitRendering,
     ) -> Self {
         use crate::line_source::RowText;
         let raw = match row {
@@ -15503,13 +15563,19 @@ impl HitText {
             }
             RowText::Unreadable => return HitText::unavailable(),
         };
-        let vocalized = (vocalized && hebrew_query::contains_attached_marks(&raw))
-            .then(|| hebrew_query::normalize_vocalized_text_for_indexing(&raw))
-            .filter(|v| !v.is_empty());
-        let plain = if vocalized.is_none() || line_hash != 0 {
-            hebrew_query::normalize_text_for_indexing(&raw)
+        let only_vocalized = rendering == HitRendering::Vocalized;
+        let (plain, vocalized) = if rendering == HitRendering::PlainAndVocalized {
+            hebrew_query::normalize_line_for_indexing(&raw)
         } else {
-            String::new()
+            let vocalized = (only_vocalized && hebrew_query::contains_attached_marks(&raw))
+                .then(|| hebrew_query::normalize_vocalized_text_for_indexing(&raw))
+                .filter(|v| !v.is_empty());
+            let plain = if vocalized.is_none() || line_hash != 0 {
+                hebrew_query::normalize_text_for_indexing(&raw)
+            } else {
+                String::new()
+            };
+            (plain, vocalized)
         };
         let status = if line_check == Some(crate::line_source::line_check(&raw))
             && (line_hash == 0 || line_dedup_hash(&plain) == line_hash)
@@ -15519,7 +15585,7 @@ impl HitText {
             TextStatus::Stale
         };
         // `display` shows the vocalized rendering whenever there is one.
-        let plain = if vocalized.is_some() {
+        let plain = if vocalized.is_some() && only_vocalized {
             String::new()
         } else {
             plain
@@ -15555,15 +15621,18 @@ pub(crate) fn indexed_texts(
     searcher: &Searcher,
     documents: &[(DocAddress, TantivyDocument)],
 ) -> Result<Vec<IndexedText>> {
-    Ok(
-        SearchEngine::resolve_hit_texts(searcher.schema(), searcher, documents, false)?
-            .into_iter()
-            .map(|hit| IndexedText {
-                text: hit.plain,
-                status: hit.status,
-            })
-            .collect(),
-    )
+    Ok(SearchEngine::resolve_hit_texts(
+        searcher.schema(),
+        searcher,
+        documents,
+        HitRendering::Plain,
+    )?
+    .into_iter()
+    .map(|hit| IndexedText {
+        text: hit.plain,
+        status: hit.status,
+    })
+    .collect())
 }
 
 impl HighlightConfig {
@@ -24618,6 +24687,86 @@ mod tests {
     }
 
     #[test]
+    fn plain_search_shows_vocalized_snippets_when_enabled() {
+        let (engine, _dir) = make_vocalized_engine();
+        let search = |query: &str| {
+            let mut texts: Vec<String> = engine
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap()
+                .into_iter()
+                .map(|r| r.text)
+                .collect();
+            texts.sort();
+            texts
+        };
+        let red = |word: &str| format!("<font color=red>{word}</font>");
+        assert!(search("ברא")
+            .iter()
+            .all(|t| !hebrew_query::contains_attached_marks(t)));
+
+        crate::vocalized_snippet::set_enabled(true);
+        let texts = search("ברא");
+        crate::vocalized_snippet::set_enabled(false);
+        assert_eq!(
+            texts,
+            vec![
+                format!("בְּרֵאשִׁית {} אֱלֹהִים", red("בָּרָא")),
+                format!("ובראשית {} אלהים בלי ניקוד", red("ברא")),
+            ]
+        );
+    }
+
+    #[test]
+    fn vocalized_snippet_of_a_long_line_keeps_its_own_marks() {
+        let (mut engine, _dir) = make_engine();
+        let line = format!("{}בָּרָא שָׁלוֹם", "וַיִּבְרָא אֱלֹהִים ".repeat(80));
+        engine
+            .add_text_book_placed(
+                "ספר".to_string(),
+                "/x".to_string(),
+                "/books/long.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                line,
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        crate::vocalized_snippet::set_enabled(true);
+        let hits = engine
+            .search_exact(
+                "שלום".to_string(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        crate::vocalized_snippet::set_enabled(false);
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].text.ends_with("בָּרָא <font color=red>שָׁלוֹם</font>"),
+            "text: {}",
+            hits[0].text
+        );
+    }
+
+    #[test]
     fn vocalized_taamim_flag_splits_classes() {
         let (engine, _dir) = make_vocalized_engine();
         // שאילתה מנוקדת בלי טעמים מוצאת טקסט עם טעם (הטעם חופשי).
@@ -26237,24 +26386,28 @@ mod tests {
         let check = crate::line_source::line_check(raw);
         let hash = line_dedup_hash(&hebrew_query::normalize_text_for_indexing(raw));
         assert_ne!(hash, 0);
-        let status = |line_hash: u64, vocalized: bool| {
+        let row = |line_hash: u64, rendering: HitRendering| {
             HitText::from_library_row(
                 RowText::Found(raw.to_string()),
                 Some(check),
                 line_hash,
-                vocalized,
+                rendering,
             )
-            .status
         };
-        for vocalized in [false, true] {
-            assert_eq!(status(hash, vocalized), TextStatus::Ok);
+        for rendering in [
+            HitRendering::Plain,
+            HitRendering::Vocalized,
+            HitRendering::PlainAndVocalized,
+        ] {
+            assert_eq!(row(hash, rendering).status, TextStatus::Ok);
             // 0 is "no signature": only the check vouches for the row.
-            assert_eq!(status(0, vocalized), TextStatus::Ok);
-            assert_eq!(status(hash ^ 1, vocalized), TextStatus::Stale);
+            assert_eq!(row(0, rendering).status, TextStatus::Ok);
+            assert_eq!(row(hash ^ 1, rendering).status, TextStatus::Stale);
         }
-        let shown =
-            HitText::from_library_row(RowText::Found(raw.to_string()), Some(check), hash, true);
+        let shown = row(hash, HitRendering::Vocalized);
         assert!(shown.plain.is_empty() && shown.vocalized.is_some());
+        let both = row(0, HitRendering::PlainAndVocalized);
+        assert!(!both.plain.is_empty() && both.vocalized.is_some());
     }
 
     #[test]
