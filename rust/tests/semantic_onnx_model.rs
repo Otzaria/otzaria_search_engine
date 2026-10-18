@@ -55,7 +55,7 @@
 #![cfg(feature = "semantic-onnx")]
 
 use search_engine::api::search_engine::{
-    SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
+    ResultsOrder, SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticConfigInput, SemanticErrorKind, SemanticExecutedMode,
     SemanticLexicalMode, SemanticRetrievalMode, TextStorage,
 };
@@ -236,8 +236,9 @@ fn indexed_engine(
     let index_dir = root.path().join("tantivy");
     std::fs::create_dir_all(&index_dir).unwrap();
     let mut engine = SearchEngine::new(index_dir.to_str().unwrap());
-    // Semantic-only hits are hydrated from Tantivy by id, so the lexical index holds the
-    // same lines under the same ids.
+    // The labels in LINES are fixture references, not document ids: the engine composes
+    // ids from the assigned book number and the ordinal. Semantic hydration needs those
+    // actual ids, read back from the lexical index after committing.
     for (id, text) in LINES {
         engine
             .add_document(
@@ -249,7 +250,7 @@ fn indexed_engine(
                 id,
                 false,
                 BOOK_KEY,
-                Some((id) as u32),
+                Some((id - 1) as u32),
                 None,
             )
             .unwrap();
@@ -261,6 +262,20 @@ fn indexed_engine(
         .expect("the Meivin identity must configure");
     assert!(configured.enabled);
 
+    let lines = LINES
+        .iter()
+        .map(|&(id, text)| {
+            let line_id = lexical_line_id(&engine, id);
+            SemanticBookLineInput {
+                line_id,
+                section_id: line_id,
+                text: format!("{passage_prefix}{text}"),
+                line_hash: id,
+                reference: format!("probe {id}"),
+                segment: id,
+            }
+        })
+        .collect();
     let indexed = engine
         .semantic_index_books(vec![SemanticBookInput {
             source_book_key: BOOK_KEY.to_owned(),
@@ -269,17 +284,7 @@ fn indexed_engine(
             is_pdf: false,
             topics: TOPICS.to_owned(),
             extra_facets: Vec::new(),
-            lines: LINES
-                .iter()
-                .map(|&(id, text)| SemanticBookLineInput {
-                    line_id: id,
-                    section_id: id,
-                    text: format!("{passage_prefix}{text}"),
-                    line_hash: id,
-                    reference: format!("probe {id}"),
-                    segment: id,
-                })
-                .collect(),
+            lines,
         }])
         .expect("indexing loads the model and embeds every line");
     assert_eq!(indexed.books_indexed, 1);
@@ -295,6 +300,34 @@ fn indexed_engine(
     assert_eq!(status.embedding_dim, 256);
     assert_eq!(status.vector_count, LINES.len() as u32);
     engine
+}
+
+/// The id Tantivy actually stores for a fixture label, without assuming a book number.
+fn lexical_line_id(engine: &SearchEngine, label: u64) -> u64 {
+    let text = LINES
+        .iter()
+        .find(|(id, _)| *id == label)
+        .map(|(_, text)| *text)
+        .expect("a known fixture label");
+    let hits = engine
+        .search_exact(
+            text.to_owned(),
+            vec![TOPICS.to_owned()],
+            2,
+            0,
+            ResultsOrder::Relevance,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+    assert_eq!(hits.len(), 1, "one lexical line for fixture {label}");
+    let line = engine
+        .get_document_by_id(hits[0].id)
+        .unwrap()
+        .expect("the lexical hit hydrates by its actual id");
+    assert_eq!(line.text, text);
+    line.id
 }
 
 /// Every line with its semantic score for `query`, best first.
@@ -355,7 +388,7 @@ fn the_meivin_model_ranks_the_line_a_query_is_about_first() {
         println!("query for line {expected}: {ranking:?}");
         assert_eq!(
             ranking.first().map(|&(id, _)| id),
-            Some(expected),
+            Some(lexical_line_id(&engine, expected)),
             "the line the query is about must rank first; ranking (id, score): {ranking:?}"
         );
     }

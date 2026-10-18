@@ -71,8 +71,6 @@ jobs:
           flutter pub add "dev:integration_test:{sdk: flutter}"
           mkdir -p integration_test
           cat > integration_test/search_test.dart <<'EOF'
-          import 'dart:io';
-
           import 'package:flutter_test/flutter_test.dart';
           import 'package:integration_test/integration_test.dart';
           import 'package:otzaria_search_engine/otzaria_search_engine.dart';
@@ -84,10 +82,11 @@ jobs:
             testWidgets('the bundled engine indexes and searches', (_) async {
               await RustLib.init();
               final temp = await getTemporaryDirectory();
-              final dir = Directory('${temp.path}/probe_index')..createSync(recursive: true);
+              temp.createSync(recursive: true);
+              final dir = temp.createTempSync('probe_index_');
               final engine = await SearchEngine.newInstance(path: dir.path);
               await engine.addDocument(
-                id: BigInt.one,
+                ordinal: 0,
                 title: 'Document 1',
                 reference: 'Reference 1',
                 topics: '/probe',
@@ -108,6 +107,10 @@ jobs:
               );
               expect(results, hasLength(1));
               expect(results.single.title, 'Document 1');
+              // A new index's first book, at ordinal 0 (line number 1).
+              expect(results.single.id, (BigInt.one << 32) | BigInt.one);
+              expect(results.single.reference, 'Reference 1');
+              expect(results.single.segment, BigInt.two);
             });
           }
           EOF
