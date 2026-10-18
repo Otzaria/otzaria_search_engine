@@ -1752,16 +1752,19 @@ fn ensure_keyed_chunking(
     .with_field("model.chunking_identity"))
 }
 
-/// What this installation is, as a vector set or a release must agree with it: the line
-/// recipe this build indexes with, the model family it queries with, and the store it reads.
+/// What this installation is, as a release that declares the store `declared` must agree
+/// with it: the line recipe this build indexes with, the model family it queries with, and
+/// that store when this build reads it — the anchor family's and the windows family's —
+/// or else the default one, so a refusal names what differs.
 #[cfg(feature = "semantic-integration")]
 fn installation_identity(
     model: ModelIdentity,
+    declared: &otzaria_semantic_search::semantic::versioning::StoreIdentity,
 ) -> otzaria_semantic_search::semantic::versioning::IndexVersion {
     otzaria_semantic_search::semantic::versioning::IndexVersion {
         text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
         model,
-        store: otzaria_semantic_search::semantic::official_index::readable_store_identity(),
+        store: otzaria_semantic_search::semantic::official_index::readable_store_for(declared),
     }
 }
 
@@ -5991,16 +5994,19 @@ impl SearchEngine {
             }
             // A manifest that does not read is a damaged release, whatever the set holds;
             // the sidecar's refusal of it would read as a set missing or damaged.
-            if let Err(err) = serde_json::from_str::<
+            let release = match serde_json::from_str::<
                 otzaria_semantic_search::semantic::segment_set::ReleaseManifest,
             >(&input.manifest_json)
             {
-                return Err(SemanticError::new(
-                    SemanticErrorKind::ArtifactCorrupt,
-                    refused(&format!("the release manifest does not read: {err}")),
-                )
-                .with_field("manifest_json"));
-            }
+                Ok(release) => release,
+                Err(err) => {
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::ArtifactCorrupt,
+                        refused(&format!("the release manifest does not read: {err}")),
+                    )
+                    .with_field("manifest_json"))
+                }
+            };
             let cancel = &cancellation.flag;
             // Held until the session is on the new generation: nothing else installs into
             // or compacts this set meanwhile, in this process.
@@ -6021,7 +6027,7 @@ impl SearchEngine {
                 manifest_json: &input.manifest_json,
             };
             let expectation = InstallExpectation {
-                identity: installation_identity(model),
+                identity: installation_identity(model, &release.identity.store),
                 published_manifest_sha256: input.published_manifest_sha256,
             };
             let installed = waiting_for_set_lock(cancel, SET_LOCK_WAIT, || {
