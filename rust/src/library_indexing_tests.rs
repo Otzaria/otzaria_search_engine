@@ -942,3 +942,61 @@ fn a_footnote_tag_inside_a_marker_does_not_hide_the_external_body() {
         "body in line_note must be searchable even when the sup contains an empty footnote tag"
     );
 }
+
+#[test]
+fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_notes_fixture(&db, true);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let stored = "<p><b><sup class=\"footnote-marker\"></sup>המשך</b></p>";
+    let expected = "<p><b><sup class=\"footnote-marker\"></sup><i class=\"footnote\">הערה זרזיר</i>המשך</b></p>";
+    conn.execute("UPDATE line_content SET content=? WHERE id=20999", [stored])
+        .unwrap();
+    conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO line_note VALUES (20999,0,0,?,?)",
+        ["", "הערה זרזיר"],
+    )
+    .unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let input = library_input(21, "הערות");
+    let mut from_db = new_engine(&dir.path().join("db_index"));
+    from_db.open_index_writer().unwrap();
+    let result = from_db
+        .add_library_books(vec![input.clone()], &IndexingCancellationToken::new())
+        .unwrap();
+    assert_eq!(result[0].status, LibraryBookStatus::Indexed);
+    from_db.commit().unwrap();
+    let mut from_source = new_engine(&dir.path().join("source_index"));
+    let mut rows = book_21_text()
+        .split('\n')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    rows[1] = expected.to_string();
+    from_source
+        .add_text_book_bytes(
+            input.title,
+            input.topics,
+            input.file_path,
+            input.catalogue_order,
+            input.generation_order,
+            rows.join("\n").into_bytes(),
+            input.extra_facets,
+            TextStorage::InIndex,
+            Some(vec![3]),
+        )
+        .unwrap();
+    from_source.commit().unwrap();
+    assert_eq!(stored_documents(&from_db), stored_documents(&from_source));
+    for word in ["זרזיר", "זרזירהמשך"] {
+        assert_eq!(
+            hit_books(&from_db, word),
+            hit_books(&from_source, word),
+            "{word}"
+        );
+    }
+}

@@ -165,6 +165,19 @@ fn after_inline_closings(html: &str, mut at: usize) -> usize {
     at
 }
 
+fn only_tags_between(html: &str, mut at: usize, end: usize) -> bool {
+    while at < end {
+        if html.as_bytes()[at] != b'<' {
+            return false;
+        }
+        let Some(close) = html[at..end].find('>') else {
+            return false;
+        };
+        at += close + 1;
+    }
+    at == end
+}
+
 fn footnote_html(body: &str) -> String {
     format!("<i class=\"footnote\">{body}</i>")
 }
@@ -199,7 +212,12 @@ pub(crate) fn rehydrate_inline_notes(line: &str, notes: &[BookNote]) -> Option<S
             let inside = sups
                 .get(sups.partition_point(|sup| sup.end <= at.at))
                 .filter(|sup| sup.start < at.at);
-            let empty_marker = marker.filter(|marker| marker.start == at.at);
+            // Empty markers have no visible width. A charPos scan can therefore
+            // stop before their opening formatting tags. Follow only this note's
+            // corresponding marker, and only across complete tags with no text.
+            let empty_marker = marker.filter(|marker| {
+                at.at <= marker.start && only_tags_between(line, at.at, marker.start)
+            });
             match inside.or(empty_marker) {
                 Some(sup) => Insertion {
                     at: after_inline_closings(line, sup.end),
@@ -538,6 +556,98 @@ mod rehydration_regression_tests {
                 Some(format!(
                     "{marker}<i class=\"footnote\">ראשונה</i><i class=\"footnote\">שנייה</i>"
                 ))
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_anchored_marker_after_leading_tags_keeps_its_body_in_the_block() {
+        let marker = "<sup class=\"footnote-marker\"></sup>";
+        for (prefix, suffix) in [("<p>", "</p>"), ("<b>", "</b>"), ("<p><b>", "</b></p>")] {
+            let stored = format!("{prefix}{marker}המשך{suffix}");
+            let expected =
+                format!("{prefix}{marker}<i class=\"footnote\">הערה זרזיר</i>המשך{suffix}");
+            let actual = rehydrate_inline_notes(
+                &stored,
+                &[BookNote {
+                    char_pos: 0,
+                    has_marker: true,
+                    body: "הערה זרזיר".into(),
+                }],
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "{prefix}");
+            assert_eq!(
+                crate::hebrew_query::strip_html_for_indexing(&actual),
+                crate::hebrew_query::strip_html_for_indexing(&expected)
+            );
+        }
+        // Cross inline closings after the marker, but retain the paragraph boundary.
+        let stored = format!("<p><b>{marker}</b></p>המשך");
+        assert_eq!(
+            rehydrate_inline_notes(
+                &stored,
+                &[BookNote {
+                    char_pos: 0,
+                    has_marker: true,
+                    body: "הערה זרזיר".into(),
+                }]
+            ),
+            Some(format!(
+                "<p><b>{marker}</b><i class=\"footnote\">הערה זרזיר</i></p>המשך"
+            ))
+        );
+    }
+
+    #[test]
+    fn adjacent_bodies_after_a_wrapped_empty_marker_keep_their_source_order() {
+        let marker = "<sup class=\"footnote-marker\"></sup>";
+        let stored = format!("<p><b>{marker}המשך</b></p>");
+        let notes = [
+            BookNote {
+                char_pos: 0,
+                has_marker: true,
+                body: "ראשונה".into(),
+            },
+            BookNote {
+                char_pos: 0,
+                has_marker: false,
+                body: "שנייה".into(),
+            },
+        ];
+        assert_eq!(rehydrate_inline_notes(&stored, &notes), Some(format!(
+            "<p><b>{marker}<i class=\"footnote\">ראשונה</i><i class=\"footnote\">שנייה</i>המשך</b></p>"
+        )));
+    }
+
+    #[test]
+    fn leading_tags_do_not_move_unanchored_bodies_or_cross_visible_prefixes() {
+        let marker = "<sup class=\"footnote-marker\"></sup>";
+        let stored = format!("<p><b>{marker}המשך</b></p>");
+        assert_eq!(
+            rehydrate_inline_notes(
+                &stored,
+                &[BookNote {
+                    char_pos: 0,
+                    has_marker: false,
+                    body: "לפני".into(),
+                }]
+            ),
+            Some(format!("<i class=\"footnote\">לפני</i>{stored}"))
+        );
+        for prefix in ["<p> ", "<p>&nbsp;", "<p>א", "<p"] {
+            let stored = format!("{prefix}{marker}המשך</p>");
+            assert_eq!(
+                rehydrate_inline_notes(
+                    &stored,
+                    &[BookNote {
+                        char_pos: 0,
+                        has_marker: true,
+                        body: "לפני".into(),
+                    }]
+                ),
+                Some(format!("<i class=\"footnote\">לפני</i>{stored}")),
+                "{prefix}"
             );
         }
     }
