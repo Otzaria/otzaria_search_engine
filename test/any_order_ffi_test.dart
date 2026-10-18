@@ -22,8 +22,6 @@ Future<void> main() async {
         title: 'בבא מציעא',
         topics: '/בדיקות',
         filePath: '/library/any_order.txt',
-        catalogueOrder: 0,
-        generationOrder: 0,
         text: 'להחזיר את החפץ חייב',
         textStorage: TextStorage.inIndex,
       );

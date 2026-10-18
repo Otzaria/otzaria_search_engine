@@ -44,22 +44,26 @@ SearchEngine.new(String path)
 ##### addDocument
 
 ```dart
-Future<void> addDocument(
-  int id,
-  String title,
-  String reference,
-  String topics,
-  String text,
-  int segment,
-  bool isPdf,
-  String filePath
-)
+Future<void> addDocument({
+  required int ordinal,
+  required String title,
+  required String reference,
+  required String topics,
+  required String text,
+  required BigInt segment,
+  required bool isPdf,
+  required String filePath,
+  int? sectionOrdinal,
+  List<String>? extraFacets,
+})
 ```
 
-Adds a document to the search index.
+Adds one line of a book to the search index.
 
 **Parameters:**
-- `id` (int/u64): Unique document identifier
+- `ordinal` (u32): The line's 0-based position in its book. The engine composes the
+  document id as `(bookNumber << 32) + ordinal + 1`, where `bookNumber` is the number it
+  gave the book (`filePath`) on its first write
 - `title` (String): Document title
 - `reference` (String): Document reference/citation
 - `topics` (String): Faceted topics (hierarchical, e.g., "category/subcategory")
@@ -67,6 +71,7 @@ Adds a document to the search index.
 - `segment` (int/u64): Segment number within the document
 - `isPdf` (bool): Whether the document is a PDF
 - `filePath` (String): File path to the document
+- `sectionOrdinal` (u32?): The ordinal of the line that opens the line's section
 
 **Returns:** Future<void>
 
@@ -244,10 +249,33 @@ sequence.
 
 ---
 
+##### Book numbers, order and stamps
+
+Every book gets a **book number** from the engine on its first write, by `filePath`: the
+high half of all its document ids. A number is never given to another book of the same
+index (the highest one handed out is reserved in `otzaria_book_numbers.json`); a book
+rewritten in place keeps its number.
+
+The catalogue and generation order are not in the ids. `setBookOrder` replaces the whole
+mapping (`BookOrderEntry { filePath, catalogueOrder, generationOrder }`), stored in
+`otzaria_book_order.json` beside the index, and `ResultsOrder.catalogue` /
+`ResultsOrder.generation` sort by it from the next call on — no reindexing. A book absent
+from the mapping sorts after every book in it, by number. The same mapping again changes
+nothing; every change bumps `bookOrderRevision()`.
+
+`getBookStamps()` returns per book: `bookNumber`, live `documents`, `contentHash`
+(`computeBookFingerprint`: text and metadata), `textHash` (`computeContentFingerprint`),
+`metadataHash` (`computeBookMetadataFingerprint`: title, topics, extra facets) and
+`sourceHash` (the `sourceHash` the book was written with, stored as given). A stamp is 0
+when absent or when the book's documents disagree on it.
+
 ##### Write & maintenance API
 
 ```dart
 Future<void> addDocumentsBatch({required List<DocumentInput> docs}) // bulk add, no commit
+Future<BigInt> setBookOrder({required List<BookOrderEntry> entries}) // the order mapping
+BigInt bookOrderRevision()
+Future<List<BookStamps>> getBookStamps()          // number, documents and stamps per book
 Future<void> upsertDocument({...})                // delete-by-id + re-insert, no commit
 Future<void> upsertDocumentsBatch({required List<DocumentInput> docs})
 Future<void> deleteDocumentById({required BigInt id})
@@ -851,14 +879,14 @@ final searchEngine = SearchEngine.new('/path/to/index');
 
 // Add documents
 await searchEngine.addDocument(
-  1,
-  'Example Book',
-  'Chapter 1',
-  'category/subcategory',
-  'This is the full text content to be indexed',
-  1,
-  false,
-  '/path/to/book.txt'
+  ordinal: 0,
+  title: 'Example Book',
+  reference: 'Chapter 1',
+  topics: 'category/subcategory',
+  text: 'This is the full text content to be indexed',
+  segment: BigInt.zero,
+  isPdf: false,
+  filePath: '/path/to/book.txt',
 );
 
 await searchEngine.commit();

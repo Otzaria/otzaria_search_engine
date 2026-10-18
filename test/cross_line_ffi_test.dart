@@ -21,8 +21,6 @@ Future<void> main() async {
         title: 'בראשית',
         topics: '/תורה',
         filePath: '/library/bereshit.txt',
-        catalogueOrder: 0,
-        generationOrder: 0,
         text:
             'ויבדל בין המים אשר מתחת לרקיע ובין המים\n(ג) ויאמר אלהים יקוו המים',
         textStorage: TextStorage.inIndex,
@@ -53,8 +51,6 @@ Future<void> main() async {
         title: 'בדיקות גבול שורה',
         topics: '/בדיקות',
         filePath: '/library/fixture.txt',
-        catalogueOrder: 1,
-        generationOrder: 0,
         text: text,
         textStorage: TextStorage.inIndex,
       );

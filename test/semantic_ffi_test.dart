@@ -41,7 +41,7 @@ Future<void> main() async {
       indexDir = Directory.systemTemp.createTempSync('otzaria_ffi_test');
       engine = await SearchEngine.newInstance(path: indexDir.path);
       await engine.addDocument(
-        id: BigInt.from(41),
+        ordinal: 40,
         title: 'בראשית',
         reference: 'בראשית א:א',
         topics: '/תורה',
@@ -49,7 +49,7 @@ Future<void> main() async {
         segment: BigInt.from(2),
         isPdf: false,
         filePath: '/library/bereshit.json',
-        sectionId: BigInt.from(7),
+        sectionOrdinal: 6,
       );
       await engine.commit();
     });
@@ -106,7 +106,8 @@ Future<void> main() async {
       expect(response.results, hasLength(1));
 
       final hit = response.results.single;
-      expect(hit.id, BigInt.from(41));
+      // The only book of the index is number 1: its line 41 is (1 << 32) + 41.
+      expect(hit.id, (BigInt.one << 32) + BigInt.from(41));
       expect(hit.source, SemanticResultSource.lexical);
       expect(hit.segment, BigInt.from(2));
       expect(hit.filePath, '/library/bereshit.json');
@@ -219,7 +220,10 @@ Future<void> main() async {
       expect(response.executedMode, SemanticExecutedMode.lexicalOnly);
       expect(response.results, hasLength(1));
       expect(response.groupCount, 1);
-      expect(response.results.single.id, BigInt.from(41));
+      expect(
+        response.results.single.id,
+        (BigInt.one << 32) + BigInt.from(41),
+      );
     });
 
     test(
@@ -260,8 +264,9 @@ Future<void> main() async {
     // Not the recipe's 512, which is also the sidecar's own default: only a
     // value the sidecar would not have chosen shows that this one arrived.
     const maxTokens = 384;
-    final lineId = BigInt.from(9001);
-    final sectionId = BigInt.from(42);
+    // The ids the engine gives line 9001 and section 42 of the index's only book.
+    final lineId = (BigInt.one << 32) + BigInt.from(9001);
+    final sectionId = (BigInt.one << 32) + BigInt.from(42);
 
     late Directory root;
     late SearchEngine engine;
@@ -272,7 +277,7 @@ Future<void> main() async {
         path: (Directory('${root.path}/tantivy')..createSync()).path,
       );
       await engine.addDocument(
-        id: lineId,
+        ordinal: 9000,
         title: 'בראשית',
         reference: 'בראשית א:א',
         topics: '/תורה',
@@ -280,7 +285,7 @@ Future<void> main() async {
         segment: BigInt.from(2),
         isPdf: false,
         filePath: bookKey,
-        sectionId: sectionId,
+        sectionOrdinal: 41,
       );
       await engine.commit();
 
@@ -384,7 +389,7 @@ Future<void> main() async {
         // page observable. The configured sidecar stays open for every request.
         for (var n = 1; n <= 12; n++) {
           await engine.addDocument(
-            id: lineId + BigInt.from(n),
+            ordinal: 9000 + n,
             title: 'בראשית',
             reference: 'בראשית א:${n + 1}',
             topics: '/תורה',
@@ -392,7 +397,7 @@ Future<void> main() async {
             segment: BigInt.from(n + 2),
             isPdf: false,
             filePath: bookKey,
-            sectionId: sectionId,
+            sectionOrdinal: 41,
           );
         }
         await engine.commit();
@@ -766,8 +771,6 @@ Future<void> main() async {
         title: 'בראשית',
         topics: '/מקרא/תורה',
         filePath: bookKey,
-        catalogueOrder: 0,
-        generationOrder: 0,
         text: 'בראשית ברא אלהים את השמים ואת הארץ\n$probeLine',
         textStorage: TextStorage.inIndex,
       );
@@ -889,8 +892,6 @@ Future<void> main() async {
         title: 'נוסף',
         topics: '/אחר',
         filePath: '/books/another.txt',
-        catalogueOrder: 1,
-        generationOrder: 0,
         text: 'שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה',
         textStorage: TextStorage.inIndex,
       );

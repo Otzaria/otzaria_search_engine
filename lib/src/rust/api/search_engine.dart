@@ -5,12 +5,14 @@
 
 import '../frb_generated.dart';
 import 'library_indexing.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `bounded_plain_snippet`, `build_advanced_query_ranked`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_fuzzy_query`, `cancelled`, `catalogue_id_base`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `combine_fingerprint`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `enqueue`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `first`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `glued_punctuation`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_storage_or_fallback`, `line_count`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `min_words`, `new_index_settings`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `open_or_create_index`, `open_with`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `prepare_text_book`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `ranked_term_query`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers_with`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `set_search_executor`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stamp_book_fingerprints`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `user_regex_line_outcome`, `user_regex_line_search`, `user_regex_stream_into`, `user_regex_term_query`, `user_regex_term_stream`, `user_regex`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `writer_mut`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BoundedGroups`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupKeyColumn`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PageCounts`, `PhraseHighlight`, `PreparedTextBook`, `RankedPage`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `TermCacheKey`, `TextBookMeta`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_stored_text`, `add_text_book_impl`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `book_number`, `bounded_plain_snippet`, `build_advanced_query_ranked`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_fuzzy_query`, `cancelled`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `combine_fingerprint`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display`, `document_at`, `enqueue`, `ensure_current_index_metadata`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed_metadata`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `first`, `flush`, `from_api`, `from_library_row`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `glued_punctuation`, `group_sort`, `id_base`, `index_metadata_path`, `index_metadata`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_storage_or_fallback`, `line_count`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `loaded_numbers`, `make_snippet_generator`, `materialize_term_set`, `metadata_fingerprint`, `min_words`, `new_index_settings`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `of`, `of`, `open_or_create_index`, `open_with`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `order_epoch`, `order_sort`, `order_tables`, `paint_ranges`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet_html`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `prepare_text_book`, `push_limited_unique`, `push`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `ranked_term_query`, `read_index_metadata`, `readable_schema_version`, `refuse_library_storage`, `register_hebrew_tokenizers_with`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `set_search_executor`, `single_input`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stamp_book`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `user_regex_line_outcome`, `user_regex_line_search`, `user_regex_stream_into`, `user_regex_term_query`, `user_regex_term_stream`, `user_regex`, `variants`, `vocalized_variant_branches`, `with_cross_line`, `with_field`, `write_index_metadata`, `write_inputs_with`, `write_inputs`, `writer_mut`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BookOrderState`, `BoundedGroups`, `CachedOrderTables`, `CachedTermSet`, `Fnv`, `GroupAcc`, `GroupCollector`, `GroupKeyColumn`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitText`, `Ids`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PageCounts`, `PhraseHighlight`, `PreparedTextBook`, `RankedPage`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `StampFields`, `Stamps`, `TermCacheKey`, `TextBookMeta`, `WordMatch`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`, `default`
+// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
 /// synchronous binding blocks the calling Dart isolate on disk I/O.
@@ -227,7 +229,7 @@ bool isProbablyGarbagePdfText({required String normalizedText}) =>
 /// to detect books whose *content* changed without reindexing everything.
 ///
 /// שימו לב: [`SearchEngine::get_book_fingerprints`] מחזיר את החתימה
-/// **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata (סדר קטלוגי
+/// **הקנונית** [`compute_book_fingerprint`], הכוללת גם metadata (כותרת
 /// וכו') — השוואה שלה מול הפונקציה הזו (טקסט בלבד) תזהה כל ספר כ"השתנה".
 ///
 /// Never returns 0 — that value is reserved for "no fingerprint recorded".
@@ -249,10 +251,9 @@ Future<BigInt> computeContentFingerprintBytes({required List<int> text}) =>
     );
 
 /// חתימת האינדוקס הקנונית לספר טקסט: הטקסט הגולמי + כל ה-metadata שמוטבע
-/// באינדקס — כותרת, נתיב קטגוריה, סדר קטלוגי, סדר דורות וממדי הסינון.
-/// שינוי בכל אחד מהם, גם ללא שינוי טקסט, משנה את החתימה — כך שהשוואה מול
-/// [`SearchEngine::get_book_fingerprints`] מזהה גם ספר שרק ה-metadata שלו
-/// התעדכן (אחרת האינדקס נשאר עם facets/מיון/כותרת ישנים).
+/// במסמכי הספר — כותרת, נתיב קטגוריה וממדי הסינון. שינוי בכל אחד מהם, גם ללא
+/// שינוי טקסט, משנה את החתימה. מקום הספר בקטלוג ובדורות אינו בה: הוא מיפוי
+/// ([`SearchEngine::set_book_order`]) ששינויו אינו מצריך אינדוקס מחדש.
 ///
 /// ה-extra_facets ממוינים ומנוקי-כפילויות — סדרם אינו משפיע על האינדקס.
 /// Never returns 0. Pure string computation — safe to call synchronously.
@@ -260,15 +261,25 @@ BigInt computeBookFingerprint({
   required String text,
   required String title,
   required String topics,
-  required int catalogueOrder,
-  required int generationOrder,
   List<String>? extraFacets,
 }) => RustLib.instance.api.crateApiSearchEngineComputeBookFingerprint(
   text: text,
   title: title,
   topics: topics,
-  catalogueOrder: catalogueOrder,
-  generationOrder: generationOrder,
+  extraFacets: extraFacets,
+);
+
+/// The `metadataHash` of a book: everything its documents carry besides its text — title,
+/// category path and the extra facets, sorted and deduplicated as the index keeps them.
+/// [`SearchEngine::get_book_stamps`] returns the value each book was written with, so a
+/// book whose metadata changed is found without reading its text. Never returns 0.
+BigInt computeBookMetadataFingerprint({
+  required String title,
+  required String topics,
+  List<String>? extraFacets,
+}) => RustLib.instance.api.crateApiSearchEngineComputeBookMetadataFingerprint(
+  title: title,
+  topics: topics,
   extraFacets: extraFacets,
 );
 
@@ -303,16 +314,17 @@ abstract class HighlightMatcher implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
-  /// Add a single document. Does not commit.
-  /// Writes no content fingerprint (`contentHash` = 0) — batch ingestion via
-  /// [`Self::add_documents_batch`] is the fingerprint-aware path.
+  /// Add a single line of a book. Does not commit. The id is the engine's: line `ordinal`
+  /// (0-based) of the book `file_path`, whose number is assigned on its first write.
+  /// Records the book's `metadataHash`, and no fingerprint (`contentHash` = 0): batch
+  /// ingestion via [`Self::add_documents_batch`] is the fingerprint-aware path.
   ///
-  /// `_text` is normalized here ([`normalize_text_for_indexing`]) — the API
+  /// `text` is normalized here ([`normalize_text_for_indexing`]) — the API
   /// is exposed over FFI, so the "input is already normalized" assumption
   /// is enforced rather than documented. Already-normalized text passes
   /// through the fast paths at negligible cost.
   Future<void> addDocument({
-    required BigInt id,
+    required int ordinal,
     required String title,
     required String reference,
     required String topics,
@@ -320,13 +332,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
-    BigInt? sectionId,
-    int? generationOrder,
+    int? sectionOrdinal,
     List<String>? extraFacets,
   });
 
   /// Add many documents in a single FFI call. Does not commit.
-  /// For initial bulk loads – no duplicate checking.
+  /// For initial bulk loads – no duplicate checking. Each document's id is composed by the
+  /// engine from its book's number and `ordinal`, as for [`Self::add_document`]; the
+  /// stamps of a book are recorded on its first document in the batch.
   ///
   /// `text` is normalized here ([`normalize_text_for_indexing`]) and a
   /// supplied `text_vocalized` through its vocalized counterpart — the API
@@ -366,9 +379,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
   /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
   /// added per surviving line, with `segment` = the page's `page_index` and
-  /// ids encoding catalogue order like [`Self::add_text_book`]. PDFs record
-  /// no content fingerprint (`contentHash` = 0, their text is not in the
-  /// library DB).
+  /// ids composed like [`Self::add_text_book`]'s. PDFs record their
+  /// `metadataHash` and no content fingerprint (`contentHash` = 0, their text is
+  /// not in the library DB).
   ///
   /// Returns the number of documents added; 0 means the PDF yielded no
   /// usable text (scanned/garbage) — the caller falls back to a sidecar or
@@ -377,8 +390,6 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String title,
     required String topics,
     required String filePath,
-    required int catalogueOrder,
-    required int generationOrder,
     required List<PdfPageInput> pages,
     List<String>? extraFacets,
   });
@@ -386,16 +397,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Indexes a whole text book in ONE FFI call. Does not commit.
   ///
   /// Splits `text` into lines, tracks the `<h…>` heading reference trail,
-  /// normalizes each line ([`normalize_text_for_indexing`]), stamps the
-  /// book's canonical fingerprint ([`compute_book_fingerprint`] — text +
-  /// metadata) on every document, and adds one document per line. Returns the number of documents added (0 for empty
-  /// text — the caller writes its empty-book marker in that case).
+  /// normalizes each line ([`normalize_text_for_indexing`]), records the
+  /// book's stamps ([`compute_book_fingerprint`] — text + metadata,
+  /// [`compute_content_fingerprint`], [`compute_book_metadata_fingerprint`] and
+  /// `source_hash` as given) on its first document, and adds one document per line.
+  /// Returns the number of documents added (0 for empty text — the caller writes its
+  /// empty-book marker in that case).
   ///
   /// This is the whole-book replacement for the app's per-line pipeline
   /// (Dart isolate → per-batch FFI normalize → SendPort copy → batch add):
   /// the raw text crosses the bridge exactly once and only a count comes
-  /// back. Document ids encode catalogue order exactly like the Dart
-  /// `buildCatalogueDocumentId`: `((catalogue_order+1) << 32) + ordinal+1`.
+  /// back. Document ids are `(bookNumber << 32) + ordinal+1`, the book's number
+  /// assigned by the engine on its first write (see [`Self::get_book_stamps`]); the
+  /// book's place in the catalogue is [`Self::set_book_order`]'s.
   ///
   /// `text_storage`: [`TextStorage::LibraryDb`] only when `text` is the
   /// newline-joined rows of an official book read from the library database
@@ -412,16 +426,18 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// in the index anyway, as for `InIndex` — the rows that held embedded `data:` images,
   /// which a result would otherwise read back raw (megabytes) on every window. Ignored
   /// for `InIndex`; ordinals past the last line are ignored.
+  ///
+  /// `source_hash`: an opaque hash of the book's source (the library database's
+  /// `book.contentHash`), stored as given; `None`/0 for none.
   Future<int> addTextBook({
     required String title,
     required String topics,
     required String filePath,
-    required int catalogueOrder,
-    required int generationOrder,
     required String text,
     List<String>? extraFacets,
     required TextStorage textStorage,
     Uint32List? storedLines,
+    BigInt? sourceHash,
   });
 
   /// [`Self::add_text_book`] over raw UTF-8 bytes. The app reads book
@@ -434,13 +450,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required String title,
     required String topics,
     required String filePath,
-    required int catalogueOrder,
-    required int generationOrder,
     required List<int> text,
     List<String>? extraFacets,
     required TextStorage textStorage,
     Uint32List? storedLines,
+    BigInt? sourceHash,
   });
+
+  /// The revision of the order mapping: 0 before any [`Self::set_book_order`].
+  BigInt bookOrderRevision();
 
   /// Stops every lexical call tagged with `request_id` (the streams, counts and
   /// per-book counts that take `cancel_request_id`), running or still to come.
@@ -825,6 +843,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// a fingerprint (e.g. PDF), or its live documents disagree (partial
   /// reindex) — callers should treat such books as changed or skip them.
   Future<Map<String, BigInt>> getBookFingerprints();
+
+  /// Every book of the index with its number, live documents and stamps, read columnar in
+  /// one pass, by `file_path`. What a check after a library update compares against: the
+  /// metadata and source stamps need no book text.
+  Future<List<BookStamps>> getBookStamps();
 
   /// Text-only fingerprint of **one** book, by its `filePath` key — the
   /// single-book form of [`Self::get_book_text_fingerprints`]. A drift check
@@ -1556,6 +1579,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
   bool setAcronymsDictionaryPath({required String path});
 
+  /// Replaces the whole order mapping: the catalogue and generation position of each book,
+  /// by its `filePath`. Catalogue and generation searches sort by it from the next call on,
+  /// with no reindexing; a book absent from it sorts after every book in it. Stored in the
+  /// index directory, so every engine that opens the index sorts the same way.
+  ///
+  /// Returns the mapping's revision, which grows on every change; the same mapping again
+  /// changes nothing. A `file_path` given twice is an error, and the mapping is kept.
+  Future<BigInt> setBookOrder({required List<BookOrderEntry> entries});
+
   /// Bulk-indexing mode: while enabled, the live writer skips background
   /// segment merges (`NoMergePolicy`). During a full-library build, even the
   /// size-aware policy can repeatedly merge intermediate segments before
@@ -1587,9 +1619,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
   bool setTranslationDictionaryPath({required String path});
 
-  /// Delete then re-insert a single document by id. Does not commit.
+  /// Delete then re-insert a single line, by the id [`Self::add_document`] composes for
+  /// it. Does not commit.
   Future<void> upsertDocument({
-    required BigInt id,
+    required int ordinal,
     required String title,
     required String reference,
     required String topics,
@@ -1597,8 +1630,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required BigInt segment,
     required bool isPdf,
     required String filePath,
-    BigInt? sectionId,
-    int? generationOrder,
+    int? sectionOrdinal,
     List<String>? extraFacets,
   });
 
@@ -1725,6 +1757,91 @@ class BookCountResult {
           truncated == other.truncated;
 }
 
+/// One book's place for [`SearchEngine::set_book_order`]: by `catalogue_order`, and by
+/// `generation_order` then `catalogue_order` (low first).
+class BookOrderEntry {
+  final String filePath;
+  final int catalogueOrder;
+  final int generationOrder;
+
+  const BookOrderEntry({
+    required this.filePath,
+    required this.catalogueOrder,
+    required this.generationOrder,
+  });
+
+  @override
+  int get hashCode =>
+      filePath.hashCode ^ catalogueOrder.hashCode ^ generationOrder.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BookOrderEntry &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          catalogueOrder == other.catalogueOrder &&
+          generationOrder == other.generationOrder;
+}
+
+/// What the index records about one book: [`SearchEngine::get_book_stamps`]. A stamp is 0
+/// when the book was written without it, or when its documents disagree on it (a partial
+/// rewrite): either way it proves nothing.
+class BookStamps {
+  final String filePath;
+
+  /// The high half of the book's document ids, assigned by the engine.
+  final int bookNumber;
+
+  /// Live documents of the book.
+  final int documents;
+
+  /// [`compute_book_fingerprint`]: text and metadata.
+  final BigInt contentHash;
+
+  /// [`compute_content_fingerprint`] of the book's raw text.
+  final BigInt textHash;
+
+  /// [`compute_book_metadata_fingerprint`].
+  final BigInt metadataHash;
+
+  /// The caller's `source_hash`, stored as given.
+  final BigInt sourceHash;
+
+  const BookStamps({
+    required this.filePath,
+    required this.bookNumber,
+    required this.documents,
+    required this.contentHash,
+    required this.textHash,
+    required this.metadataHash,
+    required this.sourceHash,
+  });
+
+  @override
+  int get hashCode =>
+      filePath.hashCode ^
+      bookNumber.hashCode ^
+      documents.hashCode ^
+      contentHash.hashCode ^
+      textHash.hashCode ^
+      metadataHash.hashCode ^
+      sourceHash.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BookStamps &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          bookNumber == other.bookNumber &&
+          documents == other.documents &&
+          contentHash == other.contentHash &&
+          textHash == other.textHash &&
+          metadataHash == other.metadataHash &&
+          sourceHash == other.sourceHash;
+}
+
 /// A total hit count paired with the single-word truncation flag — the
 /// status-bearing return of [`SearchEngine::count_with_status`] and its
 /// advanced/exact/fuzzy variants. `truncated` carries the same meaning as
@@ -1749,7 +1866,9 @@ class CountResult {
 }
 
 class DocumentInput {
-  final BigInt id;
+  /// The 0-based position of the line in its book. The engine composes the document id
+  /// from it and the book's number: `(bookNumber << 32) + ordinal + 1`.
+  final int ordinal;
   final String title;
   final String reference;
   final String topics;
@@ -1760,8 +1879,7 @@ class DocumentInput {
 
   /// Book-level **canonical** fingerprint for the `contentHash` column —
   /// [`compute_book_fingerprint`]: the raw text *plus* the metadata baked
-  /// into the index (title, topics, catalogue order, generation order,
-  /// extra facets). The same value is stamped on every document of a book,
+  /// into the index (title, topics, extra facets). Recorded once for the book,
   /// so [`SearchEngine::get_book_fingerprints`] can compare an index
   /// against the current library source, including metadata-only changes.
   /// Never compare it against [`compute_content_fingerprint`] (text only) —
@@ -1771,10 +1889,14 @@ class DocumentInput {
 
   /// Text-only fingerprint ([`compute_content_fingerprint`] over the raw
   /// book text) for the `textHash` column — unlike `content_hash` it does
-  /// not shift when catalogue order or other metadata changes, so
+  /// not shift when metadata changes, so
   /// [`SearchEngine::get_book_text_fingerprints`] detects content drift
   /// only. `None`/`0` means "no fingerprint recorded".
   final BigInt? textHash;
+
+  /// An opaque hash of the book's source (the library database's `book.contentHash`),
+  /// stored as given for [`SearchEngine::get_book_stamps`]. `None`/`0`: none.
+  final BigInt? sourceHash;
 
   /// הטקסט המנוקד של השורה (נרמול [`normalize_vocalized_text_for_indexing`])
   /// עבור השדה `textVocalized`. `None` לשורה ללא ניקוד/טעמים — השורה
@@ -1782,13 +1904,10 @@ class DocumentInput {
   /// מחשב זאת בעצמו; השדה קיים לצינורות שמוסיפים מסמכים מוכנים.
   final String? textVocalized;
 
-  /// מזהה הסעיף (בלוק הכותרת) של השורה — ראו השדה `sectionId` בסכימה.
-  /// `None` = השורה סעיף לעצמה (`id` משמש כמזהה), כך שחיפוש "תחת אותה
-  /// כותרת" מתנהג כמו "באותה פסקה" עבור מסמכים שהוזנו בלי מזהה סעיף.
-  final BigInt? sectionId;
-
-  /// סדר הדור של הספר (נמוך = מוקדם). `None` ממוין לסוף הרשימה.
-  final int? generationOrder;
+  /// The section (heading block) of the line, as the 0-based ordinal of the line that
+  /// opens it. `None`: the line is a section of its own, so "under the same heading"
+  /// behaves as "in the same line" for documents given no section.
+  final int? sectionOrdinal;
 
   /// נתיבי facet נוספים לצד `topics` — ממדי סינון (מחבר/תקופה/ספר-יסוד),
   /// למשל `"/author/רש\"י"`, `"/era/ראשונים"`, `"/base"`. ראו
@@ -1802,7 +1921,7 @@ class DocumentInput {
   final TextStorage? textStorage;
 
   const DocumentInput({
-    required this.id,
+    required this.ordinal,
     required this.title,
     required this.reference,
     required this.topics,
@@ -1812,16 +1931,16 @@ class DocumentInput {
     required this.filePath,
     this.contentHash,
     this.textHash,
+    this.sourceHash,
     this.textVocalized,
-    this.sectionId,
-    this.generationOrder,
+    this.sectionOrdinal,
     this.extraFacets,
     this.textStorage,
   });
 
   @override
   int get hashCode =>
-      id.hashCode ^
+      ordinal.hashCode ^
       title.hashCode ^
       reference.hashCode ^
       topics.hashCode ^
@@ -1831,9 +1950,9 @@ class DocumentInput {
       filePath.hashCode ^
       contentHash.hashCode ^
       textHash.hashCode ^
+      sourceHash.hashCode ^
       textVocalized.hashCode ^
-      sectionId.hashCode ^
-      generationOrder.hashCode ^
+      sectionOrdinal.hashCode ^
       extraFacets.hashCode ^
       textStorage.hashCode;
 
@@ -1842,7 +1961,7 @@ class DocumentInput {
       identical(this, other) ||
       other is DocumentInput &&
           runtimeType == other.runtimeType &&
-          id == other.id &&
+          ordinal == other.ordinal &&
           title == other.title &&
           reference == other.reference &&
           topics == other.topics &&
@@ -1852,9 +1971,9 @@ class DocumentInput {
           filePath == other.filePath &&
           contentHash == other.contentHash &&
           textHash == other.textHash &&
+          sourceHash == other.sourceHash &&
           textVocalized == other.textVocalized &&
-          sectionId == other.sectionId &&
-          generationOrder == other.generationOrder &&
+          sectionOrdinal == other.sectionOrdinal &&
           extraFacets == other.extraFacets &&
           textStorage == other.textStorage;
 }

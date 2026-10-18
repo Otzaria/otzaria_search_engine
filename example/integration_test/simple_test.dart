@@ -12,7 +12,7 @@ void main() async {
     final engine = await SearchEngine.newInstance(path: "c:\\dev\\index");
     debugPrint(engine.toString());
     engine.addDocument(
-        id: BigInt.from(1),
+        ordinal: 0,
         title: "Document 1",
         reference: "Reference 1",
         text: "יהודים",

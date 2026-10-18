@@ -4,7 +4,9 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
 import 'search_engine.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
@@ -62,9 +64,11 @@ class LibraryBookInput {
   final String title;
   final String topics;
   final String filePath;
-  final int catalogueOrder;
-  final int generationOrder;
   final List<String>? extraFacets;
+
+  /// The book's `sourceHash` (the database's `book.contentHash`), stored as given;
+  /// `None`/0 for none.
+  final BigInt? sourceHash;
 
   /// As for `add_text_book_bytes`. `LibraryDb` is kept only when every row is one line
   /// (no row holds `\n`) and, in the library, the book has no `line_note` rows (their
@@ -80,9 +84,8 @@ class LibraryBookInput {
     required this.title,
     required this.topics,
     required this.filePath,
-    required this.catalogueOrder,
-    required this.generationOrder,
     this.extraFacets,
+    this.sourceHash,
     required this.textStorage,
   });
 
@@ -95,9 +98,8 @@ class LibraryBookInput {
       title.hashCode ^
       topics.hashCode ^
       filePath.hashCode ^
-      catalogueOrder.hashCode ^
-      generationOrder.hashCode ^
       extraFacets.hashCode ^
+      sourceHash.hashCode ^
       textStorage.hashCode;
 
   @override
@@ -112,9 +114,8 @@ class LibraryBookInput {
           title == other.title &&
           topics == other.topics &&
           filePath == other.filePath &&
-          catalogueOrder == other.catalogueOrder &&
-          generationOrder == other.generationOrder &&
           extraFacets == other.extraFacets &&
+          sourceHash == other.sourceHash &&
           textStorage == other.textStorage;
 }
 
@@ -129,12 +130,22 @@ class LibraryBookResult {
   /// The storage the book was indexed with (`InIndex` when `LibraryDb` was refused).
   final TextStorage textStorage;
 
+  /// The number the engine gave the book (0 unless `Indexed`).
+  final int bookNumber;
+
   /// The book's `contentHash`, as `compute_book_fingerprint` gives it (0 unless `Indexed`).
   final BigInt contentHash;
 
   /// The book's `textHash`, as `compute_content_fingerprint_bytes` gives it (0 unless
   /// `Indexed`).
   final BigInt textHash;
+
+  /// The book's `metadataHash`, as `compute_book_metadata_fingerprint` gives it (0 unless
+  /// `Indexed`).
+  final BigInt metadataHash;
+
+  /// The `source_hash` it was given (0 unless `Indexed`).
+  final BigInt sourceHash;
   final String? error;
 
   const LibraryBookResult({
@@ -142,8 +153,11 @@ class LibraryBookResult {
     required this.status,
     required this.docs,
     required this.textStorage,
+    required this.bookNumber,
     required this.contentHash,
     required this.textHash,
+    required this.metadataHash,
+    required this.sourceHash,
     this.error,
   });
 
@@ -153,8 +167,11 @@ class LibraryBookResult {
       status.hashCode ^
       docs.hashCode ^
       textStorage.hashCode ^
+      bookNumber.hashCode ^
       contentHash.hashCode ^
       textHash.hashCode ^
+      metadataHash.hashCode ^
+      sourceHash.hashCode ^
       error.hashCode;
 
   @override
@@ -166,8 +183,11 @@ class LibraryBookResult {
           status == other.status &&
           docs == other.docs &&
           textStorage == other.textStorage &&
+          bookNumber == other.bookNumber &&
           contentHash == other.contentHash &&
           textHash == other.textHash &&
+          metadataHash == other.metadataHash &&
+          sourceHash == other.sourceHash &&
           error == other.error;
 }
 
