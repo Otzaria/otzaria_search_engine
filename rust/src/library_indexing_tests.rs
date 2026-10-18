@@ -904,3 +904,41 @@ fn without_line_note_or_outside_the_library_the_rows_are_indexed_as_they_are() {
         );
     }
 }
+
+#[test]
+fn a_footnote_tag_inside_a_marker_does_not_hide_the_external_body() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_notes_fixture(&db, true);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    // Exact stored shape from generator InlineNotesTest: a footnote tag inside a sup.
+    let stored = "א<sup class=\"footnote-marker\">1<i class=\"footnote\"></i></sup> ב";
+    conn.execute("UPDATE line_content SET content=? WHERE id=20999", [stored])
+        .unwrap();
+    conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO line_note VALUES (20999,0,2,?,?)",
+        ["1<i class=\"footnote\"></i>", "הערה זרזיר"],
+    )
+    .unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let result = engine
+        .add_library_books(
+            vec![library_input(21, "הערות")],
+            &IndexingCancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(result[0].status, LibraryBookStatus::Indexed);
+    engine.commit().unwrap();
+    let hits = hit_books(&engine, "זרזיר");
+    assert_eq!(
+        hits.len(),
+        1,
+        "body in line_note must be searchable even when the sup contains an empty footnote tag"
+    );
+}

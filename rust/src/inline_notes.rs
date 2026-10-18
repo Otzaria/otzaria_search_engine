@@ -31,6 +31,34 @@ static FOOTNOTE_BODY: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+// The generator leaves footnote tags inside any sup in the marker's HTML.
+static SUP: Lazy<Regex> =
+    Lazy::new(|| Regex::new(&format!(r"(?s)<(?i-u:sup){B}[^>]*>.*?</(?i-u:sup)>")).unwrap());
+
+/// Whether a body outside a sup is already present. Walk both sets of ranges in
+/// order, so checking many markers and notes stays linear in the line's length.
+fn has_rehydrated_body(html: &str, sup_ranges: &[std::ops::Range<usize>]) -> bool {
+    let mut bodies = FOOTNOTE_BODY.find_iter(html).peekable();
+    if bodies.peek().is_none() {
+        return false;
+    }
+    let mut sups = sup_ranges.iter().peekable();
+    bodies.any(|body| {
+        while sups.peek().is_some_and(|sup| sup.end <= body.start()) {
+            sups.next();
+        }
+        !sups.peek().is_some_and(|sup| sup.start <= body.start())
+    })
+}
+
+// Shared with the app's inline_notes_utils.dart. A closing block or unknown tag
+// stays after the restored body; crossing it can merge the next paragraph's words.
+const INLINE_TAG_NAMES: &[&str] = &[
+    "b", "i", "em", "strong", "u", "s", "strike", "span", "sup", "sub", "small", "big", "font",
+    "del", "ins", "a", "abbr", "acronym", "cite", "code", "dfn", "kbd", "q", "samp", "tt", "var",
+    "mark", "bdi", "bdo", "ruby", "rt", "rp",
+];
+
 static FOOTNOTE_MARKER: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
         r"(?s)<(?i-u:sup){B}[^>]*{B}(?i-u:footnote-marker){B}[^>]*>.*?</(?i-u:sup)>"
@@ -45,12 +73,12 @@ static FOOTNOTE_BODY_START: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
-/// The byte ends of the `<sup>` markers whose body was moved out: those not followed by one.
-fn stripped_markers(html: &str) -> Vec<usize> {
+/// The byte ranges of markers whose body was moved out: those not followed by one.
+fn stripped_markers(html: &str) -> Vec<std::ops::Range<usize>> {
     FOOTNOTE_MARKER
         .find_iter(html)
-        .map(|m| m.end())
-        .filter(|&end| !FOOTNOTE_BODY_START.is_match(&html[end..]))
+        .filter(|m| !FOOTNOTE_BODY_START.is_match(&html[m.end()..]))
+        .map(|m| m.range())
         .collect()
 }
 
@@ -63,7 +91,8 @@ struct Insertion {
 }
 
 /// `_rawInsertionPoint`: after the `visible`-th visible UTF-16 unit, with the closing tags
-/// right after it (they belong to the character before them, e.g. `</sup>`).
+/// right after it only when they close inline formatting (e.g. `</sup>`).
+/// Stop before block boundaries so the body remains in its original paragraph.
 fn raw_insertion_point(html: &str, visible: i64) -> Insertion {
     let bytes = html.as_bytes();
     let len = bytes.len();
@@ -113,16 +142,27 @@ fn raw_insertion_point(html: &str, visible: i64) -> Insertion {
     if seen < visible {
         return end_of_line;
     }
-    while i < len && html[i..].starts_with("</") {
-        match find(i, b'>') {
-            Some(close) => i = close + 1,
-            None => break,
-        }
-    }
     Insertion {
-        at: i,
+        at: after_inline_closings(html, i),
         splits_char: false,
     }
+}
+
+fn after_inline_closings(html: &str, mut at: usize) -> usize {
+    while html[at..].starts_with("</") {
+        let Some(close) = html[at..].find('>').map(|close| at + close) else {
+            break;
+        };
+        let name = html[at + 2..close].trim_end();
+        if !INLINE_TAG_NAMES
+            .iter()
+            .any(|inline| name.eq_ignore_ascii_case(inline))
+        {
+            break;
+        }
+        at = close + 1;
+    }
+    at
 }
 
 fn footnote_html(body: &str) -> String {
@@ -131,20 +171,45 @@ fn footnote_html(body: &str) -> String {
 
 /// `rehydrateInlineNotes`: each body at its `charPos`; a note without one after its marker
 /// (the k-th stripped `<sup>` belongs to the k-th note with a marker), else at the end. A line
-/// that already holds a footnote body is left alone. `None` when the line is unchanged.
+/// that already holds a body outside a sup is left alone. `None` when unchanged.
 pub(crate) fn rehydrate_inline_notes(line: &str, notes: &[BookNote]) -> Option<String> {
-    if notes.is_empty() || FOOTNOTE_BODY.is_match(line) {
+    if notes.is_empty() {
+        return None;
+    }
+    let sups: Vec<_> = SUP.find_iter(line).map(|sup| sup.range()).collect();
+    if has_rehydrated_body(line, &sups) {
         return None;
     }
     let markers = stripped_markers(line);
     let mut anchored_seen = 0;
+    let mut previous_position: Option<(i64, Insertion)> = None;
     let mut inserts: Vec<(Insertion, usize)> = Vec::with_capacity(notes.len());
     for (order, note) in notes.iter().enumerate() {
-        let at = if note.char_pos >= 0 {
-            raw_insertion_point(line, note.char_pos)
-        } else if note.has_marker && anchored_seen < markers.len() {
+        let marker = if note.has_marker {
+            markers.get(anchored_seen)
+        } else {
+            None
+        };
+        let mut at = if note.char_pos >= 0 {
+            let at = raw_insertion_point(line, note.char_pos);
+            // The generator never extracts a body inside a sup. Empty trailing
+            // markup can leave the visible scan there, including for a second,
+            // unanchored body after the same marker. Its start is excluded: an
+            // unanchored body at that offset may precede the sup entirely.
+            let inside = sups
+                .get(sups.partition_point(|sup| sup.end <= at.at))
+                .filter(|sup| sup.start < at.at);
+            let empty_marker = marker.filter(|marker| marker.start == at.at);
+            match inside.or(empty_marker) {
+                Some(sup) => Insertion {
+                    at: after_inline_closings(line, sup.end),
+                    splits_char: false,
+                },
+                None => at,
+            }
+        } else if let Some(marker) = marker {
             Insertion {
-                at: markers[anchored_seen],
+                at: marker.end,
                 splits_char: false,
             }
         } else {
@@ -153,6 +218,18 @@ pub(crate) fn rehydrate_inline_notes(line: &str, notes: &[BookNote]) -> Option<S
                 splits_char: false,
             }
         };
+        if note.char_pos >= 0 {
+            // Adjacent bodies share charPos. Keep their source order even when
+            // only the first is anchored to an empty marker at this offset.
+            if let Some((char_pos, previous)) = previous_position {
+                if char_pos == note.char_pos && previous > at {
+                    at = previous;
+                }
+            }
+            previous_position = Some((note.char_pos, at));
+        } else {
+            previous_position = None;
+        }
         if note.has_marker {
             anchored_seen += 1;
         }
@@ -344,7 +421,7 @@ mod tests {
             "<SUP class=\"footnote-marker\">א</SUP>מילה<sup class=\"footnote-markers\">ב</sup>";
         assert_eq!(
             stripped_markers(line),
-            vec!["<SUP class=\"footnote-marker\">א</SUP>".len()]
+            vec![0.."<SUP class=\"footnote-marker\">א</SUP>".len()]
         );
         // `footnotes` is not `footnote`; `<i>` of another class is not a body.
         assert!(!FOOTNOTE_BODY.is_match("<i class=\"footnotes\">x</i>"));
@@ -352,6 +429,130 @@ mod tests {
         assert_eq!(
             rehydrate("<i class=\"footnote\">כבר</i>", &[note(0, None, "x")]),
             "<i class=\"footnote\">כבר</i>"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rehydration_regression_tests {
+    use super::*;
+    #[test]
+    fn a_body_before_a_closing_block_preserves_indexed_words() {
+        let original =
+            "<p>גוף<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">הערה</i></p>המשך";
+        let stored = "<p>גוף<sup class=\"footnote-marker\">א</sup></p>המשך";
+        let notes = [BookNote {
+            char_pos: 4,
+            has_marker: true,
+            body: "הערה".into(),
+        }];
+        let actual = rehydrate_inline_notes(stored, &notes).unwrap();
+        assert_eq!(
+            crate::hebrew_query::strip_html_for_indexing(&actual),
+            crate::hebrew_query::strip_html_for_indexing(original)
+        );
+    }
+    #[test]
+    fn nested_footnote_tags_in_any_sup_remain_part_of_the_marker() {
+        for marker in [
+            "<sup class=\"footnote-marker\">1<i class=\"footnote\"></i></sup>",
+            "<SUP>1<i class=\"footnote\">בתוך</i></SUP>",
+        ] {
+            let stored = format!("א{marker} ב");
+            let notes = [BookNote {
+                char_pos: -1,
+                has_marker: marker.starts_with("<sup class="),
+                body: "הערה חיצונית".into(),
+            }];
+            let actual = rehydrate_inline_notes(&stored, &notes).unwrap();
+            assert!(actual.contains(marker));
+            assert!(actual.contains("<i class=\"footnote\">הערה חיצונית</i>"));
+            assert_eq!(rehydrate_inline_notes(&actual, &notes), None);
+        }
+    }
+
+    #[test]
+    fn inline_closings_are_crossed_but_block_and_unknown_closings_are_not() {
+        for block in ["p", "DIV", "li", "td", "custom-block"] {
+            let stored = format!("<{block}><b><span>אב</span></b></{block}>המשך");
+            let expected = format!(
+                "<{block}><b><span>אב</span></b><i class=\"footnote\">הערה</i></{block}>המשך"
+            );
+            assert_eq!(
+                rehydrate_inline_notes(
+                    &stored,
+                    &[BookNote {
+                        char_pos: 2,
+                        has_marker: false,
+                        body: "הערה".into()
+                    }]
+                ),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            raw_insertion_point("<B>אב</B ></p>", 2).at,
+            "<B>אב</B >".len()
+        );
+        assert_eq!(raw_insertion_point("<b>אב</ b></p>", 2).at, "<b>אב".len());
+    }
+    #[test]
+    fn an_anchored_body_stays_outside_empty_tags_at_the_end_of_its_marker() {
+        let marker = "<sup class=\"footnote-marker\">1<i class=\"footnote\"></i></sup>";
+        let stored = format!("א{marker} ב");
+        let notes = [BookNote {
+            char_pos: 2,
+            has_marker: true,
+            body: "הערה זרזיר".into(),
+        }];
+        let expected = format!("א{marker}<i class=\"footnote\">הערה זרזיר</i> ב");
+        assert_eq!(
+            rehydrate_inline_notes(&stored, &notes),
+            Some(expected.clone())
+        );
+        assert_eq!(rehydrate_inline_notes(&expected, &notes), None);
+    }
+    #[test]
+    fn adjacent_bodies_after_a_marker_keep_their_source_order() {
+        for (marker, char_pos) in [
+            (
+                "<sup class=\"footnote-marker\">1<i class=\"footnote\"></i></sup>",
+                1,
+            ),
+            ("<sup class=\"footnote-marker\"></sup>", 0),
+        ] {
+            let notes = [
+                BookNote {
+                    char_pos,
+                    has_marker: true,
+                    body: "ראשונה".into(),
+                },
+                BookNote {
+                    char_pos,
+                    has_marker: false,
+                    body: "שנייה".into(),
+                },
+            ];
+            assert_eq!(
+                rehydrate_inline_notes(marker, &notes),
+                Some(format!(
+                    "{marker}<i class=\"footnote\">ראשונה</i><i class=\"footnote\">שנייה</i>"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn an_unanchored_body_before_a_sup_stays_before_it() {
+        let stored = "<sup>1</sup> סוף";
+        let notes = [BookNote {
+            char_pos: 0,
+            has_marker: false,
+            body: "לפני".into(),
+        }];
+        assert_eq!(
+            rehydrate_inline_notes(stored, &notes),
+            Some(format!("<i class=\"footnote\">לפני</i>{stored}"))
         );
     }
 }
