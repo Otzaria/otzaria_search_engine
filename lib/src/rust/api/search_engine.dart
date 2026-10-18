@@ -3534,6 +3534,7 @@ class SemanticQueryTypeAlphas {
 /// | `foundational_bonus` | 0.002 | 0 to 1 |
 /// | `foundational_candidate_share` | 0.5 | 0 to 1 |
 /// | `window_penalty` | 0.04 | 0 to 0.2 |
+/// | `alias_penalty` | 0.04 | 0 to 0.2 |
 ///
 /// A value outside its range, or one that is not a number, is refused before the search runs,
 /// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
@@ -3598,6 +3599,10 @@ class SemanticRankingOptions {
   /// scan keeps its best: such a window matches a part of a line rather than the line.
   final double windowPenalty;
 
+  /// Taken off the cosine of a short line found through the neighbour whose vector it
+  /// shares (a format-3 alias), in place of the window penalty.
+  final double aliasPenalty;
+
   const SemanticRankingOptions({
     this.fusionStrategy = SemanticFusionStrategy.rrf,
     this.rrfK = 60,
@@ -3615,6 +3620,7 @@ class SemanticRankingOptions {
     this.foundationalBonus = 0.002,
     this.foundationalCandidateShare = 0.5,
     this.windowPenalty = 0.04,
+    this.aliasPenalty = 0.04,
   });
 
   /// The ranking a search runs on when it is passed none, read from the engine: the defaults
@@ -3639,7 +3645,8 @@ class SemanticRankingOptions {
       candidateWindowMultiplier.hashCode ^
       foundationalBonus.hashCode ^
       foundationalCandidateShare.hashCode ^
-      windowPenalty.hashCode;
+      windowPenalty.hashCode ^
+      aliasPenalty.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3661,7 +3668,8 @@ class SemanticRankingOptions {
           candidateWindowMultiplier == other.candidateWindowMultiplier &&
           foundationalBonus == other.foundationalBonus &&
           foundationalCandidateShare == other.foundationalCandidateShare &&
-          windowPenalty == other.windowPenalty;
+          windowPenalty == other.windowPenalty &&
+          aliasPenalty == other.aliasPenalty;
 }
 
 class SemanticRemoveResult {

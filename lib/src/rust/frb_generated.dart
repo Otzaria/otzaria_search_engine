@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -10541,8 +10542,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticRankingOptions dco_decode_semantic_ranking_options(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return SemanticRankingOptions(
       fusionStrategy: dco_decode_semantic_fusion_strategy(arr[0]),
       rrfK: dco_decode_u_32(arr[1]),
@@ -10560,6 +10561,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       foundationalBonus: dco_decode_f_64(arr[13]),
       foundationalCandidateShare: dco_decode_f_64(arr[14]),
       windowPenalty: dco_decode_f_64(arr[15]),
+      aliasPenalty: dco_decode_f_64(arr[16]),
     );
   }
 
@@ -13036,6 +13038,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_foundationalBonus = sse_decode_f_64(deserializer);
     var var_foundationalCandidateShare = sse_decode_f_64(deserializer);
     var var_windowPenalty = sse_decode_f_64(deserializer);
+    var var_aliasPenalty = sse_decode_f_64(deserializer);
     return SemanticRankingOptions(
       fusionStrategy: var_fusionStrategy,
       rrfK: var_rrfK,
@@ -13053,6 +13056,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       foundationalBonus: var_foundationalBonus,
       foundationalCandidateShare: var_foundationalCandidateShare,
       windowPenalty: var_windowPenalty,
+      aliasPenalty: var_aliasPenalty,
     );
   }
 
@@ -15456,6 +15460,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_f_64(self.foundationalBonus, serializer);
     sse_encode_f_64(self.foundationalCandidateShare, serializer);
     sse_encode_f_64(self.windowPenalty, serializer);
+    sse_encode_f_64(self.aliasPenalty, serializer);
   }
 
   @protected

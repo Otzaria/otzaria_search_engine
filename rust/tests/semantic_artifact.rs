@@ -3626,6 +3626,8 @@ struct Pipeline {
     model: ModelIdentity,
     warehouse: PathBuf,
     codec: ReleaseCodec,
+    /// The cosine a short line needs to share a neighbour's vector in the base, if any.
+    alias_threshold: Option<f32>,
     /// Each release's directory, `segment.oxv` and `release.json`, in order.
     releases: Vec<PathBuf>,
 }
@@ -3648,6 +3650,7 @@ impl Pipeline {
             model,
             warehouse,
             codec,
+            alias_threshold: None,
             releases: Vec::new(),
         }
     }
@@ -3769,6 +3772,8 @@ impl Pipeline {
             out_dir: out.clone(),
             created_at: CREATED_AT.to_string(),
             built_by: None,
+            // A delta takes its chain's.
+            alias_threshold: self.alias_threshold.filter(|_| previous.is_none()),
         })
         .unwrap();
         self.releases.push(out.clone());
@@ -4012,4 +4017,125 @@ fn releases_of_either_store_install_in_order_serve_and_compact() {
         assert_segment_format(&vectors, codec);
         serves("after compaction");
     }
+}
+
+/// A short line that shares a neighbour's vector in a format-3 set is found through that
+/// vector: in its book, as window 255 and scored the alias penalty below the line whose
+/// vector it shares; in a book it was copied into since, under that book's filter; and it
+/// counts as covered.
+#[test]
+fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    const SHORT: &str = "/books/short.txt";
+    const COPY: &str = "/books/copy.txt";
+    let lines: Vec<String> = [
+        "הלכות שבת פרק ראשון בדיני הוצאה",
+        "יציאות השבת שתים שהן ארבע בפנים",
+        "ושתים שהן ארבע בחוץ כיצד העני עומד",
+        "בחוץ ובעל הבית",
+        "בפנים פשט העני את ידו לפנים ונתן",
+        "לתוך ידו של בעל הבית או שנטל מתוכה",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.5);
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("שבת", "/משנה", SHORT, 0, lines.join("\n"))],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    assert_eq!(
+        aliases.iter().map(|row| row.hint).collect::<Vec<_>>(),
+        [3],
+        "the short line, and only it, shares a neighbour's vector"
+    );
+    drop(segment);
+
+    // The library since: the short line and its context copied into another category.
+    let device = pipeline.root.path().join("device");
+    std::fs::create_dir_all(&device).unwrap();
+    add_books(
+        &mut SearchEngine::new(device.to_str().unwrap()),
+        &[
+            ("שבת", "/משנה", SHORT, 0, lines.join("\n")),
+            ("העתק", "/העתק", COPY, 1, lines[1..].join("\n")),
+        ],
+    );
+    let engine = SearchEngine::new(device.to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    let vectors = pipeline.root.path().join("vectors");
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+
+    let refs: Vec<LineRef<'_>> = lines
+        .iter()
+        .map(|text| LineRef { text, section: 0 })
+        .collect();
+    let embedded = Chunker::new(production_chunking())
+        .unwrap()
+        .embedded_text(&refs, 3)
+        .unwrap();
+    let query = embedded.strip_prefix(PASSAGE_PREFIX).unwrap_or(&embedded);
+    let found = |facets: &[&str]| {
+        let response = search(&engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        response.results
+    };
+
+    let results = found(&[]);
+    let short = results
+        .iter()
+        .find(|hit| (hit.file_path.as_str(), hit.segment) == (SHORT, 3))
+        .expect("the short line comes back through the vector it shares");
+    assert_eq!(short.matched_window, ALIAS_WINDOW);
+    let values = search_engine::semantic_keys::column_values(&refs);
+    let shared = results
+        .iter()
+        .find(|hit| {
+            hit.file_path == SHORT
+                && hit.matched_window == 0
+                && values[hit.segment as usize] == aliases[0].key.column_value()
+        })
+        .expect("the line whose vector it shares");
+    let penalty = shared.semantic_score.unwrap() - short.semantic_score.unwrap();
+    assert!((penalty - 0.04).abs() < 1e-3, "{penalty}");
+
+    let copied = found(&["/העתק"]);
+    assert!(
+        copied.iter().any(
+            |hit| (hit.file_path.as_str(), hit.segment, hit.matched_window)
+                == (COPY, 2, ALIAS_WINDOW)
+        ),
+        "the copy of the short line is reached under its book's filter: {:?}",
+        copied
+            .iter()
+            .map(|hit| (&hit.file_path, hit.segment, hit.matched_window))
+            .collect::<Vec<_>>()
+    );
+
+    let coverage = engine
+        .semantic_coverage(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(coverage.covered_lines, coverage.live_keyed_lines);
 }

@@ -238,6 +238,7 @@ impl Publisher {
             out_dir: out.clone(),
             created_at: CREATED_AT.to_string(),
             built_by: None,
+            alias_threshold: None,
         })
         .unwrap();
         self.releases.push(out);

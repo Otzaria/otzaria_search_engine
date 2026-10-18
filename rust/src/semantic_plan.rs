@@ -191,6 +191,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
                         book,
                         ordinal: ordinal as u32,
                         window,
+                        short: window == 0 && line.short,
                         sha256,
                     })?;
                     embed.offer(&sha256, &text)?;
@@ -556,6 +557,9 @@ struct PlannedLine {
     text: Option<([u8; 32], String)>,
     /// Each window past the first the recipe embeds for it: its ordinal, SHA-256 and text.
     windows: Vec<(u8, [u8; 32], String)>,
+    /// Embedded with its neighbours' context (`Chunker::borrows_context`): a plan's short
+    /// record, which may share a neighbour's vector.
+    short: bool,
     pdf: bool,
     /// The `chunkKey` column's value, when the index has a column this build uses.
     column: Option<u64>,
@@ -752,6 +756,7 @@ fn plan_book(
             });
             let text = windows.next().map(|(_, sha256, text)| (sha256, text));
             PlannedLine {
+                short: text.is_some() && chunker.borrows_context(&texts[index]),
                 text,
                 windows: windows.collect(),
                 pdf: pdf[index],

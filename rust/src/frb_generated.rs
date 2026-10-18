@@ -9998,6 +9998,7 @@ impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
         let mut var_foundationalBonus = <f64>::sse_decode(deserializer);
         let mut var_foundationalCandidateShare = <f64>::sse_decode(deserializer);
         let mut var_windowPenalty = <f64>::sse_decode(deserializer);
+        let mut var_aliasPenalty = <f64>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticRankingOptions {
             fusion_strategy: var_fusionStrategy,
             rrf_k: var_rrfK,
@@ -10015,6 +10016,7 @@ impl SseDecode for crate::api::search_engine::SemanticRankingOptions {
             foundational_bonus: var_foundationalBonus,
             foundational_candidate_share: var_foundationalCandidateShare,
             window_penalty: var_windowPenalty,
+            alias_penalty: var_aliasPenalty,
         };
     }
 }
@@ -12139,6 +12141,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticRankin
                 .into_into_dart()
                 .into_dart(),
             self.window_penalty.into_into_dart().into_dart(),
+            self.alias_penalty.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -14237,6 +14240,7 @@ impl SseEncode for crate::api::search_engine::SemanticRankingOptions {
         <f64>::sse_encode(self.foundational_bonus, serializer);
         <f64>::sse_encode(self.foundational_candidate_share, serializer);
         <f64>::sse_encode(self.window_penalty, serializer);
+        <f64>::sse_encode(self.alias_penalty, serializer);
     }
 }
 

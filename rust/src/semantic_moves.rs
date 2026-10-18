@@ -25,6 +25,9 @@
 //! it arrived in, held to its whole key, and in no other book. An unfiltered search plans
 //! every book, with nothing unreached.
 //!
+//! A short line that shares a neighbour's vector has no slot: its own key is recorded in its
+//! book through its alias, and where it arrives it brings the vector it shares.
+//!
 //! Every key here is read from the set and compared with the set's own, so a set of 8-byte
 //! keys (segment format 3) is compared at that width throughout, with no narrowing.
 //!
@@ -41,6 +44,7 @@
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::distribution::gates::book_records;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
+use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
 use otzaria_semantic_search::semantic::resolve::SlotRef;
 use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
 use rayon::prelude::*;
@@ -147,9 +151,45 @@ impl SetView {
 
     /// Every key a scan admitting `book` reaches through the book's records — its live slots,
     /// the live slots its extras name, and those its foreign records resolve to — into
-    /// `out`, with the record's hint, sorted.
+    /// `out`, with the record's hint, sorted; and the own key of each short line of the book
+    /// that shares a neighbour's vector, which is recorded there although no slot holds it.
     pub(crate) fn recorded(&self, book: &str, out: &mut Vec<(ChunkKey, u32)>) {
-        book_records(&self.set, book, out);
+        let mut records = Vec::new();
+        self.set.book_occurrences(book, &mut records);
+        out.clear();
+        for (key, record) in records {
+            out.push((key, record.hint));
+            if let Some(anchor) = record.anchor.filter(|_| record.window == ALIAS_WINDOW) {
+                out.push((anchor, record.hint));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+
+    /// Of `values`, short lines' own keys by column value, the vectors they share: the key
+    /// of each alias occurrence of the set whose anchor is one of them, by that value.
+    pub(crate) fn alias_targets(
+        &self,
+        values: &HashSet<u64>,
+        cancel: &CancellationToken,
+    ) -> Option<Vec<(u64, ChunkKey)>> {
+        let mut targets = Vec::new();
+        for segment in self.set.segments() {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            targets.extend(
+                segment
+                    .occurrences()
+                    .filter(|row| row.is_alias())
+                    .map(|row| (row.anchor.column_value(), row.key))
+                    .filter(|(value, _)| values.contains(value)),
+            );
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        Some(targets)
     }
 
     /// Of `slots` — live slots that hold arrivals' keys — the keys a filtered scan of the

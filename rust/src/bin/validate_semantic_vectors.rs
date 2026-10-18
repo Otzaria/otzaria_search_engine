@@ -15,7 +15,8 @@
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
 //!   reached by the runtime resolver at that exact source occurrence, using the set's
 //!   parent-anchor and window metadata and the recomputed key at the width the set stores it
-//!   (all 128 bits in segment format 2, the first 64 in format 3). The same
+//!   (all 128 bits in segment format 2, the first 64 in format 3); a short line that shares
+//!   a neighbour's vector is reached through its alias, by its own key. The same
 //!   applies to every further window the recipe emits. Standalone source character coverage is
 //!   reported separately: a bounded recipe can pass G3 while omitting long-line tails;
 //!   and with `--plan`, every record of the plan the set was assembled from is one a scan
