@@ -161,6 +161,23 @@ fn worker() -> WorkerInfo {
 /// The pipeline, from `books`: the index, its plan, the plan's vectors embedded by the
 /// stand-in into a warehouse, a base assembled from both, and that base installed.
 fn release(books: &[Book]) -> Release {
+    release_in(books, |_| EpochChoice::New(CodecSpec::I8SymVec), None)
+}
+
+/// `rot192-i8i4` fitted on `warehouse` as `fit-rotation` fits it, at the stand-in's width:
+/// three quarters of the components in int8 and the rest in 4 bits — segment format 3.
+fn rot_epoch(warehouse: &Warehouse) -> EpochChoice {
+    use otzaria_semantic_search::distribution::assemble::{fit_rot_i8i4, ROTATION_SAMPLE};
+    EpochChoice::Given(fit_rot_i8i4(warehouse, ROTATION_SAMPLE, 48, 16).unwrap())
+}
+
+/// [`release`] with its base in the epoch `epoch` makes of the filled warehouse, its short
+/// lines sharing a neighbour's vector at `alias_threshold`.
+fn release_in(
+    books: &[Book],
+    epoch: impl FnOnce(&Warehouse) -> EpochChoice,
+    alias_threshold: Option<f32>,
+) -> Release {
     let root = TempDir::new().unwrap();
     let index = root.path().join("index");
     std::fs::create_dir_all(&index).unwrap();
@@ -213,10 +230,11 @@ fn release(books: &[Book]) -> Release {
         warehouse: &Warehouse::open(&warehouse).unwrap(),
         kind: PackageKind::Base,
         previous: None,
-        epoch: EpochChoice::New(CodecSpec::parse("i8-sym-vec", 1.0).unwrap()),
+        epoch: epoch(&Warehouse::open(&warehouse).unwrap()),
         out_dir: assembled.clone(),
         created_at: CREATED_AT.to_string(),
         built_by: None,
+        alias_threshold,
     })
     .unwrap();
     let vectors = root.path().join("vectors");
@@ -483,6 +501,64 @@ fn a_release_with_long_lines_covers_and_resolves_their_windows() {
     assert_eq!(gate(&report, "G6").0, "passed", "{printed}");
 }
 
+/// A release in `rot192-i8i4`, segment format 3, keeps eight bytes of each key: the gates
+/// cover and resolve its lines and windows at that width, and hold its recall to the
+/// codec's floors, 0.98 at 10 and at 50. The stand-in's 64 wide vectors are no measure of
+/// the codec's recall, so G6 is held only to its own floors.
+#[test]
+fn a_release_in_the_rotated_codec_is_gated_at_its_key_width_and_floors() {
+    let mut books = books();
+    let long = (0..60).map(|at| line(4, at)).collect::<Vec<_>>().join(" ");
+    books[2].4 = format!("{}\n{long}\n{long}", books[2].4);
+    // A short line among long ones, which shares a neighbour's vector.
+    books[0].4 = format!(
+        "{}
+{}
+{}",
+        line(1, 0),
+        "שורה קצרה",
+        line(1, 1)
+    );
+    let release = release_in(&books, rot_epoch, Some(0.5));
+    let set =
+        otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&release.vectors).unwrap();
+    let mut records = Vec::new();
+    set.book_occurrences("/books/one.txt", &mut records);
+    assert!(
+        records.iter().any(|(_, record)| record.window == u8::MAX),
+        "the short line is an alias"
+    );
+    assert_eq!(
+        (
+            set.identity().store.store_format_version,
+            set.identity().store.vector_precision.as_str()
+        ),
+        (3, "rot192-i8i4")
+    );
+    drop(set);
+    let out = release.path("report.json");
+    let args = all_gates(&release, &release.warehouse, &out);
+    let (code, printed) = validate(&as_args(&args));
+    let report = report(&out);
+    let (status, g3) = gate(&report, "G3");
+    assert_eq!(status, "passed", "{printed}");
+    assert_eq!(g3["keyedLines"], g3["coveredLines"]);
+    assert!(g3["keyedWindows"].as_u64().unwrap() >= 4, "{g3}");
+    assert_eq!(g3["keyedWindows"], g3["coveredWindows"]);
+    assert_eq!(g3["plan"]["records"], g3["plan"]["reachable"]);
+    let (status, g4) = gate(&report, "G4");
+    assert_eq!(status, "passed", "{printed}");
+    assert_eq!(g4["records"], g4["atHint"]);
+    assert_eq!(g4["unresolved"], 0);
+    let (status, g6) = gate(&report, "G6");
+    assert_eq!(g6["minRecallAt10"], 0.98);
+    assert_eq!(g6["minRecallAt50"], 0.98);
+    let recalled =
+        g6["recallAt10"].as_f64().unwrap() >= 0.98 && g6["recallAt50"].as_f64().unwrap() >= 0.98;
+    assert_eq!(status == "passed", recalled, "{printed}");
+    assert_eq!(code, if recalled { 0 } else { 1 }, "{printed}");
+}
+
 /// A vector shared by inner windows under distinct parents and a standalone anchor must
 /// reach every source occurrence. A per-book key set cannot detect this regression.
 #[test]
@@ -607,6 +683,7 @@ fn a_window_key_mislabeled_as_an_anchor_fails_runtime_coverage_and_resolution() 
         out_dir: assembled.clone(),
         created_at: CREATED_AT.into(),
         built_by: None,
+        alias_threshold: None,
     })
     .unwrap();
     let vectors = release.path("wrong-role-vectors");
@@ -1008,6 +1085,7 @@ fn empty_set(release: &Release, plan: &Path) -> PathBuf {
         out_dir: delta.clone(),
         created_at: CREATED_AT.to_string(),
         built_by: None,
+        alias_threshold: None,
     })
     .unwrap();
     let vectors = release.path("empty-vectors");

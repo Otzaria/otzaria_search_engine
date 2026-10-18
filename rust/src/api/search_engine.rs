@@ -1139,7 +1139,9 @@ pub struct SemanticSearchResult {
     /// unpainted (`Stale`) or empty (`Unavailable`).
     pub text_status: TextStatus,
     /// The window of a long line the semantic hit matched (0: the line's first); past 0,
-    /// `snippet_html` shows that window. Pass it on as [`SemanticHighlightTarget::window`].
+    /// `snippet_html` shows that window. 255 is no window: a short line found through the
+    /// neighbour whose vector it shares, shown whole. Pass it on as
+    /// [`SemanticHighlightTarget::window`].
     pub matched_window: u8,
 }
 
@@ -1358,6 +1360,7 @@ pub struct SemanticQueryTypeAlphas {
 /// | `foundational_bonus` | 0.002 | 0 to 1 |
 /// | `foundational_candidate_share` | 0.5 | 0 to 1 |
 /// | `window_penalty` | 0.04 | 0 to 0.2 |
+/// | `alias_penalty` | 0.04 | 0 to 0.2 |
 ///
 /// A value outside its range, or one that is not a number, is refused before the search runs,
 /// with a [`SemanticError`] of kind `InvalidInput` whose `field` names the option
@@ -1424,6 +1427,10 @@ pub struct SemanticRankingOptions {
     /// scan keeps its best: such a window matches a part of a line rather than the line.
     #[frb(default = 0.04)]
     pub window_penalty: f64,
+    /// Taken off the cosine of a short line found through the neighbour whose vector it
+    /// shares (a format-3 alias), in place of the window penalty.
+    #[frb(default = 0.04)]
+    pub alias_penalty: f64,
 }
 
 impl SemanticRankingOptions {
@@ -1455,6 +1462,7 @@ impl SemanticRankingOptions {
             foundational_bonus: 0.002,
             foundational_candidate_share: 0.5,
             window_penalty: 0.04,
+            alias_penalty: 0.04,
         }
     }
 }
@@ -1752,16 +1760,19 @@ fn ensure_keyed_chunking(
     .with_field("model.chunking_identity"))
 }
 
-/// What this installation is, as a vector set or a release must agree with it: the line
-/// recipe this build indexes with, the model family it queries with, and the store it reads.
+/// What this installation is, as a release that declares the store `declared` must agree
+/// with it: the line recipe this build indexes with, the model family it queries with, and
+/// that store when this build reads it — the anchor family's and the windows family's —
+/// or else the default one, so a refusal names what differs.
 #[cfg(feature = "semantic-integration")]
 fn installation_identity(
     model: ModelIdentity,
+    declared: &otzaria_semantic_search::semantic::versioning::StoreIdentity,
 ) -> otzaria_semantic_search::semantic::versioning::IndexVersion {
     otzaria_semantic_search::semantic::versioning::IndexVersion {
         text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
         model,
-        store: otzaria_semantic_search::semantic::official_index::readable_store_identity(),
+        store: otzaria_semantic_search::semantic::official_index::readable_store_for(declared),
     }
 }
 
@@ -2235,6 +2246,7 @@ fn ranking_profile(options: &SemanticRankingOptions) -> Result<RankingProfile, S
         foundational_bonus: options.foundational_bonus as f32,
         foundational_candidate_share: options.foundational_candidate_share as f32,
         window_penalty: options.window_penalty as f32,
+        alias_penalty: options.alias_penalty as f32,
         query_cache_enabled: preset.query_cache_enabled,
         embedding_cache_enabled: preset.embedding_cache_enabled,
         telemetry_enabled: preset.telemetry_enabled,
@@ -5991,16 +6003,19 @@ impl SearchEngine {
             }
             // A manifest that does not read is a damaged release, whatever the set holds;
             // the sidecar's refusal of it would read as a set missing or damaged.
-            if let Err(err) = serde_json::from_str::<
+            let release = match serde_json::from_str::<
                 otzaria_semantic_search::semantic::segment_set::ReleaseManifest,
             >(&input.manifest_json)
             {
-                return Err(SemanticError::new(
-                    SemanticErrorKind::ArtifactCorrupt,
-                    refused(&format!("the release manifest does not read: {err}")),
-                )
-                .with_field("manifest_json"));
-            }
+                Ok(release) => release,
+                Err(err) => {
+                    return Err(SemanticError::new(
+                        SemanticErrorKind::ArtifactCorrupt,
+                        refused(&format!("the release manifest does not read: {err}")),
+                    )
+                    .with_field("manifest_json"))
+                }
+            };
             let cancel = &cancellation.flag;
             // Held until the session is on the new generation: nothing else installs into
             // or compacts this set meanwhile, in this process.
@@ -6021,7 +6036,7 @@ impl SearchEngine {
                 manifest_json: &input.manifest_json,
             };
             let expectation = InstallExpectation {
-                identity: installation_identity(model),
+                identity: installation_identity(model, &release.identity.store),
                 published_manifest_sha256: input.published_manifest_sha256,
             };
             let installed = waiting_for_set_lock(cancel, SET_LOCK_WAIT, || {
@@ -6232,8 +6247,9 @@ impl SearchEngine {
     /// recomputed from its stored text, which reads the whole store. Cancellable.
     ///
     /// A line is covered when any slot of the set holds its text's key, including a slot a
-    /// later delta deleted; a release deletes only texts no line of its library holds, so
-    /// that counts a line of an index older than the set at most.
+    /// later delta deleted, or an alias shares a neighbour's vector with it; a release
+    /// deletes only texts no line of its library holds, so that counts a line of an index
+    /// older than the set at most.
     pub fn semantic_coverage(
         &self,
         vectors_dir: String,
@@ -6278,6 +6294,13 @@ impl SearchEngine {
                     .join(format!("{}.oxv", segment.id));
                 let opened = Segment::open(&path).map_err(|err| failed(&err.into()))?;
                 keys.extend((0..opened.slot_count()).map(|slot| opened.key(slot).column_value()));
+                // A short line that shares a neighbour's vector is covered by it.
+                keys.extend(
+                    opened
+                        .occurrences()
+                        .filter(|row| row.is_alias())
+                        .map(|row| row.anchor.column_value()),
+                );
             }
             keys.sort_unstable();
             keys.dedup();
@@ -7348,6 +7371,7 @@ impl SearchEngine {
         )
         .map_err(unreadable)?;
         resolver.share_keys(session.state.library_generation);
+        resolver.set_alias_penalty(request.ranking.alias_penalty);
         let filters = SidecarSearchFilters {
             book_paths: None,
             facets: (!request.facets.is_empty()).then(|| request.facets.to_vec()),
@@ -9451,11 +9475,14 @@ impl SearchEngine {
         lines: &[EmbeddedLine<'_>],
     ) -> Result<Vec<Option<String>>> {
         use otzaria_semantic_search::semantic::chunker::truncate_to_chars;
+        use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
         let chunking = semantic_keys::production_chunking();
         let short: Vec<usize> = (0..lines.len())
             .filter(|&at| {
                 let length = lines[at].3.trim().chars().count();
-                (chunking.min_embeddable_chars..chunking.min_meaningful_chars).contains(&length)
+                lines[at].4 != ALIAS_WINDOW
+                    && (chunking.min_embeddable_chars..chunking.min_meaningful_chars)
+                        .contains(&length)
             })
             .collect();
         let mut out: Vec<Option<String>> = lines
@@ -26768,6 +26795,7 @@ mod tests {
                 foundational_bonus: 0.004,
                 foundational_candidate_share: 0.25,
                 window_penalty: 0.03,
+                alias_penalty: 0.05,
             };
             let preset = RankingProfile::from_profile(SearchProfile::Balanced);
             assert_eq!(
@@ -26796,6 +26824,7 @@ mod tests {
                     foundational_bonus: 0.004,
                     foundational_candidate_share: 0.25,
                     window_penalty: 0.03,
+                    alias_penalty: 0.05,
                     query_cache_enabled: preset.query_cache_enabled,
                     embedding_cache_enabled: preset.embedding_cache_enabled,
                     telemetry_enabled: preset.telemetry_enabled,
@@ -26819,7 +26848,7 @@ mod tests {
         #[test]
         fn an_option_out_of_range_is_refused_by_its_name() {
             type Spoil = fn(&mut SemanticRankingOptions);
-            let cases: [(&str, Spoil); 24] = [
+            let cases: [(&str, Spoil); 26] = [
                 ("rrf_k", |o| {
                     o.fusion_strategy = SemanticFusionStrategy::Rrf;
                     o.rrf_k = 0;
@@ -26868,6 +26897,8 @@ mod tests {
                 }),
                 ("window_penalty", |o| o.window_penalty = 0.25),
                 ("window_penalty", |o| o.window_penalty = f64::NAN),
+                ("alias_penalty", |o| o.alias_penalty = 0.25),
+                ("alias_penalty", |o| o.alias_penalty = -0.01),
             ];
             for (field, spoil) in cases {
                 let mut options = defaults();
@@ -26914,6 +26945,7 @@ mod tests {
                 foundational_bonus: 1.0,
                 foundational_candidate_share: 0.0,
                 window_penalty: 0.2,
+                alias_penalty: 0.0,
             };
             ranking_profile(&ends)
                 .expect("the ends of every range are values a calibration may land on");

@@ -33,12 +33,18 @@
 //! [`MAX_LINES_PER_HIT`] per hit, each line once in a search. Without grouping every one is
 //! a result; grouping folds them as it folds any lines, by section or by text.
 //!
-//! A line is returned only once it holds the hit's key by all 128 bits. A column value is
-//! the key's first 64, so a line found by its column is checked against the key recomputed
-//! from its text and its neighbours' before it is returned, and one that fails — a column
-//! left stale by whatever wrote the index — is dropped and counted
-//! ([`LiveResolver::unverified`]). Nothing a scan returns reaches fusion, grouping, a page
-//! or a group's siblings on 64 bits alone.
+//! A line is returned only once it holds the hit's key by every bit the set stores of it:
+//! all 128 in segment format 2, the first 64 in format 3, whose keys read narrowed and are
+//! compared by [`ChunkKey::same_text`]. A column value is the key's first 64, so a line
+//! found by its column is checked against the key recomputed from its text and its
+//! neighbours' before it is returned, and one that fails — a column left stale by whatever
+//! wrote the index — is dropped and counted ([`LiveResolver::unverified`]).
+//!
+//! A short line that shares a neighbour's vector (a format-3 alias) is a record of the
+//! neighbour's hit, window `ALIAS_WINDOW`, whose anchor is the short line's own key: it
+//! resolves as a first-window record of that key, and comes back as window `ALIAS_WINDOW`.
+//! Its line counts toward [`MAX_LINES_PER_HIT`] like any other, and one that moved to another
+//! book is looked for there only when the hit resolved no line at all.
 //!
 //! # A filtered search
 //!
@@ -71,6 +77,7 @@ use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
+use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
 use otzaria_semantic_search::semantic::resolve::{
     BookSet, CandidateResolver, LiveKeySource, RecordRef, ResolveError, ResolvedLine, SlotRef,
     VectorHit, MAX_RECORDS_PER_HIT,
@@ -433,6 +440,9 @@ pub(crate) struct LiveResolver<'a> {
     /// The plan of each filter this search planned, by [`plan_key`]: a search can query
     /// the foundational books besides its own filter, and each query reads its own plan.
     plans: Vec<(String, Arc<ScanPlan>)>,
+    /// What the ranking takes off a short line found through an alias, so that the best
+    /// hit of a line is chosen as the coordinator will score it.
+    alias_penalty: f32,
     /// Why this search's filter could not be planned, when it could not: the semantic half
     /// of the search fails with it, as it would had the resolver failed to read the index.
     failed: Option<ResolveError>,
@@ -507,6 +517,7 @@ impl<'a> LiveResolver<'a> {
             recomputed_anchors: Mutex::new(HashMap::new()),
             library: None,
             plans: Vec::new(),
+            alias_penalty: otzaria_semantic_search::config::profiles::DEFAULT_ALIAS_PENALTY,
             failed: None,
         })
     }
@@ -517,6 +528,11 @@ impl<'a> LiveResolver<'a> {
 
     /// Share recomputed keys with the other searches made while the library database is in
     /// `library`, the state the caller's session was keyed by.
+    /// Score alias lines with the search's own `RankingProfile::alias_penalty`.
+    pub(crate) fn set_alias_penalty(&mut self, penalty: f32) {
+        self.alias_penalty = penalty;
+    }
+
     pub(crate) fn share_keys(&mut self, library: LibraryGeneration) {
         self.library = Some(library);
     }
@@ -556,15 +572,18 @@ impl<'a> LiveResolver<'a> {
         rejected.len().min(u32::MAX as usize) as u32
     }
 
-    /// Whether the line at `position` of `book` holds `key` by all 128 bits, recomputed from
-    /// the text this searcher reads: its own and its neighbours' within the recipe's window.
+    /// Whether the line at `position` of `book` holds `key` at the width the set stores it,
+    /// recomputed from the text this searcher reads: its own and its neighbours' within the
+    /// recipe's window.
     fn holds(
         &self,
         book: &BookLines,
         position: usize,
         key: ChunkKey,
     ) -> Result<bool, ResolveError> {
-        Ok(self.key_at(book, position)? == Some(key))
+        Ok(self
+            .key_at(book, position)?
+            .is_some_and(|held| held.same_text(key)))
     }
 
     /// The key of the line at `position` of `book`, recomputed once per line while the
@@ -659,8 +678,8 @@ impl<'a> LiveResolver<'a> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Which window past the first of the line at `position` of `book` holds `key` by all 128
-    /// bits, recomputed from its text; `None` when none does.
+    /// Which window past the first of the line at `position` of `book` holds `key` at the
+    /// set's width, recomputed from its text; `None` when none does.
     fn window_of(
         &self,
         book: &BookLines,
@@ -677,7 +696,7 @@ impl<'a> LiveResolver<'a> {
         })?;
         Ok(windows
             .iter()
-            .find(|(_, held)| *held == key)
+            .find(|(_, held)| held.same_text(key))
             .map(|&(window, _)| window))
     }
 
@@ -718,7 +737,14 @@ impl<'a> LiveResolver<'a> {
                 let Some(position) = book.position(record.hint) else {
                     continue;
                 };
-                if record.window > 0 {
+                // An alias's line holds its anchor, and is no line of the hit's text to repeat.
+                if let Some((anchor, _)) = alias_line(record) {
+                    if !self.column
+                        || self.column_value(book.docs[position]) == Some(anchor.column_value())
+                    {
+                        wanted.push((Arc::clone(book), position));
+                    }
+                } else if record.window > 0 {
                     windowed.push(book.docs[position]);
                 } else if !self.column {
                     wanted.push((Arc::clone(book), position));
@@ -1300,6 +1326,8 @@ impl<'a> LiveResolver<'a> {
         .collect()
     }
 
+    /// Which window of the line at `position` holds `key` as `record` describes it: where a
+    /// record's role is held to its line, and so where a new role is taught.
     fn record_at(
         &self,
         book: &BookLines,
@@ -1307,6 +1335,14 @@ impl<'a> LiveResolver<'a> {
         key: ChunkKey,
         record: &RecordRef,
     ) -> Result<Option<u8>, ResolveError> {
+        if record.window == ALIAS_WINDOW {
+            let Some((anchor, line)) = alias_line(record) else {
+                return Ok(None);
+            };
+            return Ok(self
+                .record_at(book, position, anchor, &line)?
+                .map(|_| ALIAS_WINDOW));
+        }
         if record.window == 0 {
             return Ok(self
                 .at_hint(book, key, 0, book.ordinals[position])?
@@ -1409,6 +1445,16 @@ impl<'a> LiveResolver<'a> {
         if cancel.is_cancelled() {
             return Err(ResolveError::Cancelled);
         }
+        if record.window == ALIAS_WINDOW {
+            let Some((anchor, line)) = alias_line(record) else {
+                return Ok(Vec::new());
+            };
+            let found = self.search_record(book, anchor, &line, limit, taken, cancel)?;
+            return Ok(found
+                .into_iter()
+                .map(|(position, _)| (position, ALIAS_WINDOW))
+                .collect());
+        }
         let anchor = if record.window == 0 && (self.column || record.anchor.is_some()) {
             key
         } else if let Some(anchor) = record.anchor.filter(|_| record.window > 0) {
@@ -1458,6 +1504,8 @@ impl<'a> LiveResolver<'a> {
         Ok(found)
     }
 
+    /// Where the runtime reaches each of `name`'s `records`. `line_keys` are every line's keys
+    /// by window, at the width the set stores a key (narrowed in segment format 3).
     pub(crate) fn audit_records(
         &self,
         name: &str,
@@ -1486,7 +1534,7 @@ impl<'a> LiveResolver<'a> {
                 "the audit's line keys do not match the live book",
             ));
         }
-        // The validator already keyed this book from its text; reuse those full keys.
+        // The validator already keyed this book from its text, at the set's key width.
         self.remember_keys(book.docs.iter().copied().zip(line_keys.iter().map(|keys| {
             keys.iter()
                 .find(|(window, _)| *window == 0)
@@ -1535,6 +1583,16 @@ impl<'a> LiveResolver<'a> {
             if cancel.is_cancelled() {
                 return Err(ResolveError::Cancelled);
             }
+            // An alias is audited as its short line's own record: that line, by its key.
+            let aliased = alias_line(record);
+            let (key, record) = match &aliased {
+                Some((anchor, line)) => (*anchor, line),
+                None if record.window == ALIAS_WINDOW => {
+                    audit.records.push(RecordAudit::default());
+                    continue;
+                }
+                None => (key, record),
+            };
             let at_hint = if let Some(position) = book.position(record.hint) {
                 self.record_at(&book, position, key, record)?
                     .map(|window| {
@@ -1600,7 +1658,7 @@ impl<'a> LiveResolver<'a> {
     }
 
     /// The position the record at `hint` names, and the window of it, when that line holds
-    /// `key` by all 128 bits; a key past the first window is held to the line's windows.
+    /// `key` at the set's width; a key past the first window is held to the line's windows.
     fn at_hint(
         &self,
         book: &BookLines,
@@ -1694,7 +1752,8 @@ impl<'a> LiveResolver<'a> {
             keys.iter()
                 .enumerate()
                 .filter(|(offset, line)| {
-                    **line == Some(key) && !taken.contains(&book.docs[start + offset])
+                    line.is_some_and(|line| line.same_text(key))
+                        && !taken.contains(&book.docs[start + offset])
                 })
                 .map(|(offset, _)| (start + offset, 0)),
         );
@@ -2218,7 +2277,35 @@ impl LiveResolver<'_> {
             let mut held = view
                 .live_slots(&wanted, cancel)
                 .ok_or(ResolveError::Cancelled)?;
+            // A short line that shares a neighbour's vector has no slot of its own: it arrives
+            // with the vector it shares.
+            let slotted: HashSet<u64> = held.iter().map(|slot| slot.key.column_value()).collect();
+            let unslotted: HashSet<u64> = wanted.difference(&slotted).copied().collect();
+            let mut shared: HashMap<u64, Vec<u64>> = HashMap::new();
+            if !unslotted.is_empty() {
+                let targets = view
+                    .alias_targets(&unslotted, cancel)
+                    .ok_or(ResolveError::Cancelled)?;
+                let values: HashSet<u64> = targets
+                    .iter()
+                    .map(|(_, target)| target.column_value())
+                    .filter(|value| !slotted.contains(value))
+                    .collect();
+                if !values.is_empty() {
+                    held.extend(
+                        view.live_slots(&values, cancel)
+                            .ok_or(ResolveError::Cancelled)?,
+                    );
+                }
+                for (anchor, target) in targets {
+                    shared
+                        .entry(anchor)
+                        .or_default()
+                        .push(target.column_value());
+                }
+            }
             held.sort_unstable_by_key(|slot| (slot.key.column_value(), slot.seg, slot.slot));
+            held.dedup();
             let slots_of = |value: u64| {
                 let at = held.partition_point(|slot| slot.key.column_value() < value);
                 held[at..]
@@ -2230,10 +2317,14 @@ impl LiveResolver<'_> {
                     .values
                     .iter()
                     .flat_map(|&(value, ordinal)| {
-                        slots_of(value).map(move |slot| Arrival {
-                            slot: *slot,
-                            ordinal,
-                        })
+                        let targets = shared.get(&value).map_or(&[][..], Vec::as_slice);
+                        std::iter::once(value)
+                            .chain(targets.iter().copied())
+                            .flat_map(&slots_of)
+                            .map(move |slot| Arrival {
+                                slot: *slot,
+                                ordinal,
+                            })
                     })
                     .collect();
                 found.sort_unstable();
@@ -2481,11 +2572,19 @@ impl LiveKeySource for LiveKeys<'_> {
         found
             .into_iter()
             .map(|(position, window)| {
+                // At the set's width, so a re-anchored record dedups with the ones kept.
+                let anchor = self.resolver.key_at(&book, position)?;
                 Ok(RecordRef {
                     book: Arc::clone(&record.book),
                     hint: book.ordinals[position],
                     window,
-                    anchor: self.resolver.key_at(&book, position)?,
+                    anchor: anchor.map(|anchor| {
+                        if key.is_narrow() {
+                            anchor.narrowed()
+                        } else {
+                            anchor
+                        }
+                    }),
                 })
             })
             .collect::<Result<Vec<_>, ResolveError>>()
@@ -2520,6 +2619,19 @@ impl LiveKeySource for LiveKeys<'_> {
         );
         Ok(true)
     }
+}
+
+/// An alias record as the first-window record of the short line it names: its own key, the
+/// anchor, at its hint. `None` for any other record, and for an alias without its anchor.
+fn alias_line(record: &RecordRef) -> Option<(ChunkKey, RecordRef)> {
+    let anchor = record.anchor.filter(|_| record.window == ALIAS_WINDOW)?;
+    Some((
+        anchor,
+        RecordRef {
+            window: 0,
+            ..record.clone()
+        },
+    ))
 }
 
 /// Whether `compiled` filters admit a book, by the sidecar's own book test: every book
@@ -2709,7 +2821,19 @@ impl CandidateResolver for LiveResolver<'_> {
                     if place.is_none() {
                         place = self.at_hint(&book, hit.key, 1, *ordinal)?;
                     }
-                    for record in &hit.records {
+                    // A short line arrived through its alias: that alias first, before a record
+                    // of the hit's own text in another book could take the line next to it.
+                    let held = book
+                        .position(*ordinal)
+                        .and_then(|position| self.column_value(book.docs[position]));
+                    let (aliases, others): (Vec<&RecordRef>, Vec<&RecordRef>) =
+                        hit.records.iter().partition(|record| {
+                            record.window == ALIAS_WINDOW
+                                && record
+                                    .anchor
+                                    .is_some_and(|anchor| Some(anchor.column_value()) == held)
+                        });
+                    for record in aliases.into_iter().chain(others) {
                         if place.is_some() {
                             break;
                         }
@@ -2743,6 +2867,35 @@ impl CandidateResolver for LiveResolver<'_> {
                 if room == 0 {
                     break;
                 }
+                // A short line may have no lineHash in legacy indexes. Find its
+                // repeats by its own first-window key, using the cached anchor index
+                // (recomputed from text without the chunkKey column).
+                if *window == ALIAS_WINDOW {
+                    let held = if let Some(anchor) = self.key_at(book, *position)? {
+                        self.search_record(
+                            book,
+                            anchor,
+                            &RecordRef {
+                                book: Arc::clone(&book.name),
+                                hint: book.ordinals[*position],
+                                window: 0,
+                                anchor: Some(anchor),
+                            },
+                            room,
+                            &taken,
+                            cancel,
+                        )?
+                        .into_iter()
+                        .map(|(position, _)| position)
+                        .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    taken.extend(held.iter().map(|&other| book.docs[other]));
+                    room -= held.len();
+                    repeats.push((held, Vec::new()));
+                    continue;
+                }
                 let (held, later) =
                     self.repeats_of(book, *position, hit.key, *window, room, &taken, &mut budget)?;
                 taken.extend(held.iter().map(|&other| book.docs[other]));
@@ -2764,6 +2917,7 @@ impl CandidateResolver for LiveResolver<'_> {
                     // A repeat holds the line's text, and with it the same windows.
                     let window = match *window {
                         0 => 0,
+                        ALIAS_WINDOW => ALIAS_WINDOW,
                         _ => self.window_of(book, other, hit.key)?.unwrap_or(*window),
                     };
                     lines.push(self.describe(hit_index, book, other, window)?);
@@ -2938,16 +3092,11 @@ impl CandidateResolver for LiveResolver<'_> {
         // Occurrence penalties can change which hit is best for the same source line.
         let score = |line: &ResolvedLine| {
             let hit = &hits[line.hit as usize];
-            hit.score
-                + if hit.window > 0 {
-                    hit.window_penalty
-                } else {
-                    0.0
-                }
-                - if line.window > 0 {
-                    hit.window_penalty
-                } else {
-                    0.0
+            hit.score + hit.applied_penalty
+                - match line.window {
+                    0 => 0.0,
+                    ALIAS_WINDOW => self.alias_penalty,
+                    _ => hit.window_penalty,
                 }
         };
         lines.sort_by(|a, b| score(b).total_cmp(&score(a)));
@@ -3018,6 +3167,7 @@ mod tests {
         let hit = VectorHit {
             score: 1.0,
             window_penalty: 0.04,
+            applied_penalty: 0.0,
             key,
             records: vec![RecordRef {
                 book: Arc::from("/books/gone.txt"),
@@ -3091,6 +3241,7 @@ mod tests {
         VectorHit {
             score: 1.0,
             window_penalty: 0.04,
+            applied_penalty: if window == 0 { 0.0 } else { 0.04 },
             key,
             records: vec![RecordRef {
                 book: Arc::from(book),
@@ -3346,6 +3497,146 @@ mod tests {
         }
     }
 
+    /// The key of line `index` of `lines`, in its book: a short line's borrows its
+    /// neighbours' context.
+    fn key_in(lines: &[String], index: usize) -> ChunkKey {
+        use otzaria_semantic_search::semantic::chunk_key::LineRef;
+        use otzaria_semantic_search::semantic::chunker::Chunker;
+        let refs: Vec<LineRef<'_>> = lines
+            .iter()
+            .map(|text| LineRef { text, section: 0 })
+            .collect();
+        ChunkKey::of(
+            &Chunker::new(production_chunking())
+                .unwrap()
+                .embedded_text(&refs, index)
+                .unwrap(),
+        )
+    }
+
+    /// A short line that shares its neighbour's vector is an alias record of the neighbour's
+    /// hit: found at its hint by its own key, found where an insertion moved it, and not
+    /// found once its text, and so its key, changed. It comes back as window 255, and a
+    /// compaction re-anchors it as an alias of its own key.
+    #[test]
+    fn an_alias_resolves_the_short_line_by_its_own_key() {
+        let neighbour = "שורה ארוכה דיה לעמוד לבדה בספר".to_string();
+        let short = "קצרה מאד".to_string();
+        // Two lines either side: the short line's key is its context's, which an insertion
+        // above all of them leaves alone.
+        let base = vec![
+            "השורה הראשונה של הספר כולו".to_string(),
+            "השורה השנייה של הספר כולו".to_string(),
+            neighbour,
+            short,
+            "עוד שורה ארוכה שאחריה בספר".into(),
+            "והאחרונה שבשורות הספר כולו".into(),
+        ];
+        let (key, anchor) = (key_in(&base, 2).narrowed(), key_in(&base, 3).narrowed());
+        let hit = || {
+            let mut hit = window_hit(key, 0, "/books/long.txt", 2);
+            hit.records
+                .push(occurrence("/books/long.txt", 3, ALIAS_WINDOW, anchor));
+            hit
+        };
+        let mut moved = vec!["שורת פתיחה חדשה ארוכה למדי".to_string(); 3];
+        moved.extend(base.iter().cloned());
+        let mut changed = base.clone();
+        changed[3] = "קצרה אחרת".to_string();
+        for (lines, expected) in [
+            (&base, vec![(2, 0), (3, ALIAS_WINDOW)]),
+            (&moved, vec![(5, 0), (6, ALIAS_WINDOW)]),
+            (&changed, vec![]),
+        ] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let (index, reader) = windowed_index(&dir, lines);
+            let column = live_chunk_key_field(&index.schema(), dir.path());
+            for column in [column, None] {
+                let cache = Mutex::default();
+                let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+                let found = resolver
+                    .resolve(&[hit()], None, &CancellationToken::new())
+                    .unwrap();
+                let mut found: Vec<(u64, u8)> = found
+                    .iter()
+                    .map(|line| (line.segment, line.window))
+                    .filter(|&(_, window)| window == ALIAS_WINDOW || !expected.is_empty())
+                    .collect();
+                found.sort_unstable();
+                assert_eq!(found, expected, "column: {}", column.is_some());
+                if column.is_some() && !expected.is_empty() {
+                    let live = LiveKeys::new(&resolver, 1).unwrap();
+                    let refreshed = live
+                        .resolve_record(
+                            key,
+                            &occurrence("/books/long.txt", 3, ALIAS_WINDOW, anchor),
+                            &CancellationToken::new(),
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        refreshed
+                            .iter()
+                            .map(|record| (record.hint, record.window, record.anchor))
+                            .collect::<Vec<_>>(),
+                        [(expected[1].0 as u32, ALIAS_WINDOW, Some(anchor))]
+                    );
+                }
+            }
+        }
+    }
+
+    /// A format-3 set's keys are their first eight bytes: its hits and anchors resolve as
+    /// the full keys do, and a record re-anchored for it keeps the set's width.
+    #[test]
+    fn narrow_keys_resolve_and_re_anchor_at_their_width() {
+        let long = long_line("מילה");
+        let (window, key) = crate::semantic_keys::window_keys(&long)[1];
+        let (key, anchor) = (key.narrowed(), parent_key(&long).narrowed());
+        let short = "שורת ביניים ארוכה דיה לעמוד לבדה".to_string();
+        let short_key = parent_key(&short).narrowed();
+        let mut lines = vec![short; 3];
+        lines.push(long);
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &lines);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+            let mut hit = window_hit(key, window, "/books/long.txt", 1);
+            hit.records = vec![occurrence("/books/long.txt", 1, window, anchor)];
+            let mut line = window_hit(short_key, 0, "/books/long.txt", 0);
+            line.records[0].anchor = Some(short_key);
+            let found = resolver
+                .resolve(&[hit, line], None, &CancellationToken::new())
+                .unwrap();
+            let mut found: Vec<_> = found
+                .iter()
+                .map(|line| (line.hit, line.segment, line.window))
+                .collect();
+            found.sort_unstable();
+            assert_eq!(found, [(0, 3, window), (1, 0, 0), (1, 1, 0), (1, 2, 0)]);
+            if column.is_some() {
+                let live = LiveKeys::new(&resolver, 1).unwrap();
+                let refreshed = live
+                    .resolve_record(
+                        key,
+                        &occurrence("/books/long.txt", 1, window, anchor),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    refreshed
+                        .iter()
+                        .map(|record| (record.hint, record.anchor))
+                        .collect::<Vec<_>>(),
+                    [(3, Some(anchor))]
+                );
+            }
+        }
+    }
+
     #[test]
     fn window_parent_can_move_to_another_book() {
         let long = long_line("מילה");
@@ -3400,7 +3691,13 @@ mod tests {
         let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
         let mut inner = window_hit(key, 0, "/books/long.txt", 0);
         inner.records = vec![occurrence("/books/long.txt", 0, window, anchor)];
-        inner.score = 0.9;
+        // This hit entered top-k as a cheap alias (.01), while the resolved long-window
+        // occurrence still owes its normal .20 penalty. Reusing window_penalty as the
+        // scan's applied cost would restore the wrong score and beat the anchor below.
+        inner.window = ALIAS_WINDOW;
+        inner.window_penalty = 0.20;
+        inner.applied_penalty = 0.01;
+        inner.score = 0.89;
         let mut first = window_hit(anchor, 0, "/books/long.txt", 0);
         first.score = 0.88;
         let found = resolver
@@ -3458,6 +3755,51 @@ mod tests {
                 assert!(audit.reached.contains(&(hint, 0, anchor.0)));
                 assert!(audit.reached.contains(&(hint, window, inner.0)));
             }
+        }
+    }
+    #[test]
+    fn repeated_alias_lines_all_resolve() {
+        let block: Vec<String> = [
+            "השורה הראשונה של הספר כולו",
+            "השורה השנייה של הספר כולו",
+            "שורה ארוכה דיה לעמוד לבדה בספר",
+            "קצרה מאד",
+            "עוד שורה ארוכה שאחריה בספר",
+            "והאחרונה שבשורות הספר כולו",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let mut changed = block.clone();
+        changed[1] = "הקשר אחר משנה את מפתח השורה הקצרה".to_string();
+        let lines = [block.clone(), block, changed].concat();
+        let key = key_in(&lines, 2).narrowed();
+        let anchor = key_in(&lines, 3).narrowed();
+        assert_eq!(key_in(&lines, 9).narrowed(), anchor);
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &lines);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+            let mut hit = window_hit(key, 0, "/books/long.txt", 2);
+            hit.records
+                .push(occurrence("/books/long.txt", 3, ALIAS_WINDOW, anchor));
+            let found = resolver
+                .resolve(&[hit], None, &CancellationToken::new())
+                .unwrap();
+            let mut aliases: Vec<_> = found
+                .iter()
+                .filter(|line| line.window == ALIAS_WINDOW)
+                .map(|line| (line.segment, line.window))
+                .collect();
+            aliases.sort_unstable();
+            assert_eq!(
+                aliases,
+                [(3, ALIAS_WINDOW), (9, ALIAS_WINDOW)],
+                "column: {}",
+                column.is_some()
+            );
         }
     }
 }

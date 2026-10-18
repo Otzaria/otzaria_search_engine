@@ -14,9 +14,12 @@
 //!
 //! * **G3, coverage**: every line of the release index the recipe embeds has its text
 //!   reached by the runtime resolver at that exact source occurrence, using the set's
-//!   parent-anchor and window metadata and all 128 bits of the recomputed key. The same
-//!   applies to every further window the recipe emits. Standalone source character coverage is
-//!   reported separately: a bounded recipe can pass G3 while omitting long-line tails;
+//!   parent-anchor and window metadata and the recomputed key at the width the set stores
+//!   it (all 128 bits in segment format 2, the first 64 in format 3); a short line that
+//!   shares a neighbour's vector is reached through its alias, by its own key. The same
+//!   applies to every further window the recipe emits. Standalone source character
+//!   coverage is reported separately: a bounded recipe can pass G3 while omitting
+//!   long-line tails;
 //!   and with `--plan`, every record of the plan the set was assembled from is one a scan
 //!   of the installed set reaches, by the sidecar's own count.
 //! * **G4, resolution**: every record of the set resolves on the release index — its book
@@ -30,8 +33,9 @@
 //!   `ExactReference`), each query embedded once by the runtime query model and handed to
 //!   both. The queries are `--queries`, one per line, or else `--sample-queries` spans of
 //!   3–10 words of the index's lines, drawn with a fixed seed: the same queries for the same
-//!   index. Recall is counted over keys — distinct texts — since that is what a scan returns:
-//!   a text repeated in many books is one hit however many lines it resolves to, so lines
+//!   index. The floors default to 0.98 and 0.99, and to the sidecar's 0.98 and 0.98 for a
+//!   set in `rot192-i8i4`. Recall is counted over keys — distinct texts — since that is
+//!   what a scan returns: a text repeated in many books is one hit however many lines it resolves to, so lines
 //!   that repeat a text cannot crowd the top 50 here as they do on a results page. The scan
 //!   takes nothing off a long line's further windows: what is measured is the encoding.
 //!
@@ -78,7 +82,8 @@ mod gates {
     use anyhow::{bail, Context, Result};
     use otzaria_semantic_search::cancellation::CancellationToken;
     use otzaria_semantic_search::distribution::gates::{
-        coverage, recall, simulate_device, ExactReference,
+        coverage, recall, simulate_device, ExactReference, G6_ROT_MIN_RECALL_AT_10,
+        G6_ROT_MIN_RECALL_AT_50,
     };
     use otzaria_semantic_search::distribution::plan::Plan;
     use otzaria_semantic_search::distribution::warehouse::Warehouse;
@@ -87,6 +92,7 @@ mod gates {
     use otzaria_semantic_search::semantic::embedding::{
         EmbeddingConfig, EmbeddingDeployment, EmbeddingRuntime,
     };
+    use otzaria_semantic_search::semantic::oxv::codec::ROT_I8I4_NAME;
     use otzaria_semantic_search::semantic::oxv::scan::ScanRequest;
     use otzaria_semantic_search::semantic::recipe::{
         query_input, EmbeddingTextRecipe, TextNormalizationRecipe,
@@ -104,6 +110,16 @@ mod gates {
     /// G6's floors when no flag gives them: the spec's.
     const MIN_RECALL_AT_10: f64 = 0.98;
     const MIN_RECALL_AT_50: f64 = 0.99;
+
+    /// G6's default floors for a set in `codec`: `rot192-i8i4` drops components, and the
+    /// sidecar sets its own.
+    fn recall_floors(codec: &str) -> (f64, f64) {
+        if codec == ROT_I8I4_NAME {
+            (G6_ROT_MIN_RECALL_AT_10, G6_ROT_MIN_RECALL_AT_50)
+        } else {
+            (MIN_RECALL_AT_10, MIN_RECALL_AT_50)
+        }
+    }
     /// Queries drawn from the index when no `--queries` file is given.
     const SAMPLED_QUERIES: usize = 200;
     /// The version of the report's JSON shape.
@@ -332,8 +348,8 @@ mod gates {
             _ => bail!("give --vectors, or one --release or more, and not both\n\n{USAGE}"),
         };
         let max_stale_hints = args.ratio("--max-stale-hints")?;
-        let min_recall_10 = args.ratio("--min-recall-10")?.unwrap_or(MIN_RECALL_AT_10);
-        let min_recall_50 = args.ratio("--min-recall-50")?.unwrap_or(MIN_RECALL_AT_50);
+        let min_recall_10 = args.ratio("--min-recall-10")?;
+        let min_recall_50 = args.ratio("--min-recall-50")?;
         let sample = match args.number::<u64>("--sample-queries")? {
             Some(count) if !(1..=MAX_SAMPLED_QUERIES as u64).contains(&count) => bail!(
                 "--sample-queries is {count}, and it is a count from 1 to {MAX_SAMPLED_QUERIES}"
@@ -360,6 +376,9 @@ mod gates {
         let set = SegmentSet::open(&vectors)
             .map_err(|error| anyhow::anyhow!("could not open the vector set: {error}"))?;
         let info = set.info();
+        let (floor_10, floor_50) = recall_floors(&set.identity().store.vector_precision);
+        let min_recall_10 = min_recall_10.unwrap_or(floor_10);
+        let min_recall_50 = min_recall_50.unwrap_or(floor_50);
         println!(
             "Vector set: generation {}, library version {} ({:?}), {} segment(s), {} live and \
              {} dead slot(s)",
@@ -691,14 +710,17 @@ mod gates {
             })?;
         // The set opens with this model as a device's does: the same identity, the loaded
         // package one the set takes queries from.
-        let expected = installation_identity(ModelIdentity {
-            tokenizer_checksum: runtime.tokenizer_checksum().unwrap_or_default().to_string(),
-            query_packages: vec![ModelPackage {
-                checksum: checksum.clone(),
-                quantization: package.quantization.clone(),
-            }],
-            ..family.clone()
-        });
+        let expected = installation_identity(
+            ModelIdentity {
+                tokenizer_checksum: runtime.tokenizer_checksum().unwrap_or_default().to_string(),
+                query_packages: vec![ModelPackage {
+                    checksum: checksum.clone(),
+                    quantization: package.quantization.clone(),
+                }],
+                ..family.clone()
+            },
+            &set.identity().store,
+        );
         set.identity().verify_matches(&expected).map_err(|error| {
             anyhow::anyhow!("the set does not take queries from this model: {error}")
         })?;
@@ -863,7 +885,8 @@ G6, retrieval — recall of the set's scan against the exact f32 scan:
   --sample-queries <n>      How many to draw from the index without --queries, from 1 to
                             100000 (default 200)
   --min-recall-10 <r>       The least mean recall@10 (default 0.98)
-  --min-recall-50 <r>       The least mean recall@50, over distinct texts (default 0.99)
+  --min-recall-50 <r>       The least mean recall@50, over distinct texts (default 0.99;
+                            0.98 for a set in rot192-i8i4)
   --threads <n>             Threads to scan with (default: every core)
 
   --skip <gate>             Do not run G3, G4 or G6, and do not hold the release to it;

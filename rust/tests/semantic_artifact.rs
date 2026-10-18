@@ -196,26 +196,7 @@ fn build_library_under(
     add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
 
     let model_file = mock::write_stub_onnx_package(&work.join("model"));
-    // The chunking this build keys the index's lines under, as the library's vectors are
-    // built with it. The stand-in embeds a bag of words, so a query still ranks first the
-    // line whose words it repeats, role prefixes aside.
-    let model = ModelIdentity {
-        family_id: "test-mock@0000000".to_string(),
-        tokenizer_checksum: mock::stub_tokenizer_checksum(),
-        embedding_dim: 64,
-        pooling: "in-graph".to_string(),
-        max_tokens: 512,
-        embedding_text_version: chunking.embedding_text_version,
-        normalization_version: chunking.normalization_version,
-        chunking_identity: chunking.identity(),
-        query_packages: vec![ModelPackage {
-            checksum: validate_onnx_package(&model_file)
-                .unwrap()
-                .checksum()
-                .to_string(),
-            quantization: "int8".to_string(),
-        }],
-    };
+    let model = mock_model(&model_file, &chunking);
     std::fs::write(
         work.join("model.json"),
         serde_json::to_vec_pretty(&model).unwrap(),
@@ -253,6 +234,32 @@ fn build_library_under(
         vectors,
         model_file,
         model,
+    }
+}
+
+/// The stand-in's identity under `chunking`, the one this build keys the index's lines
+/// under. The stand-in embeds a bag of words, so a query still ranks first the line whose
+/// words it repeats, role prefixes aside.
+fn mock_model(
+    model_file: &Path,
+    chunking: &otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+) -> ModelIdentity {
+    ModelIdentity {
+        family_id: "test-mock@0000000".to_string(),
+        tokenizer_checksum: mock::stub_tokenizer_checksum(),
+        embedding_dim: 64,
+        pooling: "in-graph".to_string(),
+        max_tokens: 512,
+        embedding_text_version: chunking.embedding_text_version,
+        normalization_version: chunking.normalization_version,
+        chunking_identity: chunking.identity(),
+        query_packages: vec![ModelPackage {
+            checksum: validate_onnx_package(model_file)
+                .unwrap()
+                .checksum()
+                .to_string(),
+            quantization: "int8".to_string(),
+        }],
     }
 }
 
@@ -3600,4 +3607,955 @@ fn qa_published_book_hashes_match_the_live_index_source() {
             "published metadata must allow unchanged-book detection: {path}"
         );
     }
+}
+
+/// The codec a [`Pipeline`]'s releases are assembled in: the anchor family's, segment
+/// format 2, or the windows family's, format 3 with 8-byte keys.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReleaseCodec {
+    I8SymVec,
+    Rot,
+}
+
+/// Releases made as the publishing pipeline makes them, one library version at a time: the
+/// version's index, its plan split against the previous ledger, the new keys embedded by the
+/// stand-in into one warehouse, and a base or a delta assembled from both.
+struct Pipeline {
+    root: TempDir,
+    model_file: PathBuf,
+    model: ModelIdentity,
+    warehouse: PathBuf,
+    codec: ReleaseCodec,
+    /// The cosine a short line needs to share a neighbour's vector in the base, if any.
+    alias_threshold: Option<f32>,
+    /// Each release's directory, `segment.oxv` and `release.json`, in order.
+    releases: Vec<PathBuf>,
+}
+
+impl Pipeline {
+    fn new(codec: ReleaseCodec) -> Self {
+        use otzaria_semantic_search::distribution::warehouse::{Warehouse, WarehouseIdentity};
+        let root = TempDir::new().unwrap();
+        let model_file = mock::write_stub_onnx_package(&root.path().join("model"));
+        let model = mock_model(&model_file, &production_chunking());
+        let warehouse = root.path().join("warehouse");
+        Warehouse::create(
+            &warehouse,
+            WarehouseIdentity::of(&model, &model.query_packages[0]),
+        )
+        .unwrap();
+        Self {
+            root,
+            model_file,
+            model,
+            warehouse,
+            codec,
+            alias_threshold: None,
+            releases: Vec::new(),
+        }
+    }
+
+    fn index(&self, version: u32) -> PathBuf {
+        self.root.path().join(format!("index-{version}"))
+    }
+
+    /// Release `version` of `books`: a base for the first, a delta from the last after.
+    fn release(&mut self, version: u32, books: &[Book]) -> PathBuf {
+        use otzaria_semantic_search::distribution::assemble::{
+            assemble, fit_rot_i8i4, AssembleRequest, EpochChoice, ROTATION_SAMPLE,
+        };
+        use otzaria_semantic_search::distribution::ledger::Ledger;
+        use otzaria_semantic_search::distribution::package::PackageKind;
+        use otzaria_semantic_search::distribution::plan::{EmbedManifest, Plan};
+        use otzaria_semantic_search::distribution::shard::{
+            embed_shard, ShardPolicy, WorkerInfo, MODE_MOCK,
+        };
+        use otzaria_semantic_search::distribution::warehouse::Warehouse;
+        use otzaria_semantic_search::semantic::backend::Pooling;
+        use otzaria_semantic_search::semantic::embedding::{
+            EmbeddingConfig, EmbeddingDeployment, EmbeddingRuntime,
+        };
+        use otzaria_semantic_search::semantic::oxv::codec::CodecSpec;
+        use search_engine::semantic_plan::{export_plan, PlanExport};
+        const CREATED_AT: &str = "2026-10-01T00:00:00Z";
+
+        let index = self.index(version);
+        std::fs::create_dir_all(&index).unwrap();
+        add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
+        let previous = self
+            .releases
+            .last()
+            .map(|dir| Ledger::open(dir, Some(version - 1)).unwrap());
+        let plan = self.root.path().join(format!("plan-{version}"));
+        export_plan(PlanExport {
+            index_path: index,
+            out_dir: plan.clone(),
+            library_version: version,
+            library_release_tag: format!("v{version}-20261001000000"),
+            model: self.model.clone(),
+            passage_package: self.model.query_packages[0].clone(),
+            previous: previous.as_ref(),
+            warehouse: Some(&Warehouse::open(&self.warehouse).unwrap()),
+            created_at: CREATED_AT.to_string(),
+        })
+        .unwrap();
+        let embed = EmbedManifest::read(&plan).unwrap();
+        if embed.records > 0 {
+            let mut runtime = EmbeddingRuntime::with_deployment(
+                EmbeddingConfig {
+                    model_path: self.model_file.clone(),
+                    embedding_dim: self.model.embedding_dim,
+                    pooling: Pooling::parse(&self.model.pooling).unwrap(),
+                    max_tokens: self.model.max_tokens,
+                    batch_size: 16,
+                },
+                EmbeddingDeployment::default(),
+            );
+            runtime.load().unwrap();
+            let shard = self.root.path().join(format!("shard-{version}"));
+            let worker = WorkerInfo {
+                name: "pipeline-test".to_string(),
+                version: "1".to_string(),
+                device: "cpu".to_string(),
+                ep: "cpu".to_string(),
+                mode: MODE_MOCK.to_string(),
+            };
+            embed_shard(
+                &plan,
+                &embed,
+                0,
+                embed.records,
+                &runtime,
+                16,
+                worker,
+                &shard,
+            )
+            .unwrap();
+            Warehouse::open_for_append(&self.warehouse)
+                .unwrap()
+                .add_shards(
+                    Some(&plan),
+                    &[shard],
+                    &ShardPolicy {
+                        allow_non_semantic: true,
+                    },
+                    CREATED_AT.to_string(),
+                )
+                .unwrap();
+        }
+        let out = self.root.path().join(format!("release-{version}"));
+        let epoch = match (&previous, self.codec) {
+            (Some(_), _) => EpochChoice::Previous,
+            (None, ReleaseCodec::I8SymVec) => EpochChoice::New(CodecSpec::I8SymVec),
+            // Fitted as `fit-rotation` fits it: three quarters of the stand-in's components
+            // in int8, the rest in 4 bits.
+            (None, ReleaseCodec::Rot) => EpochChoice::Given(
+                fit_rot_i8i4(
+                    &Warehouse::open(&self.warehouse).unwrap(),
+                    ROTATION_SAMPLE,
+                    48,
+                    16,
+                )
+                .unwrap(),
+            ),
+        };
+        assemble(&AssembleRequest {
+            plan: &Plan::open(&plan).unwrap(),
+            warehouse: &Warehouse::open(&self.warehouse).unwrap(),
+            kind: if previous.is_some() {
+                PackageKind::Delta
+            } else {
+                PackageKind::Base
+            },
+            previous: previous.as_ref(),
+            epoch,
+            out_dir: out.clone(),
+            created_at: CREATED_AT.to_string(),
+            built_by: None,
+            // A delta takes its chain's.
+            alias_threshold: self.alias_threshold.filter(|_| previous.is_none()),
+        })
+        .unwrap();
+        self.releases.push(out.clone());
+        out
+    }
+
+    /// What installing the release at `package` into `vectors` takes, as published.
+    fn install_input(&self, vectors: &Path, package: &Path) -> SemanticVectorsInstallInput {
+        let (segment, manifest, digest) = release(package);
+        SemanticVectorsInstallInput {
+            vectors_dir: dir_string(vectors),
+            segment_path: dir_string(&segment),
+            manifest_json: manifest,
+            published_manifest_sha256: Some(digest),
+            model_identity_json: serde_json::to_string(&self.model).unwrap(),
+        }
+    }
+}
+
+/// Every segment of the set at `vectors` is in the format `codec` writes, keys and all.
+fn assert_segment_format(vectors: &Path, codec: ReleaseCodec) {
+    use otzaria_semantic_search::semantic::oxv::reader::Segment;
+    let expected = match codec {
+        ReleaseCodec::I8SymVec => (2, 16),
+        ReleaseCodec::Rot => (3, 8),
+    };
+    let mut segments = 0;
+    for entry in std::fs::read_dir(vectors.join("segments")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "oxv") {
+            let segment = Segment::open(&path).unwrap();
+            assert_eq!(
+                (segment.format_version(), segment.key_len()),
+                expected,
+                "{codec:?}: {}",
+                path.display()
+            );
+            assert!(segment
+                .keys()
+                .all(|key| key.is_narrow() == (expected.1 == 8)));
+            segments += 1;
+        }
+    }
+    assert!(
+        segments > 0,
+        "{codec:?}: no segment at {}",
+        vectors.display()
+    );
+}
+
+/// A base and the deltas after it install through the API in order, in either store this
+/// build reads: each reports its kind and library version, a delta installed again is
+/// already applied, and one that does not follow the set is refused by the version it
+/// starts from. The set then serves and compacts, and every line comes back where the
+/// newest library has it — in format 3, resolved by the eight bytes its keys keep.
+#[test]
+fn releases_of_either_store_install_in_order_serve_and_compact() {
+    const LONG: &str = "/books/long.txt";
+    let long = qa_window_copy_line();
+    let long_book = |text: String| -> Book { ("ארוך", "/ארוך", LONG, 2, text) };
+    let genesis =
+        |text: String| -> Book { ("בראשית", "/מקרא/תורה", GENESIS, 0, text) };
+    let berachot = |text: String| -> Book {
+        ("משנה ברכות", "/משנה/זרעים", BERACHOT, 1, text)
+    };
+    let v30 = vec![
+        genesis(GENESIS_TEXT.to_string()),
+        berachot(BERACHOT_TEXT.to_string()),
+        long_book(long.clone()),
+    ];
+    // Lines inserted above the probe and above the long line move their records.
+    let v31 = vec![
+        genesis(format!("שורה חדשה בראש הספר לפני כל השאר\n{GENESIS_TEXT}")),
+        berachot(BERACHOT_TEXT.to_string()),
+        long_book(format!("שורה חדשה לפני השורה הארוכה והרחבה\n{long}")),
+    ];
+    let mut v32 = v31.clone();
+    v32[1] = berachot(format!(
+        "{BERACHOT_TEXT}\nומשעה שהכהנים טובלין ואוכלין בתרומתן"
+    ));
+    let target = {
+        use otzaria_semantic_search::semantic::chunk_key::LineRef;
+        use otzaria_semantic_search::semantic::chunker::Chunker;
+        Chunker::new(production_chunking())
+            .unwrap()
+            .embedded_windows(
+                &[LineRef {
+                    text: &long,
+                    section: 0,
+                }],
+                0,
+            )
+            .swap_remove(2)
+    };
+    let window_query = target
+        .text
+        .strip_prefix(otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX)
+        .unwrap()
+        .to_string();
+
+    for codec in [ReleaseCodec::I8SymVec, ReleaseCodec::Rot] {
+        let mut pipeline = Pipeline::new(codec);
+        let base = pipeline.release(LIBRARY_VERSION, &v30);
+        let next = pipeline.release(LIBRARY_VERSION + 1, &v31);
+        let last = pipeline.release(LIBRARY_VERSION + 2, &v32);
+        let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION + 2).to_str().unwrap());
+        let token = SemanticCancellationToken::new();
+        let vectors = pipeline.root.path().join("vectors");
+        let install = |package: &Path| {
+            engine.install_semantic_vectors(pipeline.install_input(&vectors, package), &token)
+        };
+
+        let report = install(&base).unwrap();
+        assert_eq!(
+            (report.kind, report.library_version, report.already_applied),
+            (SemanticVectorsPackageKind::Base, LIBRARY_VERSION, false),
+            "{codec:?}"
+        );
+        // Re-anchored on an index whose lines moved, as one of the base's version: the
+        // records below an inserted line move, a window's with its parent's anchor.
+        let forced = SemanticCompactionPolicy {
+            force: true,
+            ..SemanticCompactionPolicy::defaults()
+        };
+        let anchored = engine
+            .compact_semantic_vectors(
+                dir_string(&vectors),
+                Some(LIBRARY_VERSION),
+                Some(forced.clone()),
+                &token,
+            )
+            .unwrap();
+        assert!(anchored.compacted, "{codec:?}: {}", anchored.reason);
+        assert!(
+            anchored.hints_refreshed >= 2,
+            "{codec:?}: {}",
+            anchored.reason
+        );
+        assert_eq!(anchored.records_pruned, 0, "{codec:?}");
+        assert_segment_format(&vectors, codec);
+
+        let Err(off_chain) = install(&last) else {
+            panic!("{codec:?}: a delta that does not follow the set must be refused");
+        };
+        assert_eq!(
+            (off_chain.kind, off_chain.field.as_deref()),
+            (
+                SemanticErrorKind::ArtifactIncompatible,
+                Some("delta.from_library_version")
+            ),
+            "{codec:?}: {}",
+            off_chain.message
+        );
+        let info = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+        assert_eq!(
+            (info.generation, info.library_version),
+            (anchored.generation, LIBRARY_VERSION),
+            "{codec:?}: a refused delta changes nothing"
+        );
+
+        let delta = install(&next).unwrap();
+        assert_eq!(
+            (delta.kind, delta.library_version, delta.already_applied),
+            (
+                SemanticVectorsPackageKind::Delta,
+                LIBRARY_VERSION + 1,
+                false
+            ),
+            "{codec:?}"
+        );
+        assert!(delta.generation > anchored.generation);
+        let again = install(&next).unwrap();
+        assert_eq!(
+            (again.kind, again.library_version, again.already_applied),
+            (SemanticVectorsPackageKind::Delta, LIBRARY_VERSION + 1, true),
+            "{codec:?}"
+        );
+        let delta = install(&last).unwrap();
+        assert_eq!(
+            (delta.kind, delta.library_version, delta.already_applied),
+            (
+                SemanticVectorsPackageKind::Delta,
+                LIBRARY_VERSION + 2,
+                false
+            ),
+            "{codec:?}"
+        );
+        assert_eq!(delta.segments, 3, "{codec:?}");
+        assert_segment_format(&vectors, codec);
+
+        engine
+            .open_semantic_artifact(SemanticArtifactInput {
+                vectors_dir: dir_string(&vectors),
+                model_path: dir_string(&pipeline.model_file),
+                model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+                onnx_runtime_path: None,
+                scan_threads: None,
+            })
+            .unwrap();
+        let serves = |when: &str| {
+            assert_eq!(
+                semantic_lines(&engine, PROBE_LINE, &[]).first(),
+                Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
+                "{codec:?} {when}"
+            );
+            let response = search(
+                &engine,
+                &window_query,
+                &[],
+                SemanticRetrievalMode::SemanticOnly,
+            );
+            let hit = response
+                .results
+                .first()
+                .unwrap_or_else(|| panic!("{codec:?} {when}: no result for the window"));
+            assert_eq!(
+                (hit.file_path.as_str(), hit.segment, hit.matched_window),
+                (LONG, 1, target.ordinal),
+                "{codec:?} {when}"
+            );
+        };
+        serves("after the deltas");
+
+        let compacted = engine
+            .compact_semantic_vectors(
+                dir_string(&vectors),
+                Some(LIBRARY_VERSION + 2),
+                Some(forced),
+                &token,
+            )
+            .unwrap();
+        assert!(compacted.compacted, "{codec:?}: {}", compacted.reason);
+        assert_eq!(compacted.records_pruned, 0, "{codec:?}");
+        let info = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+        assert_eq!(
+            (info.segments.len(), info.library_version),
+            (1, LIBRARY_VERSION + 2),
+            "{codec:?}"
+        );
+        assert_eq!(info.segments[0].kind, SemanticVectorsPackageKind::Compacted);
+        assert_segment_format(&vectors, codec);
+        serves("after compaction");
+    }
+}
+
+/// A short line that shares a neighbour's vector in a format-3 set is found through that
+/// vector: in its book, as window 255 and scored the alias penalty below the line whose
+/// vector it shares; in a book it was copied into since, under that book's filter; and it
+/// counts as covered.
+#[test]
+fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    use search_engine::api::search_engine::SemanticHighlightTarget;
+    const SHORT: &str = "/books/short.txt";
+    const COPY: &str = "/books/copy.txt";
+    let lines: Vec<String> = [
+        "הלכות שבת פרק ראשון בדיני הוצאה",
+        "יציאות השבת שתים שהן ארבע בפנים",
+        "ושתים שהן ארבע בחוץ כיצד העני עומד",
+        "בחוץ ובעל הבית",
+        "בפנים פשט העני את ידו לפנים ונתן",
+        "לתוך ידו של בעל הבית או שנטל מתוכה",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.5);
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("שבת", "/משנה", SHORT, 0, lines.join("\n"))],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    assert_eq!(
+        aliases.iter().map(|row| row.hint).collect::<Vec<_>>(),
+        [3],
+        "the short line, and only it, shares a neighbour's vector"
+    );
+    drop(segment);
+
+    // The library since: the short line and its context copied into another category.
+    let device = pipeline.root.path().join("device");
+    std::fs::create_dir_all(&device).unwrap();
+    add_books(
+        &mut SearchEngine::new(device.to_str().unwrap()),
+        &[
+            ("שבת", "/משנה", SHORT, 0, lines.join("\n")),
+            ("העתק", "/העתק", COPY, 1, lines[1..].join("\n")),
+        ],
+    );
+    let engine = SearchEngine::new(device.to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    let vectors = pipeline.root.path().join("vectors");
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+
+    let refs: Vec<LineRef<'_>> = lines
+        .iter()
+        .map(|text| LineRef { text, section: 0 })
+        .collect();
+    let embedded = Chunker::new(production_chunking())
+        .unwrap()
+        .embedded_text(&refs, 3)
+        .unwrap();
+    let query = embedded.strip_prefix(PASSAGE_PREFIX).unwrap_or(&embedded);
+    let found = |facets: &[&str]| {
+        let response = search(&engine, query, facets, SemanticRetrievalMode::SemanticOnly);
+        assert!(
+            response.fallback_reason.is_none(),
+            "{:?}",
+            response.fallback_reason
+        );
+        response.results
+    };
+
+    let results = found(&[]);
+    let short = results
+        .iter()
+        .find(|hit| (hit.file_path.as_str(), hit.segment) == (SHORT, 3))
+        .expect("the short line comes back through the vector it shares");
+    assert_eq!(short.matched_window, ALIAS_WINDOW);
+    assert_eq!(
+        short.snippet_html, lines[3],
+        "an alias has no matched window and is shown as the whole short line"
+    );
+    let highlighted = engine
+        .semantic_passage_highlights(
+            lines[3].clone(),
+            vec![SemanticHighlightTarget {
+                file_path: SHORT.to_string(),
+                id: short.id,
+                window: ALIAS_WINDOW,
+            }],
+            &token,
+        )
+        .unwrap();
+    assert!(!highlighted[0].is_highlighted, "{highlighted:?}");
+    assert!(
+        highlighted[0].snippet_html.is_empty(),
+        "a short alias has no partial-window highlight to paint: {highlighted:?}"
+    );
+    let values = search_engine::semantic_keys::column_values(&refs);
+    let shared = results
+        .iter()
+        .find(|hit| {
+            hit.file_path == SHORT
+                && hit.matched_window == 0
+                && values[hit.segment as usize] == aliases[0].key.column_value()
+        })
+        .expect("the line whose vector it shares");
+    let penalty = shared.semantic_score.unwrap() - short.semantic_score.unwrap();
+    assert!((penalty - 0.04).abs() < 1e-3, "{penalty}");
+
+    let copied = found(&["/העתק"]);
+    assert!(
+        copied.iter().any(
+            |hit| (hit.file_path.as_str(), hit.segment, hit.matched_window)
+                == (COPY, 2, ALIAS_WINDOW)
+        ),
+        "the copy of the short line is reached under its book's filter: {:?}",
+        copied
+            .iter()
+            .map(|hit| (&hit.file_path, hit.segment, hit.matched_window))
+            .collect::<Vec<_>>()
+    );
+
+    let coverage = engine
+        .semantic_coverage(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(coverage.covered_lines, coverage.live_keyed_lines);
+
+    // Re-anchored by a forced compaction on the index of the set's version: the alias stays.
+    let compacted = engine
+        .compact_semantic_vectors(
+            dir_string(&vectors),
+            Some(LIBRARY_VERSION),
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        )
+        .unwrap();
+    assert!(compacted.compacted, "{}", compacted.reason);
+    assert_eq!(compacted.records_pruned, 0);
+    let mut kept = Vec::new();
+    for entry in std::fs::read_dir(vectors.join("segments")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "oxv") {
+            let segment =
+                otzaria_semantic_search::semantic::oxv::reader::Segment::open(&path).unwrap();
+            kept.extend(
+                segment
+                    .occurrences()
+                    .filter(|row| row.is_alias())
+                    .map(|row| (row.hint, row.anchor)),
+            );
+        }
+    }
+    kept.dedup();
+    assert_eq!(kept, [(3, aliases[0].anchor)], "the alias row is kept");
+    let short = found(&[])
+        .into_iter()
+        .find(|hit| (hit.file_path.as_str(), hit.segment) == (SHORT, 3))
+        .expect("the short line is still found through the vector it shares");
+    assert_eq!(short.matched_window, ALIAS_WINDOW);
+}
+
+/// A short line whose vector is the line after it, copied with its context into another
+/// book: under that book's filter the copy of the short line comes back as the alias, and
+/// the line after it as itself — the record of the shared text, which comes first among the
+/// hit's records, does not take the short line's place for the line next to it.
+#[test]
+fn a_copied_short_line_is_not_taken_by_the_line_whose_vector_it_shares() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    const SHORT: &str = "/books/short.txt";
+    const COPY: &str = "/books/copy.txt";
+    // The lines before the short one are short too, and the long line after it holds most of
+    // its context's words: that is the vector it shares.
+    let after = "ובעל הבית בפנים פשט העני את ידו לפנים ונתן לתוך ידו של בעל הבית או שנטל \
+                 מתוכה והוציא העני חייב ובעל הבית פטור פשט בעל הבית את ידו לחוץ ונתן";
+    let lines: Vec<String> = [
+        "הלכות שבת פרק ראשון בדיני הוצאה",
+        "יציאות השבת",
+        "שתים שהן ארבע",
+        "בחוץ ובעל הבית",
+        after,
+        "לתוך ידו של העני או שנטל מתוכה",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let refs: Vec<LineRef<'_>> = lines
+        .iter()
+        .map(|text| LineRef { text, section: 0 })
+        .collect();
+    let values = search_engine::semantic_keys::column_values(&refs);
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.3);
+    // The shared text also has a record in a book that sorts before the short line's.
+    let other: Book = ("אחר", "/אחר", "/books/a-other.txt", 2, after.to_string());
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("שבת", "/משנה", SHORT, 0, lines.join("\n")), other.clone()],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    drop(segment);
+    let alias = aliases
+        .iter()
+        .find(|row| row.hint == 3)
+        .expect("the short line shares a vector");
+    assert_eq!(
+        alias.key.column_value(),
+        values[4],
+        "the short line shares the vector of the line after it"
+    );
+
+    let device = pipeline.root.path().join("device");
+    std::fs::create_dir_all(&device).unwrap();
+    add_books(
+        &mut SearchEngine::new(device.to_str().unwrap()),
+        &[
+            ("שבת", "/משנה", SHORT, 0, lines.join("\n")),
+            ("העתק", "/העתק", COPY, 1, lines[1..].join("\n")),
+            other,
+        ],
+    );
+    let engine = SearchEngine::new(device.to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    let vectors = pipeline.root.path().join("vectors");
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+    let response = search(
+        &engine,
+        after,
+        &["/העתק"],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(
+        response.fallback_reason.is_none(),
+        "{:?}",
+        response.fallback_reason
+    );
+    let mut copied: Vec<(u64, u8)> = response
+        .results
+        .iter()
+        .filter(|hit| hit.file_path == COPY && (2..=3).contains(&hit.segment))
+        .map(|hit| (hit.segment, hit.matched_window))
+        .collect();
+    copied.sort_unstable();
+    assert_eq!(copied, [(2, ALIAS_WINDOW), (3, 0)]);
+}
+
+/// A release that declares a store no build writes — format 3 in the anchor codec, or the
+/// rotated codec in format 2 — is refused by the store field that differs from what this
+/// build reads, and nothing is installed.
+#[test]
+fn a_release_declaring_a_mixed_store_is_refused_by_its_store_field() {
+    for (codec, edit, field) in [
+        (
+            ReleaseCodec::I8SymVec,
+            ("store_format_version", serde_json::json!(3)),
+            "store.store_format_version",
+        ),
+        (
+            ReleaseCodec::Rot,
+            ("store_format_version", serde_json::json!(2)),
+            "store.vector_precision",
+        ),
+    ] {
+        let mut pipeline = Pipeline::new(codec);
+        let base = pipeline.release(LIBRARY_VERSION, &default_books());
+        let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+        let vectors = pipeline.root.path().join("vectors");
+        let mut input = pipeline.install_input(&vectors, &base);
+        let mut manifest: serde_json::Value = serde_json::from_str(&input.manifest_json).unwrap();
+        manifest["identity"]["store"][edit.0] = edit.1;
+        input.manifest_json = serde_json::to_string(&manifest).unwrap();
+        input.published_manifest_sha256 = None;
+        let Err(error) = engine.install_semantic_vectors(input, &SemanticCancellationToken::new())
+        else {
+            panic!("{codec:?}: a mixed store must be refused");
+        };
+        assert_eq!(
+            (error.kind, error.field.as_deref()),
+            (SemanticErrorKind::ArtifactIncompatible, Some(field)),
+            "{codec:?}: {}",
+            error.message
+        );
+        assert!(
+            !engine
+                .semantic_vectors_info(dir_string(&vectors))
+                .unwrap()
+                .present,
+            "{codec:?}: nothing is installed"
+        );
+    }
+}
+
+#[test]
+fn repeated_alias_in_public_search() {
+    use otzaria_semantic_search::semantic::chunk_key::LineRef;
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    const BOOK: &str = "/books/short.txt";
+    let block: Vec<String> = [
+        "הלכות שבת פרק ראשון בדיני הוצאה",
+        "יציאות השבת שתים שהן ארבע בפנים",
+        "ושתים שהן ארבע בחוץ כיצד העני עומד",
+        "בחוץ ובעל הבית",
+        "בפנים פשט העני את ידו לפנים ונתן",
+        "לתוך ידו של בעל הבית או שנטל מתוכה",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let lines = [block.clone(), block].concat();
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.5);
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("שבת", "/משנה", BOOK, 0, lines.join("\n"))],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    assert_eq!(aliases.len(), 1, "writer deduplicates equal alias anchors");
+    let vectors = pipeline.root.path().join("vectors");
+    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+    let refs: Vec<LineRef<'_>> = lines
+        .iter()
+        .map(|text| LineRef { text, section: 0 })
+        .collect();
+    let embedded = Chunker::new(production_chunking())
+        .unwrap()
+        .embedded_text(&refs, 3)
+        .unwrap();
+    let query = embedded.strip_prefix(PASSAGE_PREFIX).unwrap_or(&embedded);
+    let response = engine
+        .search_semantic(
+            query.to_string(),
+            vec![],
+            100,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            SemanticRetrievalMode::SemanticOnly,
+            None,
+            false,
+            false,
+            None,
+            &token,
+        )
+        .unwrap();
+    assert!(
+        response.fallback_reason.is_none(),
+        "{:?}",
+        response.fallback_reason
+    );
+    let mut found: Vec<_> = response
+        .results
+        .iter()
+        .filter(|hit| hit.file_path == BOOK && hit.matched_window == ALIAS_WINDOW)
+        .map(|hit| hit.segment)
+        .collect();
+    found.sort_unstable();
+    assert_eq!(
+        found,
+        [3, 9],
+        "both repeated short lines should be displayed"
+    );
+}
+
+#[test]
+fn compaction_preserves_alias_after_neighbour_tail_changes() {
+    use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef};
+    use otzaria_semantic_search::semantic::chunker::Chunker;
+    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    const BOOK: &str = "/books/short.txt";
+    let before = "תורה ".repeat(94).trim().to_string();
+    let mut words = vec!["תורה"; 101];
+    words.splice(93..93, ["דבר", "מה"]);
+    let after = words.join(" ");
+    let lines = vec![
+        before,
+        "דבר מה".to_string(),
+        after.clone(),
+        "או".to_string(),
+    ];
+    let chunker = Chunker::new(production_chunking()).unwrap();
+    let key = |texts: &[String], at: usize| {
+        let refs: Vec<_> = texts
+            .iter()
+            .map(|text| LineRef { text, section: 0 })
+            .collect();
+        ChunkKey::of(&chunker.embedded_text(&refs, at).unwrap()).narrowed()
+    };
+    assert_ne!(key(&lines, 1), key(&lines, 2));
+    let mut pipeline = Pipeline::new(ReleaseCodec::Rot);
+    pipeline.alias_threshold = Some(0.99);
+    let base = pipeline.release(
+        LIBRARY_VERSION,
+        &[("ספר", "/משנה", BOOK, 0, lines.join("\n"))],
+    );
+    let segment =
+        otzaria_semantic_search::semantic::oxv::reader::Segment::open(&base.join("segment.oxv"))
+            .unwrap();
+    let aliases: Vec<_> = segment.occurrences().filter(|row| row.is_alias()).collect();
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(
+        aliases[0].key,
+        key(&lines, 2),
+        "the short line shares the following neighbour"
+    );
+    let mut changed = lines.clone();
+    words[20] = "משה";
+    changed[2] = words.join(" ");
+    assert_eq!(
+        key(&lines, 1),
+        key(&changed, 1),
+        "the short line's capped context is unchanged"
+    );
+    assert_ne!(
+        key(&lines, 2),
+        key(&changed, 2),
+        "the neighbour's own key changed"
+    );
+    let device = pipeline.root.path().join("device");
+    std::fs::create_dir_all(&device).unwrap();
+    add_books(
+        &mut SearchEngine::new(device.to_str().unwrap()),
+        &[("ספר", "/משנה", BOOK, 0, changed.join("\n"))],
+    );
+    let engine = SearchEngine::new(device.to_str().unwrap());
+    let vectors = pipeline.root.path().join("vectors");
+    let token = SemanticCancellationToken::new();
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir_string(&vectors),
+            model_path: dir_string(&pipeline.model_file),
+            model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+    let has_short = || {
+        engine
+            .search_semantic(
+                after.clone(),
+                vec![],
+                100,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &token,
+            )
+            .unwrap()
+            .results
+            .iter()
+            .any(|hit| {
+                hit.file_path == BOOK && hit.segment == 1 && hit.matched_window == ALIAS_WINDOW
+            })
+    };
+    assert!(
+        has_short(),
+        "the unchanged short line is found before compaction"
+    );
+    let result = engine
+        .compact_semantic_vectors(
+            dir_string(&vectors),
+            Some(LIBRARY_VERSION),
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        )
+        .unwrap();
+    assert!(result.compacted, "{}", result.reason);
+    assert!(has_short(), "compaction must preserve the still-live alias");
+    let set = otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&vectors).unwrap();
+    let mut records = Vec::new();
+    set.book_occurrences(BOOK, &mut records);
+    let shared: Vec<_> = records
+        .iter()
+        .filter(|(target, _)| *target == aliases[0].key)
+        .collect();
+    assert_eq!(
+        shared.len(),
+        1,
+        "no normal occurrence is invented for the old neighbour"
+    );
+    assert_eq!(shared[0].1.window, ALIAS_WINDOW);
+    assert_eq!(shared[0].1.anchor, Some(aliases[0].anchor));
 }

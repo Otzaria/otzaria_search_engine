@@ -48,7 +48,7 @@ fn main() {
     };
     use otzaria_semantic_search::distribution::corpus::CorpusIndex;
     use otzaria_semantic_search::semantic::chunker::ChunkerConfig;
-    use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+    use otzaria_semantic_search::semantic::official_index::readable_store_for;
     use otzaria_semantic_search::semantic::segment_set::{
         install_package, InstallExpectation, InstallSource,
     };
@@ -183,7 +183,7 @@ fn main() {
                 identity: IndexVersion {
                     text: identity.text,
                     model,
-                    store: readable_store_identity(),
+                    store: readable_store_for(&report.manifest.identity.store),
                 },
                 published_manifest_sha256: Some(report.manifest_sha256.clone()),
             },

@@ -10541,8 +10541,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticRankingOptions dco_decode_semantic_ranking_options(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return SemanticRankingOptions(
       fusionStrategy: dco_decode_semantic_fusion_strategy(arr[0]),
       rrfK: dco_decode_u_32(arr[1]),
@@ -10560,6 +10560,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       foundationalBonus: dco_decode_f_64(arr[13]),
       foundationalCandidateShare: dco_decode_f_64(arr[14]),
       windowPenalty: dco_decode_f_64(arr[15]),
+      aliasPenalty: dco_decode_f_64(arr[16]),
     );
   }
 
@@ -13036,6 +13037,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_foundationalBonus = sse_decode_f_64(deserializer);
     var var_foundationalCandidateShare = sse_decode_f_64(deserializer);
     var var_windowPenalty = sse_decode_f_64(deserializer);
+    var var_aliasPenalty = sse_decode_f_64(deserializer);
     return SemanticRankingOptions(
       fusionStrategy: var_fusionStrategy,
       rrfK: var_rrfK,
@@ -13053,6 +13055,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       foundationalBonus: var_foundationalBonus,
       foundationalCandidateShare: var_foundationalCandidateShare,
       windowPenalty: var_windowPenalty,
+      aliasPenalty: var_aliasPenalty,
     );
   }
 
@@ -15456,6 +15459,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_f_64(self.foundationalBonus, serializer);
     sse_encode_f_64(self.foundationalCandidateShare, serializer);
     sse_encode_f_64(self.windowPenalty, serializer);
+    sse_encode_f_64(self.aliasPenalty, serializer);
   }
 
   @protected
@@ -17786,8 +17790,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// recomputed from its stored text, which reads the whole store. Cancellable.
   ///
   /// A line is covered when any slot of the set holds its text's key, including a slot a
-  /// later delta deleted; a release deletes only texts no line of its library holds, so
-  /// that counts a line of an index older than the set at most.
+  /// later delta deleted, or an alias shares a neighbour's vector with it; a release
+  /// deletes only texts no line of its library holds, so that counts a line of an index
+  /// older than the set at most.
   Future<SemanticCoverage> semanticCoverage({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,

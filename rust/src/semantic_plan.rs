@@ -36,10 +36,12 @@ use otzaria_semantic_search::distribution::plan::{
 };
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
 use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig, EmbeddedWindow};
-use otzaria_semantic_search::semantic::official_index::readable_store_identity;
+use otzaria_semantic_search::semantic::official_index::{
+    readable_store_for, readable_store_identity,
+};
 use otzaria_semantic_search::semantic::recipe::{ChunkingAlgorithm, EmbeddingRecipe};
 use otzaria_semantic_search::semantic::versioning::{
-    IndexVersion, ModelIdentity, ModelPackage, TextIdentity,
+    IndexVersion, ModelIdentity, ModelPackage, StoreIdentity, TextIdentity,
 };
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -189,6 +191,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
                         book,
                         ordinal: ordinal as u32,
                         window,
+                        short: window == 0 && line.short,
                         sha256,
                     })?;
                     embed.offer(&sha256, &text)?;
@@ -316,6 +319,10 @@ pub fn validate(
     let standalone_min_chars = chunking.min_meaningful_chars;
     let chunker = Chunker::new(chunking)?;
     let names: Vec<&String> = books.keys().collect();
+    // The set holds this many bytes of a key, and is audited at that width.
+    let key_len = otzaria_semantic_search::semantic::oxv::format::key_len(
+        set.identity().store.store_format_version,
+    );
     let cache = Mutex::new(ResolverCache::default());
     let resolver = LiveResolver::new(searcher.clone(), chunk_key, &cache)?;
     let cancel = CancellationToken::new();
@@ -332,8 +339,11 @@ pub fn validate(
                 let mut text_coverage = TextSpanCoverage::default();
                 let mut unwindowed_standalone_lines = 0u64;
                 let mut partially_windowed_standalone_lines = 0u64;
-                let key =
-                    |sha256: &[u8; 32]| <[u8; 16]>::try_from(&sha256[..16]).expect("16 of 32");
+                let key = |sha256: &[u8; 32]| {
+                    let mut key = [0u8; 16];
+                    key[..key_len].copy_from_slice(&sha256[..key_len]);
+                    key
+                };
                 let keys = plan_book(
                     &searcher,
                     &columns,
@@ -449,15 +459,15 @@ pub fn validate(
     Ok(validation)
 }
 
-/// What a vector set must declare to be opened by this build with `model`: the line recipe
-/// this build indexes with, the model, and the store this build reads — what
-/// `open_semantic_artifact` holds a set to, with the one package it loaded among `model`'s
-/// query packages.
-pub fn installation_identity(model: ModelIdentity) -> IndexVersion {
+/// What a vector set that declares the store `declared` must declare to be opened by this
+/// build with `model`: the line recipe this build indexes with, the model, and that store
+/// when this build reads it (`readable_store_for`) — what `open_semantic_artifact` holds a
+/// set to, with the one package it loaded among `model`'s query packages.
+pub fn installation_identity(model: ModelIdentity, declared: &StoreIdentity) -> IndexVersion {
     IndexVersion {
         text: TextIdentity::with_line_text_version(LINE_TEXT_VERSION),
         model,
-        store: readable_store_identity(),
+        store: readable_store_for(declared),
     }
 }
 
@@ -547,6 +557,9 @@ struct PlannedLine {
     text: Option<([u8; 32], String)>,
     /// Each window past the first the recipe embeds for it: its ordinal, SHA-256 and text.
     windows: Vec<(u8, [u8; 32], String)>,
+    /// Embedded with its neighbours' context (`Chunker::borrows_context`): a plan's short
+    /// record, which may share a neighbour's vector.
+    short: bool,
     pdf: bool,
     /// The `chunkKey` column's value, when the index has a column this build uses.
     column: Option<u64>,
@@ -743,6 +756,7 @@ fn plan_book(
             });
             let text = windows.next().map(|(_, sha256, text)| (sha256, text));
             PlannedLine {
+                short: text.is_some() && chunker.borrows_context(&texts[index]),
                 text,
                 windows: windows.collect(),
                 pdf: pdf[index],
