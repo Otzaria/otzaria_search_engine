@@ -196,26 +196,7 @@ fn build_library_under(
     add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
 
     let model_file = mock::write_stub_onnx_package(&work.join("model"));
-    // The chunking this build keys the index's lines under, as the library's vectors are
-    // built with it. The stand-in embeds a bag of words, so a query still ranks first the
-    // line whose words it repeats, role prefixes aside.
-    let model = ModelIdentity {
-        family_id: "test-mock@0000000".to_string(),
-        tokenizer_checksum: mock::stub_tokenizer_checksum(),
-        embedding_dim: 64,
-        pooling: "in-graph".to_string(),
-        max_tokens: 512,
-        embedding_text_version: chunking.embedding_text_version,
-        normalization_version: chunking.normalization_version,
-        chunking_identity: chunking.identity(),
-        query_packages: vec![ModelPackage {
-            checksum: validate_onnx_package(&model_file)
-                .unwrap()
-                .checksum()
-                .to_string(),
-            quantization: "int8".to_string(),
-        }],
-    };
+    let model = mock_model(&model_file, &chunking);
     std::fs::write(
         work.join("model.json"),
         serde_json::to_vec_pretty(&model).unwrap(),
@@ -253,6 +234,32 @@ fn build_library_under(
         vectors,
         model_file,
         model,
+    }
+}
+
+/// The stand-in's identity under `chunking`, the one this build keys the index's lines
+/// under. The stand-in embeds a bag of words, so a query still ranks first the line whose
+/// words it repeats, role prefixes aside.
+fn mock_model(
+    model_file: &Path,
+    chunking: &otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+) -> ModelIdentity {
+    ModelIdentity {
+        family_id: "test-mock@0000000".to_string(),
+        tokenizer_checksum: mock::stub_tokenizer_checksum(),
+        embedding_dim: 64,
+        pooling: "in-graph".to_string(),
+        max_tokens: 512,
+        embedding_text_version: chunking.embedding_text_version,
+        normalization_version: chunking.normalization_version,
+        chunking_identity: chunking.identity(),
+        query_packages: vec![ModelPackage {
+            checksum: validate_onnx_package(model_file)
+                .unwrap()
+                .checksum()
+                .to_string(),
+            quantization: "int8".to_string(),
+        }],
     }
 }
 
@@ -3599,5 +3606,410 @@ fn qa_published_book_hashes_match_the_live_index_source() {
             Some(hash),
             "published metadata must allow unchanged-book detection: {path}"
         );
+    }
+}
+
+/// The codec a [`Pipeline`]'s releases are assembled in: the anchor family's, segment
+/// format 2, or the windows family's, format 3 with 8-byte keys.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReleaseCodec {
+    I8SymVec,
+    Rot,
+}
+
+/// Releases made as the publishing pipeline makes them, one library version at a time: the
+/// version's index, its plan split against the previous ledger, the new keys embedded by the
+/// stand-in into one warehouse, and a base or a delta assembled from both.
+struct Pipeline {
+    root: TempDir,
+    model_file: PathBuf,
+    model: ModelIdentity,
+    warehouse: PathBuf,
+    codec: ReleaseCodec,
+    /// Each release's directory, `segment.oxv` and `release.json`, in order.
+    releases: Vec<PathBuf>,
+}
+
+impl Pipeline {
+    fn new(codec: ReleaseCodec) -> Self {
+        use otzaria_semantic_search::distribution::warehouse::{Warehouse, WarehouseIdentity};
+        let root = TempDir::new().unwrap();
+        let model_file = mock::write_stub_onnx_package(&root.path().join("model"));
+        let model = mock_model(&model_file, &production_chunking());
+        let warehouse = root.path().join("warehouse");
+        Warehouse::create(
+            &warehouse,
+            WarehouseIdentity::of(&model, &model.query_packages[0]),
+        )
+        .unwrap();
+        Self {
+            root,
+            model_file,
+            model,
+            warehouse,
+            codec,
+            releases: Vec::new(),
+        }
+    }
+
+    fn index(&self, version: u32) -> PathBuf {
+        self.root.path().join(format!("index-{version}"))
+    }
+
+    /// Release `version` of `books`: a base for the first, a delta from the last after.
+    fn release(&mut self, version: u32, books: &[Book]) -> PathBuf {
+        use otzaria_semantic_search::distribution::assemble::{
+            assemble, fit_rot_i8i4, AssembleRequest, EpochChoice, ROTATION_SAMPLE,
+        };
+        use otzaria_semantic_search::distribution::ledger::Ledger;
+        use otzaria_semantic_search::distribution::package::PackageKind;
+        use otzaria_semantic_search::distribution::plan::{EmbedManifest, Plan};
+        use otzaria_semantic_search::distribution::shard::{
+            embed_shard, ShardPolicy, WorkerInfo, MODE_MOCK,
+        };
+        use otzaria_semantic_search::distribution::warehouse::Warehouse;
+        use otzaria_semantic_search::semantic::backend::Pooling;
+        use otzaria_semantic_search::semantic::embedding::{
+            EmbeddingConfig, EmbeddingDeployment, EmbeddingRuntime,
+        };
+        use otzaria_semantic_search::semantic::oxv::codec::CodecSpec;
+        use search_engine::semantic_plan::{export_plan, PlanExport};
+        const CREATED_AT: &str = "2026-10-01T00:00:00Z";
+
+        let index = self.index(version);
+        std::fs::create_dir_all(&index).unwrap();
+        add_books(&mut SearchEngine::new(index.to_str().unwrap()), books);
+        let previous = self
+            .releases
+            .last()
+            .map(|dir| Ledger::open(dir, Some(version - 1)).unwrap());
+        let plan = self.root.path().join(format!("plan-{version}"));
+        export_plan(PlanExport {
+            index_path: index,
+            out_dir: plan.clone(),
+            library_version: version,
+            library_release_tag: format!("v{version}-20261001000000"),
+            model: self.model.clone(),
+            passage_package: self.model.query_packages[0].clone(),
+            previous: previous.as_ref(),
+            warehouse: Some(&Warehouse::open(&self.warehouse).unwrap()),
+            created_at: CREATED_AT.to_string(),
+        })
+        .unwrap();
+        let embed = EmbedManifest::read(&plan).unwrap();
+        if embed.records > 0 {
+            let mut runtime = EmbeddingRuntime::with_deployment(
+                EmbeddingConfig {
+                    model_path: self.model_file.clone(),
+                    embedding_dim: self.model.embedding_dim,
+                    pooling: Pooling::parse(&self.model.pooling).unwrap(),
+                    max_tokens: self.model.max_tokens,
+                    batch_size: 16,
+                },
+                EmbeddingDeployment::default(),
+            );
+            runtime.load().unwrap();
+            let shard = self.root.path().join(format!("shard-{version}"));
+            let worker = WorkerInfo {
+                name: "pipeline-test".to_string(),
+                version: "1".to_string(),
+                device: "cpu".to_string(),
+                ep: "cpu".to_string(),
+                mode: MODE_MOCK.to_string(),
+            };
+            embed_shard(
+                &plan,
+                &embed,
+                0,
+                embed.records,
+                &runtime,
+                16,
+                worker,
+                &shard,
+            )
+            .unwrap();
+            Warehouse::open_for_append(&self.warehouse)
+                .unwrap()
+                .add_shards(
+                    Some(&plan),
+                    &[shard],
+                    &ShardPolicy {
+                        allow_non_semantic: true,
+                    },
+                    CREATED_AT.to_string(),
+                )
+                .unwrap();
+        }
+        let out = self.root.path().join(format!("release-{version}"));
+        let epoch = match (&previous, self.codec) {
+            (Some(_), _) => EpochChoice::Previous,
+            (None, ReleaseCodec::I8SymVec) => EpochChoice::New(CodecSpec::I8SymVec),
+            // Fitted as `fit-rotation` fits it: three quarters of the stand-in's components
+            // in int8, the rest in 4 bits.
+            (None, ReleaseCodec::Rot) => EpochChoice::Given(
+                fit_rot_i8i4(
+                    &Warehouse::open(&self.warehouse).unwrap(),
+                    ROTATION_SAMPLE,
+                    48,
+                    16,
+                )
+                .unwrap(),
+            ),
+        };
+        assemble(&AssembleRequest {
+            plan: &Plan::open(&plan).unwrap(),
+            warehouse: &Warehouse::open(&self.warehouse).unwrap(),
+            kind: if previous.is_some() {
+                PackageKind::Delta
+            } else {
+                PackageKind::Base
+            },
+            previous: previous.as_ref(),
+            epoch,
+            out_dir: out.clone(),
+            created_at: CREATED_AT.to_string(),
+            built_by: None,
+        })
+        .unwrap();
+        self.releases.push(out.clone());
+        out
+    }
+
+    /// What installing the release at `package` into `vectors` takes, as published.
+    fn install_input(&self, vectors: &Path, package: &Path) -> SemanticVectorsInstallInput {
+        let (segment, manifest, digest) = release(package);
+        SemanticVectorsInstallInput {
+            vectors_dir: dir_string(vectors),
+            segment_path: dir_string(&segment),
+            manifest_json: manifest,
+            published_manifest_sha256: Some(digest),
+            model_identity_json: serde_json::to_string(&self.model).unwrap(),
+        }
+    }
+}
+
+/// Every segment of the set at `vectors` is in the format `codec` writes, keys and all.
+fn assert_segment_format(vectors: &Path, codec: ReleaseCodec) {
+    use otzaria_semantic_search::semantic::oxv::reader::Segment;
+    let expected = match codec {
+        ReleaseCodec::I8SymVec => (2, 16),
+        ReleaseCodec::Rot => (3, 8),
+    };
+    let mut segments = 0;
+    for entry in std::fs::read_dir(vectors.join("segments")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "oxv") {
+            let segment = Segment::open(&path).unwrap();
+            assert_eq!(
+                (segment.format_version(), segment.key_len()),
+                expected,
+                "{codec:?}: {}",
+                path.display()
+            );
+            assert!(segment
+                .keys()
+                .all(|key| key.is_narrow() == (expected.1 == 8)));
+            segments += 1;
+        }
+    }
+    assert!(
+        segments > 0,
+        "{codec:?}: no segment at {}",
+        vectors.display()
+    );
+}
+
+/// A base and the deltas after it install through the API in order, in either store this
+/// build reads: each reports its kind and library version, a delta installed again is
+/// already applied, and one that does not follow the set is refused by the version it
+/// starts from. The set then serves and compacts, and every line comes back where the
+/// newest library has it — in format 3, resolved by the eight bytes its keys keep.
+#[test]
+fn releases_of_either_store_install_in_order_serve_and_compact() {
+    const LONG: &str = "/books/long.txt";
+    let long = qa_window_copy_line();
+    let long_book = |text: String| -> Book { ("ארוך", "/ארוך", LONG, 2, text) };
+    let genesis =
+        |text: String| -> Book { ("בראשית", "/מקרא/תורה", GENESIS, 0, text) };
+    let berachot = |text: String| -> Book {
+        ("משנה ברכות", "/משנה/זרעים", BERACHOT, 1, text)
+    };
+    let v30 = vec![
+        genesis(GENESIS_TEXT.to_string()),
+        berachot(BERACHOT_TEXT.to_string()),
+        long_book(long.clone()),
+    ];
+    // Lines inserted above the probe and above the long line move their records.
+    let v31 = vec![
+        genesis(format!("שורה חדשה בראש הספר לפני כל השאר\n{GENESIS_TEXT}")),
+        berachot(BERACHOT_TEXT.to_string()),
+        long_book(format!("שורה חדשה לפני השורה הארוכה והרחבה\n{long}")),
+    ];
+    let mut v32 = v31.clone();
+    v32[1] = berachot(format!(
+        "{BERACHOT_TEXT}\nומשעה שהכהנים טובלין ואוכלין בתרומתן"
+    ));
+    let target = {
+        use otzaria_semantic_search::semantic::chunk_key::LineRef;
+        use otzaria_semantic_search::semantic::chunker::Chunker;
+        Chunker::new(production_chunking())
+            .unwrap()
+            .embedded_windows(
+                &[LineRef {
+                    text: &long,
+                    section: 0,
+                }],
+                0,
+            )
+            .swap_remove(2)
+    };
+    let window_query = target
+        .text
+        .strip_prefix(otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX)
+        .unwrap()
+        .to_string();
+
+    for codec in [ReleaseCodec::I8SymVec, ReleaseCodec::Rot] {
+        let mut pipeline = Pipeline::new(codec);
+        let base = pipeline.release(LIBRARY_VERSION, &v30);
+        let next = pipeline.release(LIBRARY_VERSION + 1, &v31);
+        let last = pipeline.release(LIBRARY_VERSION + 2, &v32);
+        let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION + 2).to_str().unwrap());
+        let token = SemanticCancellationToken::new();
+        let vectors = pipeline.root.path().join("vectors");
+        let install = |package: &Path| {
+            engine.install_semantic_vectors(pipeline.install_input(&vectors, package), &token)
+        };
+
+        let report = install(&base).unwrap();
+        assert_eq!(
+            (report.kind, report.library_version, report.already_applied),
+            (SemanticVectorsPackageKind::Base, LIBRARY_VERSION, false),
+            "{codec:?}"
+        );
+        // Re-anchored on an index whose lines moved, as one of the base's version: the
+        // records below an inserted line move, a window's with its parent's anchor.
+        let forced = SemanticCompactionPolicy {
+            force: true,
+            ..SemanticCompactionPolicy::defaults()
+        };
+        let anchored = engine
+            .compact_semantic_vectors(
+                dir_string(&vectors),
+                Some(LIBRARY_VERSION),
+                Some(forced.clone()),
+                &token,
+            )
+            .unwrap();
+        assert!(anchored.compacted, "{codec:?}: {}", anchored.reason);
+        assert!(
+            anchored.hints_refreshed >= 2,
+            "{codec:?}: {}",
+            anchored.reason
+        );
+        assert_eq!(anchored.records_pruned, 0, "{codec:?}");
+        assert_segment_format(&vectors, codec);
+
+        let Err(off_chain) = install(&last) else {
+            panic!("{codec:?}: a delta that does not follow the set must be refused");
+        };
+        assert_eq!(
+            (off_chain.kind, off_chain.field.as_deref()),
+            (
+                SemanticErrorKind::ArtifactIncompatible,
+                Some("delta.from_library_version")
+            ),
+            "{codec:?}: {}",
+            off_chain.message
+        );
+        let info = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+        assert_eq!(
+            (info.generation, info.library_version),
+            (anchored.generation, LIBRARY_VERSION),
+            "{codec:?}: a refused delta changes nothing"
+        );
+
+        let delta = install(&next).unwrap();
+        assert_eq!(
+            (delta.kind, delta.library_version, delta.already_applied),
+            (
+                SemanticVectorsPackageKind::Delta,
+                LIBRARY_VERSION + 1,
+                false
+            ),
+            "{codec:?}"
+        );
+        assert!(delta.generation > anchored.generation);
+        let again = install(&next).unwrap();
+        assert_eq!(
+            (again.kind, again.library_version, again.already_applied),
+            (SemanticVectorsPackageKind::Delta, LIBRARY_VERSION + 1, true),
+            "{codec:?}"
+        );
+        let delta = install(&last).unwrap();
+        assert_eq!(
+            (delta.kind, delta.library_version, delta.already_applied),
+            (
+                SemanticVectorsPackageKind::Delta,
+                LIBRARY_VERSION + 2,
+                false
+            ),
+            "{codec:?}"
+        );
+        assert_eq!(delta.segments, 3, "{codec:?}");
+        assert_segment_format(&vectors, codec);
+
+        engine
+            .open_semantic_artifact(SemanticArtifactInput {
+                vectors_dir: dir_string(&vectors),
+                model_path: dir_string(&pipeline.model_file),
+                model_identity_json: serde_json::to_string(&pipeline.model).unwrap(),
+                onnx_runtime_path: None,
+                scan_threads: None,
+            })
+            .unwrap();
+        let serves = |when: &str| {
+            assert_eq!(
+                semantic_lines(&engine, PROBE_LINE, &[]).first(),
+                Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 4)),
+                "{codec:?} {when}"
+            );
+            let response = search(
+                &engine,
+                &window_query,
+                &[],
+                SemanticRetrievalMode::SemanticOnly,
+            );
+            let hit = response
+                .results
+                .first()
+                .unwrap_or_else(|| panic!("{codec:?} {when}: no result for the window"));
+            assert_eq!(
+                (hit.file_path.as_str(), hit.segment, hit.matched_window),
+                (LONG, 1, target.ordinal),
+                "{codec:?} {when}"
+            );
+        };
+        serves("after the deltas");
+
+        let compacted = engine
+            .compact_semantic_vectors(
+                dir_string(&vectors),
+                Some(LIBRARY_VERSION + 2),
+                Some(forced),
+                &token,
+            )
+            .unwrap();
+        assert!(compacted.compacted, "{codec:?}: {}", compacted.reason);
+        assert_eq!(compacted.records_pruned, 0, "{codec:?}");
+        let info = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+        assert_eq!(
+            (info.segments.len(), info.library_version),
+            (1, LIBRARY_VERSION + 2),
+            "{codec:?}"
+        );
+        assert_eq!(info.segments[0].kind, SemanticVectorsPackageKind::Compacted);
+        assert_segment_format(&vectors, codec);
+        serves("after compaction");
     }
 }

@@ -10,7 +10,9 @@
 
 #![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
-use otzaria_semantic_search::distribution::assemble::{assemble, AssembleRequest, EpochChoice};
+use otzaria_semantic_search::distribution::assemble::{
+    assemble, fit_rot_i8i4, AssembleRequest, EpochChoice, ROTATION_SAMPLE,
+};
 use otzaria_semantic_search::distribution::gates::simulate_device;
 use otzaria_semantic_search::distribution::ledger::Ledger;
 use otzaria_semantic_search::distribution::package::PackageKind;
@@ -24,7 +26,7 @@ use otzaria_semantic_search::semantic::embedding::{
     mock, EmbeddingConfig, EmbeddingDeployment, EmbeddingRuntime,
 };
 use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
-use otzaria_semantic_search::semantic::oxv::codec::CodecSpec;
+use otzaria_semantic_search::semantic::oxv::codec::{CodecSpec, ROT_I8I4_NAME};
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::{
     BookOrderEntry, SearchEngine, SemanticArtifactInput, SemanticCancellationToken,
@@ -96,12 +98,16 @@ struct Publisher {
     model_file: PathBuf,
     model: ModelIdentity,
     warehouse: PathBuf,
+    /// The base's codec, which every delta keeps.
+    codec: &'static str,
     /// Each release's directory, in order.
     releases: Vec<PathBuf>,
 }
 
 impl Publisher {
-    fn new() -> Self {
+    /// A publisher whose base is in `codec`: `rot192-i8i4` fitted on the warehouse as
+    /// `fit-rotation` fits it, three quarters of the stand-in's components in int8.
+    fn new(codec: &'static str) -> Self {
         let root = TempDir::new().unwrap();
         let model_file = mock::write_stub_onnx_package(&root.path().join("model"));
         let chunking = production_chunking();
@@ -130,6 +136,7 @@ impl Publisher {
             model_file,
             model,
             warehouse,
+            codec,
             releases: Vec::new(),
         }
     }
@@ -217,7 +224,16 @@ impl Publisher {
             previous: previous.as_ref(),
             epoch: match previous {
                 Some(_) => EpochChoice::Previous,
-                None => EpochChoice::New(CodecSpec::parse("i8-sym-vec", 1.0).unwrap()),
+                None if self.codec == ROT_I8I4_NAME => EpochChoice::Given(
+                    fit_rot_i8i4(
+                        &Warehouse::open(&self.warehouse).unwrap(),
+                        ROTATION_SAMPLE,
+                        48,
+                        16,
+                    )
+                    .unwrap(),
+                ),
+                None => EpochChoice::New(CodecSpec::parse(self.codec, 1.0).unwrap()),
             },
             out_dir: out.clone(),
             created_at: CREATED_AT.to_string(),
@@ -308,28 +324,31 @@ fn a_text_whose_record_in_a_book_is_dead_is_an_arrival_of_the_book() {
         ]
     };
 
-    let mut publisher = Publisher::new();
-    publisher.release(30, &library(true, false));
-    // A delta that only tombstones: it ships no vector.
-    publisher.release(31, &library(false, false));
-    publisher.release(32, &library(false, true));
-    let device_index = publisher.root.path().join("device-index");
-    index_of(&device_index, &library(true, true));
-    let engine = publisher.device(&device_index);
+    // The anchor family's store, and format 3, whose keys are eight bytes.
+    for codec in ["i8-sym-vec", ROT_I8I4_NAME] {
+        let mut publisher = Publisher::new(codec);
+        publisher.release(30, &library(true, false));
+        // A delta that only tombstones: it ships no vector.
+        publisher.release(31, &library(false, false));
+        publisher.release(32, &library(false, true));
+        let device_index = publisher.root.path().join("device-index");
+        index_of(&device_index, &library(true, true));
+        let engine = publisher.device(&device_index);
 
-    let found = lines_of(&engine, &text, &["/א"]);
-    assert_eq!(
-        found.first(),
-        Some(&(a.to_string(), 2)),
-        "the book holds the text, whose record in it is dead: {found:?}"
-    );
-    assert!(
-        found.iter().all(|(book, _)| book == a),
-        "no line of a book the filter does not admit: {found:?}"
-    );
-    assert_eq!(
-        lines_of(&engine, &text, &["/ב"]).first(),
-        Some(&(w.to_string(), 2)),
-        "the book the live vector's record names finds it as it always did"
-    );
+        let found = lines_of(&engine, &text, &["/א"]);
+        assert_eq!(
+            found.first(),
+            Some(&(a.to_string(), 2)),
+            "{codec}: the book holds the text, whose record in it is dead: {found:?}"
+        );
+        assert!(
+            found.iter().all(|(book, _)| book == a),
+            "{codec}: no line of a book the filter does not admit: {found:?}"
+        );
+        assert_eq!(
+            lines_of(&engine, &text, &["/ב"]).first(),
+            Some(&(w.to_string(), 2)),
+            "{codec}: the book the live vector's record names finds it as it always did"
+        );
+    }
 }
