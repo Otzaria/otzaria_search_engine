@@ -25,6 +25,9 @@
 //! it arrived in, held to its whole key, and in no other book. An unfiltered search plans
 //! every book, with nothing unreached.
 //!
+//! Every key here is read from the set and compared with the set's own, so a set of 8-byte
+//! keys (segment format 3) is compared at that width throughout, with no narrowing.
+//!
 //! Liveness is the set's own. A record counts only when a scan of its book reaches a live
 //! slot through it — the sidecar's `book_records`, which reads the generation's deletions
 //! and links — and a vector only when its slot is live in the generation.

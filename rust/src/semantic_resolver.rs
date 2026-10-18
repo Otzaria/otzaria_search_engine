@@ -33,12 +33,12 @@
 //! [`MAX_LINES_PER_HIT`] per hit, each line once in a search. Without grouping every one is
 //! a result; grouping folds them as it folds any lines, by section or by text.
 //!
-//! A line is returned only once it holds the hit's key by all 128 bits. A column value is
-//! the key's first 64, so a line found by its column is checked against the key recomputed
-//! from its text and its neighbours' before it is returned, and one that fails — a column
-//! left stale by whatever wrote the index — is dropped and counted
-//! ([`LiveResolver::unverified`]). Nothing a scan returns reaches fusion, grouping, a page
-//! or a group's siblings on 64 bits alone.
+//! A line is returned only once it holds the hit's key by every bit the set stores of it:
+//! all 128 in segment format 2, the first 64 in format 3, whose keys read narrowed and are
+//! compared by [`ChunkKey::same_text`]. A column value is the key's first 64, so a line
+//! found by its column is checked against the key recomputed from its text and its
+//! neighbours' before it is returned, and one that fails — a column left stale by whatever
+//! wrote the index — is dropped and counted ([`LiveResolver::unverified`]).
 //!
 //! # A filtered search
 //!
@@ -556,15 +556,18 @@ impl<'a> LiveResolver<'a> {
         rejected.len().min(u32::MAX as usize) as u32
     }
 
-    /// Whether the line at `position` of `book` holds `key` by all 128 bits, recomputed from
-    /// the text this searcher reads: its own and its neighbours' within the recipe's window.
+    /// Whether the line at `position` of `book` holds `key` at the width the set stores it,
+    /// recomputed from the text this searcher reads: its own and its neighbours' within the
+    /// recipe's window.
     fn holds(
         &self,
         book: &BookLines,
         position: usize,
         key: ChunkKey,
     ) -> Result<bool, ResolveError> {
-        Ok(self.key_at(book, position)? == Some(key))
+        Ok(self
+            .key_at(book, position)?
+            .is_some_and(|held| held.same_text(key)))
     }
 
     /// The key of the line at `position` of `book`, recomputed once per line while the
@@ -659,8 +662,8 @@ impl<'a> LiveResolver<'a> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Which window past the first of the line at `position` of `book` holds `key` by all 128
-    /// bits, recomputed from its text; `None` when none does.
+    /// Which window past the first of the line at `position` of `book` holds `key` at the
+    /// set's width, recomputed from its text; `None` when none does.
     fn window_of(
         &self,
         book: &BookLines,
@@ -677,7 +680,7 @@ impl<'a> LiveResolver<'a> {
         })?;
         Ok(windows
             .iter()
-            .find(|(_, held)| *held == key)
+            .find(|(_, held)| held.same_text(key))
             .map(|&(window, _)| window))
     }
 
@@ -1300,6 +1303,8 @@ impl<'a> LiveResolver<'a> {
         .collect()
     }
 
+    /// Which window of the line at `position` holds `key` as `record` describes it: where a
+    /// record's role is held to its line, and so where a new role is taught.
     fn record_at(
         &self,
         book: &BookLines,
@@ -1458,6 +1463,8 @@ impl<'a> LiveResolver<'a> {
         Ok(found)
     }
 
+    /// Where the runtime reaches each of `name`'s `records`. `line_keys` are every line's keys
+    /// by window, at the width the set stores a key (narrowed in segment format 3).
     pub(crate) fn audit_records(
         &self,
         name: &str,
@@ -1486,7 +1493,7 @@ impl<'a> LiveResolver<'a> {
                 "the audit's line keys do not match the live book",
             ));
         }
-        // The validator already keyed this book from its text; reuse those full keys.
+        // The validator already keyed this book from its text, at the set's key width.
         self.remember_keys(book.docs.iter().copied().zip(line_keys.iter().map(|keys| {
             keys.iter()
                 .find(|(window, _)| *window == 0)
@@ -1600,7 +1607,7 @@ impl<'a> LiveResolver<'a> {
     }
 
     /// The position the record at `hint` names, and the window of it, when that line holds
-    /// `key` by all 128 bits; a key past the first window is held to the line's windows.
+    /// `key` at the set's width; a key past the first window is held to the line's windows.
     fn at_hint(
         &self,
         book: &BookLines,
@@ -1694,7 +1701,8 @@ impl<'a> LiveResolver<'a> {
             keys.iter()
                 .enumerate()
                 .filter(|(offset, line)| {
-                    **line == Some(key) && !taken.contains(&book.docs[start + offset])
+                    line.is_some_and(|line| line.same_text(key))
+                        && !taken.contains(&book.docs[start + offset])
                 })
                 .map(|(offset, _)| (start + offset, 0)),
         );
@@ -2481,11 +2489,19 @@ impl LiveKeySource for LiveKeys<'_> {
         found
             .into_iter()
             .map(|(position, window)| {
+                // At the set's width, so a re-anchored record dedups with the ones kept.
+                let anchor = self.resolver.key_at(&book, position)?;
                 Ok(RecordRef {
                     book: Arc::clone(&record.book),
                     hint: book.ordinals[position],
                     window,
-                    anchor: self.resolver.key_at(&book, position)?,
+                    anchor: anchor.map(|anchor| {
+                        if key.is_narrow() {
+                            anchor.narrowed()
+                        } else {
+                            anchor
+                        }
+                    }),
                 })
             })
             .collect::<Result<Vec<_>, ResolveError>>()
@@ -3342,6 +3358,57 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 assert_eq!(refreshed[0].hint, 41);
+            }
+        }
+    }
+
+    /// A format-3 set's keys are their first eight bytes: its hits and anchors resolve as
+    /// the full keys do, and a record re-anchored for it keeps the set's width.
+    #[test]
+    fn narrow_keys_resolve_and_re_anchor_at_their_width() {
+        let long = long_line("מילה");
+        let (window, key) = crate::semantic_keys::window_keys(&long)[1];
+        let (key, anchor) = (key.narrowed(), parent_key(&long).narrowed());
+        let short = "שורת ביניים ארוכה דיה לעמוד לבדה".to_string();
+        let short_key = parent_key(&short).narrowed();
+        let mut lines = vec![short; 3];
+        lines.push(long);
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &lines);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+            let mut hit = window_hit(key, window, "/books/long.txt", 1);
+            hit.records = vec![occurrence("/books/long.txt", 1, window, anchor)];
+            let mut line = window_hit(short_key, 0, "/books/long.txt", 0);
+            line.records[0].anchor = Some(short_key);
+            let found = resolver
+                .resolve(&[hit, line], None, &CancellationToken::new())
+                .unwrap();
+            let mut found: Vec<_> = found
+                .iter()
+                .map(|line| (line.hit, line.segment, line.window))
+                .collect();
+            found.sort_unstable();
+            assert_eq!(found, [(0, 3, window), (1, 0, 0), (1, 1, 0), (1, 2, 0)]);
+            if column.is_some() {
+                let live = LiveKeys::new(&resolver, 1).unwrap();
+                let refreshed = live
+                    .resolve_record(
+                        key,
+                        &occurrence("/books/long.txt", 1, window, anchor),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    refreshed
+                        .iter()
+                        .map(|record| (record.hint, record.anchor))
+                        .collect::<Vec<_>>(),
+                    [(3, Some(anchor))]
+                );
             }
         }
     }
