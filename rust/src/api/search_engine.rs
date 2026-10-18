@@ -9475,11 +9475,14 @@ impl SearchEngine {
         lines: &[EmbeddedLine<'_>],
     ) -> Result<Vec<Option<String>>> {
         use otzaria_semantic_search::semantic::chunker::truncate_to_chars;
+        use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
         let chunking = semantic_keys::production_chunking();
         let short: Vec<usize> = (0..lines.len())
             .filter(|&at| {
                 let length = lines[at].3.trim().chars().count();
-                (chunking.min_embeddable_chars..chunking.min_meaningful_chars).contains(&length)
+                lines[at].4 != ALIAS_WINDOW
+                    && (chunking.min_embeddable_chars..chunking.min_meaningful_chars)
+                        .contains(&length)
             })
             .collect();
         let mut out: Vec<Option<String>> = lines

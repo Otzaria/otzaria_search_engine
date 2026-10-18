@@ -3092,12 +3092,7 @@ impl CandidateResolver for LiveResolver<'_> {
         // Occurrence penalties can change which hit is best for the same source line.
         let score = |line: &ResolvedLine| {
             let hit = &hits[line.hit as usize];
-            hit.score
-                + if hit.window > 0 {
-                    hit.window_penalty
-                } else {
-                    0.0
-                }
+            hit.score + hit.applied_penalty
                 - match line.window {
                     0 => 0.0,
                     ALIAS_WINDOW => self.alias_penalty,
@@ -3172,6 +3167,7 @@ mod tests {
         let hit = VectorHit {
             score: 1.0,
             window_penalty: 0.04,
+            applied_penalty: 0.0,
             key,
             records: vec![RecordRef {
                 book: Arc::from("/books/gone.txt"),
@@ -3245,6 +3241,7 @@ mod tests {
         VectorHit {
             score: 1.0,
             window_penalty: 0.04,
+            applied_penalty: if window == 0 { 0.0 } else { 0.04 },
             key,
             records: vec![RecordRef {
                 book: Arc::from(book),
@@ -3694,7 +3691,13 @@ mod tests {
         let resolver = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
         let mut inner = window_hit(key, 0, "/books/long.txt", 0);
         inner.records = vec![occurrence("/books/long.txt", 0, window, anchor)];
-        inner.score = 0.9;
+        // This hit entered top-k as a cheap alias (.01), while the resolved long-window
+        // occurrence still owes its normal .20 penalty. Reusing window_penalty as the
+        // scan's applied cost would restore the wrong score and beat the anchor below.
+        inner.window = ALIAS_WINDOW;
+        inner.window_penalty = 0.20;
+        inner.applied_penalty = 0.01;
+        inner.score = 0.89;
         let mut first = window_hit(anchor, 0, "/books/long.txt", 0);
         first.score = 0.88;
         let found = resolver

@@ -4029,6 +4029,7 @@ fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
     use otzaria_semantic_search::semantic::chunker::Chunker;
     use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
     use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
+    use search_engine::api::search_engine::SemanticHighlightTarget;
     const SHORT: &str = "/books/short.txt";
     const COPY: &str = "/books/copy.txt";
     let lines: Vec<String> = [
@@ -4109,6 +4110,26 @@ fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
         .find(|hit| (hit.file_path.as_str(), hit.segment) == (SHORT, 3))
         .expect("the short line comes back through the vector it shares");
     assert_eq!(short.matched_window, ALIAS_WINDOW);
+    assert_eq!(
+        short.snippet_html, lines[3],
+        "an alias has no matched window and is shown as the whole short line"
+    );
+    let highlighted = engine
+        .semantic_passage_highlights(
+            lines[3].clone(),
+            vec![SemanticHighlightTarget {
+                file_path: SHORT.to_string(),
+                id: short.id,
+                window: ALIAS_WINDOW,
+            }],
+            &token,
+        )
+        .unwrap();
+    assert!(!highlighted[0].is_highlighted, "{highlighted:?}");
+    assert!(
+        highlighted[0].snippet_html.is_empty(),
+        "a short alias has no partial-window highlight to paint: {highlighted:?}"
+    );
     let values = search_engine::semantic_keys::column_values(&refs);
     let shared = results
         .iter()
