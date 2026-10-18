@@ -494,9 +494,9 @@ keyed. `export_semantic_plan` and `build_semantic_artifact` take the same flag.
 
 | gate | runs with | passes when |
 | --- | --- | --- |
-| G3, coverage | always; `--plan` adds to it | every line of the index the recipe embeds has its text recorded by the set in its own book, by all 128 bits of its key; and with `--plan`, every record of the plan the set was assembled from is reachable in the set |
-| G4, resolution | always | every record resolves on the index, by all 128 bits of its key, and every line's `chunkKey` column is its text's; records off their hint are reported, and fail it only past `--max-stale-hints <fraction>` |
-| G6, retrieval | `--warehouse`, `--model`, `--model-identity` | the set's scan, as a device runs it, reaches mean recall@10 of `--min-recall-10` (0.98) and recall@50 of `--min-recall-50` (0.99) against the exact `f32` scan of the warehouse's vectors, on the same query vectors |
+| G3, coverage | always; `--plan` adds to it | every line of the index the recipe embeds has its text recorded by the set in its own book, by every bit of its key the set stores (all 128 in segment format 2, the first 64 in format 3); and with `--plan`, every record of the plan the set was assembled from is reachable in the set |
+| G4, resolution | always | every record resolves on the index, by every bit of its key the set stores, and every line's `chunkKey` column is its text's; records off their hint are reported, and fail it only past `--max-stale-hints <fraction>` |
+| G6, retrieval | `--warehouse`, `--model`, `--model-identity` | the set's scan, as a device runs it, reaches mean recall@10 of `--min-recall-10` (0.98) and recall@50 of `--min-recall-50` (0.99; 0.98 for a set in `rot192-i8i4`) against the exact `f32` scan of the warehouse's vectors, on the same query vectors |
 
 G6's queries are `--queries <file>`, one per line, or else `--sample-queries`
 (200; from 1 to 100,000) spans of the index's lines drawn with a fixed seed, embedded by the
