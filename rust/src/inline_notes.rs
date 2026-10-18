@@ -12,9 +12,12 @@ use std::collections::HashMap;
 
 /// One `line_note` row of a line, in `noteIndex` order. `char_pos` is -1 when it has none.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BookNote {
+pub struct BookNote {
+    /// UTF-16 offset in the stored line, counting each HTML entity as one unit; -1 if absent.
     pub char_pos: i64,
+    /// Whether the database marker is non-null (an empty marker still counts).
     pub has_marker: bool,
+    /// Original footnote body HTML, without the surrounding footnote element.
     pub body: String,
 }
 
@@ -182,10 +185,13 @@ fn footnote_html(body: &str) -> String {
     format!("<i class=\"footnote\">{body}</i>")
 }
 
-/// `rehydrateInlineNotes`: each body at its `charPos`; a note without one after its marker
+/// Restores schema 7 footnote HTML for database readers and indexing.
+///
+/// Supply notes in database `noteIndex` order. Each body is inserted at its `charPos`;
+/// a note without one is inserted after its marker
 /// (the k-th stripped `<sup>` belongs to the k-th note with a marker), else at the end. A line
 /// that already holds a body outside a sup is left alone. `None` when unchanged.
-pub(crate) fn rehydrate_inline_notes(line: &str, notes: &[BookNote]) -> Option<String> {
+pub fn rehydrate_inline_notes(line: &str, notes: &[BookNote]) -> Option<String> {
     if notes.is_empty() {
         return None;
     }

@@ -51,7 +51,7 @@ mod lexicons;
 // `crate::api`.
 #[cfg(test)]
 mod external_text_tests;
-mod inline_notes;
+pub mod inline_notes;
 mod line_source;
 // The batch behind `SearchEngine::add_library_books`; its types are in `crate::api`.
 mod library_indexing;
