@@ -20,7 +20,7 @@ Future<void> main() async {
       const lines = ['כונטרסים תורה', 'קונטרשים תורה'];
       for (var i = 0; i < lines.length; i++) {
         await engine.addDocument(
-          id: BigInt.from(i + 1),
+          ordinal: i,
           title: 'בדיקת PR45',
           reference: '',
           topics: '/בדיקות',

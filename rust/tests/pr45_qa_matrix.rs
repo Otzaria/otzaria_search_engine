@@ -19,7 +19,7 @@ fn engine(lines: &[&str]) -> (SearchEngine, TempDir) {
     for (id, line) in lines.iter().enumerate() {
         engine
             .add_document(
-                id as u64,
+                id as u32,
                 "title",
                 "ref",
                 "/root",
@@ -27,7 +27,6 @@ fn engine(lines: &[&str]) -> (SearchEngine, TempDir) {
                 0,
                 false,
                 "/books/qa.txt",
-                None,
                 None,
                 None,
             )
@@ -82,7 +81,8 @@ fn assert_search_hit_highlights(
         )
         .unwrap()
         .unwrap();
-    let ids: HashSet<_> = hits.iter().map(|hit| hit.id).collect();
+    // Line `id` of the fixture is written at ordinal `id`: the low half of its id, less one.
+    let ids: HashSet<_> = hits.iter().map(|hit| (hit.id & 0xFFFF_FFFF) - 1).collect();
     assert!(!ids.is_empty(), "fixture has no search hits: query={query}");
     if require_every_fixture {
         assert_eq!(

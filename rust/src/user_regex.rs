@@ -40,6 +40,7 @@ use crate::api::search_engine::{
     indexed_texts, line_source_book, HighlightRange, SearchResult, TextStatus, UserRegexKind,
     UserRegexLineMatches, UserRegexStreamUpdate, LINE_CHECK_FIELD,
 };
+use crate::book_order::{book_number_of, OrderKind, OrderTables};
 use crate::doc_store::DocumentLoader;
 use crate::gap_phrase::Proximity;
 use crate::hebrew_query::{
@@ -1152,6 +1153,15 @@ pub(crate) struct LineSearch<'a> {
     pub(crate) cancel: &'a AtomicBool,
     /// Line hits kept; more end the search with `truncated` ([`MAX_LINE_HITS`]).
     pub(crate) max_hits: usize,
+    /// The catalogue order hits are reported and kept in, and its epoch for the cache.
+    pub(crate) order: Arc<OrderTables>,
+    pub(crate) order_epoch: u64,
+}
+
+impl LineSearch<'_> {
+    fn catalogue_key(&self, id: u64) -> u64 {
+        self.order.key(OrderKind::Catalogue, id)
+    }
 }
 
 /// What a page of the stream shows.
@@ -1186,6 +1196,7 @@ impl LineOutcome {
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct LineCacheKey {
     index: u64,
+    order: u64,
     sources: Vec<(Source, line_source::SourceGeneration)>,
     facets: Vec<String>,
     pattern: String,
@@ -1196,6 +1207,7 @@ impl LineCacheKey {
     /// The same search, whatever its scope.
     fn same_search(&self, other: &Self) -> bool {
         self.index == other.index
+            && self.order == other.order
             && self.sources == other.sources
             && self.pattern == other.pattern
             && self.max_hits == other.max_hits
@@ -1270,6 +1282,7 @@ pub(crate) fn run_line_search(
     facets.sort();
     let key = LineCacheKey {
         index: index_identity(ctx.searcher),
+        order: ctx.order_epoch,
         sources: Source::all()
             .into_iter()
             .map(|source| (source, line_source::scan_cache_generation(source)))
@@ -1339,7 +1352,7 @@ pub(crate) fn run_line_search(
     }
     let (done, total) = (state.done, state.total);
     let mut hits = std::mem::take(&mut state.hits);
-    hits.sort_unstable_by_key(|h| h.id);
+    hits.sort_unstable_by_key(|h| ctx.catalogue_key(h.id));
     let outcome = Arc::new(LineOutcome {
         hits,
         book_counts: std::mem::take(&mut state.book_counts),
@@ -1501,7 +1514,7 @@ fn narrowed_outcome(
                     .map(|(id, address)| LineHit { id, address }),
             );
         }
-        hits.sort_unstable_by_key(|h| h.id);
+        hits.sort_unstable_by_key(|h| ctx.catalogue_key(h.id));
         return Ok(Some(Arc::new(LineOutcome {
             hits,
             book_counts,
@@ -1560,8 +1573,8 @@ impl Progress {
     }
 
     /// Adds the hits of finished work (in catalogue order); `false` once the cap is reached.
-    fn add(&mut self, mut hits: Vec<(String, LineHit)>) -> bool {
-        hits.sort_unstable_by_key(|(_, h)| h.id);
+    fn add(&mut self, ctx: &LineSearch<'_>, mut hits: Vec<(String, LineHit)>) -> bool {
+        hits.sort_unstable_by_key(|(_, h)| ctx.catalogue_key(h.id));
         for (book, hit) in hits {
             if self.hits.len() >= self.max_hits {
                 self.truncated = true;
@@ -1680,7 +1693,7 @@ fn search_lines(
                 );
                 if count <= CANDIDATE_FETCH_LIMIT {
                     let mut docs = ctx.searcher.search(query.as_ref(), &IdAddressCollector)?;
-                    docs.sort_unstable_by_key(|(id, _)| *id);
+                    docs.sort_unstable_by_key(|(id, _)| ctx.catalogue_key(*id));
                     LineWork::Verify(docs)
                 } else {
                     // Too many to read one by one: read their books, but decode only their rows.
@@ -1701,7 +1714,7 @@ fn search_lines(
             }
         });
         if let Some(LineWork::Scan(books)) = scan.work.as_mut() {
-            books.sort_unstable_by_key(|b| b.min_id);
+            books.sort_unstable_by_key(|b| ctx.order.catalogue_rank(book_number_of(b.min_id)));
         }
     }
     let LineScan { state, work, .. } = scan;
@@ -1852,7 +1865,7 @@ fn verify_candidates(
             }
         }
         let before = state.hits.len();
-        let keep_going = state.add(hits);
+        let keep_going = state.add(ctx, hits);
         state.done += batch.len() as u32;
         if let Some(reporter) = reporter.as_mut() {
             reporter.offer(&state.hits[before..])?;
@@ -1899,7 +1912,7 @@ fn scan_books(
             );
         }
         let before = state.hits.len();
-        let keep_going = state.add(hits);
+        let keep_going = state.add(ctx, hits);
         state.done = end as u32;
         if let Some(reporter) = reporter.as_mut() {
             reporter.offer(&state.hits[before..])?;

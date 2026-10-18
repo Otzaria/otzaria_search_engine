@@ -27,8 +27,8 @@ use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 use otzaria_semantic_search::semantic::oxv::codec::CodecSpec;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::{
-    SearchEngine, SemanticArtifactInput, SemanticCancellationToken, SemanticLexicalMode,
-    SemanticRetrievalMode, TextStorage,
+    BookOrderEntry, SearchEngine, SemanticArtifactInput, SemanticCancellationToken,
+    SemanticLexicalMode, SemanticRetrievalMode, TextStorage,
 };
 use search_engine::semantic_keys::production_chunking;
 use search_engine::semantic_plan::{export_plan, PlanExport};
@@ -66,21 +66,27 @@ fn line(book: usize, line: usize) -> String {
 fn index_of(dir: &Path, books: &[Book]) {
     std::fs::create_dir_all(dir).unwrap();
     let mut engine = SearchEngine::new(dir.to_str().unwrap());
+    let mut places = Vec::new();
     for (title, topics, key, order, lines) in books {
+        places.push(BookOrderEntry {
+            file_path: key.to_string(),
+            catalogue_order: *order,
+            generation_order: 0,
+        });
         engine
             .add_text_book(
                 title.to_string(),
                 topics.to_string(),
                 key.to_string(),
-                *order,
-                0,
                 lines.join("\n"),
                 None,
                 TextStorage::InIndex,
                 None,
+                None,
             )
             .unwrap();
     }
+    engine.set_book_order(places).unwrap();
     engine.commit().unwrap();
 }
 

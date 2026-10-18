@@ -55,11 +55,10 @@ fn write_index(dir: &Path) {
             "בראשית".to_string(),
             "/מקרא/תורה".to_string(),
             GENESIS.to_string(),
-            0,
-            0,
             GENESIS_TEXT.to_string(),
             Some(vec!["/era/תנך".to_string()]),
             TextStorage::InIndex,
+            None,
             None,
         )
         .unwrap();
@@ -68,11 +67,10 @@ fn write_index(dir: &Path) {
             "משנה ברכות".to_string(),
             "/משנה/זרעים".to_string(),
             BERACHOT.to_string(),
-            1,
-            0,
             BERACHOT_TEXT.to_string(),
             None,
             TextStorage::InIndex,
+            None,
             None,
         )
         .unwrap();

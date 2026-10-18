@@ -15,7 +15,7 @@ fn engine() -> (SearchEngine, TempDir) {
 
 fn add_book(engine: &mut SearchEngine, order: u32, path: &str, lines: &[&str]) {
     engine
-        .add_text_book(
+        .add_text_book_placed(
             format!("ספר {order}"),
             "/t".to_string(),
             path.to_string(),
@@ -454,7 +454,7 @@ fn pdf_lines_join_across_pages_but_not_across_a_dropped_line() {
         },
     ];
     let added = e
-        .add_pdf_book(
+        .add_pdf_book_placed(
             "ספר".into(),
             "/t".into(),
             "/b/book.pdf".into(),
@@ -685,7 +685,7 @@ fn real_library_cross_line_cost() {
                 .collect();
             lines += rows.len();
             engine
-                .add_text_book(
+                .add_text_book_placed(
                     format!("ספר {book}"),
                     "/x".into(),
                     format!("/x/{book}"),
@@ -943,7 +943,7 @@ fn acronym_snippets_paint_complete_alternatives_without_stray_expansion_words() 
 }
 
 fn add_filtered_book(e: &mut SearchEngine, order: u32, topics: &str, text: &str, extra: &[&str]) {
-    e.add_text_book(
+    e.add_text_book_placed(
         format!("ספר {order}"),
         topics.into(),
         format!("/filter/{order}.txt"),

@@ -39,16 +39,19 @@ pub(crate) fn snapshot_of(searcher: &Searcher) -> u64 {
     hasher.finish()
 }
 
-/// One search: the index snapshot it ran on and its query's fingerprint.
+/// One search: the index snapshot it ran on, the book order it ranked by and its query's
+/// fingerprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PageKey {
     snapshot: u64,
+    order: u64,
     query: u128,
 }
 
 impl PageKey {
-    /// `None` when the query is too large to fingerprint.
-    pub(crate) fn new(snapshot: u64, query: &dyn Query) -> Option<Self> {
+    /// `None` when the query is too large to fingerprint. `order` is the epoch of the book
+    /// order mapping (`book_order::next_epoch`).
+    pub(crate) fn new(snapshot: u64, order: u64, query: &dyn Query) -> Option<Self> {
         let mut writer = FingerprintWriter {
             low: DefaultHasher::new(),
             high: DefaultHasher::new(),
@@ -58,6 +61,7 @@ impl PageKey {
         write!(writer, "{query:?}").ok()?;
         Some(Self {
             snapshot,
+            order,
             query: (u128::from(writer.high.finish()) << 64) | u128::from(writer.low.finish()),
         })
     }
@@ -219,13 +223,15 @@ mod tests {
 
     #[test]
     fn keys_tell_queries_and_generations_apart() {
-        let a = PageKey::new(1, &term("שלום")).unwrap();
-        assert_eq!(a, PageKey::new(1, &term("שלום")).unwrap());
-        assert_ne!(a, PageKey::new(1, &term("שלומ")).unwrap());
-        assert_ne!(a, PageKey::new(2, &term("שלום")).unwrap());
+        let a = PageKey::new(1, 0, &term("שלום")).unwrap();
+        assert_eq!(a, PageKey::new(1, 0, &term("שלום")).unwrap());
+        assert_ne!(a, PageKey::new(1, 0, &term("שלומ")).unwrap());
+        assert_ne!(a, PageKey::new(2, 0, &term("שלום")).unwrap());
+        // Another book order ranks the same hits differently.
+        assert_ne!(a, PageKey::new(1, 1, &term("שלום")).unwrap());
         assert_ne!(
-            PageKey::new(1, &AllQuery).unwrap(),
-            PageKey::new(1, &EmptyQuery).unwrap()
+            PageKey::new(1, 0, &AllQuery).unwrap(),
+            PageKey::new(1, 0, &EmptyQuery).unwrap()
         );
     }
 
@@ -241,7 +247,7 @@ mod tests {
     #[test]
     fn serves_pages_inside_the_ranking_only() {
         let cache = PageCache::default();
-        let key = PageKey::new(1, &AllQuery).unwrap();
+        let key = PageKey::new(1, 0, &AllQuery).unwrap();
         cache.store_ranked(key, 0, addresses(400), 400);
         let page = cache.page(&key, 0, 100, 100).unwrap();
         assert_eq!(page.addresses, addresses(200)[100..].to_vec());
@@ -253,7 +259,7 @@ mod tests {
     #[test]
     fn a_complete_ranking_serves_every_page_and_the_total() {
         let cache = PageCache::default();
-        let key = PageKey::new(1, &AllQuery).unwrap();
+        let key = PageKey::new(1, 0, &AllQuery).unwrap();
         cache.store_ranked(key, 2, addresses(150), 400);
         assert_eq!(cache.total(&key), Some(150));
         assert_eq!(
@@ -266,7 +272,7 @@ mod tests {
     #[test]
     fn a_longer_ranking_replaces_a_shorter_one() {
         let cache = PageCache::default();
-        let key = PageKey::new(1, &AllQuery).unwrap();
+        let key = PageKey::new(1, 0, &AllQuery).unwrap();
         cache.store_ranked(key, 0, addresses(400), 400);
         cache.store_ranked(key, 0, addresses(800), 800);
         assert!(cache.page(&key, 0, 600, 100).is_some());

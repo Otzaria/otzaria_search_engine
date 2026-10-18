@@ -234,6 +234,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BookCountResult dco_decode_book_count_result(dynamic raw);
 
   @protected
+  BookOrderEntry dco_decode_book_order_entry(dynamic raw);
+
+  @protected
+  BookStamps dco_decode_book_stamps(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -373,6 +379,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BenchmarkResult> dco_decode_list_benchmark_result(dynamic raw);
+
+  @protected
+  List<BookOrderEntry> dco_decode_list_book_order_entry(dynamic raw);
+
+  @protected
+  List<BookStamps> dco_decode_list_book_stamps(dynamic raw);
 
   @protected
   List<bool> dco_decode_list_bool(dynamic raw);
@@ -945,6 +957,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BookCountResult sse_decode_book_count_result(SseDeserializer deserializer);
 
   @protected
+  BookOrderEntry sse_decode_book_order_entry(SseDeserializer deserializer);
+
+  @protected
+  BookStamps sse_decode_book_stamps(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -1114,6 +1132,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BenchmarkResult> sse_decode_list_benchmark_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<BookOrderEntry> sse_decode_list_book_order_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BookStamps> sse_decode_list_book_stamps(SseDeserializer deserializer);
 
   @protected
   List<bool> sse_decode_list_bool(SseDeserializer deserializer);
@@ -1846,6 +1872,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_book_order_entry(
+    BookOrderEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_book_stamps(BookStamps self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -2054,6 +2089,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_benchmark_result(
     List<BenchmarkResult> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_book_order_entry(
+    List<BookOrderEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_book_stamps(
+    List<BookStamps> self,
     SseSerializer serializer,
   );
 

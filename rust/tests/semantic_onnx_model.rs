@@ -241,7 +241,7 @@ fn indexed_engine(
     for (id, text) in LINES {
         engine
             .add_document(
-                id,
+                (id - 1) as u32,
                 TITLE,
                 &format!("probe {id}"),
                 TOPICS,
@@ -249,8 +249,7 @@ fn indexed_engine(
                 id,
                 false,
                 BOOK_KEY,
-                Some(id),
-                None,
+                Some((id) as u32),
                 None,
             )
             .unwrap();
@@ -429,11 +428,10 @@ fn build_artifact(
                 TITLE.to_owned(),
                 TOPICS.to_owned(),
                 BOOK_KEY.to_owned(),
-                0,
-                0,
                 text,
                 None,
                 TextStorage::InIndex,
+                None,
                 None,
             )
             .unwrap();

@@ -16,7 +16,7 @@
 //!
 //! The intersection is computed against the same reader generation the
 //! wrapped query runs on, and a section id never collides across books
-//! (the id embeds the book's catalogue id_base), so a section from a
+//! (the id embeds the book's number), so a section from a
 //! facet-excluded book can never admit lines of another book.
 //!
 //! Like `gap_phrase`, the wrapper is a plain `Query`/`Weight`/`Scorer`

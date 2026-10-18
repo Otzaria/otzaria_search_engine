@@ -227,10 +227,9 @@ fn library_input(book_id: i64, title: &str) -> LibraryBookInput {
         title: format!("כותרת {title}"),
         topics: format!("/ספרייה/{book_id}"),
         file_path: format!("id:{book_id}"),
-        catalogue_order: book_id as u32 * 2,
-        generation_order: (book_id % 5) as u32,
         extra_facets: Some(vec![format!("/era/{book_id}"), "/author/x".to_string()]),
         text_storage: TextStorage::LibraryDb,
+        source_hash: Some(book_id as u64 * 7 + 1),
     }
 }
 
@@ -285,9 +284,8 @@ fn assert_prepared_alike(engine: &SearchEngine, db: &Path, input: &LibraryBookIn
         title: input.title.clone(),
         topics: input.topics.clone(),
         file_path: input.file_path.clone(),
-        catalogue_order: input.catalogue_order,
-        generation_order: input.generation_order,
         extra_facets: input.extra_facets.clone().unwrap_or_default(),
+        source_hash: input.source_hash.unwrap_or(0),
     };
     let expected = engine
         .prepare_text_book(
@@ -337,12 +335,11 @@ fn library_books_index_like_the_bytes_the_app_reads() {
                     input.title.clone(),
                     input.topics.clone(),
                     input.file_path.clone(),
-                    input.catalogue_order,
-                    input.generation_order,
                     app.bytes,
                     input.extra_facets.clone(),
                     app.storage,
                     app.stored_lines,
+                    input.source_hash,
                 )
                 .unwrap();
         }
@@ -395,6 +392,22 @@ fn library_books_index_like_the_bytes_the_app_reads() {
             )
             .unwrap(),
             Some(result.text_hash)
+        );
+    }
+    // A batch book carries every stamp the app's path records, and its result says which.
+    let stamps = by_engine.get_book_stamps().unwrap();
+    assert_eq!(stamps, by_app.get_book_stamps().unwrap());
+    for result in results.iter().filter(|r| r.status == Indexed) {
+        let key = format!("id:{}", result.book_id);
+        let book = stamps.iter().find(|book| book.file_path == key).unwrap();
+        assert_eq!(
+            (result.book_number, result.metadata_hash, result.source_hash),
+            (book.book_number, book.metadata_hash, book.source_hash)
+        );
+        assert_eq!(result.source_hash, result.book_id as u64 * 7 + 1);
+        assert_eq!(
+            result.book_number, result.book_id as u32,
+            "numbered in input order"
         );
     }
     assert_eq!(
@@ -804,12 +817,11 @@ fn line_note_bodies_are_indexed_like_the_apps_rehydrated_text() {
                 input.title.clone(),
                 input.topics.clone(),
                 input.file_path.clone(),
-                input.catalogue_order,
-                input.generation_order,
                 bytes,
                 input.extra_facets.clone(),
                 storage,
                 stored_lines,
+                input.source_hash,
             )
             .unwrap();
     }
@@ -988,6 +1000,7 @@ fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries
             input.extra_facets,
             TextStorage::InIndex,
             Some(vec![3]),
+            input.source_hash,
         )
         .unwrap();
     from_source.commit().unwrap();

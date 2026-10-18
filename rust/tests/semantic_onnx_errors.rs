@@ -125,7 +125,7 @@ fn configured(root: &TempDir, config: SemanticConfigInput) -> SearchEngine {
     let mut engine = SearchEngine::new(index.to_str().unwrap());
     engine
         .add_document(
-            1,
+            0,
             "probe",
             "probe 1",
             "/probe",
@@ -134,7 +134,6 @@ fn configured(root: &TempDir, config: SemanticConfigInput) -> SearchEngine {
             false,
             "/probe.txt",
             Some(1),
-            None,
             None,
         )
         .unwrap();

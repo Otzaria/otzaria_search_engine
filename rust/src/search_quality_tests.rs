@@ -14,7 +14,7 @@ fn engine_with(lines: &[&str]) -> (SearchEngine, TempDir) {
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
     for (id, text) in lines.iter().enumerate() {
         engine
-            .add_document(
+            .add_document_at(
                 id as u64,
                 "title",
                 "ref",
@@ -162,7 +162,7 @@ fn ranking_does_not_depend_on_segments() {
         .enumerate()
     {
         engine
-            .add_document(
+            .add_document_at(
                 id as u64,
                 "title",
                 "ref",

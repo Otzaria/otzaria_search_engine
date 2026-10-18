@@ -78,8 +78,11 @@ fn result(book: &LibraryBookInput, status: LibraryBookStatus) -> LibraryBookResu
         status,
         docs: 0,
         text_storage: book.text_storage,
+        book_number: 0,
         content_hash: 0,
         text_hash: 0,
+        metadata_hash: 0,
+        source_hash: 0,
         error: None,
     }
 }
@@ -139,9 +142,8 @@ pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome
         title: book.title.clone(),
         topics: book.topics.clone(),
         file_path: book.file_path.clone(),
-        catalogue_order: book.catalogue_order,
-        generation_order: book.generation_order,
         extra_facets: book.extra_facets.clone().unwrap_or_default(),
+        source_hash: book.source_hash.unwrap_or(0),
     };
     match engine.prepare_text_book(&meta, &text.text, text_storage, &text.data_uri_rows) {
         Ok(prepared) => Outcome::Prepared(Box::new(prepared), text.text.len()),
@@ -192,6 +194,11 @@ pub(crate) fn add_library_books(
     cancel: Option<&IndexingCancellationToken>,
 ) -> Result<Vec<LibraryBookResult>> {
     let started = Instant::now();
+    // In input order, before the workers race for them: the same batch numbers its books
+    // the same way every time.
+    for book in &books {
+        engine.book_number(&book.file_path)?;
+    }
     let cancelled = || cancel.is_some_and(|token| token.is_cancelled());
     let abort = AtomicBool::new(false);
     let stop = || cancelled() || abort.load(Ordering::Relaxed);
@@ -266,8 +273,11 @@ pub(crate) fn add_library_books(
                             status: LibraryBookStatus::Indexed,
                             docs,
                             text_storage: prepared.text_storage,
+                            book_number: prepared.book_number,
                             content_hash: prepared.content_hash,
                             text_hash: prepared.text_hash,
+                            metadata_hash: prepared.metadata_hash,
+                            source_hash: prepared.source_hash,
                             error: None,
                         };
                         (done, bytes)

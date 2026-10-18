@@ -52,7 +52,7 @@ fn build(dir: &TempDir, twins: bool) -> SearchEngine {
     };
     for (order, (title, file_path, text)) in BOOKS.iter().enumerate() {
         engine
-            .add_text_book(
+            .add_text_book_placed(
                 title.to_string(),
                 "/root".to_string(),
                 file_path.to_string(),

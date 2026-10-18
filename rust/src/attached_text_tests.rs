@@ -84,7 +84,7 @@ fn add_book(
     storage: TextStorage,
 ) {
     let added = engine
-        .add_text_book(
+        .add_text_book_placed(
             "ספר".to_string(),
             "/מצורף".to_string(),
             file_path.to_string(),
@@ -324,7 +324,7 @@ fn attached_book_keys_must_be_canonical() {
         "db:a/b:1", "DB:a:1",
     ] {
         let err = engine
-            .add_text_book(
+            .add_text_book_placed(
                 "t".to_string(),
                 "/a".to_string(),
                 bad.to_string(),
@@ -344,7 +344,7 @@ fn attached_book_keys_must_be_canonical() {
     // The app's slugs: letters of any script, digits, `._-`; the id follows the last `:`.
     for good in ["db:ספרייה_2.v-1:7", "db:x:0"] {
         assert!(engine
-            .add_text_book(
+            .add_text_book_placed(
                 "t".to_string(),
                 "/a".to_string(),
                 good.to_string(),
@@ -373,10 +373,9 @@ fn input(
         title: "ספר".to_string(),
         topics: "/מצורף".to_string(),
         file_path: file_path.to_string(),
-        catalogue_order: order,
-        generation_order: 0,
         extra_facets: None,
         text_storage: TextStorage::LibraryDb,
+        source_hash: Some(u64::from(order) + 1),
     }
 }
 
