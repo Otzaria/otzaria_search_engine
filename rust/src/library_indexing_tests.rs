@@ -994,8 +994,6 @@ fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries
             input.title,
             input.topics,
             input.file_path,
-            input.catalogue_order,
-            input.generation_order,
             rows.join("\n").into_bytes(),
             input.extra_facets,
             TextStorage::InIndex,
