@@ -620,3 +620,383 @@ fn a_book_that_panics_fails_alone_and_the_batch_finishes() {
         .iter()
         .all(|r| r.status == LibraryBookStatus::Indexed));
 }
+
+// ── Schema 7: footnote bodies in `line_note` ──────────────────────────────────────────
+
+const MARKED: &str = "גוף<sup class=\"footnote-marker\">א</sup> המשך\
+                      <sup class=\"footnote-marker\">ב</sup> סוף";
+const PLACED: &str = "גוף<sup class=\"footnote-marker\">א</sup> <b>המשך</b> סוף";
+
+/// `(book, row lineIndex, noteIndex, charPos, marker, body)`.
+type FixtureNote = (i64, i64, i64, i64, Option<&'static str>, &'static str);
+
+fn notes_fixture_books() -> Vec<(i64, &'static str, Vec<String>)> {
+    vec![
+        (
+            21,
+            "הערות",
+            vec![
+                format!("{BOM}<h1>הערות</h1>"),
+                MARKED.to_string(),
+                PLACED.to_string(),
+                format!(
+                    "תמונה <img src=\"{}\"> אחרי<sup class=\"footnote-marker\">ג</sup>",
+                    image()
+                ),
+                "שורה בלי הערה".to_string(),
+            ],
+        ),
+        (
+            22,
+            "בלי הערות",
+            vec!["<h1>בלי הערות</h1>".to_string(), MARKED.to_string()],
+        ),
+    ]
+}
+
+fn fixture_notes() -> Vec<FixtureNote> {
+    vec![
+        (21, 1, 0, -1, Some("א"), "ראשונה זרזיר"),
+        (21, 1, 1, -1, None, "נספחת קורקבן"),
+        (21, 1, 2, -1, Some("ב"), "שנייה חרטום"),
+        (21, 2, 0, 4, Some("א"), "מוקדמת"),
+        (21, 2, 1, 9, None, "באמצע תמנון"),
+        (21, 3, 0, -1, Some("ג"), "בתמונה ינשוף"),
+    ]
+}
+
+/// What the app indexes for book 21 (`loadTextBookSource`): the bodies back in their lines,
+/// the BOM dropped by decoding, the image cleaned off.
+fn book_21_text() -> String {
+    [
+        "<h1>הערות</h1>",
+        "גוף<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">ראשונה זרזיר</i> המשך\
+         <sup class=\"footnote-marker\">ב</sup><i class=\"footnote\">שנייה חרטום</i> סוף\
+         <i class=\"footnote\">נספחת קורקבן</i>",
+        "גוף<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">מוקדמת</i> \
+         <b>המשך</b><i class=\"footnote\">באמצע תמנון</i> סוף",
+        "תמונה <img src=\"\"> אחרי<sup class=\"footnote-marker\">ג</sup>\
+         <i class=\"footnote\">בתמונה ינשוף</i>",
+        "שורה בלי הערה",
+    ]
+    .join("\n")
+}
+
+/// A schema-7 database; without `with_note_table`, the same rows in a schema-6 one.
+fn write_notes_fixture(path: &Path, with_note_table: bool) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE book (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL);
+         CREATE TABLE line (id INTEGER PRIMARY KEY NOT NULL, bookId INTEGER NOT NULL,
+                            lineIndex INTEGER NOT NULL);
+         CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);
+         CREATE TABLE line_content (id INTEGER PRIMARY KEY NOT NULL, content TEXT);",
+    )
+    .unwrap();
+    if with_note_table {
+        conn.execute_batch(
+            "CREATE TABLE line_note (lineId INTEGER NOT NULL, noteIndex INTEGER NOT NULL,
+                                     charPos INTEGER NOT NULL, marker TEXT, body TEXT NOT NULL,
+                                     PRIMARY KEY (lineId, noteIndex)) WITHOUT ROWID;",
+        )
+        .unwrap();
+    }
+    for (book, title, rows) in notes_fixture_books() {
+        conn.execute(
+            "INSERT INTO book (id, title) VALUES (?1, ?2)",
+            rusqlite::params![book, title],
+        )
+        .unwrap();
+        // Rowid order is not `lineIndex` order.
+        for (index, row) in rows.iter().enumerate().rev() {
+            let id = book * 1000 - index as i64;
+            conn.execute(
+                "INSERT INTO line (id, bookId, lineIndex) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, book, index as i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO line_content (id, content) VALUES (?1, ?2)",
+                rusqlite::params![id, row],
+            )
+            .unwrap();
+        }
+    }
+    if with_note_table {
+        for (book, line, note, char_pos, marker, body) in fixture_notes().into_iter().rev() {
+            conn.execute(
+                "INSERT INTO line_note (lineId, noteIndex, charPos, marker, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![book * 1000 - line, note, char_pos, marker, body],
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn hit_books(engine: &SearchEngine, word: &str) -> Vec<(String, String)> {
+    engine
+        .search(
+            vec![word.to_string()],
+            vec![],
+            20,
+            0,
+            0,
+            100,
+            crate::api::search_engine::ResultsOrder::Catalogue,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.file_path, r.text))
+        .collect()
+}
+
+#[test]
+fn line_note_bodies_are_indexed_like_the_apps_rehydrated_text() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_notes_fixture(&db, true);
+    configure_line_source(db.display().to_string()).unwrap();
+    let inputs: Vec<LibraryBookInput> = notes_fixture_books()
+        .iter()
+        .map(|(id, title, _)| library_input(*id, title))
+        .collect();
+
+    let mut by_engine = new_engine(&dir.path().join("engine"));
+    by_engine.open_index_writer().unwrap();
+    let results = by_engine
+        .add_library_books(inputs.clone(), &IndexingCancellationToken::new())
+        .unwrap();
+    by_engine.commit().unwrap();
+    let statuses: Vec<(i64, LibraryBookStatus, TextStorage)> = results
+        .iter()
+        .map(|r| (r.book_id, r.status, r.text_storage))
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            (21, LibraryBookStatus::Indexed, TextStorage::InIndex),
+            (22, LibraryBookStatus::Indexed, TextStorage::LibraryDb),
+        ]
+    );
+
+    // The app's per-book path: the rehydrated bytes with InIndex, the plain book as rows.
+    let mut by_app = new_engine(&dir.path().join("app"));
+    let text = book_21_text();
+    for (input, bytes, storage, stored_lines) in [
+        (
+            &inputs[0],
+            text.clone().into_bytes(),
+            TextStorage::InIndex,
+            Some(vec![3]),
+        ),
+        (
+            &inputs[1],
+            format!("<h1>בלי הערות</h1>\n{MARKED}").into_bytes(),
+            TextStorage::LibraryDb,
+            None,
+        ),
+    ] {
+        by_app
+            .add_text_book_bytes(
+                input.title.clone(),
+                input.topics.clone(),
+                input.file_path.clone(),
+                input.catalogue_order,
+                input.generation_order,
+                bytes,
+                input.extra_facets.clone(),
+                storage,
+                stored_lines,
+            )
+            .unwrap();
+    }
+    by_app.commit().unwrap();
+    assert_eq!(stored_documents(&by_engine), stored_documents(&by_app));
+    assert_eq!(
+        by_engine.get_book_fingerprints().unwrap(),
+        by_app.get_book_fingerprints().unwrap()
+    );
+    assert_eq!(
+        by_engine.get_book_text_fingerprints().unwrap(),
+        by_app.get_book_text_fingerprints().unwrap()
+    );
+    // `textBookContentMatchesIndex` hashes the same text the batch indexed.
+    let expected_hash = compute_content_fingerprint_bytes(text.clone().into_bytes());
+    assert_eq!(results[0].text_hash, expected_hash);
+    assert_eq!(
+        library_book_content_fingerprint(
+            LibraryBookSource::Library,
+            None,
+            21,
+            Some("הערות".to_string())
+        )
+        .unwrap(),
+        Some(expected_hash)
+    );
+
+    // Words found only in footnotes, at the end, after a marker and at an offset.
+    for word in ["זרזיר", "קורקבן", "חרטום", "תמנון", "ינשוף"] {
+        let hits = hit_books(&by_engine, word);
+        assert_eq!(hits.len(), 1, "{word}");
+        assert_eq!(hits[0].0, "id:21", "{word}");
+        let highlighted = format!("<font color=red>{word}</font>");
+        assert!(hits[0].1.contains(&highlighted), "{word}");
+    }
+}
+
+#[test]
+fn without_line_note_or_outside_the_library_the_rows_are_indexed_as_they_are() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let schema6 = dir.path().join("seforim.db");
+    write_notes_fixture(&schema6, false);
+    let attached = dir.path().join("attached.db");
+    write_notes_fixture(&attached, true);
+    configure_line_source(schema6.display().to_string()).unwrap();
+    crate::api::search_engine::configure_attached_line_source(
+        "att".to_string(),
+        Some(attached.display().to_string()),
+        false,
+    )
+    .unwrap();
+
+    let library = library_input(21, "הערות");
+    // The app puts bodies back only in books of the library (`_dbBookNotes`).
+    let attached_book = LibraryBookInput {
+        source: LibraryBookSource::Attached,
+        attached_slug: Some("att".to_string()),
+        file_path: "db:att:21".to_string(),
+        ..library_input(21, "הערות")
+    };
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let results = engine
+        .add_library_books(
+            vec![library.clone(), attached_book.clone()],
+            &IndexingCancellationToken::new(),
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    assert!(results.iter().all(
+        |r| r.status == LibraryBookStatus::Indexed && r.text_storage == TextStorage::LibraryDb
+    ));
+    assert!(hit_books(&engine, "קורקבן").is_empty());
+    let mut books: Vec<String> = hit_books(&engine, "המשך")
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    books.sort();
+    assert_eq!(books, ["db:att:21", "id:21"]);
+
+    let rows = notes_fixture_books().swap_remove(0).2;
+    let text = rows.join("\n");
+    let text = crate::line_source::strip_data_uris_for_index(text.strip_prefix(BOM).unwrap());
+    for (source, slug) in [
+        (LibraryBookSource::Library, None),
+        (LibraryBookSource::Attached, Some("att".to_string())),
+    ] {
+        assert_eq!(
+            library_book_content_fingerprint(source, slug, 21, None).unwrap(),
+            Some(compute_content_fingerprint_bytes(text.clone().into_bytes()))
+        );
+    }
+}
+
+#[test]
+fn a_footnote_tag_inside_a_marker_does_not_hide_the_external_body() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_notes_fixture(&db, true);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    // Exact stored shape from generator InlineNotesTest: a footnote tag inside a sup.
+    let stored = "א<sup class=\"footnote-marker\">1<i class=\"footnote\"></i></sup> ב";
+    conn.execute("UPDATE line_content SET content=? WHERE id=20999", [stored])
+        .unwrap();
+    conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO line_note VALUES (20999,0,2,?,?)",
+        ["1<i class=\"footnote\"></i>", "הערה זרזיר"],
+    )
+    .unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let result = engine
+        .add_library_books(
+            vec![library_input(21, "הערות")],
+            &IndexingCancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(result[0].status, LibraryBookStatus::Indexed);
+    engine.commit().unwrap();
+    let hits = hit_books(&engine, "זרזיר");
+    assert_eq!(
+        hits.len(),
+        1,
+        "body in line_note must be searchable even when the sup contains an empty footnote tag"
+    );
+}
+
+#[test]
+fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_notes_fixture(&db, true);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let stored = "<p><b><sup class=\"footnote-marker\"></sup>המשך</b></p>";
+    let expected = "<p><b><sup class=\"footnote-marker\"></sup><i class=\"footnote\">הערה זרזיר</i>המשך</b></p>";
+    conn.execute("UPDATE line_content SET content=? WHERE id=20999", [stored])
+        .unwrap();
+    conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO line_note VALUES (20999,0,0,?,?)",
+        ["", "הערה זרזיר"],
+    )
+    .unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let input = library_input(21, "הערות");
+    let mut from_db = new_engine(&dir.path().join("db_index"));
+    from_db.open_index_writer().unwrap();
+    let result = from_db
+        .add_library_books(vec![input.clone()], &IndexingCancellationToken::new())
+        .unwrap();
+    assert_eq!(result[0].status, LibraryBookStatus::Indexed);
+    from_db.commit().unwrap();
+    let mut from_source = new_engine(&dir.path().join("source_index"));
+    let mut rows = book_21_text()
+        .split('\n')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    rows[1] = expected.to_string();
+    from_source
+        .add_text_book_bytes(
+            input.title,
+            input.topics,
+            input.file_path,
+            input.catalogue_order,
+            input.generation_order,
+            rows.join("\n").into_bytes(),
+            input.extra_facets,
+            TextStorage::InIndex,
+            Some(vec![3]),
+        )
+        .unwrap();
+    from_source.commit().unwrap();
+    assert_eq!(stored_documents(&from_db), stored_documents(&from_source));
+    for word in ["זרזיר", "זרזירהמשך"] {
+        assert_eq!(
+            hit_books(&from_db, word),
+            hit_books(&from_source, word),
+            "{word}"
+        );
+    }
+}

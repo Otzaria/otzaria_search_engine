@@ -13,6 +13,7 @@
 //! Lock order: a caller takes its Tantivy searcher first and one source's mutex second (never
 //! two at once); nothing here calls back into Dart or into the engine while holding it.
 
+use crate::inline_notes::{BookNote, BookNotes};
 use crate::sqlite_host;
 use anyhow::{Context, Result};
 use lru::LruCache;
@@ -250,6 +251,8 @@ fn row_bytes<'a>(
 struct Layout {
     /// `line_content` exists (schema 6); otherwise the text is `line.content`.
     split: bool,
+    /// `line_note` holds footnote bodies moved out of the lines (schema 7).
+    notes: bool,
     codec: Option<ZstdCodec>,
     /// What `codec` was loaded from (see [`dict_signature`]).
     dict_signature: Option<(i64, i64, i64)>,
@@ -283,9 +286,18 @@ impl Layout {
             anyhow::bail!("{} has no `line` table", path.display());
         }
         let split = has_table("line_content")?;
+        // The app's `DbCapabilities.hasBookNotes`.
+        let notes = has_table("line_note")?
+            && conn.query_row(
+                "SELECT count(*) FROM pragma_table_info('line_note') \
+                 WHERE name IN ('lineId', 'noteIndex', 'charPos', 'marker', 'body')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? == 5;
         if !has_table("zstd_dict")? {
             return Ok(Self {
                 split,
+                notes,
                 codec: None,
                 dict_signature: None,
             });
@@ -301,6 +313,7 @@ impl Layout {
         };
         Ok(Self {
             split,
+            notes,
             codec: Some(codec),
             dict_signature: Some(signature),
         })
@@ -326,6 +339,37 @@ pub(crate) struct IndexingText {
     pub row_has_newline: bool,
     /// The rows whose embedded `data:` images were removed.
     pub data_uri_rows: Vec<u32>,
+    /// The book has `line_note` rows, put back in its text.
+    pub has_notes: bool,
+}
+
+/// The app's `_loadBookNotesInIsolate`: the book's `line_note` rows by `lineIndex`, in
+/// `noteIndex` order; a row whose values are not of the expected types is skipped.
+fn book_notes(conn: &Connection, book_id: i64) -> Result<BookNotes> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT l.lineIndex, n.noteIndex, n.charPos, n.marker, n.body \
+         FROM line l JOIN line_note n ON n.lineId = l.id \
+         WHERE l.bookId = ?1 ORDER BY l.lineIndex, n.noteIndex",
+    )?;
+    let mut rows = stmt.query([book_id])?;
+    let mut notes = BookNotes::new();
+    while let Some(row) = rows.next()? {
+        let (ValueRef::Integer(line_index), ValueRef::Integer(_), ValueRef::Text(body)) =
+            (row.get_ref(0)?, row.get_ref(1)?, row.get_ref(4)?)
+        else {
+            continue;
+        };
+        let char_pos = match row.get_ref(2)? {
+            ValueRef::Integer(char_pos) => char_pos,
+            _ => -1,
+        };
+        notes.entry(line_index).or_default().push(BookNote {
+            char_pos,
+            has_marker: matches!(row.get_ref(3)?, ValueRef::Text(_)),
+            body: String::from_utf8_lossy(body).into_owned(),
+        });
+    }
+    Ok(notes)
 }
 
 /// A read-only connection to one library database, with the per-book caches valid for it.
@@ -423,6 +467,7 @@ impl LineStore {
                 &mut self.layout,
                 Layout {
                     split: false,
+                    notes: false,
                     codec: None,
                     dict_signature: None,
                 },
@@ -620,11 +665,13 @@ impl LineStore {
     /// The book's text exactly as the app hands it to the indexing path: its rows in order,
     /// each decoded and cleaned like [`prepare_row`], joined with `\n`. `None` when the book
     /// has no rows, or its title is not `title` (when given): the app's read guards a book id
-    /// the same way.
+    /// the same way. With `with_notes`, the `line_note` bodies are put back in their lines
+    /// (see [`crate::inline_notes`]), as the app does for a book of the library.
     pub fn read_book_for_indexing(
         &mut self,
         book_id: i64,
         title: Option<&str>,
+        with_notes: bool,
     ) -> Result<Option<IndexingText>> {
         self.in_read_txn(|store| {
             let Self { conn, layout, .. } = &mut *store;
@@ -638,22 +685,54 @@ impl LineStore {
                     return Ok(None);
                 }
             }
+            let notes = if with_notes && layout.notes {
+                book_notes(conn, book_id)?
+            } else {
+                BookNotes::new()
+            };
             let mut stmt = conn.prepare_cached(layout.book_sql())?;
             let mut query = stmt.query([book_id])?;
-            let mut book = IndexingText::default();
+            let mut book = IndexingText {
+                has_notes: !notes.is_empty(),
+                ..IndexingText::default()
+            };
             let mut first_row: Option<Vec<u8>> = None;
             let mut has_data_uri = false;
+            // The line of the app's joined text that this row starts.
+            let mut text_line = 0i64;
             while let Some(row) = query.next()? {
-                let bytes = row_bytes(row.get_ref(0)?, &mut layout.codec).map_err(|reason| {
-                    anyhow::anyhow!(
-                        "book {book_id} row {} cannot be decoded: {reason}",
-                        book.rows
-                    )
-                })?;
+                let mut bytes =
+                    row_bytes(row.get_ref(0)?, &mut layout.codec).map_err(|reason| {
+                        anyhow::anyhow!(
+                            "book {book_id} row {} cannot be decoded: {reason}",
+                            book.rows
+                        )
+                    })?;
                 if book.rows > 0 {
                     book.text.push('\n');
                 }
                 book.row_has_newline |= bytes.contains(&b'\n');
+                if book.has_notes {
+                    // The app decodes the book as one string to put the bodies back, which
+                    // drops the BOM, and cleans `data:` off the result.
+                    let raw = String::from_utf8_lossy(&bytes);
+                    let row_text = if book.rows == 0 {
+                        raw.strip_prefix('\u{FEFF}').unwrap_or(&raw)
+                    } else {
+                        &raw
+                    };
+                    let rehydrated =
+                        crate::inline_notes::rehydrate_row(row_text, text_line, &notes);
+                    text_line += 1 + row_text.matches('\n').count() as i64;
+                    let replaced = match rehydrated {
+                        Some(rehydrated) => Some(rehydrated.into_bytes()),
+                        None if row_text.len() != raw.len() => Some(row_text.as_bytes().to_vec()),
+                        None => None,
+                    };
+                    if let Some(replaced) = replaced {
+                        bytes = Cow::Owned(replaced);
+                    }
+                }
                 if contains_data_scheme(&bytes) {
                     has_data_uri = true;
                     let raw = String::from_utf8_lossy(&bytes);
