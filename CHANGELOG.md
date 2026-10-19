@@ -1,5 +1,65 @@
 # Changelog
 
+## 5.0.0 – 2026-10-19
+
+> Breaking for every existing index: schema 7 gives books stable numbers and
+> takes the catalogue order out of the document ids, so an index built by 4.x
+> (schema 6) is `rebuild_required`. The Dart API of indexing changes too:
+> `addDocument`/`updateDocument` take an `ordinal` instead of an `id`, and the
+> catalogue and generation orders move to `setBookOrder`. The package is now
+> built by a build hook instead of cargokit, which needs Flutter 3.38.1.
+
+### Breaking
+
+- **Index schema 7**: a document's id is `(bookNumber << 32) + ordinal + 1`,
+  the number assigned by the engine on a book's first write. The catalogue and
+  generation order are no longer in the ids or the documents, so a change of
+  either does not reindex a book, and `compute_book_fingerprint` no longer
+  covers them.
+- **Indexing calls**: `addDocument` and `updateDocument` take `ordinal`
+  (the 0-based line in its book) instead of `id`, and no `sectionId`;
+  `DocumentInput.id`, `sectionId` and `generationOrder` are replaced by `ordinal` and
+  `sectionOrdinal`. `addDocumentsBatch`, `addTextBook` and the library indexing
+  calls take `title`, `topics` and `extraFacets` instead of `catalogueOrder`
+  and `generationOrder`, and an optional `sourceHash`.
+- **The native library is built by a build hook** (`hook/build.dart`), not
+  cargokit: no platform plugin code, Swift Package Manager supported,
+  `flutter: ">=3.38.1"`, and the hook downloads the signed binary or compiles
+  it with cargo. `build_from_source` and `skip_build` are its user defines.
+
+### Added
+
+- **`setBookOrder(entries)`** replaces the order mapping of the books
+  (`BookOrderEntry`: `filePath`, `catalogueOrder`, `generationOrder`), applied
+  to the next catalogue or generation search with no reindexing;
+  `bookOrderRevision()` returns its revision and `warmBookOrder()` prepares it
+  before the first search.
+- **`getBookStamps()`** returns, for every book, its number, live documents and
+  `contentHash`, `textHash`, `metadataHash` and `sourceHash` (`BookStamps`), so
+  a check after a library update needs no book text. `computeBookMetadataFingerprint`
+  gives the `metadataHash` of a book.
+- **`setVocalizedSnippets(enabled)`**: a search on the mark-free text shows the
+  line with its nikud and cantillation (highlights unchanged). Off by default.
+- **Smart search**: a short line that shares a neighbour's vector resolves to
+  it, and `SemanticRankingOptions.aliasPenalty` (default 0.04) is taken off
+  the cosine of such a line.
+- **Vector sets in segment format 3** (`rot192-i8i4`): installed in whichever
+  store the build reads, with the validation gates of the codec (recall@50 of
+  0.98 for `rot192-i8i4`). Format 2 sets are still accepted. (#55)
+- The shared note renderer of schema 7 is exposed to database clients.
+
+### Changed
+
+- **The sidecar is pinned at `86f4548`.**
+- Margin notes (`line_note`) of library books are indexed back in their lines,
+  as the app shows them; empty marker notes after leading formatting tags are
+  kept.
+
+### Fixed
+
+- Repeated alias results are kept and the reverse alias lookup is cached.
+- A copied short line's alias resolves before the shared text's records.
+
 ## 4.1.0 – 2026-10-17
 
 > Nothing here breaks an index built by 4.0.0: the schema is unchanged, and
