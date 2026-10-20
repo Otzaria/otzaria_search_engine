@@ -344,8 +344,9 @@ pub(crate) struct IndexingText {
 }
 
 /// The app's `_loadBookNotesInIsolate`: the book's `line_note` rows by `lineIndex`, in
-/// `noteIndex` order; a row whose values are not of the expected types is skipped.
-fn book_notes(conn: &Connection, book_id: i64) -> Result<BookNotes> {
+/// `noteIndex` order; a row whose keys are not integers, or whose body is NULL, is skipped.
+/// A body is decoded like a line ([`row_bytes`]); one that cannot be fails the read.
+fn book_notes(conn: &Connection, book_id: i64, codec: &mut Option<ZstdCodec>) -> Result<BookNotes> {
     let mut stmt = conn.prepare_cached(
         "SELECT l.lineIndex, n.noteIndex, n.charPos, n.marker, n.body \
          FROM line l JOIN line_note n ON n.lineId = l.id \
@@ -354,10 +355,18 @@ fn book_notes(conn: &Connection, book_id: i64) -> Result<BookNotes> {
     let mut rows = stmt.query([book_id])?;
     let mut notes = BookNotes::new();
     while let Some(row) = rows.next()? {
-        let (ValueRef::Integer(line_index), ValueRef::Integer(_), ValueRef::Text(body)) =
-            (row.get_ref(0)?, row.get_ref(1)?, row.get_ref(4)?)
+        let (ValueRef::Integer(line_index), ValueRef::Integer(note_index)) =
+            (row.get_ref(0)?, row.get_ref(1)?)
         else {
             continue;
+        };
+        let body = match row.get_ref(4)? {
+            ValueRef::Null => continue,
+            value => row_bytes(value, codec).map_err(|reason| {
+                anyhow::anyhow!(
+                    "book {book_id} line {line_index} note {note_index} cannot be decoded: {reason}"
+                )
+            })?,
         };
         let char_pos = match row.get_ref(2)? {
             ValueRef::Integer(char_pos) => char_pos,
@@ -366,7 +375,7 @@ fn book_notes(conn: &Connection, book_id: i64) -> Result<BookNotes> {
         notes.entry(line_index).or_default().push(BookNote {
             char_pos,
             has_marker: matches!(row.get_ref(3)?, ValueRef::Text(_)),
-            body: String::from_utf8_lossy(body).into_owned(),
+            body: String::from_utf8_lossy(&body).into_owned(),
         });
     }
     Ok(notes)
@@ -686,7 +695,7 @@ impl LineStore {
                 }
             }
             let notes = if with_notes && layout.notes {
-                book_notes(conn, book_id)?
+                book_notes(conn, book_id, &mut layout.codec)?
             } else {
                 BookNotes::new()
             };
