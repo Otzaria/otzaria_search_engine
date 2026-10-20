@@ -781,4 +781,49 @@ mod tests {
         assert!(plan.find_matches("אהרן משה", &[]).is_empty());
         assert_eq!(plan.find_matches("משה ו אהרן", &[]).len(), 1);
     }
+
+    #[test]
+    fn each_token_is_matched_on_its_own_normalized_text() {
+        let lines = [
+            "ר' אמר רש\"י שבת ושבת רש\"י אמר שבת",
+            "<b>אמר</b> שַׁבָּת אמ\u{05B8}ר&nbsp;\u{FB2A}בת",
+            "אמר' \"שבת\" אמר ש'בת אמר שב\"ת",
+        ];
+        let found = |plan: &PreparedHighlightMatcher, boundaries: &[bool]| {
+            lines
+                .iter()
+                .flat_map(|line| plan.find_matches(line, boundaries))
+                .map(|m| {
+                    let words = m.word_ranges.iter().map(|r| (r.start, r.end)).collect();
+                    (m.start, m.end, words)
+                })
+                .collect::<Vec<(usize, usize, Vec<(usize, usize)>)>>()
+        };
+        let phrase = matcher("אמר שבת", &[], 0);
+        let word = matcher("שבת", &["קידומות"], 0);
+        assert_eq!(
+            found(&phrase, &[]),
+            vec![
+                (26, 33, vec![(0, 3), (4, 7)]),
+                (3, 18, vec![(0, 3), (8, 15)]),
+                (19, 32, vec![(0, 4), (10, 13)]),
+                (0, 9, vec![(0, 3), (6, 9)]),
+                (11, 19, vec![(0, 3), (4, 8)]),
+                (20, 28, vec![(0, 3), (4, 8)]),
+            ]
+        );
+        assert_eq!(
+            found(&word, &[]),
+            vec![
+                (12, 15, vec![(0, 3)]),
+                (17, 20, vec![(0, 3)]),
+                (30, 33, vec![(0, 3)]),
+                (11, 18, vec![(0, 7)]),
+                (29, 32, vec![(0, 3)]),
+                (6, 9, vec![(0, 3)]),
+                (15, 19, vec![(0, 4)]),
+                (24, 28, vec![(0, 4)]),
+            ]
+        );
+    }
 }
