@@ -640,8 +640,8 @@ const MARKED: &str = "גוף<sup class=\"footnote-marker\">א</sup> המשך\
                       <sup class=\"footnote-marker\">ב</sup> סוף";
 const PLACED: &str = "גוף<sup class=\"footnote-marker\">א</sup> <b>המשך</b> סוף";
 
-/// `(book, row lineIndex, noteIndex, charPos, marker, body)`.
-type FixtureNote = (i64, i64, i64, i64, Option<&'static str>, &'static str);
+/// `(book, row lineIndex, noteIndex, charPos, hasMarker, body)`.
+type FixtureNote = (i64, i64, i64, i64, bool, &'static str);
 
 fn notes_fixture_books() -> Vec<(i64, &'static str, Vec<String>)> {
     vec![
@@ -669,12 +669,12 @@ fn notes_fixture_books() -> Vec<(i64, &'static str, Vec<String>)> {
 
 fn fixture_notes() -> Vec<FixtureNote> {
     vec![
-        (21, 1, 0, -1, Some("א"), "ראשונה זרזיר"),
-        (21, 1, 1, -1, None, "נספחת קורקבן"),
-        (21, 1, 2, -1, Some("ב"), "שנייה חרטום"),
-        (21, 2, 0, 4, Some("א"), "מוקדמת"),
-        (21, 2, 1, 9, None, "באמצע תמנון"),
-        (21, 3, 0, -1, Some("ג"), "בתמונה ינשוף"),
+        (21, 1, 0, -1, true, "ראשונה זרזיר"),
+        (21, 1, 1, -1, false, "נספחת קורקבן"),
+        (21, 1, 2, -1, true, "שנייה חרטום"),
+        (21, 2, 0, 4, true, "מוקדמת"),
+        (21, 2, 1, 9, false, "באמצע תמנון"),
+        (21, 3, 0, -1, true, "בתמונה ינשוף"),
     ]
 }
 
@@ -709,7 +709,7 @@ fn write_notes_fixture(path: &Path, with_note_table: bool) {
     if with_note_table {
         conn.execute_batch(
             "CREATE TABLE line_note (lineId INTEGER NOT NULL, noteIndex INTEGER NOT NULL,
-                                     charPos INTEGER NOT NULL, marker TEXT, body TEXT NOT NULL,
+                                     charPos INTEGER NOT NULL, hasMarker INTEGER NOT NULL, body TEXT NOT NULL,
                                      PRIMARY KEY (lineId, noteIndex)) WITHOUT ROWID;",
         )
         .unwrap();
@@ -736,11 +736,17 @@ fn write_notes_fixture(path: &Path, with_note_table: bool) {
         }
     }
     if with_note_table {
-        for (book, line, note, char_pos, marker, body) in fixture_notes().into_iter().rev() {
+        for (book, line, note, char_pos, has_marker, body) in fixture_notes().into_iter().rev() {
             conn.execute(
-                "INSERT INTO line_note (lineId, noteIndex, charPos, marker, body)
+                "INSERT INTO line_note (lineId, noteIndex, charPos, hasMarker, body)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![book * 1000 - line, note, char_pos, marker, body],
+                rusqlite::params![
+                    book * 1000 - line,
+                    note,
+                    char_pos,
+                    i64::from(has_marker),
+                    body
+                ],
             )
             .unwrap();
         }
@@ -968,6 +974,36 @@ fn a_note_body_that_cannot_be_decoded_fails_the_book_instead_of_dropping_the_not
 }
 
 #[test]
+fn a_has_marker_other_than_0_or_1_fails_the_book() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    for (case, value) in ["2", "'x'"].into_iter().enumerate() {
+        let db = dir.path().join(format!("seforim-{case}.db"));
+        write_notes_fixture(&db, true);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            &format!(
+                "UPDATE line_note SET hasMarker = {value} WHERE lineId = 20999 AND noteIndex = 0"
+            ),
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        configure_line_source(db.display().to_string()).unwrap();
+        let mut engine = new_engine(&dir.path().join(format!("index-{case}")));
+        engine.open_index_writer().unwrap();
+        let results = engine
+            .add_library_books(
+                vec![library_input(21, "הערות")],
+                &IndexingCancellationToken::new(),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(results[0].status, LibraryBookStatus::Failed, "{value}");
+    }
+}
+
+#[test]
 fn without_line_note_or_outside_the_library_the_rows_are_indexed_as_they_are() {
     let _guard = crate::external_text_tests::guard();
     let dir = tempfile::TempDir::new().unwrap();
@@ -1039,8 +1075,8 @@ fn a_footnote_tag_inside_a_marker_does_not_hide_the_external_body() {
     conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
         .unwrap();
     conn.execute(
-        "INSERT INTO line_note VALUES (20999,0,2,?,?)",
-        ["1<i class=\"footnote\"></i>", "הערה זרזיר"],
+        "INSERT INTO line_note VALUES (20999,0,2,1,?)",
+        ["הערה זרזיר"],
     )
     .unwrap();
     drop(conn);
@@ -1077,8 +1113,8 @@ fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries
     conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
         .unwrap();
     conn.execute(
-        "INSERT INTO line_note VALUES (20999,0,0,?,?)",
-        ["", "הערה זרזיר"],
+        "INSERT INTO line_note VALUES (20999,0,0,1,?)",
+        ["הערה זרזיר"],
     )
     .unwrap();
     drop(conn);

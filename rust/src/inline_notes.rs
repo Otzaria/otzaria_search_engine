@@ -15,7 +15,7 @@ use std::collections::HashMap;
 pub struct BookNote {
     /// UTF-16 offset in the stored line, counting each HTML entity as one unit; -1 if absent.
     pub char_pos: i64,
-    /// Whether the database marker is non-null (an empty marker still counts).
+    /// `line_note.hasMarker`: the note had a marker sup (an empty one still counts).
     pub has_marker: bool,
     /// Original footnote body HTML, without the surrounding footnote element.
     pub body: String,

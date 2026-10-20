@@ -290,7 +290,7 @@ impl Layout {
         let notes = has_table("line_note")?
             && conn.query_row(
                 "SELECT count(*) FROM pragma_table_info('line_note') \
-                 WHERE name IN ('lineId', 'noteIndex', 'charPos', 'marker', 'body')",
+                 WHERE name IN ('lineId', 'noteIndex', 'charPos', 'hasMarker', 'body')",
                 [],
                 |r| r.get::<_, i64>(0),
             )? == 5;
@@ -345,10 +345,11 @@ pub(crate) struct IndexingText {
 
 /// The app's `_loadBookNotesInIsolate`: the book's `line_note` rows by `lineIndex`, in
 /// `noteIndex` order; a row whose keys are not integers, or whose body is NULL, is skipped.
-/// A body is decoded like a line ([`row_bytes`]); one that cannot be fails the read.
+/// A body is decoded like a line ([`row_bytes`]); one that cannot be, or a `hasMarker` other
+/// than 0 or 1, fails the read.
 fn book_notes(conn: &Connection, book_id: i64, codec: &mut Option<ZstdCodec>) -> Result<BookNotes> {
     let mut stmt = conn.prepare_cached(
-        "SELECT l.lineIndex, n.noteIndex, n.charPos, n.marker, n.body \
+        "SELECT l.lineIndex, n.noteIndex, n.charPos, n.hasMarker, n.body \
          FROM line l JOIN line_note n ON n.lineId = l.id \
          WHERE l.bookId = ?1 ORDER BY l.lineIndex, n.noteIndex",
     )?;
@@ -372,9 +373,16 @@ fn book_notes(conn: &Connection, book_id: i64, codec: &mut Option<ZstdCodec>) ->
             ValueRef::Integer(char_pos) => char_pos,
             _ => -1,
         };
+        let has_marker = match row.get_ref(3)? {
+            ValueRef::Integer(0) => false,
+            ValueRef::Integer(1) => true,
+            other => anyhow::bail!(
+                "book {book_id} line {line_index} note {note_index} has hasMarker {other:?}, not 0 or 1"
+            ),
+        };
         notes.entry(line_index).or_default().push(BookNote {
             char_pos,
-            has_marker: matches!(row.get_ref(3)?, ValueRef::Text(_)),
+            has_marker,
             body: String::from_utf8_lossy(&body).into_owned(),
         });
     }
