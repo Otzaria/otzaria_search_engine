@@ -730,6 +730,62 @@ mod tests {
     }
 
     #[test]
+    fn spelling_terms_keep_word_order_across_segments() {
+        use tantivy::schema::{Schema, TextFieldIndexing, TextOptions};
+        use tantivy::tokenizer::{TextAnalyzer, WhitespaceTokenizer};
+
+        let mut builder = Schema::builder();
+        let indexing = TextFieldIndexing::default().set_tokenizer("ws");
+        let text = builder.add_text_field(
+            "text",
+            TextOptions::default().set_indexing_options(indexing),
+        );
+        let index = tantivy::Index::create_in_ram(builder.build());
+        index.tokenizers().register(
+            "ws",
+            TextAnalyzer::builder(WhitespaceTokenizer::default()).build(),
+        );
+        let mut writer: tantivy::IndexWriter = index.writer(15_000_000).unwrap();
+        writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+        for line in [
+            "רמבם רמב\"ם רמ\"בם רמב'ם שבת \"",
+            "רמבם ש\"ץ שבת רמבן",
+            "רמבם שבתות רמ",
+        ] {
+            writer.add_document(tantivy::doc!(text => line)).unwrap();
+            writer.commit().unwrap();
+        }
+        let searcher = index.reader().unwrap().searcher();
+        assert_eq!(searcher.segment_readers().len(), 3);
+
+        assert_eq!(
+            spellings(&searcher, text, "רמבם").unwrap(),
+            ["רמבם", "רמ\"בם", "רמב\"ם", "רמב'ם"]
+        );
+        let words = ["שבת", "רמבם", "רמב\"ם", "חסר", "שבת", "רמב", "שץ", ""];
+        let found: Vec<String> = spelling_terms(&searcher, text, &words)
+            .unwrap()
+            .iter()
+            .map(|term| term.value().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "שבת",
+                "רמבם",
+                "רמ\"בם",
+                "רמב\"ם",
+                "רמב'ם",
+                "חסר",
+                "רמב",
+                "שץ",
+                "ש\"ץ",
+                ""
+            ]
+        );
+    }
+
+    #[test]
     fn a_phrase_with_few_spellings_is_a_union_of_phrases() {
         use tantivy::collector::Count;
         use tantivy::schema::{Schema, TextFieldIndexing, TextOptions};
