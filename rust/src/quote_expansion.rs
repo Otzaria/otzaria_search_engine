@@ -142,33 +142,41 @@ where
     }
 }
 
-/// Matches exactly one byte string.
+/// Matches exactly the given byte strings. A state is the range of the sorted words
+/// that start with the bytes read so far, and how many bytes that is.
 #[derive(Debug, Clone)]
-pub(crate) struct Literal(Vec<u8>);
+pub(crate) struct Literal(Vec<Vec<u8>>);
 
 impl Literal {
-    pub(crate) fn new(word: &str) -> Self {
-        Self(word.as_bytes().to_vec())
+    pub(crate) fn new<'a>(words: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut words: Vec<Vec<u8>> = words.into_iter().map(|w| w.as_bytes().to_vec()).collect();
+        words.sort_unstable();
+        words.dedup();
+        Self(words)
     }
 }
 
 impl Automaton for Literal {
-    type State = Option<usize>;
+    type State = Option<(usize, usize, usize)>;
 
-    fn start(&self) -> Option<usize> {
-        Some(0)
+    fn start(&self) -> Self::State {
+        (!self.0.is_empty()).then_some((0, self.0.len(), 0))
     }
 
-    fn is_match(&self, state: &Option<usize>) -> bool {
-        *state == Some(self.0.len())
+    fn is_match(&self, state: &Self::State) -> bool {
+        state.is_some_and(|(lo, _, depth)| self.0[lo].len() == depth)
     }
 
-    fn can_match(&self, state: &Option<usize>) -> bool {
+    fn can_match(&self, state: &Self::State) -> bool {
         state.is_some()
     }
 
-    fn accept(&self, state: &Option<usize>, byte: u8) -> Option<usize> {
-        state.and_then(|at| (self.0.get(at) == Some(&byte)).then_some(at + 1))
+    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
+        let (lo, hi, depth) = (*state)?;
+        let range = &self.0[lo..hi];
+        let start = lo + range.partition_point(|w| w.get(depth).is_none_or(|&b| b < byte));
+        let end = lo + range.partition_point(|w| w.get(depth).is_none_or(|&b| b <= byte));
+        (start < end).then_some((start, end, depth + 1))
     }
 }
 
@@ -183,7 +191,7 @@ pub(crate) fn spellings(
     if word.bytes().any(is_quote) {
         return Ok(out);
     }
-    let automaton = QuoteTransparent::new(Literal::new(word));
+    let automaton = QuoteTransparent::new(Literal::new([word]));
     for reader in searcher.segment_readers() {
         let inverted = reader.inverted_index(field)?;
         let mut stream = inverted.terms().search(&automaton).into_stream()?;
@@ -204,12 +212,36 @@ pub(crate) fn spelling_terms<S: AsRef<str>>(
     field: Field,
     words: &[S],
 ) -> tantivy::Result<Vec<Term>> {
+    // Quoted inputs are already emitted verbatim below, just as in `spellings`.
+    let literal = Literal::new(
+        words
+            .iter()
+            .map(|w| w.as_ref())
+            .filter(|word| !word.bytes().any(is_quote)),
+    );
+    let mut found: std::collections::HashMap<Vec<u8>, Vec<String>> = Default::default();
+    if literal.can_match(&literal.start()) {
+        // One walk per segment for all expandable words; a term's quote-free form
+        // identifies the word it belongs to.
+        let automaton = QuoteTransparent::new(literal);
+        for reader in searcher.segment_readers() {
+            let inverted = reader.inverted_index(field)?;
+            let mut stream = inverted.terms().search(&automaton).into_stream()?;
+            while stream.advance() {
+                if let Ok(term) = std::str::from_utf8(stream.key()) {
+                    let word = term.bytes().filter(|&b| !is_quote(b)).collect();
+                    found.entry(word).or_default().push(term.to_string());
+                }
+            }
+        }
+    }
     let mut seen = std::collections::HashSet::new();
     let mut terms = Vec::new();
-    for word in words {
-        for spelling in spellings(searcher, field, word.as_ref())? {
-            if seen.insert(spelling.clone()) {
-                terms.push(Term::from_field_text(field, &spelling));
+    for word in words.iter().map(|w| w.as_ref()) {
+        let spellings = found.get(word.as_bytes()).into_iter().flatten();
+        for spelling in std::iter::once(word).chain(spellings.map(String::as_str)) {
+            if seen.insert(spelling) {
+                terms.push(Term::from_field_text(field, spelling));
             }
         }
     }
@@ -497,7 +529,7 @@ pub(crate) fn phrase_query(
             (
                 offset,
                 word.clone(),
-                Arc::new(QuoteTransparent::new(Literal::new(word))),
+                Arc::new(QuoteTransparent::new(Literal::new([word.as_str()]))),
             )
         })
         .collect();
@@ -696,14 +728,14 @@ mod tests {
     #[test]
     fn a_quote_free_word_reaches_every_quoted_spelling() {
         assert_eq!(
-            matches(Literal::new("רמבם"), DICTIONARY),
+            matches(Literal::new(["רמבם"]), DICTIONARY),
             ["רמ\"בם", "רמב\"ם", "רמב'ם", "רמבם"]
         );
     }
 
     #[test]
     fn a_quoted_word_reaches_only_itself() {
-        assert_eq!(matches(Literal::new("רמב\"ם"), DICTIONARY), ["רמב\"ם"]);
+        assert_eq!(matches(Literal::new(["רמב\"ם"]), DICTIONARY), ["רמב\"ם"]);
     }
 
     #[test]
@@ -727,6 +759,99 @@ mod tests {
         );
         let empty = tantivy_fst::Regex::new("").unwrap();
         assert!(matches(empty, DICTIONARY).is_empty());
+    }
+
+    #[test]
+    fn spelling_terms_keep_word_order_across_segments() {
+        use tantivy::schema::{Schema, TextFieldIndexing, TextOptions};
+        use tantivy::tokenizer::{TextAnalyzer, WhitespaceTokenizer};
+
+        let mut builder = Schema::builder();
+        let indexing = TextFieldIndexing::default().set_tokenizer("ws");
+        let text = builder.add_text_field(
+            "text",
+            TextOptions::default().set_indexing_options(indexing),
+        );
+        let index = tantivy::Index::create_in_ram(builder.build());
+        index.tokenizers().register(
+            "ws",
+            TextAnalyzer::builder(WhitespaceTokenizer::default()).build(),
+        );
+        let mut writer: tantivy::IndexWriter = index.writer(15_000_000).unwrap();
+        writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+        for line in [
+            "רמבם רמב\"ם רמ\"בם רמב'ם שבת \" '",
+            "רמבם ש\"ץ שבת רמבן",
+            "רמבם שבתות רמ",
+        ] {
+            writer.add_document(tantivy::doc!(text => line)).unwrap();
+            writer.commit().unwrap();
+        }
+        let searcher = index.reader().unwrap().searcher();
+        assert_eq!(searcher.segment_readers().len(), 3);
+
+        assert_eq!(
+            spellings(&searcher, text, "רמבם").unwrap(),
+            ["רמבם", "רמ\"בם", "רמב\"ם", "רמב'ם"]
+        );
+        let words = [
+            "",
+            "שבת",
+            "\"",
+            "'",
+            "רמבם",
+            "רמב\"ם",
+            "חסר",
+            "שבת",
+            "רמב",
+            "שץ",
+            "",
+        ];
+        let found: Vec<String> = spelling_terms(&searcher, text, &words)
+            .unwrap()
+            .iter()
+            .map(|term| term.value().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "",
+                "שבת",
+                "\"",
+                "'",
+                "רמבם",
+                "רמ\"בם",
+                "רמב\"ם",
+                "רמב'ם",
+                "חסר",
+                "רמב",
+                "שץ",
+                "ש\"ץ"
+            ]
+        );
+    }
+
+    #[test]
+    fn quoted_inputs_remain_literal_without_expandable_words() {
+        use tantivy::schema::{Schema, STRING};
+
+        let mut builder = Schema::builder();
+        let text = builder.add_text_field("text", STRING);
+        let index = tantivy::Index::create_in_ram(builder.build());
+        let searcher = index.reader().unwrap().searcher();
+
+        // Skipping expansion must still emit the original quoted inputs once,
+        // in their original order, even when none are in the dictionary.
+        let words = ["רמב\"ם", "'", "\"", "רמב\"ם"];
+        let found: Vec<String> = spelling_terms(&searcher, text, &words)
+            .unwrap()
+            .iter()
+            .map(|term| term.value().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(found, ["רמב\"ם", "'", "\""]);
+        assert!(spelling_terms::<&str>(&searcher, text, &[])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
