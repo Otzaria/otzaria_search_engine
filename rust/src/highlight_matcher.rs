@@ -361,6 +361,8 @@ struct MappedText {
 }
 
 impl MappedText {
+    const MAX_INITIAL_CAPACITY: usize = 1024;
+
     fn push(&mut self, c: char, start: usize, end: usize) {
         self.text.push(c);
         self.starts.extend(std::iter::repeat_n(start, c.len_utf8()));
@@ -375,10 +377,13 @@ impl MappedText {
     }
 
     fn strip_markup(data: &str) -> Self {
+        // Tags and entities can disappear entirely, so bound the reservation
+        // based on raw input size. Longer visible text grows normally.
+        let capacity = data.len().min(Self::MAX_INITIAL_CAPACITY);
         let mut out = Self {
-            text: String::with_capacity(data.len()),
-            starts: Vec::with_capacity(data.len()),
-            ends: Vec::with_capacity(data.len()),
+            text: String::with_capacity(capacity),
+            starts: Vec::with_capacity(capacity),
+            ends: Vec::with_capacity(capacity),
         };
         let mut byte = 0;
         let mut utf16 = 0;
@@ -494,6 +499,51 @@ mod tests {
         )
         .unwrap()
         .matcher
+    }
+
+    #[test]
+    fn discarded_markup_does_not_reserve_the_raw_lines_mapping_size() {
+        let suffix = "😀 <b>שַׁבָּת</b>";
+        let lines = [
+            format!("<span data-note=\"{}\"></span>{suffix}", "x".repeat(65_536)),
+            format!("&{};{suffix}", "x".repeat(65_536)),
+            format!("{}{suffix}", "<i></i>".repeat(8192)),
+        ];
+        let plan = matcher("שבת", &[], 0);
+        for data in lines {
+            let mapped = MappedText::strip_markup(&data);
+            assert_eq!(mapped.text, "😀 שַׁבָּת");
+            assert!(mapped.text.capacity() <= MappedText::MAX_INITIAL_CAPACITY);
+            assert!(mapped.starts.capacity() <= MappedText::MAX_INITIAL_CAPACITY);
+            assert!(mapped.ends.capacity() <= MappedText::MAX_INITIAL_CAPACITY);
+            assert_eq!(mapped.starts.len(), mapped.text.len());
+            assert_eq!(mapped.ends.len(), mapped.text.len());
+
+            let found = plan.find_matches(&data, &[]);
+            assert_eq!(found.len(), 1);
+            let start = data[..data.find('ש').unwrap()].encode_utf16().count();
+            assert_eq!(found[0].start, start);
+            assert_eq!(found[0].end, start + "שַׁבָּת".encode_utf16().count());
+        }
+    }
+
+    #[test]
+    fn long_visible_lines_grow_and_keep_their_utf16_source_ranges() {
+        let part = "😀 אָמַר&nbsp;";
+        let data = part.repeat(200);
+        let mapped = MappedText::strip_markup(&data);
+        assert_eq!(mapped.text, "😀 אָמַר ".repeat(200));
+        assert!(mapped.text.len() > MappedText::MAX_INITIAL_CAPACITY);
+        assert_eq!(mapped.starts.len(), mapped.text.len());
+        assert_eq!(mapped.ends.len(), mapped.text.len());
+
+        let found = matcher("אמר", &[], 0).find_matches(&data, &[]);
+        assert_eq!(found.len(), 200);
+        for (i, found) in found.iter().enumerate() {
+            let start = i * part.encode_utf16().count() + "😀 ".encode_utf16().count();
+            assert_eq!(found.start, start);
+            assert_eq!(found.end, start + "אָמַר".encode_utf16().count());
+        }
     }
 
     #[test]
