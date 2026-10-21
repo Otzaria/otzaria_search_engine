@@ -126,6 +126,7 @@ impl PreparedHighlightMatcher {
         };
         let mut stream = tokenizer.token_stream(&text.text);
         let mut candidates: Vec<Vec<Option<Range>>> = vec![Vec::new(); self.words.len()];
+        let mut mapped = MappedText::default();
         while stream.advance() {
             let token = stream.token();
             let position = token.position;
@@ -134,10 +135,11 @@ impl PreparedHighlightMatcher {
                     row.resize(position + 1, None);
                 }
             }
-            let mapped = text.normalized_token(
+            text.normalized_token(
                 token.offset_from,
                 token.offset_to,
                 !token.text.contains(['\'', '"']),
+                &mut mapped,
             );
             for (i, patterns) in self.words.iter().enumerate() {
                 if candidates[i][position].is_some() {
@@ -173,12 +175,14 @@ impl PreparedHighlightMatcher {
         };
         let mut stream = tokenizer.token_stream(&text.text);
         let mut ranges = Vec::new();
+        let mut mapped = MappedText::default();
         while stream.advance() {
             let token = stream.token();
-            let mapped = text.normalized_token(
+            text.normalized_token(
                 token.offset_from,
                 token.offset_to,
                 !token.text.contains(['\'', '"']),
+                &mut mapped,
             );
             for (i, patterns) in self.independent_words.iter().enumerate() {
                 let edge = self.edge(i, require_boundaries);
@@ -357,6 +361,8 @@ struct MappedText {
 }
 
 impl MappedText {
+    const MAX_INITIAL_CAPACITY: usize = 1024;
+
     fn push(&mut self, c: char, start: usize, end: usize) {
         self.text.push(c);
         self.starts.extend(std::iter::repeat_n(start, c.len_utf8()));
@@ -371,7 +377,14 @@ impl MappedText {
     }
 
     fn strip_markup(data: &str) -> Self {
-        let mut out = Self::default();
+        // Tags and entities can disappear entirely, so bound the reservation
+        // based on raw input size. Longer visible text grows normally.
+        let capacity = data.len().min(Self::MAX_INITIAL_CAPACITY);
+        let mut out = Self {
+            text: String::with_capacity(capacity),
+            starts: Vec::with_capacity(capacity),
+            ends: Vec::with_capacity(capacity),
+        };
         let mut byte = 0;
         let mut utf16 = 0;
         let mut has_tag_end = true;
@@ -418,8 +431,11 @@ impl MappedText {
         out
     }
 
-    fn normalized_token(&self, start: usize, end: usize, quote_free: bool) -> Self {
-        let mut out = Self::default();
+    /// Writes the token into `out`, reused across tokens to spare its allocations.
+    fn normalized_token(&self, start: usize, end: usize, quote_free: bool, out: &mut Self) {
+        out.text.clear();
+        out.starts.clear();
+        out.ends.clear();
         for (i, c) in self.text[start..end].char_indices() {
             let source_start = self.starts[start + i];
             let source_end = self.ends[start + i];
@@ -451,7 +467,6 @@ impl MappedText {
                 out.push(c, source_start, source_end);
             }
         }
-        out
     }
 }
 
@@ -484,6 +499,51 @@ mod tests {
         )
         .unwrap()
         .matcher
+    }
+
+    #[test]
+    fn discarded_markup_does_not_reserve_the_raw_lines_mapping_size() {
+        let suffix = "😀 <b>שַׁבָּת</b>";
+        let lines = [
+            format!("<span data-note=\"{}\"></span>{suffix}", "x".repeat(65_536)),
+            format!("&{};{suffix}", "x".repeat(65_536)),
+            format!("{}{suffix}", "<i></i>".repeat(8192)),
+        ];
+        let plan = matcher("שבת", &[], 0);
+        for data in lines {
+            let mapped = MappedText::strip_markup(&data);
+            assert_eq!(mapped.text, "😀 שַׁבָּת");
+            assert!(mapped.text.capacity() <= MappedText::MAX_INITIAL_CAPACITY);
+            assert!(mapped.starts.capacity() <= MappedText::MAX_INITIAL_CAPACITY);
+            assert!(mapped.ends.capacity() <= MappedText::MAX_INITIAL_CAPACITY);
+            assert_eq!(mapped.starts.len(), mapped.text.len());
+            assert_eq!(mapped.ends.len(), mapped.text.len());
+
+            let found = plan.find_matches(&data, &[]);
+            assert_eq!(found.len(), 1);
+            let start = data[..data.find('ש').unwrap()].encode_utf16().count();
+            assert_eq!(found[0].start, start);
+            assert_eq!(found[0].end, start + "שַׁבָּת".encode_utf16().count());
+        }
+    }
+
+    #[test]
+    fn long_visible_lines_grow_and_keep_their_utf16_source_ranges() {
+        let part = "😀 אָמַר&nbsp;";
+        let data = part.repeat(200);
+        let mapped = MappedText::strip_markup(&data);
+        assert_eq!(mapped.text, "😀 אָמַר ".repeat(200));
+        assert!(mapped.text.len() > MappedText::MAX_INITIAL_CAPACITY);
+        assert_eq!(mapped.starts.len(), mapped.text.len());
+        assert_eq!(mapped.ends.len(), mapped.text.len());
+
+        let found = matcher("אמר", &[], 0).find_matches(&data, &[]);
+        assert_eq!(found.len(), 200);
+        for (i, found) in found.iter().enumerate() {
+            let start = i * part.encode_utf16().count() + "😀 ".encode_utf16().count();
+            assert_eq!(found.start, start);
+            assert_eq!(found.end, start + "אָמַר".encode_utf16().count());
+        }
     }
 
     #[test]
@@ -780,5 +840,50 @@ mod tests {
         .matcher;
         assert!(plan.find_matches("אהרן משה", &[]).is_empty());
         assert_eq!(plan.find_matches("משה ו אהרן", &[]).len(), 1);
+    }
+
+    #[test]
+    fn each_token_is_matched_on_its_own_normalized_text() {
+        let lines = [
+            "ר' אמר רש\"י שבת ושבת רש\"י אמר שבת",
+            "<b>אמר</b> שַׁבָּת אמ\u{05B8}ר&nbsp;\u{FB2A}בת",
+            "אמר' \"שבת\" אמר ש'בת אמר שב\"ת",
+        ];
+        let found = |plan: &PreparedHighlightMatcher, boundaries: &[bool]| {
+            lines
+                .iter()
+                .flat_map(|line| plan.find_matches(line, boundaries))
+                .map(|m| {
+                    let words = m.word_ranges.iter().map(|r| (r.start, r.end)).collect();
+                    (m.start, m.end, words)
+                })
+                .collect::<Vec<(usize, usize, Vec<(usize, usize)>)>>()
+        };
+        let phrase = matcher("אמר שבת", &[], 0);
+        let word = matcher("שבת", &["קידומות"], 0);
+        assert_eq!(
+            found(&phrase, &[]),
+            vec![
+                (26, 33, vec![(0, 3), (4, 7)]),
+                (3, 18, vec![(0, 3), (8, 15)]),
+                (19, 32, vec![(0, 4), (10, 13)]),
+                (0, 9, vec![(0, 3), (6, 9)]),
+                (11, 19, vec![(0, 3), (4, 8)]),
+                (20, 28, vec![(0, 3), (4, 8)]),
+            ]
+        );
+        assert_eq!(
+            found(&word, &[]),
+            vec![
+                (12, 15, vec![(0, 3)]),
+                (17, 20, vec![(0, 3)]),
+                (30, 33, vec![(0, 3)]),
+                (11, 18, vec![(0, 7)]),
+                (29, 32, vec![(0, 3)]),
+                (6, 9, vec![(0, 3)]),
+                (15, 19, vec![(0, 4)]),
+                (24, 28, vec![(0, 4)]),
+            ]
+        );
     }
 }
