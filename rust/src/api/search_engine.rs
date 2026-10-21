@@ -22220,6 +22220,81 @@ mod tests {
     }
 
     #[test]
+    fn lexical_fuzzy_highlight_terms_hold_every_spelling() {
+        let (mut engine, dir) = make_engine();
+        for (id, line) in [
+            (1, "הלכה הלכ\"ה"),
+            (2, "הלכתי הלכת'י"),
+            (3, "הולכ\"ים הלך"),
+            (4, "הלכו מלך"),
+        ] {
+            add(&mut engine, id, line, &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+        let searcher = engine.searcher_for_tests();
+        let text_f = engine.schema.get_field("text").unwrap();
+        let dict = engine.magic_dict.as_ref().unwrap();
+        let tokens = vec!["הלך".to_string()];
+        for distance in [0, 1, 2] {
+            // Every spelling of every fuzzy, literal and dictionary term.
+            let mut words = if distance == 0 {
+                HashSet::new()
+            } else {
+                let automaton = engine.fuzzy_automaton(&tokens[0], distance).unwrap();
+                engine
+                    .automaton_highlight_terms(&searcher, &[automaton])
+                    .unwrap()
+            };
+            words.insert(tokens[0].clone());
+            words.extend(dict.highlight_forms(&tokens[0], MAX_LEXICAL_FORMS));
+            let words: Vec<String> = words.into_iter().collect();
+            let expected: std::collections::BTreeSet<Term> =
+                quote_expansion::spelling_terms(&searcher, text_f, &words)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            assert!(expected
+                .iter()
+                .any(|t| t.value().as_str().unwrap().contains('"')));
+
+            let query = engine
+                .build_lexical_fuzzy_highlight_query(&searcher, &tokens, distance)
+                .unwrap();
+            let mut terms = std::collections::BTreeSet::new();
+            query.query_terms(&mut |term, _| {
+                terms.insert(term.clone());
+            });
+            assert_eq!(terms, expected, "distance {distance}");
+        }
+    }
+
+    #[test]
+    fn automaton_highlight_terms_complete_reports_a_capped_walk() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שבת שב\"ת", "/books/a.txt");
+        engine.commit().unwrap();
+        let searcher = engine.searcher_for_tests();
+
+        let one = [quote_expansion::Literal::new(["שבת"])];
+        let (terms, complete) = engine
+            .automaton_highlight_terms_complete(&searcher, &one)
+            .unwrap();
+        assert!(complete);
+        assert_eq!(
+            terms,
+            HashSet::from(["שבת".to_string(), "שב\"ת".to_string()])
+        );
+
+        // A share of one term each: every walk stops at its first term.
+        let many = vec![quote_expansion::Literal::new(["שבת"]); MAX_HIGHLIGHT_TERMS];
+        let (_, complete) = engine
+            .automaton_highlight_terms_complete(&searcher, &many)
+            .unwrap();
+        assert!(!complete);
+    }
+
+    #[test]
     fn test_lexical_fuzzy_distance_zero_uses_dictionary_without_edit_distance() {
         let (mut engine, dir) = make_engine();
         add(&mut engine, 1, "הלכה", "/books/a.txt"); // edit distance 1, not a dictionary form
