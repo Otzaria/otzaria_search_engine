@@ -14657,19 +14657,20 @@ impl SearchEngine {
         let text_f = self.schema.get_field("text")?;
 
         // Start from the edit-distance terms (same automatons as search)...
-        let mut matched = if max_distance == 0 {
-            HashSet::new()
+        let (fuzzy_terms, complete) = if max_distance == 0 {
+            (HashSet::new(), true)
         } else {
             let automatons = term_texts
                 .iter()
                 .map(|t| self.fuzzy_automaton(t, max_distance))
                 .collect::<Result<Vec<_>>>()?;
-            self.automaton_highlight_terms(searcher, &automatons)?
+            self.automaton_highlight_terms_complete(searcher, &automatons)?
         };
 
         // ...then add the literal tokens and the (blacklist-filtered) lexical
         // forms per token. The exact token can otherwise be omitted when a broad
         // fuzzy automaton exhausts its highlight-term budget first.
+        let mut matched = HashSet::new();
         for token in term_texts {
             matched.insert(token.clone());
             matched.extend(Self::quoteless_variant(token));
@@ -14678,8 +14679,16 @@ impl SearchEngine {
             }
         }
 
-        let matched: Vec<String> = matched.into_iter().collect();
-        let terms = quote_expansion::spelling_terms(searcher, text_f, &matched)?;
+        // A complete quote-transparent walk already holds every quoted spelling of
+        // its terms; only a capped one needs them looked up.
+        let mut words: Vec<&String> = matched.iter().collect();
+        if !complete {
+            words.extend(&fuzzy_terms);
+        }
+        let mut terms = quote_expansion::spelling_terms(searcher, text_f, &words)?;
+        if complete {
+            terms.extend(fuzzy_terms.iter().map(|t| Term::from_field_text(text_f, t)));
+        }
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
@@ -14720,17 +14729,34 @@ impl SearchEngine {
         A: Automaton,
         A::State: Clone,
     {
+        Ok(self
+            .automaton_highlight_terms_complete(searcher, automatons)?
+            .0)
+    }
+
+    /// [`Self::automaton_highlight_terms`], and whether no automaton reached its
+    /// share of the budget (every term it matches is in the set).
+    fn automaton_highlight_terms_complete<A>(
+        &self,
+        searcher: &Searcher,
+        automatons: &[A],
+    ) -> Result<(HashSet<String>, bool)>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let mut matched: HashSet<String> = HashSet::new();
+        let mut complete = true;
         // Split the term budget evenly between automatons: a global cap would
         // let one broad first word exhaust it and leave the remaining query
         // words with no highlighting at all.
         let per_automaton_cap = (MAX_HIGHLIGHT_TERMS / automatons.len().max(1)).max(1);
         for automaton in automatons {
-            for term in self.automaton_terms(searcher, automaton, per_automaton_cap)? {
-                matched.insert(term);
-            }
+            let terms = self.automaton_terms(searcher, automaton, per_automaton_cap)?;
+            complete &= terms.len() < per_automaton_cap;
+            matched.extend(terms);
         }
-        Ok(matched)
+        Ok((matched, complete))
     }
 
     fn automaton_terms<A>(
