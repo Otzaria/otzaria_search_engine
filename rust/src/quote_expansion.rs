@@ -212,16 +212,26 @@ pub(crate) fn spelling_terms<S: AsRef<str>>(
     field: Field,
     words: &[S],
 ) -> tantivy::Result<Vec<Term>> {
-    // One walk per segment for all the words; a found term's quote-free form is its word.
-    let automaton = QuoteTransparent::new(Literal::new(words.iter().map(|w| w.as_ref())));
+    // Quoted inputs are already emitted verbatim below, just as in `spellings`.
+    let literal = Literal::new(
+        words
+            .iter()
+            .map(|w| w.as_ref())
+            .filter(|word| !word.bytes().any(is_quote)),
+    );
     let mut found: std::collections::HashMap<Vec<u8>, Vec<String>> = Default::default();
-    for reader in searcher.segment_readers() {
-        let inverted = reader.inverted_index(field)?;
-        let mut stream = inverted.terms().search(&automaton).into_stream()?;
-        while stream.advance() {
-            if let Ok(term) = std::str::from_utf8(stream.key()) {
-                let word = term.bytes().filter(|&b| !is_quote(b)).collect();
-                found.entry(word).or_default().push(term.to_string());
+    if literal.can_match(&literal.start()) {
+        // One walk per segment for all expandable words; a term's quote-free form
+        // identifies the word it belongs to.
+        let automaton = QuoteTransparent::new(literal);
+        for reader in searcher.segment_readers() {
+            let inverted = reader.inverted_index(field)?;
+            let mut stream = inverted.terms().search(&automaton).into_stream()?;
+            while stream.advance() {
+                if let Ok(term) = std::str::from_utf8(stream.key()) {
+                    let word = term.bytes().filter(|&b| !is_quote(b)).collect();
+                    found.entry(word).or_default().push(term.to_string());
+                }
             }
         }
     }
@@ -770,7 +780,7 @@ mod tests {
         let mut writer: tantivy::IndexWriter = index.writer(15_000_000).unwrap();
         writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
         for line in [
-            "רמבם רמב\"ם רמ\"בם רמב'ם שבת \"",
+            "רמבם רמב\"ם רמ\"בם רמב'ם שבת \" '",
             "רמבם ש\"ץ שבת רמבן",
             "רמבם שבתות רמ",
         ] {
@@ -784,7 +794,19 @@ mod tests {
             spellings(&searcher, text, "רמבם").unwrap(),
             ["רמבם", "רמ\"בם", "רמב\"ם", "רמב'ם"]
         );
-        let words = ["שבת", "רמבם", "רמב\"ם", "חסר", "שבת", "רמב", "שץ", ""];
+        let words = [
+            "",
+            "שבת",
+            "\"",
+            "'",
+            "רמבם",
+            "רמב\"ם",
+            "חסר",
+            "שבת",
+            "רמב",
+            "שץ",
+            "",
+        ];
         let found: Vec<String> = spelling_terms(&searcher, text, &words)
             .unwrap()
             .iter()
@@ -793,7 +815,10 @@ mod tests {
         assert_eq!(
             found,
             [
+                "",
                 "שבת",
+                "\"",
+                "'",
                 "רמבם",
                 "רמ\"בם",
                 "רמב\"ם",
@@ -801,10 +826,32 @@ mod tests {
                 "חסר",
                 "רמב",
                 "שץ",
-                "ש\"ץ",
-                ""
+                "ש\"ץ"
             ]
         );
+    }
+
+    #[test]
+    fn quoted_inputs_remain_literal_without_expandable_words() {
+        use tantivy::schema::{Schema, STRING};
+
+        let mut builder = Schema::builder();
+        let text = builder.add_text_field("text", STRING);
+        let index = tantivy::Index::create_in_ram(builder.build());
+        let searcher = index.reader().unwrap().searcher();
+
+        // Skipping expansion must still emit the original quoted inputs once,
+        // in their original order, even when none are in the dictionary.
+        let words = ["רמב\"ם", "'", "\"", "רמב\"ם"];
+        let found: Vec<String> = spelling_terms(&searcher, text, &words)
+            .unwrap()
+            .iter()
+            .map(|term| term.value().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(found, ["רמב\"ם", "'", "\""]);
+        assert!(spelling_terms::<&str>(&searcher, text, &[])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
