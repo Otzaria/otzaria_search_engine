@@ -126,6 +126,7 @@ impl PreparedHighlightMatcher {
         };
         let mut stream = tokenizer.token_stream(&text.text);
         let mut candidates: Vec<Vec<Option<Range>>> = vec![Vec::new(); self.words.len()];
+        let mut mapped = MappedText::default();
         while stream.advance() {
             let token = stream.token();
             let position = token.position;
@@ -134,10 +135,11 @@ impl PreparedHighlightMatcher {
                     row.resize(position + 1, None);
                 }
             }
-            let mapped = text.normalized_token(
+            text.normalized_token(
                 token.offset_from,
                 token.offset_to,
                 !token.text.contains(['\'', '"']),
+                &mut mapped,
             );
             for (i, patterns) in self.words.iter().enumerate() {
                 if candidates[i][position].is_some() {
@@ -173,12 +175,14 @@ impl PreparedHighlightMatcher {
         };
         let mut stream = tokenizer.token_stream(&text.text);
         let mut ranges = Vec::new();
+        let mut mapped = MappedText::default();
         while stream.advance() {
             let token = stream.token();
-            let mapped = text.normalized_token(
+            text.normalized_token(
                 token.offset_from,
                 token.offset_to,
                 !token.text.contains(['\'', '"']),
+                &mut mapped,
             );
             for (i, patterns) in self.independent_words.iter().enumerate() {
                 let edge = self.edge(i, require_boundaries);
@@ -371,7 +375,11 @@ impl MappedText {
     }
 
     fn strip_markup(data: &str) -> Self {
-        let mut out = Self::default();
+        let mut out = Self {
+            text: String::with_capacity(data.len()),
+            starts: Vec::with_capacity(data.len()),
+            ends: Vec::with_capacity(data.len()),
+        };
         let mut byte = 0;
         let mut utf16 = 0;
         let mut has_tag_end = true;
@@ -418,8 +426,11 @@ impl MappedText {
         out
     }
 
-    fn normalized_token(&self, start: usize, end: usize, quote_free: bool) -> Self {
-        let mut out = Self::default();
+    /// Writes the token into `out`, reused across tokens to spare its allocations.
+    fn normalized_token(&self, start: usize, end: usize, quote_free: bool, out: &mut Self) {
+        out.text.clear();
+        out.starts.clear();
+        out.ends.clear();
         for (i, c) in self.text[start..end].char_indices() {
             let source_start = self.starts[start + i];
             let source_end = self.ends[start + i];
@@ -451,7 +462,6 @@ impl MappedText {
                 out.push(c, source_start, source_end);
             }
         }
-        out
     }
 }
 
