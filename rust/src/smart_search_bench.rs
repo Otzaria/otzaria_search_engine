@@ -175,6 +175,7 @@ impl Config {
 
 /// The inputs of a semantic session, for modes that need vectors; `None` unless all are set.
 /// `OTZ_VECTORS` is the set's directory, the one holding `CURRENT`.
+#[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
 struct SemanticInputs {
     vectors: PathBuf,
     model: PathBuf,
@@ -309,6 +310,7 @@ fn run_once(
                 false,
                 false,
                 None,
+                None,
             )?;
             Ok(page_outcome(results.len()))
         }
@@ -322,6 +324,7 @@ fn run_once(
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
                 None,
             )?;
             Ok(page_outcome(results.len()))

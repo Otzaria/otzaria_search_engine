@@ -319,6 +319,7 @@ fn lexical_line_id(engine: &SearchEngine, label: u64) -> u64 {
             false,
             false,
             None,
+            None,
         )
         .unwrap();
     assert_eq!(hits.len(), 1, "one lexical line for fixture {label}");

@@ -2908,6 +2908,8 @@ impl PhraseHighlight {
 /// What a highlight-query builder resolves to: the flat term query that drives
 /// tantivy's fragment selection (and, absent a phrase filter, its
 /// highlighting), plus the optional phrase constraint above.
+type AcronymAlternative = (Box<dyn Query>, bool, Vec<String>);
+
 struct HighlightPlan {
     /// `None` falls back to the main search query, which already exposes its
     /// terms to `SnippetGenerator` when it is a Term/Phrase/TermSet query.
@@ -3924,6 +3926,9 @@ pub(crate) struct TextBookMeta {
 #[frb(ignore)]
 pub(crate) struct PreparedTextBook {
     pub documents: Vec<TantivyDocument>,
+    pub(crate) spooled_documents: Option<crate::indexing_buffers::DocumentSpool>,
+    pub(crate) buffered_documents: crate::indexing_diagnostics::BufferedBytes,
+    pub(crate) source_generation: Option<(crate::line_source::Source, u64)>,
     /// The book's number: the high half of its ids.
     pub book_number: u32,
     /// The book's `contentHash` ([`book_fingerprint`]).
@@ -3939,12 +3944,36 @@ pub(crate) struct PreparedTextBook {
 }
 
 impl PreparedTextBook {
+    #[cfg(test)]
+    pub(crate) fn for_each_document(
+        &mut self,
+        mut f: impl FnMut(TantivyDocument) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(spool) = &mut self.spooled_documents {
+            spool.for_each(f)?;
+        } else {
+            for document in &self.documents {
+                f(document.clone())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Moves the documents into `writer`, in line order; returns how many.
     pub(crate) fn enqueue(&mut self, writer: &IndexWriter) -> Result<u32> {
+        if let Some(mut spool) = self.spooled_documents.take() {
+            let enqueued = spool.for_each(|document| {
+                writer.add_document(document)?;
+                Ok(())
+            });
+            self.buffered_documents.set(0);
+            return enqueued;
+        }
         let count = self.documents.len() as u32;
         for document in self.documents.drain(..) {
             writer.add_document(document)?;
         }
+        self.buffered_documents.set(0);
         Ok(count)
     }
 }
@@ -4571,7 +4600,7 @@ const TEXT_VOCALIZED_STORED_FIELD: &str = "textVocalizedStored";
 /// Cache key for materialized single-word term sets. The searcher
 /// `generation_id` changes on every reader reload (i.e. after each commit),
 /// so entries from a stale index snapshot can never be served.
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct TermCacheKey {
     generation: u64,
     /// The dictionary the branches were scanned against (`text` vs
@@ -4694,6 +4723,7 @@ pub struct SearchEngine {
     /// FST dictionary scan behind `single_regex_term_query` is the expensive
     /// part of each — this makes every call after the first near-free.
     term_cache: Mutex<LruCache<TermCacheKey, CachedTermSet>>,
+    term_work: crate::highlight_cache::WorkGate<TermCacheKey>,
     /// Bulk-indexing mode (see [`SearchEngine::set_bulk_indexing`]): while
     /// on, the live writer (and any lazily-reopened one) uses `NoMergePolicy`.
     bulk_indexing: bool,
@@ -4720,6 +4750,9 @@ pub struct SearchEngine {
     page_cache: PageCache,
     /// Highlight term sets and display patterns: see [`crate::highlight_cache`].
     highlight_cache: HighlightCache,
+    grouped_cache: GroupCache,
+    dictionary_epoch: u64,
+    memory_epoch: std::sync::atomic::AtomicU64,
     /// Request ids of running lexical searches: see [`crate::lexical_cancellation`].
     lexical_cancellations: LexicalCancellations,
     /// Which book holds which number (see [`crate::book_order`]): read from the index when
@@ -4871,20 +4904,8 @@ impl SearchEngine {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .expect("Failed to create index reader");
-        // Best-effort: if another instance/process holds the writer lock right
-        // now, start without a writer; ensure_writer() retries on first write.
-        let index_writer = match index.writer(DEFAULT_WRITER_HEAP_SIZE) {
-            Ok(writer) => {
-                writer.set_merge_policy(Box::new(SizeAwareMergePolicy {
-                    index_path: PathBuf::from(path),
-                }));
-                Some(writer)
-            }
-            Err(err) => {
-                warn!("writer unavailable at startup ({err}); will retry lazily");
-                None
-            }
-        };
+        // Search-only instances acquire neither the writer lock nor its worker pool.
+        let index_writer = None;
 
         // Nothing committed yet, so a chunk-key recipe recorded now describes every key the
         // index will hold.
@@ -4907,6 +4928,7 @@ impl SearchEngine {
             magic_dict: None,
             translation_dict: None,
             acronym_dict: None,
+            term_work: crate::highlight_cache::WorkGate::default(),
             term_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
@@ -4925,6 +4947,9 @@ impl SearchEngine {
             semantic_highlights: Default::default(),
             page_cache: PageCache::default(),
             highlight_cache: HighlightCache::default(),
+            grouped_cache: GroupCache::default(),
+            dictionary_epoch: book_order::next_epoch(),
+            memory_epoch: std::sync::atomic::AtomicU64::default(),
             lexical_cancellations: LexicalCancellations::default(),
             book_numbers: Mutex::new(None),
             numbers_stale: AtomicBool::new(true),
@@ -4971,6 +4996,7 @@ impl SearchEngine {
             magic_dict: None,
             translation_dict: None,
             acronym_dict: None,
+            term_work: crate::highlight_cache::WorkGate::default(),
             term_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
@@ -4989,6 +5015,9 @@ impl SearchEngine {
             semantic_highlights: Default::default(),
             page_cache: PageCache::default(),
             highlight_cache: HighlightCache::default(),
+            grouped_cache: GroupCache::default(),
+            dictionary_epoch: book_order::next_epoch(),
+            memory_epoch: std::sync::atomic::AtomicU64::default(),
             lexical_cancellations: LexicalCancellations::default(),
             book_numbers: Mutex::new(None),
             numbers_stale: AtomicBool::new(true),
@@ -5388,8 +5417,10 @@ impl SearchEngine {
     /// advanced search.
     #[frb(sync)]
     pub fn set_magic_dictionary_path(&mut self, path: String) -> bool {
-        // The fuzzy display pattern paints the dictionary's forms.
+        self.dictionary_epoch = book_order::next_epoch();
         self.highlight_cache.clear();
+        self.page_cache.clear();
+        self.grouped_cache.clear();
         #[cfg(feature = "semantic-integration")]
         let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
         match MagicDictionary::open(Path::new(&path)) {
@@ -5419,6 +5450,10 @@ impl SearchEngine {
     /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
     #[frb(sync)]
     pub fn set_translation_dictionary_path(&mut self, path: String) -> bool {
+        self.dictionary_epoch = book_order::next_epoch();
+        self.highlight_cache.clear();
+        self.page_cache.clear();
+        self.grouped_cache.clear();
         match TranslationLexicon::load(Path::new(&path)) {
             Ok(lexicon) => {
                 debug!(
@@ -5448,6 +5483,10 @@ impl SearchEngine {
     /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
     #[frb(sync)]
     pub fn set_acronyms_dictionary_path(&mut self, path: String) -> bool {
+        self.dictionary_epoch = book_order::next_epoch();
+        self.highlight_cache.clear();
+        self.page_cache.clear();
+        self.grouped_cache.clear();
         match AcronymLexicon::load(Path::new(&path)) {
             Ok(lexicon) => {
                 debug!(
@@ -7832,6 +7871,7 @@ impl SearchEngine {
                 match_nikud,
                 match_taamim,
                 grouping,
+                None,
             )?,
             SemanticLexicalMode::Fuzzy => self.search_and_count_smart_fuzzy(
                 query,
@@ -8278,14 +8318,91 @@ impl SearchEngine {
         text_storage: TextStorage,
         stored_lines: &[u32],
     ) -> Result<PreparedTextBook> {
-        let TextBookMeta {
-            title,
-            topics,
-            file_path,
-            extra_facets,
-            source_hash,
-        } = book;
-        let lines: Vec<&str> = text.split('\n').collect();
+        let mut sorted = std::borrow::Cow::Borrowed(stored_lines);
+        if !stored_lines.windows(2).all(|pair| pair[0] <= pair[1]) {
+            sorted.to_mut().sort_unstable();
+        }
+        let mut stored = sorted.iter().copied().map(Ok);
+        self.prepare_text_book_reader(
+            book,
+            &mut std::io::Cursor::new(text),
+            book_fingerprint(text, &book.title, &book.topics, book.extra_facets.clone()),
+            content_fingerprint(text),
+            text_storage,
+            &mut stored,
+            8 << 20,
+            &|| false,
+        )
+    }
+
+    pub(crate) fn prepare_text_book_buffer(
+        &self,
+        book: &TextBookMeta,
+        text: &mut crate::indexing_buffers::TextBuffer,
+        text_storage: TextStorage,
+        stored_lines: &mut crate::indexing_buffers::OrdinalBuffer,
+        document_budget: usize,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<PreparedTextBook> {
+        use std::io::Read;
+        let mut content = Fnv::new();
+        content.feed(&text.len().to_le_bytes());
+        let mut text_hash = Fnv::new();
+        let mut reader = text.reader()?;
+        let mut buffer = [0u8; 64 << 10];
+        loop {
+            anyhow::ensure!(!stop(), "indexing preparation interrupted");
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            content.feed(&buffer[..count]);
+            text_hash.feed(&buffer[..count]);
+        }
+        drop(reader);
+        feed_metadata(
+            &mut content,
+            &book.title,
+            &book.topics,
+            book.extra_facets.clone(),
+        );
+        let mut stored = stored_lines.iter()?;
+        self.prepare_text_book_reader(
+            book,
+            &mut text.reader()?,
+            content.finish(),
+            text_hash.finish(),
+            text_storage,
+            &mut stored,
+            document_budget,
+            stop,
+        )
+    }
+
+    fn prepare_text_book_reader(
+        &self,
+        book: &TextBookMeta,
+        reader: &mut dyn std::io::BufRead,
+        content_hash: u64,
+        text_hash: u64,
+        text_storage: TextStorage,
+        stored_lines: &mut dyn Iterator<Item = Result<u32>>,
+        document_budget: usize,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<PreparedTextBook> {
+        use rayon::prelude::*;
+        use std::sync::Arc;
+        struct Line {
+            plain: String,
+            vocalized: Option<String>,
+            hash: u64,
+            check: Option<u32>,
+            edges: Option<cross_line::LineEdges>,
+            reference: Arc<String>,
+            section: u32,
+            ordinal: usize,
+        }
+        let prepare_started = Instant::now();
         let (
             title_f,
             reference_f,
@@ -8300,171 +8417,201 @@ impl SearchEngine {
             line_hash_f,
         ) = self.all_fields()?;
         let stamp_fields = StampFields::of(&self.schema)?;
-        let topics_facet = Facet::from_text(&topics)?;
-        // נתיבי הממדים (מחבר/תקופה/יסוד) נפרסים פעם אחת לספר ומוטבעים
-        // כערכי facet נוספים על כל שורה.
-        let extra_facet_values: Vec<Facet> = extra_facets
+        let topics_facet = Facet::from_text(&book.topics)?;
+        let extra_facets: Vec<Facet> = book
+            .extra_facets
             .iter()
-            .map(|f| Facet::from_text(f))
+            .map(Facet::from_text)
             .collect::<std::result::Result<_, _>>()?;
         let stamps = Stamps {
-            content: book_fingerprint(text, title, topics, extra_facets.clone()),
-            text: content_fingerprint(text),
-            metadata: metadata_fingerprint(title, topics, extra_facets.clone()),
-            source: *source_hash,
+            content: content_hash,
+            text: text_hash,
+            metadata: metadata_fingerprint(&book.title, &book.topics, book.extra_facets.clone()),
+            source: book.source_hash,
         };
-        let book_number = self.book_number(file_path)?;
+        let book_number = self.book_number(&book.file_path)?;
         let id_base = u64::from(book_number) << 32;
-        let chunk_key_f = self.chunk_key_field;
-        let library = text_storage == TextStorage::LibraryDb;
-        let mut kept_in_index = Vec::new();
-        if library && !stored_lines.is_empty() {
-            kept_in_index = vec![false; lines.len()];
-            for &ordinal in stored_lines {
-                if let Some(kept) = kept_in_index.get_mut(ordinal as usize) {
-                    *kept = true;
-                }
-            }
-        }
-        let stores_text = |segment: usize| !library || kept_in_index.get(segment) == Some(&true);
         let stored_fields = self.stored_text_fields()?;
         let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
         let edge_analyzer = self.text_index_analyzer()?;
-
-        // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
-        // writer.add_document (queue push; grows only when tantivy's indexing
-        // threads apply backpressure).
-        let prepare_started = Instant::now();
-
-        // Sequential cheap pass: the reference trail is stateful across
-        // lines, so resolve each line to its reference index first. The
-        // stripped trail is recomputed only when a heading changes it.
-        let mut trail: Vec<&str> = Vec::new();
-        let mut references: Vec<String> = vec![String::new()];
-        let mut reference_of_line: Vec<u32> = Vec::with_capacity(lines.len());
-        for raw_line in &lines {
-            if raw_line.starts_with("<h") {
-                update_reference_trail(&mut trail, raw_line);
-                // כיווץ אחרי ההסרה: תג הכותרת עצמו (תג שבירה) הופך לרווח.
-                references.push(
-                    trail
-                        .iter()
-                        .map(|part| {
-                            hebrew_query::collapse_whitespace(
-                                &hebrew_query::strip_html_for_indexing(part),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
+        let mut next_stored = stored_lines.next().transpose()?;
+        let mut documents = Vec::new();
+        let mut spooled_documents: Option<crate::indexing_buffers::DocumentSpool> = None;
+        let mut buffered_documents = crate::indexing_diagnostics::BufferedBytes::default();
+        let mut document_bytes = 0usize;
+        let mut trail: Vec<String> = Vec::new();
+        let mut reference = Arc::new(String::new());
+        let mut section = 0u32;
+        let mut ordinal = 0usize;
+        let mut window: Vec<Line> = Vec::new();
+        let mut previous = 0usize;
+        let mut finished = false;
+        let mut keys_time = std::time::Duration::ZERO;
+        let reach = semantic_keys::production_chunking().context_window_lines;
+        while !finished || previous < window.len() {
+            anyhow::ensure!(!stop(), "indexing preparation interrupted");
+            let mut raw_lines = Vec::new();
+            let mut raw_bytes = 0usize;
+            while !finished && raw_lines.len() < 256 && raw_bytes < (1 << 20) {
+                let mut raw = String::new();
+                let read = reader.read_line(&mut raw)?;
+                finished = !raw.ends_with('\n');
+                if raw.ends_with('\n') {
+                    raw.pop();
+                }
+                if raw.starts_with("<h") {
+                    let mut borrowed: Vec<&str> = trail.iter().map(String::as_str).collect();
+                    update_reference_trail(&mut borrowed, &raw);
+                    trail = borrowed.into_iter().map(str::to_owned).collect();
+                    reference = Arc::new(
+                        trail
+                            .iter()
+                            .map(|part| {
+                                hebrew_query::collapse_whitespace(
+                                    &hebrew_query::strip_html_for_indexing(part),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    section += 1;
+                }
+                while next_stored.is_some_and(|next| (next as usize) < ordinal) {
+                    next_stored = stored_lines.next().transpose()?;
+                }
+                let stores_text =
+                    text_storage != TextStorage::LibraryDb || next_stored == Some(ordinal as u32);
+                raw_bytes += raw.len();
+                raw_lines.push((raw, reference.clone(), section, ordinal, stores_text));
+                ordinal += 1;
+                if read == 0 {
+                    finished = true;
+                }
             }
-            reference_of_line.push((references.len() - 1) as u32);
-        }
-
-        // The expensive pass — normalization is order-independent across
-        // lines, so it fans out over all cores. A line carrying nikud/taamim
-        // also gets its vocalized rendering, for the `textVocalized` field
-        // (the mark check is cheap and almost always short-circuits false).
-        use rayon::prelude::*;
-        type Prepared = (
-            String,
-            Option<String>,
-            u64,
-            Option<u32>,
-            Option<cross_line::LineEdges>,
-        );
-        let normalized: Vec<Prepared> = lines
-            .par_iter()
-            .enumerate()
-            .map_init(
-                || edge_analyzer.clone(),
-                |analyzer, (segment, raw_line)| {
-                    let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw_line);
-                    let line_hash = line_dedup_hash(&plain);
-                    let line_check =
-                        (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
-                    // A heading interrupts the text: no phrase continues into or out of it.
-                    let edges = (!raw_line.starts_with("<h"))
-                        .then(|| cross_line::line_edges(analyzer, &plain))
-                        .flatten();
-                    (plain, vocalized, line_hash, line_check, edges)
-                },
-            )
-            .collect();
-        let prepare_time = prepare_started.elapsed();
-
-        // The key each line's vector is stored under: the production recipe over the text
-        // the index stores and the sections the headings open, which the passes above just
-        // made. Only for a column in use — one written under another recipe counts as
-        // absent.
-        let keys_started = Instant::now();
-        let chunk_keys: Vec<u64> = match chunk_key_f {
-            Some(_) => {
-                let lines: Vec<LineRef<'_>> = normalized
+            anyhow::ensure!(!stop(), "indexing preparation interrupted");
+            let normalized: Vec<Line> = raw_lines
+                .par_iter()
+                .map_init(
+                    || edge_analyzer.clone(),
+                    |analyzer, (raw, reference, section, ordinal, stores_text)| {
+                        let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw);
+                        let hash = line_dedup_hash(&plain);
+                        let check = (!stores_text).then(|| crate::line_source::line_check(raw));
+                        let edges = (!raw.starts_with("<h"))
+                            .then(|| cross_line::line_edges(analyzer, &plain))
+                            .flatten();
+                        Line {
+                            plain,
+                            vocalized,
+                            hash,
+                            check,
+                            edges,
+                            reference: reference.clone(),
+                            section: *section,
+                            ordinal: *ordinal,
+                        }
+                    },
+                )
+                .collect();
+            drop(raw_lines);
+            window.extend(normalized);
+            let end = if finished {
+                window.len()
+            } else {
+                window.len().saturating_sub(reach)
+            };
+            let keys_started = Instant::now();
+            let keys = if self.chunk_key_field.is_some() {
+                let lines: Vec<LineRef<'_>> = window
                     .iter()
-                    .zip(&reference_of_line)
-                    .map(|((plain, _, _, _, _), section)| LineRef {
-                        text: plain,
-                        section: u64::from(*section),
+                    .map(|line| LineRef {
+                        text: &line.plain,
+                        section: u64::from(line.section),
                     })
                     .collect();
                 semantic_keys::column_values(&lines)
-            }
-            None => Vec::new(),
-        };
-        let keys_time = keys_started.elapsed();
-
-        let mut documents = Vec::with_capacity(lines.len());
-        for (segment, (normalized_line, vocalized_line, line_hash, line_check, edges)) in
-            normalized.into_iter().enumerate()
-        {
-            let reference = references[reference_of_line[segment] as usize].as_str();
-            let id = id_base + segment as u64 + 1;
-            let mut document = doc!(
-                title_f        => title.as_str(),
-                reference_f    => reference,
-                text_f         => normalized_line.as_str(),
-                id_f           => id,
-                is_pdf_f       => false,
-                file_path_f    => file_path.as_str(),
-                topics_f       => topics_facet.clone(),
-                // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
-                // בין ספרים, אז sectionId הנגזר ייחודי גלובלית.
-                section_id_f   => u64::from(reference_of_line[segment]),
-                line_hash_f    => line_hash
-            );
-            if let Some(stored) = segment_to_store(id, segment as u64) {
-                document.add_u64(segment_f, stored);
-            }
-            let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
-            set_chunk_key(&mut document, chunk_key_f, chunk_key);
-            if segment == 0 {
-                stamp_book(&mut document, stamp_fields, stamps);
-            }
-            for facet in &extra_facet_values {
-                document.add_facet(topics_f, facet.clone());
-            }
-            if let Some(vocalized) = &vocalized_line {
-                document.add_text(text_vocalized_f, vocalized);
-            }
-            if let Some(edges) = &edges {
-                edge_fields.add(&mut document, edges, true, true);
-            }
-            if let Some(check) = line_check {
-                document.add_u64(line_check_f, u64::from(check));
             } else {
-                add_stored_text(
+                Vec::new()
+            };
+            keys_time += keys_started.elapsed();
+            for (offset, line) in window.iter().enumerate().take(end).skip(previous) {
+                anyhow::ensure!(!stop(), "indexing preparation interrupted");
+                let segment = line.ordinal;
+                let id = id_base + segment as u64 + 1;
+                let mut document = doc!(title_f => book.title.as_str(),
+                    reference_f => line.reference.as_str(), text_f => line.plain.as_str(),
+                    id_f => id, is_pdf_f => false, file_path_f => book.file_path.as_str(),
+                    topics_f => topics_facet.clone(), section_id_f => u64::from(line.section),
+                    line_hash_f => line.hash);
+                if let Some(stored) = segment_to_store(id, segment as u64) {
+                    document.add_u64(segment_f, stored);
+                }
+                set_chunk_key(
                     &mut document,
-                    stored_fields,
-                    &normalized_line,
-                    vocalized_line.as_deref(),
+                    self.chunk_key_field,
+                    keys.get(offset).copied().unwrap_or(0),
                 );
+                if segment == 0 {
+                    stamp_book(&mut document, stamp_fields, stamps);
+                }
+                for facet in &extra_facets {
+                    document.add_facet(topics_f, facet.clone());
+                }
+                if let Some(vocalized) = &line.vocalized {
+                    document.add_text(text_vocalized_f, vocalized);
+                }
+                if let Some(edges) = &line.edges {
+                    edge_fields.add(&mut document, edges, true, true);
+                }
+                if let Some(check) = line.check {
+                    document.add_u64(line_check_f, u64::from(check));
+                } else {
+                    add_stored_text(
+                        &mut document,
+                        stored_fields,
+                        &line.plain,
+                        line.vocalized.as_deref(),
+                    );
+                }
+                let bytes = document.node_data.capacity()
+                    + document.len() * 16
+                    + std::mem::size_of::<TantivyDocument>();
+                if spooled_documents.is_none()
+                    && document_bytes.saturating_add(bytes) > document_budget
+                {
+                    let mut spool = crate::indexing_buffers::DocumentSpool::new(
+                        &self.schema,
+                        &self.index_path,
+                    )?;
+                    for previous in documents.drain(..) {
+                        spool.push(&previous)?;
+                    }
+                    documents = Vec::new();
+                    buffered_documents.set(64 << 10);
+                    spooled_documents = Some(spool);
+                }
+                if let Some(spool) = &mut spooled_documents {
+                    spool.push(&document)?;
+                } else {
+                    document_bytes += bytes;
+                    documents.push(document);
+                    buffered_documents.set(document_bytes);
+                }
             }
-            documents.push(document);
+            if finished {
+                break;
+            }
+            previous = reach.min(end);
+            window.drain(..end.saturating_sub(reach));
         }
+        let prepare_time = prepare_started.elapsed();
+        crate::indexing_diagnostics::prepare(prepare_time);
         Ok(PreparedTextBook {
             documents,
+            spooled_documents,
+            buffered_documents,
+            source_generation: None,
             book_number,
             content_hash: stamps.content,
             text_hash: stamps.text,
@@ -8565,7 +8712,7 @@ impl SearchEngine {
         let topics_facet = Facet::from_text(&topics)?;
         let extra_facet_values: Vec<Facet> = extra_facets
             .iter()
-            .map(|f| Facet::from_text(f))
+            .map(Facet::from_text)
             .collect::<std::result::Result<_, _>>()?;
         self.ensure_writer()?;
         let id_base = self.id_base(&file_path)?;
@@ -8784,6 +8931,19 @@ impl SearchEngine {
         Ok(())
     }
 
+    pub(crate) fn preparation_directory(&self) -> &Path {
+        &self.index_path
+    }
+
+    pub(crate) fn library_preparation_policy(&self) -> (usize, usize, usize) {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        if self.writer_heap_size <= ECONOMY_WRITER_HEAP_SIZE {
+            (1, 1, 2 << 20)
+        } else {
+            ((cores / 2).clamp(1, 2), (cores / 2).clamp(1, 4), 8 << 20)
+        }
+    }
+
     /// Economy indexing mode: shrinks the writer's memory budget to the
     /// mobile footprint (50MB ⇒ tantivy caps itself at 3 indexing threads)
     /// so the machine stays responsive during a long build; `false` restores
@@ -8829,6 +8989,8 @@ impl SearchEngine {
     /// Discard all pending writes since the last commit.
     pub fn rollback(&mut self) -> Result<()> {
         self.writer_mut()?.rollback()?;
+        // Tantivy recreates its writer and resets the merge policy on rollback.
+        self.set_bulk_indexing(self.bulk_indexing)?;
         Ok(())
     }
 
@@ -9016,6 +9178,42 @@ impl SearchEngine {
         Ok((epoch, tables))
     }
 
+    /// מזהה אטום של התוכן, המיון, המילונים ומקורות הטקסט לחיפוש הנוכחי.
+    pub fn search_snapshot(&self) -> String {
+        self.refresh_book_order();
+        format!(
+            "{:016x}:{:016x}:{:016x}:{:?}",
+            page_cache::snapshot_of(&self.index_reader.searcher()),
+            self.order_epoch(),
+            self.dictionary_epoch,
+            crate::line_source::search_snapshot_generation()
+        )
+    }
+
+    /// משחרר מטמוני חיפוש וטקסט שאפשר לבנות מחדש בלחץ זיכרון.
+    pub fn release_memory(&self) {
+        self.memory_epoch.fetch_add(1, Ordering::AcqRel);
+        self.page_cache.clear();
+        self.grouped_cache.clear();
+        self.highlight_cache.clear();
+        self.term_cache.lock().unwrap().clear();
+        self.term_work.clear_idle();
+        if let Some(dictionary) = &self.magic_dict {
+            dictionary.release_memory();
+        }
+        crate::user_regex::release_memory();
+        crate::line_source::release_memory();
+        #[cfg(feature = "semantic-integration")]
+        {
+            self.semantic_sessions.prune_expired();
+            self.semantic_highlights.clear();
+            *self
+                .semantic_resolver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Default::default();
+        }
+    }
+
     // ── Search API ─────────────────────────────────────────────────────────────
 
     /// Paged regex search. Drops the single-word truncation flag: a broad
@@ -9033,19 +9231,23 @@ impl SearchEngine {
         max_expansions: u32,
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
+        cancel_request_id: Option<u32>,
     ) -> Result<Vec<SearchResult>> {
-        let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
-        let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search(
-            query,
-            |_| Ok(HighlightPlan::none()),
-            self.schema.get_field("text")?,
-            limit,
-            offset,
-            &order,
-            &hl,
-            None,
-        )
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let (query, _) = self.build_query(regex_terms, facets, slop, max_expansions)?;
+            let hl = highlight.unwrap_or_else(HighlightConfig::default);
+            self.run_search(
+                query,
+                |_| Ok(HighlightPlan::none()),
+                self.schema.get_field("text")?,
+                limit,
+                offset,
+                &order,
+                &hl,
+                None,
+            )
+        })
     }
 
     /// Search and return total hit count alongside paged results in one call.
@@ -9060,20 +9262,24 @@ impl SearchEngine {
         max_expansions: u32,
         order: ResultsOrder,
         highlight: Option<HighlightConfig>,
+        cancel_request_id: Option<u32>,
     ) -> Result<SearchPageResult> {
-        let (query, truncated) = self.build_query(regex_terms, facets, slop, max_expansions)?;
-        let hl = highlight.unwrap_or_else(HighlightConfig::default);
-        self.run_search_and_count(
-            query,
-            |_| Ok(HighlightPlan::none()),
-            self.schema.get_field("text")?,
-            limit,
-            offset,
-            &order,
-            &hl,
-            truncated,
-            None,
-        )
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let (query, truncated) = self.build_query(regex_terms, facets, slop, max_expansions)?;
+            let hl = highlight.unwrap_or_else(HighlightConfig::default);
+            self.run_search_and_count(
+                query,
+                |_| Ok(HighlightPlan::none()),
+                self.schema.get_field("text")?,
+                limit,
+                offset,
+                &order,
+                &hl,
+                truncated,
+                None,
+            )
+        })
     }
 
     /// Bare hit count. Drops the single-word truncation flag: a broad query
@@ -9643,19 +9849,23 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
     ) -> Result<Vec<SearchResult>> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
-        self.run_search(
-            q,
-            |s| self.exact_highlight_plan(s, &query, &voc),
-            self.search_text_field(&voc)?,
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            grouping.as_ref(),
-        )
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
+            self.run_search(
+                q,
+                |s| self.exact_highlight_plan(s, &query, &voc),
+                self.search_text_field(&voc)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                grouping.as_ref(),
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -9669,20 +9879,24 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
     ) -> Result<SearchPageResult> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
-        self.run_search_and_count(
-            q,
-            |s| self.exact_highlight_plan(s, &query, &voc),
-            self.search_text_field(&voc)?,
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            truncated,
-            grouping.as_ref(),
-        )
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
+            self.run_search_and_count(
+                q,
+                |s| self.exact_highlight_plan(s, &query, &voc),
+                self.search_text_field(&voc)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                truncated,
+                grouping.as_ref(),
+            )
+        })
     }
 
     /// Collect scored, ungrouped Tantivy hits for the semantic coordinator.
@@ -9936,7 +10150,7 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
-        let result = (|| {
+        let result = request.scope(|| {
             request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let (q, _) = self.build_exact_query(&query, &facets, &voc)?;
@@ -9953,7 +10167,7 @@ impl SearchEngine {
                 &request,
                 &sink,
             )
-        })();
+        });
         Self::surface_stream_error(&sink, request.finish(result))
     }
 
@@ -9977,7 +10191,7 @@ impl SearchEngine {
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
-        let result = (|| {
+        let result = request.scope(|| {
             request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             // The mark-free exact path never degrades under a collection
@@ -9996,10 +10210,43 @@ impl SearchEngine {
                 truncated,
                 grouping.as_ref(),
                 &request,
-                &sink,
+                &mut |update| sink.add(update).is_ok(),
             )
-        })();
+        });
         Self::surface_stream_error(&sink, request.finish(result))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exact_stream_into(
+        &self,
+        query: String,
+        limit: u32,
+        offset: u32,
+        order: ResultsOrder,
+        grouping: Option<ResultGrouping>,
+        chunk_size: u32,
+        cancel_request_id: Option<u32>,
+        emit: &mut dyn FnMut(SearchStreamUpdate) -> bool,
+    ) -> Result<()> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(false, false);
+            let (query_built, truncated) = self.build_exact_query(&query, &[], &voc)?;
+            self.run_search_stream_with_counts(
+                query_built,
+                |s| self.exact_highlight_plan(s, &query, &voc),
+                self.search_text_field(&voc)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                chunk_size,
+                truncated,
+                grouping.as_ref(),
+                &request,
+                emit,
+            )
+        })
     }
 
     /// Exact-mode hit count. Drops the truncation flag: the mark-free path
@@ -10030,6 +10277,7 @@ impl SearchEngine {
         cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
+        let _scope = request.enter();
         request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
@@ -10071,6 +10319,7 @@ impl SearchEngine {
         cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
+        let _scope = request.enter();
         request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_exact_query(&query, &facets, &voc)?;
@@ -10146,60 +10395,64 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<Vec<SearchResult>> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
-        // מצב-שדה: הדגלים הגלובליים או אפשרות "ניקוד"/"טעמים" פר-מילה —
-        // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
-        // בתוך בניית השאילתה.
-        let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, proximity, truncated, acronym_alts) = self
-            .build_advanced_query_ranked(
-                &query,
-                distance,
-                &custom_spacing,
-                any_order.unwrap_or(false),
-                &alternative_words,
-                &search_options,
-                facets,
-                &voc,
-                &scope,
-                &match_mode,
-                true,
-                matches!(order, ResultsOrder::Relevance),
-            )?;
-        let (q, _) = self.apply_advanced_negative_query(
-            q,
-            truncated,
-            &negative_query,
-            negative_distance,
-            &negative_custom_spacing,
-            &negative_alternative_words,
-            &negative_search_options,
-            &voc,
-            &negative_scope,
-            any_order.unwrap_or(false),
-        )?;
-        self.run_search(
-            q,
-            |s| {
-                self.advanced_highlight_plan_for_scope(
-                    s,
-                    &regex_terms,
-                    &proximity,
-                    &voc_mode,
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
+            // מצב-שדה: הדגלים הגלובליים או אפשרות "ניקוד"/"טעמים" פר-מילה —
+            // בחירת השדה וה-analyzer של ההדגשה, בעוד הדרישה פר-תו נגזרת פר-מילה
+            // בתוך בניית השאילתה.
+            let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self
+                .build_advanced_query_ranked(
+                    &query,
+                    distance,
+                    &custom_spacing,
+                    any_order.unwrap_or(false),
+                    &alternative_words,
+                    &search_options,
+                    facets,
+                    &voc,
                     &scope,
                     &match_mode,
-                    &acronym_alts,
-                )
-            },
-            self.search_text_field(&voc_mode)?,
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            grouping.as_ref(),
-        )
+                    true,
+                    matches!(order, ResultsOrder::Relevance),
+                )?;
+            let (q, _) = self.apply_advanced_negative_query(
+                q,
+                truncated,
+                &negative_query,
+                negative_distance,
+                &negative_custom_spacing,
+                &negative_alternative_words,
+                &negative_search_options,
+                &voc,
+                &negative_scope,
+                any_order.unwrap_or(false),
+            )?;
+            self.run_search(
+                q,
+                |s| {
+                    self.advanced_highlight_plan_for_scope(
+                        s,
+                        &regex_terms,
+                        &proximity,
+                        &voc_mode,
+                        &scope,
+                        &match_mode,
+                        &acronym_alts,
+                    )
+                },
+                self.search_text_field(&voc_mode)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                grouping.as_ref(),
+            )
+        })
     }
 
     pub fn search_and_count_advanced(
@@ -10226,58 +10479,62 @@ impl SearchEngine {
         word_match_mode: Option<WordMatchMode>,
         word_match_count: Option<u32>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<SearchPageResult> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
-        let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
-        let (q, regex_terms, proximity, truncated, acronym_alts) = self
-            .build_advanced_query_ranked(
-                &query,
-                distance,
-                &custom_spacing,
-                any_order.unwrap_or(false),
-                &alternative_words,
-                &search_options,
-                facets,
-                &voc,
-                &scope,
-                &match_mode,
-                true,
-                matches!(order, ResultsOrder::Relevance),
-            )?;
-        let (q, truncated) = self.apply_advanced_negative_query(
-            q,
-            truncated,
-            &negative_query,
-            negative_distance,
-            &negative_custom_spacing,
-            &negative_alternative_words,
-            &negative_search_options,
-            &voc,
-            &negative_scope,
-            any_order.unwrap_or(false),
-        )?;
-        self.run_search_and_count(
-            q,
-            |s| {
-                self.advanced_highlight_plan_for_scope(
-                    s,
-                    &regex_terms,
-                    &proximity,
-                    &voc_mode,
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
+            let voc_mode = voc.or(hebrew_query::options_vocalized_flags(&search_options));
+            let (q, regex_terms, proximity, truncated, acronym_alts) = self
+                .build_advanced_query_ranked(
+                    &query,
+                    distance,
+                    &custom_spacing,
+                    any_order.unwrap_or(false),
+                    &alternative_words,
+                    &search_options,
+                    facets,
+                    &voc,
                     &scope,
                     &match_mode,
-                    &acronym_alts,
-                )
-            },
-            self.search_text_field(&voc_mode)?,
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            truncated,
-            grouping.as_ref(),
-        )
+                    true,
+                    matches!(order, ResultsOrder::Relevance),
+                )?;
+            let (q, truncated) = self.apply_advanced_negative_query(
+                q,
+                truncated,
+                &negative_query,
+                negative_distance,
+                &negative_custom_spacing,
+                &negative_alternative_words,
+                &negative_search_options,
+                &voc,
+                &negative_scope,
+                any_order.unwrap_or(false),
+            )?;
+            self.run_search_and_count(
+                q,
+                |s| {
+                    self.advanced_highlight_plan_for_scope(
+                        s,
+                        &regex_terms,
+                        &proximity,
+                        &voc_mode,
+                        &scope,
+                        &match_mode,
+                        &acronym_alts,
+                    )
+                },
+                self.search_text_field(&voc_mode)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                truncated,
+                grouping.as_ref(),
+            )
+        })
     }
 
     /// Advanced-query result stream. Drops the single-word truncation flag —
@@ -10313,7 +10570,7 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
-        let result = (|| {
+        let result = request.scope(|| {
             request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
@@ -10368,7 +10625,7 @@ impl SearchEngine {
                 &request,
                 &sink,
             )
-        })();
+        });
         Self::surface_stream_error(&sink, request.finish(result))
     }
 
@@ -10406,7 +10663,7 @@ impl SearchEngine {
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
-        let result = (|| {
+        let result = request.scope(|| {
             request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             let match_mode = WordMatch::from_api(word_match_mode, word_match_count);
@@ -10460,9 +10717,9 @@ impl SearchEngine {
                 truncated,
                 grouping.as_ref(),
                 &request,
-                &sink,
+                &mut |update| sink.add(update).is_ok(),
             )
-        })();
+        });
         Self::surface_stream_error(&sink, request.finish(result))
     }
 
@@ -10541,6 +10798,7 @@ impl SearchEngine {
         cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
+        let _scope = request.enter();
         request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
@@ -10649,6 +10907,7 @@ impl SearchEngine {
         cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
+        let _scope = request.enter();
         request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, _, _, truncated, _) = self.build_advanced_query(
@@ -10803,38 +11062,43 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
     ) -> Result<Vec<SearchResult>> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        if voc.any() {
-            // The vocalized query is a materialized TermSetQuery per token —
-            // it exposes its terms to the snippet generator by itself.
-            let (q, _) = self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
-            return self.run_search(
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            if voc.any() {
+                // The vocalized query is a materialized TermSetQuery per token —
+                // it exposes its terms to the snippet generator by itself.
+                let (q, _) =
+                    self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
+                return self.run_search(
+                    q,
+                    |_| Ok(HighlightPlan::none()),
+                    self.search_text_field(&voc)?,
+                    limit,
+                    offset,
+                    &order,
+                    &HighlightConfig::default(),
+                    grouping.as_ref(),
+                );
+            }
+            let token_texts = self.index_token_texts(&query)?;
+            let phrases = self.quoted_phrase_token_groups(&query)?;
+            let rank = matches!(order, ResultsOrder::Relevance);
+            let q =
+                self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
+            self.run_search(
                 q,
-                |_| Ok(HighlightPlan::none()),
-                self.search_text_field(&voc)?,
+                |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
+                self.schema.get_field("text")?,
                 limit,
                 offset,
                 &order,
                 &HighlightConfig::default(),
                 grouping.as_ref(),
-            );
-        }
-        let token_texts = self.index_token_texts(&query)?;
-        let phrases = self.quoted_phrase_token_groups(&query)?;
-        let rank = matches!(order, ResultsOrder::Relevance);
-        let q =
-            self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
-        self.run_search(
-            q,
-            |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
-            self.schema.get_field("text")?,
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            grouping.as_ref(),
-        )
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10849,39 +11113,43 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         grouping: Option<ResultGrouping>,
+        cancel_request_id: Option<u32>,
     ) -> Result<SearchPageResult> {
-        let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        if voc.any() {
-            let (q, truncated) =
-                self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
-            return self.run_search_and_count(
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            if voc.any() {
+                let (q, truncated) =
+                    self.build_fuzzy_query_vocalized(&query, &facets, max_distance, &voc)?;
+                return self.run_search_and_count(
+                    q,
+                    |_| Ok(HighlightPlan::none()),
+                    self.search_text_field(&voc)?,
+                    limit,
+                    offset,
+                    &order,
+                    &HighlightConfig::default(),
+                    truncated,
+                    grouping.as_ref(),
+                );
+            }
+            let token_texts = self.index_token_texts(&query)?;
+            let phrases = self.quoted_phrase_token_groups(&query)?;
+            let rank = matches!(order, ResultsOrder::Relevance);
+            let q =
+                self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
+            self.run_search_and_count(
                 q,
-                |_| Ok(HighlightPlan::none()),
-                self.search_text_field(&voc)?,
+                |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
+                self.schema.get_field("text")?,
                 limit,
                 offset,
                 &order,
                 &HighlightConfig::default(),
-                truncated,
+                false,
                 grouping.as_ref(),
-            );
-        }
-        let token_texts = self.index_token_texts(&query)?;
-        let phrases = self.quoted_phrase_token_groups(&query)?;
-        let rank = matches!(order, ResultsOrder::Relevance);
-        let q =
-            self.build_fuzzy_search_query(&token_texts, &phrases, &facets, max_distance, rank)?;
-        self.run_search_and_count(
-            q,
-            |s| self.fuzzy_highlight_plan(s, &token_texts, &phrases, max_distance),
-            self.schema.get_field("text")?,
-            limit,
-            offset,
-            &order,
-            &HighlightConfig::default(),
-            false,
-            grouping.as_ref(),
-        )
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10901,7 +11169,7 @@ impl SearchEngine {
         sink: StreamSink<Vec<SearchResult>>,
     ) -> Result<()> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
-        let result = (|| {
+        let result = request.scope(|| {
             request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             if voc.any() {
@@ -10939,7 +11207,7 @@ impl SearchEngine {
                 &request,
                 &sink,
             )
-        })();
+        });
         Self::surface_stream_error(&sink, request.finish(result))
     }
 
@@ -10964,7 +11232,7 @@ impl SearchEngine {
         sink: StreamSink<SearchStreamUpdate>,
     ) -> Result<()> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
-        let result = (|| {
+        let result = request.scope(|| {
             request.check()?;
             let voc = VocalizedFlags::new(match_nikud, match_taamim);
             if voc.any() {
@@ -10982,7 +11250,7 @@ impl SearchEngine {
                     truncated,
                     grouping.as_ref(),
                     &request,
-                    &sink,
+                    &mut |update| sink.add(update).is_ok(),
                 );
             }
             let token_texts = self.index_token_texts(&query)?;
@@ -11004,9 +11272,9 @@ impl SearchEngine {
                 false,
                 grouping.as_ref(),
                 &request,
-                &sink,
+                &mut |update| sink.add(update).is_ok(),
             )
-        })();
+        });
         Self::surface_stream_error(&sink, request.finish(result))
     }
 
@@ -11064,6 +11332,7 @@ impl SearchEngine {
         cancel_request_id: Option<u32>,
     ) -> Result<CountResult> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
+        let _scope = request.enter();
         request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
@@ -11108,6 +11377,7 @@ impl SearchEngine {
         cancel_request_id: Option<u32>,
     ) -> Result<BookCountResult> {
         let request = self.lexical_cancellations.begin(cancel_request_id);
+        let _scope = request.enter();
         request.check()?;
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
         let (q, truncated) = self.build_fuzzy_count_query(&query, &facets, max_distance, &voc)?;
@@ -11291,6 +11561,7 @@ impl SearchEngine {
 
     fn open_writer(&self) -> Result<IndexWriter> {
         let writer = self.index.writer(self.writer_heap_size)?;
+        crate::indexing_buffers::cleanup_abandoned(&self.index_path);
         if self.bulk_indexing {
             writer.set_merge_policy(Box::new(NoMergePolicy));
         } else {
@@ -11730,6 +12001,7 @@ impl SearchEngine {
         A: Automaton,
         A::State: Clone,
     {
+        let cancellation = crate::lexical_cancellation::LexicalFlag::current();
         let searcher = self.index_reader.searcher();
         for reader in searcher.segment_readers() {
             let inverted = reader.inverted_index(text_field)?;
@@ -11737,6 +12009,7 @@ impl SearchEngine {
             for regex in regexes {
                 let mut stream = inverted.terms().search(regex.as_ref()).into_stream()?;
                 while stream.advance() {
+                    cancellation.check()?;
                     segment_terms += 1;
                     if segment_terms > max_expansions as usize {
                         return Ok(true);
@@ -12003,6 +12276,7 @@ impl SearchEngine {
         max_expansions: u32,
         postings_budget: u64,
     ) -> Result<CachedTermSet> {
+        let memory_epoch = self.memory_epoch.load(Ordering::Acquire);
         let searcher = self.index_reader.searcher();
         // The materialization below (per-branch DFA compile + one FST scan
         // per branch per segment) is the expensive part of a search, and one
@@ -12021,6 +12295,11 @@ impl SearchEngine {
             return Ok(entry.clone());
         }
 
+        let _work = self.term_work.enter(cache_key.clone())?;
+        if let Some(entry) = self.term_cache.lock().unwrap().get(&cache_key) {
+            return Ok(entry.clone());
+        }
+        crate::lexical_cancellation::check_current()?;
         let automata = term_automaton::compile_branches(branches).map_err(|e| {
             // Surface the failure loudly: the historical failure mode here
             // was a compile error silently becoming "0 results" in the UI.
@@ -12073,10 +12352,37 @@ impl SearchEngine {
                 .collect(),
         );
         let entry = CachedTermSet { terms, truncated };
-        self.term_cache
-            .lock()
-            .unwrap()
-            .put(cache_key, entry.clone());
+        crate::lexical_cancellation::check_current()?;
+        let bytes = |key: &TermCacheKey, entry: &CachedTermSet| {
+            [&key.branches, &key.typo_tokens]
+                .into_iter()
+                .map(|terms| {
+                    terms.capacity() * std::mem::size_of::<String>()
+                        + terms.iter().map(String::capacity).sum::<usize>()
+                })
+                .sum::<usize>()
+                + entry
+                    .terms
+                    .iter()
+                    .map(|term| {
+                        std::mem::size_of::<Term>() + term.value().as_str().map_or(0, str::len)
+                    })
+                    .sum::<usize>()
+        };
+        let mut cache = self.term_cache.lock().unwrap();
+        if self.memory_epoch.load(Ordering::Acquire) == memory_epoch
+            && bytes(&cache_key, &entry) <= 16 << 20
+        {
+            cache.put(cache_key, entry.clone());
+            while cache
+                .iter()
+                .map(|(key, entry)| bytes(key, entry))
+                .sum::<usize>()
+                > 16 << 20
+            {
+                cache.pop_lru();
+            }
+        }
         Ok(entry)
     }
 
@@ -13197,7 +13503,7 @@ impl SearchEngine {
         text_field: Field,
         scope: &SearchScope,
         cross_line: bool,
-    ) -> Result<Vec<(Box<dyn Query>, bool, Vec<String>)>> {
+    ) -> Result<Vec<AcronymAlternative>> {
         let Some(dict) = self.acronym_dict.as_ref() else {
             return Ok(Vec::new());
         };
@@ -13335,13 +13641,15 @@ impl SearchEngine {
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
+        let query = crate::lexical_cancellation::LexicalFlag::current().wrap(query);
+        crate::lexical_cancellation::check_current()?;
         let searcher = self.index_reader.searcher();
         if let Some(grouping) = grouping {
             let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
             return Self::build_grouped_results(
                 &self.schema,
                 &searcher,
-                &query,
+                query.as_ref(),
                 make_highlight,
                 text_field,
                 hl,
@@ -13354,6 +13662,7 @@ impl SearchEngine {
         if addresses.is_empty() {
             return Ok(Vec::new());
         }
+        crate::lexical_cancellation::check_current()?;
         let plan = Self::resolve_highlight(&searcher, make_highlight);
         let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
         Self::build_results(
@@ -13383,13 +13692,15 @@ impl SearchEngine {
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
+        let query = crate::lexical_cancellation::LexicalFlag::current().wrap(query);
+        crate::lexical_cancellation::check_current()?;
         let searcher = self.index_reader.searcher();
         if let Some(grouping) = grouping {
             let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
             let results = Self::build_grouped_results(
                 &self.schema,
                 &searcher,
-                &query,
+                query.as_ref(),
                 make_highlight,
                 text_field,
                 hl,
@@ -13427,6 +13738,7 @@ impl SearchEngine {
                 group_count: None,
             });
         }
+        crate::lexical_cancellation::check_current()?;
         let plan = Self::resolve_highlight(&searcher, make_highlight);
         let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
         let results = Self::build_results(
@@ -13456,7 +13768,8 @@ impl SearchEngine {
             page_cache::snapshot_of(&searcher),
             self.order_epoch(),
             &*query,
-        );
+        )
+        .map(|key| key.with_epoch(self.page_cache.epoch()));
         if let Some(counts) = key
             .as_ref()
             .and_then(|key| self.page_cache.book_counts(key))
@@ -13473,7 +13786,8 @@ impl SearchEngine {
 
     /// The hit count of `query`, from the page cache when a search counted it.
     fn count_on(&self, searcher: &Searcher, query: &dyn Query) -> Result<u32> {
-        let key = PageKey::new(page_cache::snapshot_of(searcher), self.order_epoch(), query);
+        let key = PageKey::new(page_cache::snapshot_of(searcher), self.order_epoch(), query)
+            .map(|key| key.with_epoch(self.page_cache.epoch()));
         if let Some(total) = key.as_ref().and_then(|key| self.page_cache.total(key)) {
             return Ok(total);
         }
@@ -13561,18 +13875,29 @@ impl SearchEngine {
         let chunk_size = (chunk_size.max(1)) as usize;
         if let Some(grouping) = grouping {
             let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
-            let results = Self::build_grouped_results(
-                &self.schema,
-                &searcher,
-                &query,
-                make_highlight,
-                text_field,
-                hl,
-                &page,
-            )?;
-            for chunk in results.chunks(chunk_size) {
+            request.check()?;
+            let plan = Self::resolve_highlight(&searcher, make_highlight);
+            let hl_q = plan.query.as_deref().unwrap_or(query.as_ref());
+            let generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
+            for reps in result_chunks(&page.reps, chunk_size) {
                 request.check()?;
-                if sink.add(chunk.to_vec()).is_err() {
+                let chunk_page = GroupedPage {
+                    reps: reps.to_vec(),
+                    group_count: page.group_count,
+                    raw_total: page.raw_total,
+                    truncated: page.truncated,
+                };
+                let results = Self::build_grouped_results_with_generator(
+                    &self.schema,
+                    &searcher,
+                    &generator,
+                    text_field,
+                    hl,
+                    &chunk_page,
+                    plan.phrase.as_ref(),
+                )?;
+                request.check()?;
+                if sink.add(results).is_err() {
                     break;
                 }
             }
@@ -13584,13 +13909,14 @@ impl SearchEngine {
         if addresses.is_empty() {
             return Ok(());
         }
+        crate::lexical_cancellation::check_current()?;
         let plan = Self::resolve_highlight(&searcher, make_highlight);
         let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
         let phrase = plan.phrase.as_ref();
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
         let snippet_generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
-        for chunk in addresses.chunks(chunk_size) {
+        for chunk in result_chunks(&addresses, chunk_size) {
             let results = Self::build_results_with_generator(
                 &self.schema,
                 &searcher,
@@ -13628,21 +13954,44 @@ impl SearchEngine {
         truncated: bool,
         grouping: Option<&ResultGrouping>,
         request: &LexicalRequest<'_>,
-        sink: &StreamSink<SearchStreamUpdate>,
+        emit: &mut dyn FnMut(SearchStreamUpdate) -> bool,
     ) -> Result<()>
     where
         F: FnOnce(&Searcher) -> Result<HighlightPlan>,
     {
+        let mut sink = CallbackSink(emit);
         let searcher = self.index_reader.searcher();
         let query = request.wrap(query);
         let chunk_size = (chunk_size.max(1)) as usize;
 
         if let Some(grouping) = grouping {
-            // מעבר אינדקס אחד: קיבוץ + ספירות פר-ספר יחד, כמו המסלול השטוח.
-            let sort = self.group_sort(order)?;
-            let collectors = (GroupCollector::new(grouping, sort), BookCountCollector);
-            let ((), book_counts) = searcher.search(&*query, &collectors)?;
-            let page = Self::finalize_grouped(collectors.0.take_hits(), limit, offset);
+            let key = self.group_cache_key(&searcher, &*query, grouping, order);
+            let cached = key.as_ref().and_then(|key| {
+                Some((
+                    self.grouped_cache.get(key)?,
+                    self.page_cache.book_counts(&key.0)?,
+                ))
+            });
+            let (page, book_counts) = match cached {
+                Some((page, counts)) => (page.slice(limit, offset), (*counts).clone()),
+                None => {
+                    let sort = self.group_sort(order)?;
+                    let collectors = (GroupCollector::new(grouping, sort), BookCountCollector);
+                    let ((), book_counts) = searcher.search(&*query, &collectors)?;
+                    request.check()?;
+                    let full = Arc::new(Self::finalize_grouped(
+                        collectors.0.take_hits(),
+                        u32::MAX,
+                        0,
+                    ));
+                    if let Some(key) = key {
+                        self.page_cache
+                            .store_book_counts(key.0, Arc::new(book_counts.clone()));
+                        self.grouped_cache.put(key, Arc::clone(&full));
+                    }
+                    (full.slice(limit, offset), book_counts)
+                }
+            };
             request.check()?;
             if sink
                 .add(SearchStreamUpdate {
@@ -13656,22 +14005,33 @@ impl SearchEngine {
             {
                 return Ok(());
             }
-            let results = Self::build_grouped_results(
-                &self.schema,
-                &searcher,
-                &query,
-                make_highlight,
-                text_field,
-                hl,
-                &page,
-            )?;
-            for chunk in results.chunks(chunk_size) {
+            request.check()?;
+            let plan = Self::resolve_highlight(&searcher, make_highlight);
+            let hl_q = plan.query.as_deref().unwrap_or(query.as_ref());
+            let generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
+            for reps in result_chunks(&page.reps, chunk_size) {
+                request.check()?;
+                let chunk_page = GroupedPage {
+                    reps: reps.to_vec(),
+                    group_count: page.group_count,
+                    raw_total: page.raw_total,
+                    truncated: page.truncated,
+                };
+                let results = Self::build_grouped_results_with_generator(
+                    &self.schema,
+                    &searcher,
+                    &generator,
+                    text_field,
+                    hl,
+                    &chunk_page,
+                    plan.phrase.as_ref(),
+                )?;
                 request.check()?;
                 if sink
                     .add(SearchStreamUpdate {
                         total_count: None,
                         book_counts: None,
-                        results: chunk.to_vec(),
+                        results,
                         truncated: false,
                         group_count: None,
                     })
@@ -13715,13 +14075,14 @@ impl SearchEngine {
             return Ok(());
         }
 
+        crate::lexical_cancellation::check_current()?;
         let plan = Self::resolve_highlight(&searcher, make_highlight);
         let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
         let phrase = plan.phrase.as_ref();
         // One generator for the whole stream: creating it resolves term
         // doc-frequencies, which is too expensive to repeat per chunk.
         let snippet_generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
-        for chunk in addresses.chunks(chunk_size) {
+        for chunk in result_chunks(&addresses, chunk_size) {
             let results = Self::build_results_with_generator(
                 &self.schema,
                 &searcher,
@@ -13779,7 +14140,8 @@ impl SearchEngine {
             ResultsOrder::Relevance => 2,
         };
         let (epoch, sort) = self.order_sort(order)?;
-        let key = PageKey::new(page_cache::snapshot_of(searcher), epoch, query);
+        let key = PageKey::new(page_cache::snapshot_of(searcher), epoch, query)
+            .map(|key| key.with_epoch(self.page_cache.epoch()));
         if let Some(page) = key
             .as_ref()
             .and_then(|key| self.page_cache.page(key, slot, offset, limit))
@@ -13860,9 +14222,45 @@ impl SearchEngine {
         offset: u32,
         order: &ResultsOrder,
     ) -> Result<GroupedPage> {
+        let key = self.group_cache_key(searcher, query, grouping, order);
+        if let Some(page) = key.as_ref().and_then(|key| self.grouped_cache.get(key)) {
+            return Ok(page.slice(limit, offset));
+        }
         let collector = GroupCollector::new(grouping, self.group_sort(order)?);
         searcher.search(query, &collector)?;
-        Ok(Self::finalize_grouped(collector.take_hits(), limit, offset))
+        crate::lexical_cancellation::check_current()?;
+        let page = Arc::new(Self::finalize_grouped(collector.take_hits(), u32::MAX, 0));
+        if let Some(key) = key {
+            self.grouped_cache.put(key, Arc::clone(&page));
+        }
+        Ok(page.slice(limit, offset))
+    }
+
+    fn group_cache_key(
+        &self,
+        searcher: &Searcher,
+        query: &dyn Query,
+        grouping: &ResultGrouping,
+        order: &ResultsOrder,
+    ) -> Option<GroupCacheKey> {
+        self.refresh_book_order();
+        let key = PageKey::new(page_cache::snapshot_of(searcher), self.order_epoch(), query)
+            .map(|key| key.with_epoch(self.page_cache.epoch()))?;
+        let grouping = match grouping {
+            ResultGrouping::SameSection => 0,
+            ResultGrouping::IdenticalText => 1,
+        };
+        let order = match order {
+            ResultsOrder::Catalogue => 0,
+            ResultsOrder::Generation => 1,
+            ResultsOrder::Relevance => 2,
+        };
+        Some((
+            key,
+            grouping,
+            order,
+            self.grouped_cache.1.load(Ordering::Acquire),
+        ))
     }
 
     /// ממיין את הקבוצות לפי הנציג הטוב ביותר וגוזר את העמוד המבוקש.
@@ -13897,7 +14295,7 @@ impl SearchEngine {
     fn build_grouped_results<F>(
         schema: &Schema,
         searcher: &Searcher,
-        query: &Box<dyn Query>,
+        query: &dyn Query,
         make_highlight: F,
         text_field: Field,
         hl: &HighlightConfig,
@@ -13909,22 +14307,39 @@ impl SearchEngine {
         if page.reps.is_empty() {
             return Ok(Vec::new());
         }
+        crate::lexical_cancellation::check_current()?;
         let plan = Self::resolve_highlight(searcher, make_highlight);
-        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query.as_ref());
-        let addresses: Vec<DocAddress> = page.reps.iter().map(|r| r.address).collect();
-        let mut results = Self::build_results(
+        let hl_q: &dyn Query = plan.query.as_deref().unwrap_or(query);
+        let generator = Self::make_snippet_generator(searcher, hl_q, text_field, hl)?;
+        Self::build_grouped_results_with_generator(
             schema,
             searcher,
-            hl_q,
+            &generator,
             text_field,
-            addresses,
             hl,
+            page,
             plan.phrase.as_ref(),
+        )
+    }
+
+    fn build_grouped_results_with_generator(
+        schema: &Schema,
+        searcher: &Searcher,
+        generator: &SnippetGenerator,
+        text_field: Field,
+        hl: &HighlightConfig,
+        page: &GroupedPage,
+        phrase: Option<&PhraseHighlight>,
+    ) -> Result<Vec<SearchResult>> {
+        let addresses = page.reps.iter().map(|r| r.address).collect();
+        let mut results = Self::build_results_with_generator(
+            schema, searcher, generator, text_field, addresses, hl, phrase,
         )?;
         let rep_by_id: HashMap<u64, &GroupedRep> = page.reps.iter().map(|r| (r.id, r)).collect();
         let fields = SiblingFields::resolve(schema)?;
         let mut loader = DocumentLoader::new(searcher);
         for result in &mut results {
+            crate::lexical_cancellation::check_current()?;
             let Some(rep) = rep_by_id.get(&result.id) else {
                 continue;
             };
@@ -14011,31 +14426,35 @@ impl SearchEngine {
         alternative_words: HashMap<u32, Vec<String>>,
         search_options: HashMap<String, HashMap<String, bool>>,
         any_order: Option<bool>,
+        cancel_request_id: Option<u32>,
     ) -> Result<Option<HighlightPattern>> {
-        let searcher = self.index_reader.searcher();
-        let key = format!(
-            "advanced {query:?} {distance} {:?} {:?} {:?} {any_order:?}",
-            custom_spacing.iter().collect::<BTreeMap<_, _>>(),
-            alternative_words.iter().collect::<BTreeMap<_, _>>(),
-            search_options
-                .iter()
-                .map(|(word, options)| (word, options.iter().collect::<BTreeMap<_, _>>()))
-                .collect::<BTreeMap<_, _>>(),
-        );
-        let pattern =
-            self.highlight_cache
-                .pattern(searcher.generation().generation_id(), key, || {
-                    self.compute_index_highlight_pattern(
-                        &searcher,
-                        &query,
-                        distance,
-                        &custom_spacing,
-                        &alternative_words,
-                        &search_options,
-                        any_order,
-                    )
-                })?;
-        Ok(pattern.map(|pattern| pattern.to_api()))
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let searcher = self.index_reader.searcher();
+            let key = format!(
+                "advanced {query:?} {distance} {:?} {:?} {:?} {any_order:?}",
+                custom_spacing.iter().collect::<BTreeMap<_, _>>(),
+                alternative_words.iter().collect::<BTreeMap<_, _>>(),
+                search_options
+                    .iter()
+                    .map(|(word, options)| (word, options.iter().collect::<BTreeMap<_, _>>()))
+                    .collect::<BTreeMap<_, _>>(),
+            );
+            let pattern =
+                self.highlight_cache
+                    .pattern(searcher.generation().generation_id(), key, || {
+                        self.compute_index_highlight_pattern(
+                            &searcher,
+                            &query,
+                            distance,
+                            &custom_spacing,
+                            &alternative_words,
+                            &search_options,
+                            any_order,
+                        )
+                    })?;
+            Ok(pattern.map(|pattern| pattern.to_api()))
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -14116,18 +14535,22 @@ impl SearchEngine {
         &self,
         query: String,
         max_distance: u8,
+        cancel_request_id: Option<u32>,
     ) -> Result<Option<HighlightPattern>> {
-        anyhow::ensure!(
-            max_distance <= 2,
-            "fuzzy highlight distance is limited to 2, got {max_distance}"
-        );
-        let searcher = self.index_reader.searcher();
-        let pattern = self.highlight_cache.pattern(
-            searcher.generation().generation_id(),
-            format!("fuzzy {query:?} {max_distance}"),
-            || self.compute_index_fuzzy_highlight_pattern(&searcher, &query, max_distance),
-        )?;
-        Ok(pattern.map(|pattern| pattern.to_api()))
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            anyhow::ensure!(
+                max_distance <= 2,
+                "fuzzy highlight distance is limited to 2, got {max_distance}"
+            );
+            let searcher = self.index_reader.searcher();
+            let pattern = self.highlight_cache.pattern(
+                searcher.generation().generation_id(),
+                format!("fuzzy {query:?} {max_distance}"),
+                || self.compute_index_fuzzy_highlight_pattern(&searcher, &query, max_distance),
+            )?;
+            Ok(pattern.map(|pattern| pattern.to_api()))
+        })
     }
 
     fn compute_index_fuzzy_highlight_pattern(
@@ -14759,6 +15182,7 @@ impl SearchEngine {
         A: Automaton,
         A::State: Clone,
     {
+        let cancellation = crate::lexical_cancellation::LexicalFlag::current();
         let mut matched = Vec::new();
         let mut seen = HashSet::new();
         'segments: for reader in searcher.segment_readers() {
@@ -14768,6 +15192,7 @@ impl SearchEngine {
                 .search(QuoteTransparent::new(automaton))
                 .into_stream()?;
             while stream.advance() {
+                cancellation.check()?;
                 if let Ok(term) = std::str::from_utf8(stream.key()) {
                     // contains-before-insert: a term already seen in an
                     // earlier segment costs no allocation at all.
@@ -14794,6 +15219,7 @@ impl SearchEngine {
         text_field: Field,
         hl: &HighlightConfig,
     ) -> Result<SnippetGenerator> {
+        let cancellation = crate::lexical_cancellation::LexicalFlag::current();
         // `SnippetGenerator::create` with the display analyzer instead of the field's:
         // a term reached through its quote-free spelling paints the quoted word.
         let mut terms = std::collections::BTreeSet::new();
@@ -14804,6 +15230,7 @@ impl SearchEngine {
         });
         let mut terms_text = std::collections::BTreeMap::new();
         for term in terms {
+            cancellation.check()?;
             let Some(text) = term.value().as_str().map(str::to_string) else {
                 continue;
             };
@@ -14851,6 +15278,7 @@ impl SearchEngine {
     /// `window`: `fragment` is the whole line, cut to that many bytes around its
     /// first occurrence — tantivy picks the fragment by term density, which can
     /// cut the phrase off when its fuzzy variants cluster elsewhere.
+    #[cfg(any(test, feature = "semantic-integration"))]
     fn phrase_filtered_snippet_html(
         searcher: &Searcher,
         fragment: &str,
@@ -15121,6 +15549,8 @@ impl SearchEngine {
         hl: &HighlightConfig,
         phrase: Option<&PhraseHighlight>,
     ) -> Result<Vec<SearchResult>> {
+        let cancellation = crate::lexical_cancellation::LexicalFlag::current();
+        cancellation.check()?;
         let title_field = schema.get_field("title")?;
         let reference_field = schema.get_field("reference")?;
         // המסלול המנוקד מציג את העותק המנוקד; לשורה בלי עותק כזה — הטקסט הרגיל.
@@ -15133,6 +15563,7 @@ impl SearchEngine {
         let mut documents = Vec::with_capacity(addresses.len());
         let mut loader = DocumentLoader::new(searcher);
         for doc_address in addresses {
+            cancellation.check()?;
             match loader.load(doc_address) {
                 Ok(d) => documents.push((doc_address, d)),
                 Err(e) => {
@@ -15157,6 +15588,7 @@ impl SearchEngine {
             HitRendering::Plain
         };
         let texts = Self::resolve_hit_texts(schema, searcher, &documents, rendering)?;
+        cancellation.check()?;
         let next_lines = match phrase {
             Some(pf) if pf.cross_line && !vocalized_field => {
                 Self::cross_line_next_lines(schema, searcher, &documents, &texts, pf)?
@@ -15170,87 +15602,96 @@ impl SearchEngine {
             .par_iter()
             .zip(texts.into_par_iter())
             .enumerate()
-            .map(|(slot, ((_, retrieved_doc), hit_text))| {
-                let title = retrieved_doc
-                    .get_first(title_field)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let reference = retrieved_doc
-                    .get_first(reference_field)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let id = retrieved_doc
-                    .get_first(id_field)
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or_default();
-                let segment = retrieved_doc
-                    .get_first(segment_field)
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or_default();
-                let is_pdf = retrieved_doc
-                    .get_first(is_pdf_field)
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or_default();
-                let file_path = retrieved_doc
-                    .get_first(file_path_field)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+            .map(
+                |(slot, ((_, retrieved_doc), hit_text))| -> Result<SearchResult> {
+                    cancellation.check()?;
+                    let title = retrieved_doc
+                        .get_first(title_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let reference = retrieved_doc
+                        .get_first(reference_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let id = retrieved_doc
+                        .get_first(id_field)
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default();
+                    let segment = retrieved_doc
+                        .get_first(segment_field)
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default();
+                    let is_pdf = retrieved_doc
+                        .get_first(is_pdf_field)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or_default();
+                    let file_path = retrieved_doc
+                        .get_first(file_path_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
 
-                let text_status = hit_text.status;
-                let (text, shown_vocalized) = match rendering {
-                    HitRendering::PlainAndVocalized => (hit_text.plain, hit_text.vocalized),
-                    _ => (hit_text.display(vocalized_field), None),
-                };
-                let cross_line_html = match (next_lines.get(slot), phrase) {
-                    (Some(Some(next)), Some(pf)) => {
-                        Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
-                    }
-                    _ => None,
-                };
-                let continues_to_next_line = cross_line_html.is_some();
-                let result_text = match (text_status, cross_line_html) {
-                    (TextStatus::Ok, Some(html)) => html,
-                    (TextStatus::Ok, None) => {
-                        match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase) {
-                            Some((offset, html)) => shown_vocalized
-                                .and_then(|vocalized| {
-                                    crate::vocalized_snippet::vocalize_snippet_html(
-                                        &html,
-                                        &text,
-                                        offset,
-                                        &vocalized,
-                                        &hl.highlight_prefix,
-                                        &hl.highlight_postfix,
-                                    )
-                                })
-                                .unwrap_or(html),
-                            None => shown_vocalized.unwrap_or(text),
+                    let text_status = hit_text.status;
+                    let (text, shown_vocalized) = match rendering {
+                        HitRendering::PlainAndVocalized => (hit_text.plain, hit_text.vocalized),
+                        _ => (hit_text.display(vocalized_field), None),
+                    };
+                    let cross_line_html = match (next_lines.get(slot), phrase) {
+                        (Some(Some(next)), Some(pf)) => {
+                            Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
                         }
-                    }
-                    // The line no longer matches what was indexed: painting the query's
-                    // terms into it would claim a match the index never saw.
-                    (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
-                    (TextStatus::Unavailable, _) => String::new(),
-                };
+                        _ => None,
+                    };
+                    let continues_to_next_line = cross_line_html.is_some();
+                    let result_text = match (text_status, cross_line_html) {
+                        (TextStatus::Ok, Some(html)) => html,
+                        (TextStatus::Ok, None) => {
+                            match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
+                            {
+                                Some((offset, html)) => shown_vocalized
+                                    .and_then(|vocalized| {
+                                        crate::vocalized_snippet::vocalize_snippet_html(
+                                            &html,
+                                            &text,
+                                            offset,
+                                            &vocalized,
+                                            &hl.highlight_prefix,
+                                            &hl.highlight_postfix,
+                                        )
+                                    })
+                                    .unwrap_or(html),
+                                None => bounded_plain_snippet(
+                                    shown_vocalized.as_deref().unwrap_or(&text),
+                                    hl.max_chars,
+                                ),
+                            }
+                        }
+                        // The line no longer matches what was indexed: painting the query's
+                        // terms into it would claim a match the index never saw.
+                        (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
+                        (TextStatus::Unavailable, _) => String::new(),
+                    };
 
-                SearchResult {
-                    title,
-                    reference,
-                    text: result_text,
-                    id,
-                    segment,
-                    is_pdf,
-                    file_path,
-                    merged_count: 1,
-                    merged: Vec::new(),
-                    text_status,
-                    continues_to_next_line,
-                }
-            })
-            .collect();
+                    cancellation.check()?;
+                    Ok(SearchResult {
+                        title,
+                        reference,
+                        text: result_text,
+                        id,
+                        segment,
+                        is_pdf,
+                        file_path,
+                        merged_count: 1,
+                        merged: Vec::new(),
+                        text_status,
+                        continues_to_next_line,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
+        cancellation.check()?;
         Ok(results)
     }
 
@@ -15777,14 +16218,14 @@ pub fn prepare_user_regex_matcher(raw: String) -> Option<UserRegexMatcher> {
 /// token per search; a cancelled one stays cancelled.
 #[frb(opaque)]
 pub struct UserRegexCancellationToken {
-    flag: std::sync::atomic::AtomicBool,
+    flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl UserRegexCancellationToken {
     #[frb(sync)]
     pub fn new() -> Self {
         Self {
-            flag: std::sync::atomic::AtomicBool::new(false),
+            flag: Arc::default(),
         }
     }
 
@@ -15887,7 +16328,7 @@ impl SearchEngine {
         offset: u32,
         order: &ResultsOrder,
         chunk_size: u32,
-        cancel: &std::sync::atomic::AtomicBool,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
         emit: &mut dyn FnMut(UserRegexStreamUpdate) -> bool,
     ) -> Result<()> {
         let regex = Self::user_regex(raw)?;
@@ -15929,8 +16370,9 @@ impl SearchEngine {
         }
         let (query, truncated, _) =
             self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
+        let count = Self::user_regex_checked(&cancellation.flag, searcher.search(&*query, &Count))?;
         Ok(CountResult {
-            count: searcher.search(&*query, &Count)? as u32,
+            count: count as u32,
             truncated,
         })
     }
@@ -15953,10 +16395,11 @@ impl SearchEngine {
         }
         let (query, truncated, _) =
             self.user_regex_term_query(&searcher, &regex, &facets, &cancellation.flag)?;
-        Ok(BookCountResult {
-            counts: searcher.search(&*query, &BookCountCollector)?,
-            truncated,
-        })
+        let counts = Self::user_regex_checked(
+            &cancellation.flag,
+            searcher.search(&*query, &BookCountCollector),
+        )?;
+        Ok(BookCountResult { counts, truncated })
     }
 
     /// Per-child facet counts under `facet_prefix` of a `/…/` query (see
@@ -15986,7 +16429,8 @@ impl SearchEngine {
         };
         let mut collector = FacetCollector::for_field("topics");
         collector.add_facet(&facet_prefix);
-        let counts = searcher.search(&*query, &collector)?;
+        let counts =
+            Self::user_regex_checked(&cancellation.flag, searcher.search(&*query, &collector))?;
         Ok(FacetCountsResult {
             counts: counts
                 .get(facet_prefix.as_str())
@@ -16002,6 +16446,17 @@ impl SearchEngine {
     fn user_regex(raw: &str) -> Result<crate::user_regex::UserRegex> {
         crate::user_regex::parse(raw)
             .map_err(|reason| anyhow::anyhow!("invalid user regex: {reason}"))
+    }
+
+    fn user_regex_checked<T>(
+        cancel: &std::sync::atomic::AtomicBool,
+        result: tantivy::Result<T>,
+    ) -> Result<T> {
+        anyhow::ensure!(
+            !cancel.load(Ordering::Relaxed),
+            crate::user_regex::CANCELLED
+        );
+        Ok(result?)
     }
 
     fn user_regex_line_search<'a>(
@@ -16033,8 +16488,9 @@ impl SearchEngine {
         cancellation: &UserRegexCancellationToken,
     ) -> Result<Arc<crate::user_regex::LineOutcome>> {
         let ctx = self.user_regex_line_search(searcher, facets, &cancellation.flag)?;
-        crate::user_regex::run_line_search(&ctx, regex, None, &mut |_| true)?
-            .ok_or_else(|| anyhow::anyhow!(crate::user_regex::CANCELLED))
+        let outcome = crate::user_regex::run_line_search(&ctx, regex, None, &mut |_| true)?;
+        anyhow::ensure!(!cancellation.is_cancelled(), crate::user_regex::CANCELLED);
+        outcome.ok_or_else(|| anyhow::anyhow!(crate::user_regex::CANCELLED))
     }
 
     /// The query of a term pattern: one word as its term set, a sequence as an adjacent
@@ -16045,7 +16501,7 @@ impl SearchEngine {
         searcher: &Searcher,
         regex: &crate::user_regex::UserRegex,
         facets: &[String],
-        cancel: &std::sync::atomic::AtomicBool,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<UserRegexTermQuery> {
         let text_field = self.schema.get_field("text")?;
         let single = regex.parts.len() == 1;
@@ -16104,7 +16560,11 @@ impl SearchEngine {
             ])),
             None => main,
         };
-        Ok((query, truncated, sets))
+        Ok((
+            crate::lexical_cancellation::LexicalFlag::shared(cancel).wrap(query),
+            truncated,
+            sets,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -16117,7 +16577,7 @@ impl SearchEngine {
         offset: u32,
         order: &ResultsOrder,
         chunk_size: u32,
-        cancel: &std::sync::atomic::AtomicBool,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
         emit: &mut dyn FnMut(UserRegexStreamUpdate) -> bool,
     ) -> Result<()> {
         use std::sync::atomic::Ordering;
@@ -16153,22 +16613,30 @@ impl SearchEngine {
         let collected = match self.order_sort(order)?.1 {
             Some(sort) => {
                 let top = top.order_by((sort, Order::Asc));
-                let (docs, count, by_book) =
-                    searcher.search(&*query, &(top, Count, BookCountCollector))?;
-                (
-                    docs.into_iter().map(|(_, a)| a).collect::<Vec<_>>(),
-                    count,
-                    by_book,
-                )
+                searcher
+                    .search(&*query, &(top, Count, BookCountCollector))
+                    .map(|(docs, count, by_book)| {
+                        (
+                            docs.into_iter().map(|(_, a)| a).collect::<Vec<_>>(),
+                            count,
+                            by_book,
+                        )
+                    })
             }
             None => {
                 let top = top.order_by_score();
-                let (docs, count, by_book) =
-                    searcher.search(&*query, &(top, Count, BookCountCollector))?;
-                (docs.into_iter().map(|(_, a)| a).collect(), count, by_book)
+                searcher
+                    .search(&*query, &(top, Count, BookCountCollector))
+                    .map(|(docs, count, by_book)| {
+                        (docs.into_iter().map(|(_, a)| a).collect(), count, by_book)
+                    })
             }
         };
-        let (addresses, total, by_book) = collected;
+        if cancel.load(Ordering::Relaxed) {
+            emit(event(Vec::new(), None, false, true, true));
+            return Ok(());
+        }
+        let (addresses, total, by_book) = collected?;
         let addresses = if limit == 0 { Vec::new() } else { addresses };
         let total = total as u32;
         if !emit(event(
@@ -16180,7 +16648,7 @@ impl SearchEngine {
         )) {
             return Ok(());
         }
-        if !addresses.is_empty() {
+        if !addresses.is_empty() && !cancel.load(Ordering::Relaxed) {
             let per_word: Vec<HashSet<String>> =
                 sets.iter().map(|s| s.iter().cloned().collect()).collect();
             let plan = HighlightPlan {
@@ -16217,6 +16685,16 @@ impl SearchEngine {
                     &hl,
                     plan.phrase.as_ref(),
                 )?;
+                if cancel.load(Ordering::Relaxed) {
+                    emit(event(
+                        Vec::new(),
+                        Some((total, &by_book)),
+                        truncated,
+                        true,
+                        true,
+                    ));
+                    return Ok(());
+                }
                 if !emit(event(results, None, false, false, false)) {
                     return Ok(());
                 }
@@ -16227,7 +16705,7 @@ impl SearchEngine {
             Some((total, &by_book)),
             truncated,
             true,
-            false,
+            cancel.load(Ordering::Relaxed),
         ));
         Ok(())
     }
@@ -16436,6 +16914,7 @@ struct GroupedHits {
 }
 
 /// נציג קבוצה בעמוד סופי, אחרי מיון וחיתוך `limit`/`offset`.
+#[derive(Clone)]
 struct GroupedRep {
     id: u64,
     address: DocAddress,
@@ -16445,11 +16924,106 @@ struct GroupedRep {
 
 /// עמוד קבוצות סופי — נציגים + ספירות. `truncated` כב-[`GroupedHits`]:
 /// תקרת הקבוצות נפגעה, `group_count` הוא תחתית ולא הערך המלא.
+#[derive(Clone)]
 struct GroupedPage {
     reps: Vec<GroupedRep>,
     group_count: u32,
     raw_total: u32,
     truncated: bool,
+}
+
+struct CallbackSink<'a, T>(&'a mut dyn FnMut(T) -> bool);
+impl<T> CallbackSink<'_, T> {
+    fn add(&mut self, update: T) -> Result<(), ()> {
+        if (self.0)(update) {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
+fn result_chunks<T>(items: &[T], chunk_size: usize) -> impl Iterator<Item = &[T]> {
+    let first_size = chunk_size.max(1);
+    #[cfg(test)]
+    let first_size = std::env::var("OTZARIA_PERF_FIRST_CHUNK")
+        .ok()
+        .and_then(|size| size.parse::<usize>().ok())
+        .map_or(first_size, |size| size.clamp(1, chunk_size.max(1)));
+    let (first, rest) = items.split_at(items.len().min(first_size));
+    std::iter::once(first)
+        .filter(|chunk| !chunk.is_empty())
+        .chain(rest.chunks(chunk_size.max(1)))
+}
+
+const GROUP_CACHE_BYTES: usize = 8 << 20;
+
+type GroupCacheKey = (PageKey, u8, u8, u64);
+
+struct GroupCache(
+    Mutex<LruCache<GroupCacheKey, Arc<GroupedPage>>>,
+    std::sync::atomic::AtomicU64,
+);
+
+#[frb(ignore)]
+impl Default for GroupCache {
+    fn default() -> Self {
+        Self(
+            Mutex::new(LruCache::new(NonZeroUsize::new(4).unwrap())),
+            std::sync::atomic::AtomicU64::default(),
+        )
+    }
+}
+
+impl GroupCache {
+    fn get(&self, key: &GroupCacheKey) -> Option<Arc<GroupedPage>> {
+        self.0.lock().unwrap().get(key).cloned()
+    }
+
+    fn put(&self, key: GroupCacheKey, page: Arc<GroupedPage>) {
+        let bytes = |page: &GroupedPage| {
+            page.reps.capacity() * std::mem::size_of::<GroupedRep>()
+                + page
+                    .reps
+                    .iter()
+                    .map(|rep| rep.siblings.capacity() * std::mem::size_of::<DocAddress>())
+                    .sum::<usize>()
+        };
+        if bytes(&page) > GROUP_CACHE_BYTES {
+            return;
+        }
+        let mut cache = self.0.lock().unwrap();
+        if key.3 != self.1.load(Ordering::Acquire) {
+            return;
+        }
+        cache.put(key, page);
+        while cache.iter().map(|(_, page)| bytes(page)).sum::<usize>() > GROUP_CACHE_BYTES {
+            cache.pop_lru();
+        }
+    }
+
+    fn clear(&self) {
+        let mut cache = self.0.lock().unwrap();
+        self.1.fetch_add(1, Ordering::AcqRel);
+        cache.clear();
+    }
+}
+
+impl GroupedPage {
+    fn slice(&self, limit: u32, offset: u32) -> Self {
+        Self {
+            reps: self
+                .reps
+                .iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .cloned()
+                .collect(),
+            group_count: self.group_count,
+            raw_total: self.raw_total,
+            truncated: self.truncated,
+        }
+    }
 }
 
 /// שדות ה-doc-store שחברת קבוצה נושאת ([`MergedSibling`]) — נפתרים מהסכימה
@@ -16970,6 +17544,71 @@ mod quality_bench;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn acquiring_the_writer_cleans_only_abandoned_spool_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        let stale = dir.path().join(".otzaria-prepare-crashed");
+        let other = dir.path().join("unrelated-user-file");
+        let folder = dir.path().join(".otzaria-prepare-folder");
+        std::fs::write(&stale, "abandoned").unwrap();
+        std::fs::write(&other, "keep").unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        engine.open_index_writer().unwrap();
+        assert!(!stale.exists());
+        assert_eq!(std::fs::read_to_string(other).unwrap(), "keep");
+        assert!(folder.is_dir());
+    }
+
+    #[test]
+    fn another_engine_cannot_clean_spools_before_acquiring_the_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = SearchEngine::new(dir.path().to_str().unwrap());
+        first.open_index_writer().unwrap();
+        let owned = dir.path().join(".otzaria-prepare-owned-by-writer");
+        std::fs::write(&owned, "still in use").unwrap();
+        let mut second = SearchEngine::new(dir.path().to_str().unwrap());
+        assert!(owned.exists());
+        assert!(second.open_index_writer().is_err());
+        assert_eq!(std::fs::read_to_string(&owned).unwrap(), "still in use");
+        drop(first);
+        second.open_index_writer().unwrap();
+        assert!(!owned.exists());
+    }
+
+    #[test]
+    fn spooled_text_book_is_enqueued_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+        engine.open_index_writer().unwrap();
+        let book = TextBookMeta {
+            title: "ספר".into(),
+            topics: "/ספר".into(),
+            file_path: "id:1".into(),
+            extra_facets: Vec::new(),
+            source_hash: 0,
+        };
+        let mut text = crate::indexing_buffers::TextBuffer::new(16);
+        text.push_str("ראשונה\nשנייה\nשלישית").unwrap();
+        let mut stored = crate::indexing_buffers::OrdinalBuffer::default();
+        let mut prepared = engine
+            .prepare_text_book_buffer(
+                &book,
+                &mut text,
+                TextStorage::InIndex,
+                &mut stored,
+                1,
+                &|| false,
+            )
+            .unwrap();
+        assert!(prepared.spooled_documents.is_some());
+        let writer = engine.index_writer.as_ref().unwrap();
+        assert_eq!(prepared.enqueue(writer).unwrap(), 3);
+        assert_eq!(prepared.enqueue(writer).unwrap(), 0);
+        engine.commit().unwrap();
+        assert_eq!(engine.searcher_for_tests().num_docs(), 3);
+    }
+
     use super::*;
 
     /// The generation a test book is placed at when it names none.
@@ -17447,6 +18086,7 @@ mod tests {
             match_taamim,
             scope,
             negative_scope,
+            None,
             None,
             None,
             None,
@@ -18457,10 +19097,9 @@ mod tests {
         assert_eq!(response.fallback_kind, Some(CLOSED.1));
     }
 
-    fn disable_auto_merge(engine: &SearchEngine) {
+    fn disable_auto_merge(engine: &mut SearchEngine) {
         engine
-            .index_writer
-            .as_ref()
+            .writer_mut()
             .unwrap()
             .set_merge_policy(Box::new(NoMergePolicy));
     }
@@ -18475,6 +19114,7 @@ mod tests {
                 0,
                 100,
                 ResultsOrder::Catalogue,
+                None,
                 None,
             )
             .unwrap()
@@ -18518,6 +19158,7 @@ mod tests {
                 ResultsOrder::Generation,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap()
@@ -18566,6 +19207,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -18588,6 +19230,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -18701,6 +19344,7 @@ mod tests {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap();
@@ -19012,6 +19656,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 3);
@@ -19038,6 +19683,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -19104,6 +19750,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -19189,6 +19836,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -19905,6 +20553,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -20034,6 +20683,7 @@ mod tests {
                 max_expansions,
                 ResultsOrder::Catalogue,
                 None,
+                None,
             )
         };
         // Union of 3 terms exceeds a cap of 2 — the single-word path degrades
@@ -20153,6 +20803,7 @@ mod tests {
             100,
             ResultsOrder::Catalogue,
             None,
+            None,
         );
         assert!(result.is_err());
     }
@@ -20262,6 +20913,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -20347,6 +20999,7 @@ mod tests {
                 max_expansions,
                 ResultsOrder::Catalogue,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -20403,7 +21056,7 @@ mod tests {
         // global union contains seven distinct terms. Counting the union
         // would wrongly select the flat-scoring degrade path.
         let (mut engine, _dir) = make_engine();
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
         for (id, letter) in [(1, "א"), (2, "ב"), (3, "ג")] {
             add(
                 &mut engine,
@@ -20452,13 +21105,12 @@ mod tests {
         // exhausted; its partitioning is not deterministic. Keep this test
         // of dictionary-prefix survival in one explicit segment.
         engine
-            .index_writer
-            .take()
+            .take_writer()
             .unwrap()
             .wait_merging_threads()
             .unwrap();
         engine.index_writer = Some(engine.index.writer_with_num_threads(1, 50_000_000).unwrap());
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
 
         let letters = [
             "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט", "י", "כ", "ל", "מ", "נ", "ס", "ע", "פ",
@@ -20752,6 +21404,7 @@ mod tests {
                 HashMap::new(),
                 typo_options("משה"),
                 None,
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -20778,6 +21431,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options.clone(),
+                None,
                 None,
             )
             .unwrap()
@@ -20812,6 +21466,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 typo_options("משה"),
+                None,
                 None,
             )
             .unwrap()
@@ -20852,6 +21507,7 @@ mod tests {
                 HashMap::new(),
                 options,
                 None,
+                None,
             )
             .unwrap()
             .expect("pattern");
@@ -20876,7 +21532,7 @@ mod tests {
         engine.commit().unwrap();
 
         let hl = engine
-            .generate_index_fuzzy_highlight_pattern("משה".to_string(), 1)
+            .generate_index_fuzzy_highlight_pattern("משה".to_string(), 1, None)
             .unwrap()
             .expect("pattern");
         // The edit-distance-1 match from the index plus the literal token.
@@ -20885,7 +21541,7 @@ mod tests {
 
         // Distance above the FuzzyTermQuery limit is rejected loudly.
         assert!(engine
-            .generate_index_fuzzy_highlight_pattern("משה".to_string(), 3)
+            .generate_index_fuzzy_highlight_pattern("משה".to_string(), 3, None)
             .is_err());
     }
 
@@ -20903,6 +21559,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 HashMap::new(),
+                None,
                 None,
             )
             .unwrap()
@@ -20945,6 +21602,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options,
+                None,
                 None,
             )
             .unwrap()
@@ -20993,6 +21651,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 options,
+                None,
                 None,
             )
             .unwrap()
@@ -21179,6 +21838,7 @@ mod tests {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
             let ids: Vec<u64> = page.results.iter().map(|r| r.id).collect();
@@ -21229,6 +21889,7 @@ mod tests {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap()
@@ -21295,6 +21956,7 @@ mod tests {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap()
                 .results
@@ -21327,6 +21989,7 @@ mod tests {
                     HashMap::new(),
                     HashMap::new(),
                     typo.clone(),
+                    None,
                     None,
                 )
                 .unwrap()
@@ -21427,7 +22090,7 @@ mod tests {
     #[test]
     fn test_count_documents_by_file_path_multi_segment() {
         let (mut engine, _dir) = make_engine();
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
 
         add(&mut engine, 1, "שלום עולם", "/books/a.txt");
         engine.commit().unwrap();
@@ -21739,6 +22402,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -22033,6 +22697,59 @@ mod tests {
         );
     }
 
+    fn assert_rollback_preserves_indexing_mode(bulk: bool, economy: bool) {
+        let (mut engine, _dir) = make_engine();
+        engine.set_bulk_indexing(true).unwrap();
+        engine.set_economy_indexing(economy).unwrap();
+        for id in 1..=MAX_SEGMENTS_AFTER_OPTIMIZE as u64 {
+            add(&mut engine, id, "שלום", &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        engine.set_bulk_indexing(bulk).unwrap();
+        add(&mut engine, 99, "מבוטל", "/books/cancelled.txt");
+        engine.rollback().unwrap();
+        add(&mut engine, 100, "שלום", "/books/resumed.txt");
+        engine.commit().unwrap();
+        engine
+            .take_writer()
+            .unwrap()
+            .wait_merging_threads()
+            .unwrap();
+        engine.index_reader.reload().unwrap();
+
+        assert!(engine.get_document_by_id(99).unwrap().is_none());
+        assert!(engine.get_document_by_id(100).unwrap().is_some());
+        assert_eq!(
+            engine.get_document_count(),
+            MAX_SEGMENTS_AFTER_OPTIMIZE as u64 + 1
+        );
+        assert_eq!(
+            engine.get_segment_count().unwrap() as usize,
+            MAX_SEGMENTS_AFTER_OPTIMIZE + usize::from(bulk),
+            "rollback changed the merge policy (bulk={bulk}, economy={economy})"
+        );
+    }
+
+    #[test]
+    fn rollback_preserves_normal_indexing_after_resume() {
+        assert_rollback_preserves_indexing_mode(false, false);
+    }
+
+    #[test]
+    fn rollback_preserves_bulk_indexing_after_resume() {
+        assert_rollback_preserves_indexing_mode(true, false);
+    }
+
+    #[test]
+    fn rollback_preserves_economy_indexing_after_resume() {
+        assert_rollback_preserves_indexing_mode(false, true);
+    }
+
+    #[test]
+    fn rollback_preserves_bulk_economy_indexing_after_resume() {
+        assert_rollback_preserves_indexing_mode(true, true);
+    }
+
     #[test]
     fn test_get_document_count() {
         let (mut engine, _dir) = make_engine();
@@ -22157,6 +22874,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert!(
@@ -22175,6 +22893,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -22199,6 +22918,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -22260,6 +22980,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -22297,6 +23018,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1, 2]);
@@ -22318,6 +23040,7 @@ mod tests {
                 order,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap()
@@ -22409,6 +23132,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap()
@@ -22593,6 +23317,7 @@ mod tests {
                         false,
                         false,
                         None,
+                        None,
                     )
                     .unwrap();
                 assert_eq!(
@@ -22627,6 +23352,7 @@ mod tests {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap()
                 .into_iter()
@@ -22640,7 +23366,7 @@ mod tests {
             );
 
             let pattern = engine
-                .generate_index_fuzzy_highlight_pattern("הלכתי לישון".to_string(), distance)
+                .generate_index_fuzzy_highlight_pattern("הלכתי לישון".to_string(), distance, None)
                 .unwrap()
                 .expect("pattern");
             let matcher = pattern.matcher.expect("matcher");
@@ -22687,6 +23413,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         let hit = results.iter().find(|result| result.id == 1).unwrap();
@@ -22702,13 +23429,12 @@ mod tests {
         let (mut engine, dir) = make_engine();
         add(&mut engine, 1, "הלכתי לישון", "/books/a.txt");
 
-        let mut next_id = 2u64;
-        for term in one_edit_insertions("הלכתי")
-            .into_iter()
-            .chain(one_edit_insertions("לישון"))
-        {
+        for (next_id, term) in (2u64..).zip(
+            one_edit_insertions("הלכתי")
+                .into_iter()
+                .chain(one_edit_insertions("לישון")),
+        ) {
             add(&mut engine, next_id, &term, "/books/noise.txt");
-            next_id += 1;
         }
         engine.commit().unwrap();
         assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
@@ -22723,6 +23449,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap());
@@ -22787,6 +23514,7 @@ mod tests {
                 100,
                 ResultsOrder::Relevance,
                 None,
+                None,
             )
             .unwrap();
 
@@ -22819,6 +23547,7 @@ mod tests {
                 100,
                 ResultsOrder::Catalogue,
                 None,
+                None,
             )
             .unwrap();
         let page2 = engine
@@ -22830,6 +23559,7 @@ mod tests {
                 0,
                 100,
                 ResultsOrder::Catalogue,
+                None,
                 None,
             )
             .unwrap();
@@ -22845,7 +23575,7 @@ mod tests {
     #[test]
     fn test_optimize_reduces_segments_many_commits() {
         let (mut engine, _dir) = make_engine();
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
 
         for id in 1..=12 {
             let text = format!("שלום {id}");
@@ -22875,7 +23605,7 @@ mod tests {
     #[test]
     fn test_optimize_commits_pending_documents() {
         let (mut engine, _dir) = make_engine();
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
         // Two committed segments so optimize doesn't take the early-skip path.
         add(&mut engine, 1, "ספר", "/books/a.txt");
         engine.commit().unwrap();
@@ -22893,7 +23623,7 @@ mod tests {
     #[test]
     fn test_optimize_preserves_search_results() {
         let (mut engine, _dir) = make_engine();
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
 
         add(&mut engine, 1, "שלום עולם", "/books/a.txt");
         engine.commit().unwrap();
@@ -22917,7 +23647,7 @@ mod tests {
     #[test]
     fn test_optimize_preserves_upsert_and_delete_afterwards() {
         let (mut engine, _dir) = make_engine();
-        disable_auto_merge(&engine);
+        disable_auto_merge(&mut engine);
 
         add(&mut engine, 1, "טקסט ישן", "/books/a.txt");
         engine.commit().unwrap();
@@ -23058,6 +23788,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1, 2]);
@@ -23072,6 +23803,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap());
@@ -23094,6 +23826,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap());
@@ -23136,6 +23869,7 @@ mod tests {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
             assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
@@ -23173,6 +23907,7 @@ mod tests {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
             assert_eq!(ids(results.clone()), vec![1], "no hit for {query}");
@@ -23203,6 +23938,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(ids(results.clone()), vec![1]);
@@ -23231,6 +23967,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -23352,6 +24089,7 @@ mod tests {
                 1,
                 ResultsOrder::Catalogue,
                 None,
+                None,
             )
             .unwrap());
         assert_eq!(
@@ -23373,6 +24111,7 @@ mod tests {
                 0,
                 10,
                 ResultsOrder::Catalogue,
+                None,
                 None,
             )
             .unwrap());
@@ -23426,6 +24165,7 @@ mod tests {
                 1,
                 ResultsOrder::Catalogue,
                 None,
+                None,
             )
             .unwrap();
         assert!(
@@ -23442,6 +24182,7 @@ mod tests {
                 0,
                 100,
                 ResultsOrder::Catalogue,
+                None,
                 None,
             )
             .unwrap();
@@ -23760,6 +24501,7 @@ mod tests {
                 100,
                 ResultsOrder::Catalogue,
                 None,
+                None,
             )
             .unwrap());
         assert_eq!(got, vec![1], "empty facet list should not filter anything");
@@ -23779,6 +24521,7 @@ mod tests {
             0,
             100,
             ResultsOrder::Catalogue,
+            None,
             None,
         );
         assert!(result.is_err(), "malformed facet should error, not panic");
@@ -23870,7 +24613,7 @@ mod tests {
 
         let advanced_ids = |engine: &mut SearchEngine, query: &str| {
             ids(search_advanced_default(
-                &engine,
+                engine,
                 query.to_string(),
                 vec!["/root".to_string()],
                 100,
@@ -23937,6 +24680,7 @@ mod tests {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap())
         };
@@ -23978,6 +24722,7 @@ mod tests {
                     ResultsOrder::Relevance,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap())
@@ -24028,6 +24773,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap());
         assert!(
@@ -24049,6 +24795,7 @@ mod tests {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap());
@@ -24072,7 +24819,7 @@ mod tests {
             let mut options = HashMap::new();
             options.insert(format!("{query}_0"), word_opts);
             ids(search_advanced_default(
-                &engine,
+                engine,
                 query.to_string(),
                 vec!["/root".to_string()],
                 100,
@@ -24117,7 +24864,7 @@ mod tests {
                 options.insert(format!("{query}_0"), word_opts);
             }
             ids(search_advanced_default(
-                &engine,
+                engine,
                 query.to_string(),
                 vec!["/root".to_string()],
                 100,
@@ -24197,7 +24944,7 @@ mod tests {
                 );
             }
             ids(search_advanced_default(
-                &engine,
+                engine,
                 query.to_string(),
                 vec!["/root".to_string()],
                 100,
@@ -24279,7 +25026,7 @@ mod tests {
                 );
             }
             ids(search_advanced_default(
-                &engine,
+                engine,
                 query.to_string(),
                 vec!["/root".to_string()],
                 100,
@@ -24443,6 +25190,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -24473,6 +25221,7 @@ mod tests {
             ResultsOrder::Relevance,
             false,
             false,
+            None,
             None,
         );
         assert!(result.is_err(), "distance > 2 should error, not panic");
@@ -24505,6 +25254,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -24533,6 +25283,7 @@ mod tests {
                     ResultsOrder::Relevance,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap();
@@ -24582,6 +25333,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(page.total_count, 2);
@@ -24630,6 +25382,7 @@ mod tests {
                 true,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(hits.len(), 1);
@@ -24646,6 +25399,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -24666,6 +25420,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(plain.len(), 2);
@@ -24680,6 +25435,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -24699,6 +25455,7 @@ mod tests {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap()
@@ -24755,6 +25512,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         crate::vocalized_snippet::set_enabled(false);
@@ -24780,6 +25538,7 @@ mod tests {
                 true,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(nikud_only.len(), 1);
@@ -24794,6 +25553,7 @@ mod tests {
                 true,
                 true,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(with_taam.len(), 1);
@@ -24807,6 +25567,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 true,
+                None,
                 None,
             )
             .unwrap();
@@ -24825,6 +25586,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -24950,6 +25712,7 @@ mod tests {
                 true,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert!(!hits.is_empty());
@@ -24964,6 +25727,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -25005,7 +25769,7 @@ mod tests {
 
     fn scope_search(engine: &SearchEngine, query: &str, scope: SearchScope) -> Vec<u64> {
         search_advanced_default(
-            &engine,
+            engine,
             query.to_string(),
             vec!["/root".to_string()],
             100,
@@ -25089,6 +25853,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -25117,6 +25882,7 @@ mod tests {
                 false,
                 SearchScope::SameSection,
                 SearchScope::SameSection,
+                None,
                 None,
                 None,
                 None,
@@ -25226,6 +25992,7 @@ mod tests {
                 None,
                 mode,
                 count,
+                None,
                 None,
             )
             .unwrap()
@@ -25424,6 +26191,7 @@ mod tests {
                 Some(WordMatchMode::AnyWord),
                 None,
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -25595,6 +26363,7 @@ mod tests {
                     None,
                     None,
                     self.any_order,
+                    None,
                 )
                 .unwrap()
         }
@@ -25712,6 +26481,7 @@ mod tests {
                     None,
                     None,
                     self.any_order,
+                    None,
                 )
                 .unwrap()
                 .total_count
@@ -25901,6 +26671,7 @@ mod tests {
                         HashMap::new(),
                         options.clone(),
                         Some(true),
+                        None,
                     )
                     .unwrap()
                     .unwrap()
@@ -26069,6 +26840,7 @@ mod tests {
                 Some(WordMatchMode::AtLeast),
                 Some(2),
                 None,
+                None,
             )
             .unwrap()
             .into_iter()
@@ -26223,6 +26995,7 @@ mod tests {
                 false,
                 false,
                 Some(ResultGrouping::SameSection),
+                None,
             )
             .unwrap();
         // שתי שורות תואמות באותו סעיף — קבוצה אחת, מונה 2, אחות אחת.
@@ -26245,6 +27018,7 @@ mod tests {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -26278,6 +27052,7 @@ mod tests {
                 false,
                 false,
                 Some(ResultGrouping::IdenticalText),
+                None,
             )
             .unwrap();
         assert_eq!(page.total_count, 3);
@@ -26305,6 +27080,7 @@ mod tests {
                 false,
                 false,
                 Some(ResultGrouping::IdenticalText),
+                None,
             )
             .unwrap();
         assert_eq!(second.group_count, Some(2));
@@ -26338,6 +27114,7 @@ mod tests {
                 false,
                 false,
                 Some(ResultGrouping::IdenticalText),
+                None,
             )
             .unwrap();
         assert_eq!(page.total_count, 3);
@@ -26372,6 +27149,7 @@ mod tests {
                 false,
                 false,
                 Some(ResultGrouping::IdenticalText),
+                None,
             )
             .unwrap();
         assert_eq!(page.total_count, 2);
@@ -29832,3 +30610,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "search_responsiveness_tests.rs"]
+mod search_responsiveness_tests;
+
+#[cfg(test)]
+#[path = "../corpus_performance.rs"]
+mod corpus_performance;

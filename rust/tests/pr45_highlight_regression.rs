@@ -68,6 +68,7 @@ fn search_advanced_default(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -110,6 +111,7 @@ fn spelling_budget_keeps_affix_typo_hits() {
             HashMap::new(),
             HashMap::new(),
             options,
+            None,
             None,
         )
         .unwrap()

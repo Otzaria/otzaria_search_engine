@@ -1214,6 +1214,11 @@ impl LineCacheKey {
     }
 }
 
+pub(crate) fn release_memory() {
+    TERM_CACHE.lock().unwrap().clear();
+    LINE_SCANS.lock().unwrap().clear();
+}
+
 /// A line search as far as it got. A later call of the same search (another page, a count,
 /// or after a cancel) resumes it, and a concurrent one waits for it instead of reading the
 /// scope again.
@@ -1319,15 +1324,16 @@ pub(crate) fn run_line_search(
             let mut reporter = Reporter::new(ctx, plan, page, emit);
             reporter.offer(&outcome.hits)?;
         }
+        let cancelled = ctx.cancel.load(Ordering::Relaxed);
         emit(final_update(
             outcome.count(),
             &outcome.book_counts,
             outcome.truncated,
-            false,
+            cancelled,
             0,
             0,
         ));
-        return Ok(Some(outcome));
+        return Ok((!cancelled).then_some(outcome));
     }
 
     let finished = {
@@ -1364,15 +1370,16 @@ pub(crate) fn run_line_search(
     } else {
         scan.outcome = Some(outcome.clone());
     }
+    let cancelled = ctx.cancel.load(Ordering::Relaxed);
     emit(final_update(
         outcome.count(),
         &outcome.book_counts,
         outcome.truncated,
-        false,
+        cancelled,
         done,
         total,
     ));
-    Ok(Some(outcome))
+    Ok((!cancelled).then_some(outcome))
 }
 
 /// One search's scan, run by one call at a time; the others wait on `freed`.
@@ -1627,10 +1634,13 @@ impl<'a, 'e> Reporter<'a, 'e> {
         };
         self.seen += hits.len();
         for chunk in wanted.chunks(self.page.chunk_size.max(1) as usize) {
-            if !self.listening {
+            if !self.listening || self.ctx.cancel.load(Ordering::Relaxed) {
                 break;
             }
             let hydrated = hydrate(self.ctx, self.plan, chunk, self.page)?;
+            if self.ctx.cancel.load(Ordering::Relaxed) {
+                break;
+            }
             let (results, match_ranges) = hydrated
                 .into_iter()
                 .map(|(result, ranges)| (result, UserRegexLineMatches { ranges }))
@@ -1653,7 +1663,7 @@ impl<'a, 'e> Reporter<'a, 'e> {
     }
 
     fn progress(&mut self, done: u32, total: u32) {
-        if self.listening {
+        if self.listening && !self.ctx.cancel.load(Ordering::Relaxed) {
             self.listening = (self.emit)(UserRegexStreamUpdate {
                 kind: UserRegexKind::CrossSpace,
                 results: Vec::new(),
@@ -1940,12 +1950,87 @@ impl BookScan {
     }
 }
 
+const FETCH_AHEAD_BYTES: usize = 32 << 20;
+
+struct ReadAheadBudget {
+    used: Mutex<usize>,
+    changed: std::sync::Condvar,
+    limit: usize,
+}
+
+impl Default for ReadAheadBudget {
+    fn default() -> Self {
+        Self::new(FETCH_AHEAD_BYTES)
+    }
+}
+
+impl ReadAheadBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            used: Mutex::new(0),
+            changed: std::sync::Condvar::new(),
+            limit,
+        }
+    }
+
+    fn admit(&self, bytes: usize, cancel: &AtomicBool) -> Option<ReadAheadPermit<'_>> {
+        let mut used = self.used.lock().unwrap();
+        while *used > 0 && used.saturating_add(bytes) > self.limit {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            used = self
+                .changed
+                .wait_timeout(used, std::time::Duration::from_millis(10))
+                .unwrap()
+                .0;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        *used += bytes;
+        Some(ReadAheadPermit {
+            budget: self,
+            bytes,
+        })
+    }
+}
+
+struct ReadAheadPermit<'a> {
+    budget: &'a ReadAheadBudget,
+    bytes: usize,
+}
+
+impl Drop for ReadAheadPermit<'_> {
+    fn drop(&mut self) {
+        *self.budget.used.lock().unwrap() -= self.bytes;
+        self.budget.changed.notify_all();
+    }
+}
+
 /// What a reading thread hands a book's scan.
 enum Fetched {
     /// The index stores the book's text.
     Stored,
     /// The rows to match, undecoded, by ordinal; `Err` when the database could not be read.
     Library(Result<Option<BookRows>, ()>),
+}
+
+impl Fetched {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Library(Ok(Some((rows, _)))) => {
+                rows.capacity() * std::mem::size_of::<(u64, RawRow)>()
+                    + rows
+                        .iter()
+                        .map(|(_, row)| match row {
+                            RawRow::Text(bytes) | RawRow::Frame(bytes) => bytes.capacity(),
+                        })
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
 }
 
 /// Rows of a book by ordinal, with the decoder of their frames.
@@ -1961,6 +2046,8 @@ fn fetch_rows(
     store: &mut line_source::LineStore,
     book: &ScopeBook,
     book_id: i64,
+    stop: &dyn Fn() -> bool,
+    known_row_count: Option<u64>,
 ) -> anyhow::Result<Option<BookRows>> {
     match &book.candidates {
         Some(candidates) => {
@@ -1972,18 +2059,23 @@ fn fetch_rows(
             ordinals.dedup();
             // A row read alone is a random read (~0.3 ms on a cold file); reading the whole
             // book runs sequentially (~1.5 µs a row). Only sparse candidates read alone.
-            let book_rows = store.book_row_count(book_id)?;
+            let book_rows = match known_row_count {
+                Some(rows) => rows,
+                None => store.book_row_count(book_id)?,
+            };
             if (ordinals.len() as u64).saturating_mul(SPARSE_ROW_FACTOR) >= book_rows {
                 let wanted: HashSet<u64> = ordinals.into_iter().collect();
-                return Ok(store.fetch_book_raw(book_id)?.map(|(rows, decoder)| {
-                    let rows = (0u64..)
-                        .zip(rows)
-                        .filter(|(ordinal, _)| wanted.contains(ordinal))
-                        .collect();
-                    (rows, decoder)
-                }));
+                return Ok(store
+                    .fetch_book_raw_checked(book_id, stop)?
+                    .map(|(rows, decoder)| {
+                        let rows = (0u64..)
+                            .zip(rows)
+                            .filter(|(ordinal, _)| wanted.contains(ordinal))
+                            .collect();
+                        (rows, decoder)
+                    }));
             }
-            let (rows, decoder) = store.fetch_rows_raw(book_id, &ordinals)?;
+            let (rows, decoder) = store.fetch_rows_raw_checked(book_id, &ordinals, stop)?;
             let rows = ordinals
                 .into_iter()
                 .zip(rows)
@@ -1992,7 +2084,7 @@ fn fetch_rows(
             Ok(Some((rows, decoder)))
         }
         None => Ok(store
-            .fetch_book_raw(book_id)?
+            .fetch_book_raw_checked(book_id, stop)?
             .map(|(rows, decoder)| ((0u64..).zip(rows).collect(), decoder))),
     }
 }
@@ -2015,24 +2107,54 @@ fn scan_batch(
         .filter_map(|source| Some((source, line_source::begin_scan(source).ok()?)))
         .collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, Fetched)>(FETCH_AHEAD);
+    let budget = ReadAheadBudget::default();
+    let large_books = ReadAheadBudget::new(1);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(FETCH_AHEAD);
     std::thread::scope(|scope| {
         for _ in 0..SCAN_READERS {
             let sender = sender.clone();
-            let (sessions, next) = (&sessions, &next);
+            let (sessions, next, budget, large_books) = (&sessions, &next, &budget, &large_books);
             scope.spawn(move || loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= books.len() || ctx.cancel.load(Ordering::Relaxed) {
                     break;
                 }
                 let book = &books[i];
+                let row_count = if book.candidates.is_some() {
+                    source_of(book).and_then(|(source, id)| {
+                        sessions.iter().find(|(kept, _)| *kept == source).and_then(
+                            |(_, session)| session.read(|store| store.book_row_count(id)).ok(),
+                        )
+                    })
+                } else {
+                    Some(book.docs)
+                };
+                let large_permit = if book.library && row_count.is_none_or(|rows| rows >= 4_096) {
+                    let Some(permit) = large_books.admit(1, ctx.cancel) else {
+                        break;
+                    };
+                    Some(permit)
+                } else {
+                    None
+                };
                 let fetched = match source_of(book) {
                     Some((source, book_id)) => {
                         let session = sessions.iter().find(|(s, _)| *s == source).map(|(_, s)| s);
                         let started = std::time::Instant::now();
                         let rows = match session {
                             Some(session) => session
-                                .read(|store| fetch_rows(store, book, book_id))
+                                .read(|store| {
+                                    fetch_rows(
+                                        store,
+                                        book,
+                                        book_id,
+                                        &|| {
+                                            ctx.cancel.load(Ordering::Relaxed)
+                                                || !session.is_current()
+                                        },
+                                        row_count,
+                                    )
+                                })
                                 .map_err(|_| ()),
                             None => Err(()),
                         };
@@ -2042,7 +2164,10 @@ fn scan_batch(
                     }
                     None => Fetched::Stored,
                 };
-                if sender.send((i, fetched)).is_err() {
+                let Some(permit) = budget.admit(fetched.bytes(), ctx.cancel) else {
+                    break;
+                };
+                if sender.send((i, fetched, permit, large_permit)).is_err() {
                     break;
                 }
             });
@@ -2051,7 +2176,12 @@ fn scan_batch(
         let mut scanned = receiver
             .into_iter()
             .par_bridge()
-            .map(|(i, fetched)| scan_fetched(ctx, plan, &books[i], fetched).map(|s| (i, s)))
+            .map(|(i, fetched, permit, large_permit)| {
+                let scan = scan_fetched(ctx, plan, &books[i], fetched).map(|scan| (i, scan));
+                drop(permit);
+                drop(large_permit);
+                scan
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         // A book no reader got to (cancelled) counts as unread.
         let mut out: Vec<BookScan> = books.iter().map(|_| BookScan::empty(true)).collect();
@@ -2543,3 +2673,69 @@ impl Scorer for ListScorer {
 #[cfg(test)]
 #[path = "user_regex_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod read_ahead_tests {
+    use super::*;
+
+    #[test]
+    fn read_ahead_bytes_block_until_the_previous_book_is_scanned() {
+        let budget = ReadAheadBudget::default();
+        let cancel = AtomicBool::new(false);
+        let first = budget.admit(FETCH_AHEAD_BYTES + 1, &cancel).unwrap();
+        std::thread::scope(|scope| {
+            let (ready, receiver) = std::sync::mpsc::channel();
+            let (admitted, got) = std::sync::mpsc::channel();
+            let (budget, cancel) = (&budget, &cancel);
+            scope.spawn(move || {
+                ready.send(()).unwrap();
+                let permit = budget.admit(1, cancel).unwrap();
+                admitted.send(()).unwrap();
+                drop(permit);
+            });
+            receiver.recv().unwrap();
+            assert!(got
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err());
+            drop(first);
+            got.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        });
+        assert_eq!(*budget.used.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn cancellation_releases_a_reader_waiting_for_the_byte_budget() {
+        let budget = ReadAheadBudget::default();
+        let cancel = AtomicBool::new(false);
+        let _first = budget.admit(FETCH_AHEAD_BYTES, &cancel).unwrap();
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| budget.admit(1, &cancel).is_none());
+            cancel.store(true, Ordering::Relaxed);
+            assert!(waiting.join().unwrap());
+        });
+    }
+    #[test]
+    fn two_large_books_do_not_start_fetching_together_and_waiting_can_cancel() {
+        let gate = ReadAheadBudget::new(1);
+        let cancel = AtomicBool::new(false);
+        let first = gate.admit(1, &cancel).unwrap();
+        std::thread::scope(|scope| {
+            let (fetching, received) = std::sync::mpsc::channel();
+            let (gate, cancel) = (&gate, &cancel);
+            let second = scope.spawn(move || {
+                let permit = gate.admit(1, cancel);
+                if permit.is_some() {
+                    fetching.send(()).unwrap();
+                }
+                permit.is_none()
+            });
+            assert!(received
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err());
+            cancel.store(true, Ordering::Relaxed);
+            assert!(second.join().unwrap());
+        });
+        drop(first);
+        assert_eq!(*gate.used.lock().unwrap(), 0);
+    }
+}

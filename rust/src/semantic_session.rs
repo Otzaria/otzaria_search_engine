@@ -293,6 +293,21 @@ impl<T> SemanticSessions<T> {
             .clear();
     }
 
+    /// Release expired sessions without restarting a search the user is continuing.
+    pub(crate) fn prune_expired(&self) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let expired: Vec<_> = sessions
+            .iter()
+            .filter(|(_, (used, session))| {
+                used.elapsed() > SESSION_TTL && Arc::strong_count(session) == 1
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired {
+            sessions.pop(&key);
+        }
+    }
+
     /// The session kept under `key`, unless it has expired.
     pub(crate) fn get(&self, key: &SessionKey) -> Option<Arc<Mutex<T>>> {
         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
@@ -486,5 +501,20 @@ mod tests {
             sessions.put(kept, Arc::new(Mutex::new(n)));
         }
         assert_eq!(sessions.len(), SESSION_CAPACITY);
+    }
+    #[test]
+    fn memory_pressure_keeps_current_sessions_and_their_epoch() {
+        let sessions = SemanticSessions::<u32>::default();
+        sessions.put(key(1), Arc::new(Mutex::new(7)));
+        let epoch = sessions.epoch();
+        sessions.prune_expired();
+        assert_eq!(*sessions.get(&key(1)).unwrap().lock().unwrap(), 7);
+        assert_eq!(sessions.epoch(), epoch);
+        for (_, (used, _)) in sessions.sessions.lock().unwrap().iter_mut() {
+            *used = Instant::now() - SESSION_TTL - Duration::from_secs(1);
+        }
+        sessions.prune_expired();
+        assert_eq!(sessions.len(), 0);
+        assert_eq!(sessions.epoch(), epoch);
     }
 }

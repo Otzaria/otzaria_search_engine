@@ -109,6 +109,13 @@ pub struct MagicDictionary {
 }
 
 impl MagicDictionary {
+    pub(crate) fn release_memory(&self) {
+        self.cache.lock().unwrap().clear();
+        let conn = self.conn.lock().unwrap();
+        conn.flush_prepared_statement_cache();
+        let _ = conn.execute_batch("PRAGMA shrink_memory;");
+    }
+
     /// Opens `lexical.db` read-only. Fails if the file is missing or not a
     /// valid SQLite database — the caller treats that as "no dictionary".
     pub fn open(path: &Path) -> Result<Self> {

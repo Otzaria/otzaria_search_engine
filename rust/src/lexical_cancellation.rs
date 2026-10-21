@@ -11,6 +11,7 @@
 //! A cancel that arrives before the call it cancels is remembered, so the call stops
 //! at once when it starts; [`REMEMBERED`] such ids are kept.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,7 +140,76 @@ pub(crate) struct LexicalRequest<'a> {
     id: Option<u32>,
 }
 
+thread_local! {
+    static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Cancellation shared with parallel hydration workers.
+#[derive(Clone, Default)]
+pub(crate) struct LexicalFlag(Option<Arc<AtomicBool>>);
+
+impl LexicalFlag {
+    pub(crate) fn shared(flag: &Arc<AtomicBool>) -> Self {
+        Self(Some(Arc::clone(flag)))
+    }
+
+    pub(crate) fn current() -> Self {
+        Self(CURRENT.with(|current| current.borrow().clone()))
+    }
+
+    pub(crate) fn check(&self) -> anyhow::Result<()> {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(LexicalSearchCancelled.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_tantivy(&self) -> tantivy::Result<()> {
+        match &self.0 {
+            Some(flag) => cancelled(flag),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn wrap(&self, query: Box<dyn Query>) -> Box<dyn Query> {
+        match &self.0 {
+            Some(flag) => Box::new(CancellableQuery {
+                inner: query,
+                flag: Arc::clone(flag),
+            }),
+            None => query,
+        }
+    }
+}
+
+pub(crate) fn check_current() -> anyhow::Result<()> {
+    LexicalFlag::current().check()
+}
+
+struct RestoreScope(Option<Arc<AtomicBool>>);
+
+impl Drop for RestoreScope {
+    fn drop(&mut self) {
+        CURRENT.with(|current| *current.borrow_mut() = self.0.take());
+    }
+}
+
 impl LexicalRequest<'_> {
+    pub(crate) fn enter(&self) -> impl Drop {
+        RestoreScope(CURRENT.with(|current| current.replace(self.flag.clone())))
+    }
+
+    /// Carries cancellation through query preparation and restores nested callers.
+    pub(crate) fn scope<T>(&self, run: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+        self.check()?;
+        let _restore = RestoreScope(CURRENT.with(|current| current.replace(self.flag.clone())));
+        self.finish(run())
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.flag
             .as_ref()
@@ -443,5 +513,28 @@ mod tests {
         }
         assert_eq!(calls.len(), REMEMBERED);
         assert!(calls.begin(Some(3)).check().is_ok());
+    }
+    #[test]
+    fn nested_scopes_restore_the_parent_and_parallel_workers_keep_the_flag() {
+        let calls = LexicalCancellations::default();
+        let parent = calls.begin(Some(1));
+        parent
+            .scope(|| {
+                let flag = LexicalFlag::current();
+                calls.cancel(1);
+                assert!(flag.check().is_err());
+                let child = calls.begin(Some(2));
+                child.scope(|| {
+                    check_current()?;
+                    Ok(())
+                })?;
+                assert!(check_current().is_err());
+                std::thread::scope(|scope| {
+                    assert!(scope.spawn(|| flag.check()).join().unwrap().is_err())
+                });
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(check_current().is_ok());
     }
 }

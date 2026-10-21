@@ -159,7 +159,17 @@ fn answers(engine: &SearchEngine) -> Vec<String> {
             (ResultsOrder::Relevance, true),
         ] {
             let result = engine
-                .search_and_count_exact(query.into(), facets(), 50, 0, order, false, false, None)
+                .search_and_count_exact(
+                    query.into(),
+                    facets(),
+                    50,
+                    0,
+                    order,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
                 .unwrap();
             out.push(format!("exact {query}: {}", page(result, ranked)));
         }
@@ -181,6 +191,7 @@ fn answers(engine: &SearchEngine) -> Vec<String> {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap();
@@ -275,6 +286,7 @@ fn answers(engine: &SearchEngine) -> Vec<String> {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         let label: std::collections::BTreeMap<_, std::collections::BTreeMap<_, _>> = opts
@@ -324,6 +336,7 @@ fn answers(engine: &SearchEngine) -> Vec<String> {
                 HashMap::new(),
                 opts,
                 None,
+                None,
             )
             .unwrap();
         paint(format!("highlight {query}"), pattern);
@@ -331,7 +344,7 @@ fn answers(engine: &SearchEngine) -> Vec<String> {
     for query in ["רמבם", "אדמור", "שצ"] {
         for distance in [0u8, 1] {
             let pattern = engine
-                .generate_index_fuzzy_highlight_pattern(query.into(), distance)
+                .generate_index_fuzzy_highlight_pattern(query.into(), distance, None)
                 .unwrap();
             paint(format!("fuzzy highlight{distance} {query}"), pattern);
         }
@@ -347,6 +360,7 @@ fn answers(engine: &SearchEngine) -> Vec<String> {
                 ResultsOrder::Catalogue,
                 true,
                 false,
+                None,
                 None,
             )
             .unwrap();

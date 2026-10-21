@@ -248,6 +248,7 @@ fn ordinary_approximate_quoted_phrases_keep_dictionary_expansion() {
             false,
             false,
             None,
+            None,
         )
         .unwrap();
     let mut got: Vec<_> = results.iter().map(|hit| hit.id & 0xFFFF_FFFF).collect();

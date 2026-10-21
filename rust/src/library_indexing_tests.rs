@@ -139,19 +139,38 @@ fn app_input(db: &Path, book_id: i64) -> Option<AppInput> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .unwrap();
-    let dicts: Vec<Vec<u8>> = conn
-        .prepare("SELECT dict FROM zstd_dict")
+    let dicts: Vec<Vec<u8>> = if conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='zstd_dict')",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
         .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    let mut stmt = conn
-        .prepare(
-            "SELECT CAST(lc.content AS BLOB), typeof(lc.content) = 'blob' FROM line l \
-             LEFT JOIN line_content lc ON lc.id = l.id WHERE l.bookId = ?1 ORDER BY l.lineIndex",
+    {
+        conn.prepare("SELECT dict FROM zstd_dict")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let split = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='line_content')",
+            [],
+            |row| row.get::<_, bool>(0),
         )
         .unwrap();
+    let sql = if split {
+        "SELECT CAST(lc.content AS BLOB), typeof(lc.content) = 'blob' FROM line l \
+         LEFT JOIN line_content lc ON lc.id = l.id WHERE l.bookId = ?1 ORDER BY l.lineIndex, l.id"
+    } else {
+        "SELECT CAST(content AS BLOB), typeof(content) = 'blob' FROM line \
+         WHERE bookId = ?1 ORDER BY lineIndex, id"
+    };
+    let mut stmt = conn.prepare(sql).unwrap();
     let mut rows = stmt.query([book_id]).unwrap();
     let mut bytes = Vec::new();
     let mut count = 0;
@@ -264,7 +283,7 @@ fn assert_prepared_alike(engine: &SearchEngine, db: &Path, input: &LibraryBookIn
         );
         return;
     };
-    let Outcome::Prepared(prepared, _) = outcome else {
+    let Outcome::Prepared(mut prepared) = outcome else {
         panic!("book {} was not prepared", input.book_id);
     };
     let text = String::from_utf8(app.bytes.clone()).unwrap();
@@ -287,7 +306,7 @@ fn assert_prepared_alike(engine: &SearchEngine, db: &Path, input: &LibraryBookIn
         extra_facets: input.extra_facets.clone().unwrap_or_default(),
         source_hash: input.source_hash.unwrap_or(0),
     };
-    let expected = engine
+    let mut expected = engine
         .prepare_text_book(
             &meta,
             &text,
@@ -295,14 +314,21 @@ fn assert_prepared_alike(engine: &SearchEngine, db: &Path, input: &LibraryBookIn
             app.stored_lines.as_deref().unwrap_or_default(),
         )
         .unwrap();
-    let json = |docs: &[tantivy::TantivyDocument]| -> Vec<String> {
-        docs.iter()
-            .map(|d| tantivy::Document::to_json(d, &schema))
-            .collect()
+    let digests = |prepared: &mut crate::api::search_engine::PreparedTextBook| {
+        let mut hashes = Vec::new();
+        prepared
+            .for_each_document(|document| {
+                hashes.push(compute_content_fingerprint_bytes(
+                    tantivy::Document::to_json(&document, &schema).into_bytes(),
+                ));
+                Ok(())
+            })
+            .unwrap();
+        hashes
     };
     assert_eq!(
-        json(&prepared.documents),
-        json(&expected.documents),
+        digests(&mut prepared),
+        digests(&mut expected),
         "book {}",
         input.book_id
     );
@@ -327,6 +353,7 @@ fn library_books_index_like_the_bytes_the_app_reads() {
         .collect();
 
     let mut by_app = new_engine(&dir.path().join("app"));
+    by_app.open_index_writer().unwrap();
     for input in &inputs {
         assert_prepared_alike(&by_app, &db, input);
         if let Some(app) = app_input(&db, input.book_id) {
@@ -469,19 +496,30 @@ fn real_library_books_prepare_like_the_bytes_the_app_reads() {
         .unwrap_or(20);
     configure_line_source(db.clone()).unwrap();
     let dir = tempfile::TempDir::new().unwrap();
-    let engine = SearchEngine::new(dir.path().to_str().unwrap());
+    let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+    engine.open_index_writer().unwrap();
     let conn = rusqlite::Connection::open_with_flags(
         &db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .unwrap();
-    let books: Vec<(i64, String)> = conn
+    let all_books: Vec<(i64, String)> = conn
         .prepare("SELECT id, title FROM book WHERE totalLines > 0 ORDER BY id")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .map(Result::unwrap)
-        .step_by(step)
+        .collect();
+    let forced: std::collections::HashSet<i64> = std::env::var("OTZARIA_PARITY_BOOK_IDS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|id| id.trim().parse().ok())
+        .collect();
+    let books: Vec<_> = all_books
+        .into_iter()
+        .enumerate()
+        .filter(|(ordinal, (id, _))| ordinal % step.max(1) == 0 || forced.contains(id))
+        .map(|(_, book)| book)
         .collect();
     for (id, title) in &books {
         assert_prepared_alike(&engine, Path::new(&db), &library_input(*id, title));
@@ -589,7 +627,6 @@ fn a_book_that_panics_fails_alone_and_the_batch_finishes() {
          BEGIN;",
     )
     .unwrap();
-    // Each book is larger than the tests' in-flight budget.
     for book in 1..=8i64 {
         conn.execute(
             "INSERT INTO book (id, title) VALUES (?1, ?2)",
@@ -757,6 +794,7 @@ fn hit_books(engine: &SearchEngine, word: &str) -> Vec<(String, String)> {
             0,
             100,
             crate::api::search_engine::ResultsOrder::Catalogue,
+            None,
             None,
         )
         .unwrap()
@@ -1010,4 +1048,208 @@ fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries
             "{word}"
         );
     }
+}
+
+#[test]
+fn spooled_documents_preserve_every_field_and_neighbour_keys() {
+    use tantivy::schema::Value;
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let mut lines = Vec::new();
+    for ordinal in 0..1100 {
+        lines.push(match ordinal % 257 {
+            0 => format!("<h2>פרק {ordinal}</h2>"),
+            1 | 252 | 253 | 254 | 255 | 256 => "קצר מאד".to_string(),
+            2 => "טקסט מנוקד וַיֹּאמֶר אֱלֹהִים וכל מילה שומרת על ניקודה".to_string(),
+            3 => "שורה ארוכה שמשמשת גם לחלון סמנטי ".repeat(80),
+            _ => format!("שורה {ordinal} מלאה מילים כדי להיבדק בפני עצמה"),
+        });
+    }
+    lines.push(String::new());
+    let text = lines.join("\n");
+    let input = library_input(1, "גבולות");
+    let meta = TextBookMeta {
+        title: input.title,
+        topics: input.topics,
+        file_path: input.file_path,
+        extra_facets: input.extra_facets.unwrap(),
+        source_hash: 8,
+    };
+    let mut buffer = crate::indexing_buffers::TextBuffer::new(16);
+    buffer.push_str(&text).unwrap();
+    let mut stored = crate::indexing_buffers::OrdinalBuffer::default();
+    for ordinal in [2, 255, 256, 257, 1024] {
+        stored.push(ordinal).unwrap();
+    }
+    let mut prepared = engine
+        .prepare_text_book_buffer(
+            &meta,
+            &mut buffer,
+            TextStorage::LibraryDb,
+            &mut stored,
+            1024,
+            &|| false,
+        )
+        .unwrap();
+    assert!(prepared.spooled_documents.is_some());
+    assert!(prepared.documents.is_empty());
+    let mut expected = engine
+        .prepare_text_book(
+            &meta,
+            &text,
+            TextStorage::LibraryDb,
+            &[257, 2, 1024, 255, 256],
+        )
+        .unwrap();
+    let schema = engine.searcher_for_tests().schema().clone();
+    let collect = |prepared: &mut crate::api::search_engine::PreparedTextBook| {
+        let mut documents = Vec::new();
+        prepared
+            .for_each_document(|document| {
+                documents.push(document);
+                Ok(())
+            })
+            .unwrap();
+        documents
+    };
+    let documents = collect(&mut prepared);
+    let expected_documents = collect(&mut expected);
+    assert_eq!(documents.len(), lines.len());
+    for (actual, expected) in documents.iter().zip(&expected_documents) {
+        assert_eq!(
+            tantivy::Document::to_json(actual, &schema),
+            tantivy::Document::to_json(expected, &schema)
+        );
+    }
+    let normalized: Vec<String> = lines
+        .iter()
+        .map(|line| crate::hebrew_query::normalize_text_for_indexing(line))
+        .collect();
+    let mut section = 0u64;
+    let sections: Vec<u64> = lines
+        .iter()
+        .map(|line| {
+            if line.starts_with("<h") {
+                section += 1;
+            }
+            section
+        })
+        .collect();
+    let key_lines: Vec<otzaria_semantic_search::semantic::chunk_key::LineRef<'_>> = normalized
+        .iter()
+        .zip(&sections)
+        .map(
+            |(text, section)| otzaria_semantic_search::semantic::chunk_key::LineRef {
+                text,
+                section: *section,
+            },
+        )
+        .collect();
+    let keys = crate::semantic_keys::sidecar_column_values(&key_lines);
+    let field = schema.get_field("chunkKey").unwrap();
+    for (ordinal, (document, key)) in documents.iter().zip(keys).enumerate() {
+        assert_eq!(
+            document
+                .get_first(field)
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            key,
+            "line {ordinal}"
+        );
+    }
+    assert_eq!(prepared.content_hash, expected.content_hash);
+    assert_eq!(prepared.text_hash, expected.text_hash);
+    assert_eq!(prepared.metadata_hash, expected.metadata_hash);
+}
+
+#[test]
+fn cancellation_during_preparation_discards_a_spooled_book() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let text = "שורה ארוכה מספיק כדי להיכנס לאינדקס ולהיבדק\n".repeat(1100);
+    let mut buffer = crate::indexing_buffers::TextBuffer::new(16);
+    buffer.push_str(&text).unwrap();
+    let mut stored = crate::indexing_buffers::OrdinalBuffer::default();
+    let meta = TextBookMeta {
+        title: "ספר".into(),
+        topics: "/ספר".into(),
+        file_path: "id:1".into(),
+        extra_facets: Vec::new(),
+        source_hash: 0,
+    };
+    let checks = AtomicUsize::new(0);
+    let error = engine
+        .prepare_text_book_buffer(
+            &meta,
+            &mut buffer,
+            TextStorage::LibraryDb,
+            &mut stored,
+            1024,
+            &|| checks.fetch_add(1, Ordering::Relaxed) > 300,
+        )
+        .err()
+        .expect("preparation must stop");
+    assert!(error.to_string().contains("interrupted"));
+    engine.commit().unwrap();
+    assert_eq!(engine.searcher_for_tests().num_docs(), 0);
+}
+
+#[test]
+fn a_search_only_engine_takes_no_writer_lock() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let engine = new_engine(&dir.path().join("index"));
+    assert!(!engine.holds_writer_for_tests());
+    let mut writer = new_engine(&dir.path().join("index"));
+    writer.open_index_writer().unwrap();
+    assert!(writer.holds_writer_for_tests());
+    assert!(!engine.holds_writer_for_tests());
+    assert!(engine.get_book_fingerprints().unwrap().is_empty());
+}
+
+#[test]
+fn economy_mode_limits_preparation_as_well_as_the_writer() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    let normal = engine.library_preparation_policy();
+    engine.set_economy_indexing(true).unwrap();
+    let economy = engine.library_preparation_policy();
+    assert_eq!(economy, (1, 1, 2 << 20));
+    assert!(normal.0 >= economy.0 && normal.1 >= economy.1 && normal.2 >= economy.2);
+    assert!(!engine.holds_writer_for_tests());
+}
+
+#[test]
+fn legacy_library_without_split_content_or_dictionaries_preserves_all_fields() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("legacy.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE book(id INTEGER PRIMARY KEY, title TEXT);
+        CREATE TABLE line(id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);
+        INSERT INTO book VALUES(1,'ישן');",
+    )
+    .unwrap();
+    for (id, text) in [
+        format!("{BOM}<h1>ישן</h1>"),
+        format!("מילים {} בראשית", image()),
+        "".to_string(),
+    ]
+    .iter()
+    .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO line VALUES(?1,1,?2,?3)",
+            rusqlite::params![id + 1, id, text],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    assert_prepared_alike(&engine, &db, &library_input(1, "ישן"));
 }

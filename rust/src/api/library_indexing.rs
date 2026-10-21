@@ -131,11 +131,5 @@ pub fn library_book_content_fingerprint(
 ) -> anyhow::Result<Option<u64>> {
     let source = crate::library_indexing::line_source_of(source, attached_slug.as_deref())
         .map_err(anyhow::Error::msg)?;
-    let text = crate::library_indexing::read_library_book(source, book_id, db_title.as_deref())
-        .map_err(|unavailable| {
-            anyhow::anyhow!("book {book_id} of {source:?} cannot be read: {unavailable:?}")
-        })?;
-    Ok(text.filter(|text| !text.text.is_empty()).map(|text| {
-        crate::api::search_engine::compute_content_fingerprint_bytes(text.text.into_bytes())
-    }))
+    crate::library_indexing::library_book_fingerprint(source, book_id, db_title.as_deref())
 }

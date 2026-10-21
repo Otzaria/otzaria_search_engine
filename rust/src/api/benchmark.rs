@@ -282,6 +282,7 @@ impl RegexBenchmarker {
                 max_expansions,
                 ResultsOrder::Relevance,
                 None,
+                None,
             )?;
         }
 
@@ -299,6 +300,7 @@ impl RegexBenchmarker {
                 slop,
                 max_expansions,
                 ResultsOrder::Relevance,
+                None,
                 None,
             )?;
             let duration = start.elapsed();

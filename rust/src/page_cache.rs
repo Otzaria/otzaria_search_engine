@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 use std::hash::{DefaultHasher, Hasher};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
@@ -44,11 +45,17 @@ pub(crate) fn snapshot_of(searcher: &Searcher) -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PageKey {
     snapshot: u64,
+    cache_epoch: u64,
     order: u64,
     query: u128,
 }
 
 impl PageKey {
+    pub(crate) fn with_epoch(mut self, epoch: u64) -> Self {
+        self.cache_epoch = epoch;
+        self
+    }
+
     /// `None` when the query is too large to fingerprint. `order` is the epoch of the book
     /// order mapping (`book_order::next_epoch`).
     pub(crate) fn new(snapshot: u64, order: u64, query: &dyn Query) -> Option<Self> {
@@ -61,6 +68,7 @@ impl PageKey {
         write!(writer, "{query:?}").ok()?;
         Some(Self {
             snapshot,
+            cache_epoch: 0,
             order,
             query: (u128::from(writer.high.finish()) << 64) | u128::from(writer.low.finish()),
         })
@@ -114,17 +122,24 @@ pub(crate) struct CachedPage {
     pub(crate) book_counts: Option<Arc<HashMap<String, u32>>>,
 }
 
-pub(crate) struct PageCache(Mutex<LruCache<PageKey, Entry>>);
+pub(crate) struct PageCache(Mutex<LruCache<PageKey, Entry>>, AtomicU64);
 
 impl Default for PageCache {
     fn default() -> Self {
-        Self(Mutex::new(LruCache::new(
-            NonZeroUsize::new(ENTRIES).expect("cache size is non-zero"),
-        )))
+        Self(
+            Mutex::new(LruCache::new(
+                NonZeroUsize::new(ENTRIES).expect("cache size is non-zero"),
+            )),
+            AtomicU64::default(),
+        )
     }
 }
 
 impl PageCache {
+    pub(crate) fn epoch(&self) -> u64 {
+        self.1.load(Ordering::Acquire)
+    }
+
     /// The hits `offset..offset + limit` of order `slot`, when this search ranked
     /// that far — and its total and per-book counts, whichever it holds.
     pub(crate) fn page(
@@ -168,6 +183,9 @@ impl PageCache {
     ) {
         let complete = addresses.len() < window;
         let mut cache = self.0.lock().unwrap();
+        if key.cache_epoch != self.epoch() {
+            return;
+        }
         let entry = cache.get_or_insert_mut(key, Entry::default);
         if complete {
             entry.total.get_or_insert(addresses.len() as u32);
@@ -185,16 +203,24 @@ impl PageCache {
 
     pub(crate) fn store_total(&self, key: PageKey, total: u32) {
         let mut cache = self.0.lock().unwrap();
+        if key.cache_epoch != self.epoch() {
+            return;
+        }
         cache.get_or_insert_mut(key, Entry::default).total = Some(total);
     }
 
     pub(crate) fn store_book_counts(&self, key: PageKey, counts: Arc<HashMap<String, u32>>) {
         let mut cache = self.0.lock().unwrap();
+        if key.cache_epoch != self.epoch() {
+            return;
+        }
         cache.get_or_insert_mut(key, Entry::default).book_counts = Some(counts);
     }
 
     pub(crate) fn clear(&self) {
-        self.0.lock().unwrap().clear();
+        let mut cache = self.0.lock().unwrap();
+        self.1.fetch_add(1, Ordering::AcqRel);
+        cache.clear();
     }
 
     #[cfg(test)]
@@ -282,5 +308,20 @@ mod tests {
         assert_eq!(cache.page(&key, 0, 0, 10).unwrap().total, Some(900));
         cache.clear();
         assert!(cache.page(&key, 0, 0, 10).is_none());
+    }
+    #[test]
+    fn results_collected_before_clear_cannot_refill_the_cache() {
+        let cache = PageCache::default();
+        let key = PageKey::new(1, 0, &AllQuery)
+            .unwrap()
+            .with_epoch(cache.epoch());
+        cache.clear();
+        cache.store_ranked(key, 0, addresses(20), 40);
+        cache.store_total(key, 20);
+        cache.store_book_counts(key, Arc::new(HashMap::from([("book".into(), 20)])));
+        assert_eq!(cache.len(), 0);
+        let current = key.with_epoch(cache.epoch());
+        cache.store_ranked(current, 0, addresses(20), 40);
+        assert_eq!(cache.len(), 1);
     }
 }

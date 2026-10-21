@@ -339,6 +339,7 @@ where
 {
     use rayon::prelude::*;
 
+    let cancellation = crate::lexical_cancellation::LexicalFlag::current();
     let branches: usize = automata.parts.iter().map(|p| p.branch_count()).sum();
     let sources = automata.parts.len() + extra.len();
     let pairs: Vec<(usize, usize)> = (0..sources)
@@ -350,14 +351,18 @@ where
             let inverted = &segments[segment];
             if let Some(part) = automata.parts.get(source) {
                 let single = (part.branch_count() == 1).then_some(part.first_branch);
-                scan(inverted, part.as_ref(), cap, |term| {
+                scan(inverted, part.as_ref(), cap, &cancellation, |term| {
                     single.or_else(|| quote_transparent_branch(part, term))
                 })
             } else {
                 let branch = branches + (source - automata.parts.len());
-                scan(inverted, &extra[source - automata.parts.len()], cap, |_| {
-                    Some(branch)
-                })
+                scan(
+                    inverted,
+                    &extra[source - automata.parts.len()],
+                    cap,
+                    &cancellation,
+                    |_| Some(branch),
+                )
             }
         })
         .collect::<tantivy::Result<_>>()?;
@@ -422,6 +427,7 @@ fn scan<A>(
     inverted: &InvertedIndexReader,
     automaton: &A,
     cap: usize,
+    cancellation: &crate::lexical_cancellation::LexicalFlag,
     branch_of: impl Fn(&[u8]) -> Option<usize>,
 ) -> tantivy::Result<ScanHits>
 where
@@ -434,6 +440,7 @@ where
         .search(QuoteTransparent::new(automaton))
         .into_stream()?;
     while stream.advance() {
+        cancellation.check_tantivy()?;
         if hits.len() >= cap {
             return Ok((hits, true));
         }

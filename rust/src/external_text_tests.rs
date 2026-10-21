@@ -562,6 +562,7 @@ fn probes() -> Vec<(String, Probe)> {
                                 false,
                                 false,
                                 grouping,
+                                None,
                             )
                             .unwrap()
                         }),
@@ -583,6 +584,7 @@ fn probes() -> Vec<(String, Probe)> {
                         ResultsOrder::Relevance,
                         false,
                         false,
+                        None,
                         None,
                     )
                     .unwrap()
@@ -612,6 +614,7 @@ fn probes() -> Vec<(String, Probe)> {
                     nikud,
                     taamim,
                     None,
+                    None,
                 )
                 .unwrap()
             }),
@@ -629,6 +632,7 @@ fn probes() -> Vec<(String, Probe)> {
                     ResultsOrder::Catalogue,
                     nikud,
                     taamim,
+                    None,
                     None,
                 )
                 .unwrap()
@@ -649,6 +653,7 @@ fn probes() -> Vec<(String, Probe)> {
                     ResultsOrder::Catalogue,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .unwrap()
@@ -673,6 +678,7 @@ fn probes() -> Vec<(String, Probe)> {
                     slop,
                     100,
                     ResultsOrder::Catalogue,
+                    None,
                     None,
                 )
                 .unwrap()
@@ -797,6 +803,7 @@ fn probes() -> Vec<(String, Probe)> {
                         any_word.then_some(WordMatchMode::AnyWord),
                         None,
                         None,
+                        None,
                     )
                     .unwrap()
                 }),
@@ -869,6 +876,7 @@ fn assert_answers_like_stored(stored_index: &SearchEngine, library_index: &Searc
                     false,
                     false,
                     grouping,
+                    None,
                 )
                 .unwrap()
             };
@@ -889,6 +897,7 @@ fn assert_answers_like_stored(stored_index: &SearchEngine, library_index: &Searc
                     false,
                     false,
                     grouping,
+                    None,
                 )
                 .unwrap()
             };
@@ -912,6 +921,7 @@ fn assert_answers_like_stored(stored_index: &SearchEngine, library_index: &Searc
             ResultsOrder::Catalogue,
             false,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -1047,6 +1057,7 @@ pub(crate) fn exact(e: &SearchEngine, word: &str) -> Vec<SearchResult> {
         ResultsOrder::Catalogue,
         false,
         false,
+        None,
         None,
     )
     .unwrap()
@@ -2463,6 +2474,7 @@ fn real_library_smoke() {
                         false,
                         false,
                         grouping,
+                        None,
                     )
                     .unwrap()
                 },
@@ -2476,6 +2488,7 @@ fn real_library_smoke() {
                         false,
                         false,
                         grouping,
+                        None,
                     )
                     .unwrap()
                 },
@@ -2490,6 +2503,7 @@ fn real_library_smoke() {
                         false,
                         false,
                         grouping,
+                        None,
                     )
                     .unwrap()
                 },
@@ -2818,6 +2832,7 @@ fn real_library_image_rows() {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         (ms(t.elapsed()), r)
@@ -3073,7 +3088,17 @@ fn real_library_perf() {
         };
         let t = std::time::Instant::now();
         let r = e
-            .search_exact(q.to_string(), vec![], 100, 0, order, false, false, None)
+            .search_exact(
+                q.to_string(),
+                vec![],
+                100,
+                0,
+                order,
+                false,
+                false,
+                None,
+                None,
+            )
             .unwrap();
         let not_ok = r.iter().filter(|x| x.text_status != TextStatus::Ok).count();
         (t.elapsed(), r.len(), not_ok)
@@ -3142,6 +3167,7 @@ fn real_library_perf() {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         let b = external
@@ -3153,6 +3179,7 @@ fn real_library_perf() {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();

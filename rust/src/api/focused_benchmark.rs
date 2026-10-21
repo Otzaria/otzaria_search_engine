@@ -86,6 +86,7 @@ pub fn run_focused_benchmark() -> Result<()> {
             max_expansions,
             ResultsOrder::Relevance,
             None,
+            None,
         );
 
         // Actual benchmark
@@ -98,6 +99,7 @@ pub fn run_focused_benchmark() -> Result<()> {
             slop,
             max_expansions,
             ResultsOrder::Relevance,
+            None,
             None,
         ) {
             Ok(results) => {

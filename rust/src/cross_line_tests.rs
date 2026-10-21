@@ -41,8 +41,18 @@ fn exact(e: &SearchEngine, query: &str) -> Vec<SearchResult> {
 }
 
 fn exact_ordered(e: &SearchEngine, query: &str, order: ResultsOrder) -> Vec<SearchResult> {
-    e.search_exact(query.to_string(), vec![], 100, 0, order, false, false, None)
-        .unwrap()
+    e.search_exact(
+        query.to_string(),
+        vec![],
+        100,
+        0,
+        order,
+        false,
+        false,
+        None,
+        None,
+    )
+    .unwrap()
 }
 
 fn advanced(e: &SearchEngine, query: &str, distance: u32) -> Vec<SearchResult> {
@@ -75,6 +85,7 @@ fn advanced_with(
         false,
         SearchScope::WordDistance,
         SearchScope::WordDistance,
+        None,
         None,
         None,
         None,
@@ -309,6 +320,7 @@ fn a_hit_in_line_and_across_the_break_counts_once() {
             false,
             false,
             None,
+            None,
         )
         .unwrap();
     assert_eq!(page.total_count, 1);
@@ -322,6 +334,7 @@ fn a_hit_in_line_and_across_the_break_counts_once() {
             false,
             false,
             Some(ResultGrouping::SameSection),
+            None,
         )
         .unwrap();
     assert_eq!(hits(&grouped), [(0, true)]);
@@ -386,6 +399,7 @@ fn any_order_stays_within_one_line() {
             None,
             None,
             Some(true),
+            None,
         )
         .unwrap()
     };
@@ -432,6 +446,7 @@ fn vocalized_searches_stay_inside_their_line() {
             ResultsOrder::Catalogue,
             true,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -791,6 +806,7 @@ fn real_library_cross_line_cost() {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap()
                 .results
@@ -815,6 +831,7 @@ fn real_library_cross_line_cost() {
                     false,
                     SearchScope::WordDistance,
                     SearchScope::WordDistance,
+                    None,
                     None,
                     None,
                     None,
