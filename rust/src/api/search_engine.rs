@@ -8637,7 +8637,7 @@ impl SearchEngine {
             } else {
                 document_bytes += bytes;
                 documents.push(document);
-                buffered_documents.set(document_bytes);
+                buffered_documents.set_document_bytes(document_bytes);
             }
         }
         crate::indexing_diagnostics::prepare(prepare_started.elapsed());
@@ -8885,7 +8885,7 @@ impl SearchEngine {
                 } else {
                     document_bytes += bytes;
                     documents.push(document);
-                    buffered_documents.set(document_bytes);
+                    buffered_documents.set_document_bytes(document_bytes);
                 }
             }
             if finished {
