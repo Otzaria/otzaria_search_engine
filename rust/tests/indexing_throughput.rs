@@ -71,6 +71,8 @@ fn measure_indexing_throughput() {
             .unwrap();
         let add_ms = started.elapsed().as_secs_f64() * 1000.0;
         engine.commit().unwrap();
+        let committed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        engine.optimize().unwrap();
         let total_ms = started.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(engine.get_document_count(), (books * lines) as u64);
         assert!(results
@@ -90,7 +92,7 @@ fn measure_indexing_throughput() {
             .collect();
         println!(
             "OTZARIA_BENCH {}",
-            serde_json::json!({"fixture":name,"economy":economy,"books":books,"docs":books*lines,"add_ms":add_ms,"total_ms":total_ms,"stamps":stamps})
+            serde_json::json!({"fixture":name,"economy":economy,"books":books,"docs":books*lines,"add_ms":add_ms,"commit_ms":committed_ms,"total_ms":total_ms,"stamps":stamps})
         );
     }
 }

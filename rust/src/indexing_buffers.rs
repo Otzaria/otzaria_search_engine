@@ -43,6 +43,21 @@ impl PreparationPolicy {
     }
 }
 
+pub(crate) fn preparation_cpu<T: Send>(
+    economy: bool,
+    prepare: impl FnOnce() -> T + Send,
+) -> Result<T> {
+    if economy {
+        static POOL: once_cell::sync::OnceCell<rayon::ThreadPool> =
+            once_cell::sync::OnceCell::new();
+        let pool =
+            POOL.get_or_try_init(|| rayon::ThreadPoolBuilder::new().num_threads(1).build())?;
+        Ok(pool.install(prepare))
+    } else {
+        Ok(prepare())
+    }
+}
+
 const SPOOL_PREFIX: &str = ".otzaria-prepare-";
 
 /// Call only after acquiring this directory's index-writer lock.
@@ -356,6 +371,21 @@ fn read_string(reader: &mut impl Read) -> Result<String> {
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn economy_cpu_uses_one_reused_worker_without_changing_normal_pool() {
+        let normal = preparation_cpu(false, rayon::current_num_threads).unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                preparation_cpu(true, rayon::current_num_threads).unwrap(),
+                1
+            );
+            assert_eq!(
+                preparation_cpu(false, rayon::current_num_threads).unwrap(),
+                normal
+            );
+        }
+    }
 
     #[test]
     fn only_explicit_economy_limits_preparation_parallelism_and_small_buffers() {

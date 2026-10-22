@@ -611,3 +611,29 @@ fn user_regex_streams_stop_after_callback_cancellation_even_when_cached_or_empty
         }
     }
 }
+
+#[test]
+fn failed_economy_reader_reload_restores_writer_and_explicit_mode() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+    engine.open_index_writer().unwrap();
+    let original_heap = engine.writer_heap_size;
+    let error = engine
+        .set_economy_indexing_with_reload(true, |_| anyhow::bail!("injected reader reload failure"))
+        .unwrap_err();
+    assert!(error.to_string().contains("injected"));
+    assert!(!engine.economy_indexing);
+    assert_eq!(engine.writer_heap_size, original_heap);
+    assert!(engine.index_writer.is_some());
+    engine.set_economy_indexing(true).unwrap();
+    let error = engine
+        .set_economy_indexing_with_reload(false, |_| {
+            anyhow::bail!("injected reader reload failure")
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("injected"));
+    assert!(engine.economy_indexing);
+    assert_eq!(engine.writer_heap_size, ECONOMY_WRITER_HEAP_SIZE);
+    assert!(engine.index_writer.is_some());
+    engine.set_economy_indexing(false).unwrap();
+}

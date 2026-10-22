@@ -295,14 +295,6 @@ pub(crate) fn add_library_books(
         changed: Condvar::new(),
         limit: reservation * policy.book_workers,
     };
-    let prepare_pool = engine
-        .economy_indexing_for_preparation()
-        .then(|| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(policy.cpu_threads)
-                .build()
-        })
-        .transpose()?;
     let mut results: Vec<Option<LibraryBookResult>> = vec![None; books.len()];
     let (tx, rx) = mpsc::channel::<(usize, Outcome, usize)>();
     let mut docs_total = 0u64;
@@ -311,8 +303,7 @@ pub(crate) fn add_library_books(
     let enqueued = std::thread::scope(|scope| -> Result<()> {
         for _ in 0..policy.book_workers.min(books.len()) {
             let tx = tx.clone();
-            let (books, next_book, budget, stop, prepare_pool) =
-                (&books, &next_book, &budget, &stop, &prepare_pool);
+            let (books, next_book, budget, stop) = (&books, &next_book, &budget, &stop);
             scope.spawn(move || loop {
                 let index = next_book.fetch_add(1, Ordering::Relaxed);
                 let Some(book) = books.get(index) else {
@@ -324,9 +315,8 @@ pub(crate) fn add_library_books(
                 } else {
                     // A panic would leave its book unsent and every later one waiting
                     // in the budget for it: it fails that book instead.
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match prepare_pool {
-                        Some(pool) => pool.install(|| prepare_checked(engine, book, policy, stop)),
-                        None => prepare_checked(engine, book, policy, stop),
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        prepare_checked(engine, book, policy, stop)
                     }))
                     .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")))
                 };

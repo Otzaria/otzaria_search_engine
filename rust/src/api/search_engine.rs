@@ -8497,30 +8497,35 @@ impl SearchEngine {
                 }
             }
             anyhow::ensure!(!stop(), "indexing preparation interrupted");
-            let normalized: Vec<Line> = raw_lines
-                .par_iter()
-                .map_init(
-                    || edge_analyzer.clone(),
-                    |analyzer, (raw, reference, section, ordinal, stores_text)| {
-                        let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw);
-                        let hash = line_dedup_hash(&plain);
-                        let check = (!stores_text).then(|| crate::line_source::line_check(raw));
-                        let edges = (!raw.starts_with("<h"))
-                            .then(|| cross_line::line_edges(analyzer, &plain))
-                            .flatten();
-                        Line {
-                            plain,
-                            vocalized,
-                            hash,
-                            check,
-                            edges,
-                            reference: reference.clone(),
-                            section: *section,
-                            ordinal: *ordinal,
-                        }
-                    },
-                )
-                .collect();
+            let normalized: Vec<Line> =
+                crate::indexing_buffers::preparation_cpu(self.economy_indexing, || {
+                    raw_lines
+                        .par_iter()
+                        .map_init(
+                            || edge_analyzer.clone(),
+                            |analyzer, (raw, reference, section, ordinal, stores_text)| {
+                                let (plain, vocalized) =
+                                    hebrew_query::normalize_line_for_indexing(raw);
+                                let hash = line_dedup_hash(&plain);
+                                let check =
+                                    (!stores_text).then(|| crate::line_source::line_check(raw));
+                                let edges = (!raw.starts_with("<h"))
+                                    .then(|| cross_line::line_edges(analyzer, &plain))
+                                    .flatten();
+                                Line {
+                                    plain,
+                                    vocalized,
+                                    hash,
+                                    check,
+                                    edges,
+                                    reference: reference.clone(),
+                                    section: *section,
+                                    ordinal: *ordinal,
+                                }
+                            },
+                        )
+                        .collect()
+                })?;
             drop(raw_lines);
             window.extend(normalized);
             let end = if finished {
@@ -8530,14 +8535,16 @@ impl SearchEngine {
             };
             let keys_started = Instant::now();
             let keys = if self.chunk_key_field.is_some() {
-                let lines: Vec<LineRef<'_>> = window
-                    .iter()
-                    .map(|line| LineRef {
-                        text: &line.plain,
-                        section: u64::from(line.section),
-                    })
-                    .collect();
-                semantic_keys::column_values(&lines)
+                crate::indexing_buffers::preparation_cpu(self.economy_indexing, || {
+                    let lines: Vec<LineRef<'_>> = window
+                        .iter()
+                        .map(|line| LineRef {
+                            text: &line.plain,
+                            section: u64::from(line.section),
+                        })
+                        .collect();
+                    semantic_keys::column_values(&lines)
+                })?
             } else {
                 Vec::new()
             };
@@ -8727,6 +8734,7 @@ impl SearchEngine {
         let stored_fields = self.stored_text_fields()?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
         let edge_analyzer = self.text_index_analyzer()?;
+        let economy_indexing = self.economy_indexing;
         let writer = self.writer_mut()?;
 
         // Normalization + garbage heuristic are per-line pure functions —
@@ -8739,20 +8747,25 @@ impl SearchEngine {
             .flat_map(|(page_idx, page)| page.text.split('\n').map(move |line| (page_idx, line)))
             .collect();
         type Prepared = (usize, String, bool, Option<cross_line::LineEdges>);
-        let prepared: Vec<Prepared> = lines
-            .par_iter()
-            .map_init(
-                || edge_analyzer.clone(),
-                |analyzer, (page_idx, raw_line)| {
-                    let normalized = hebrew_query::normalize_pdf_text_for_indexing(raw_line);
-                    let is_garbage = hebrew_query::is_probably_garbage_pdf_text(&normalized);
-                    let edges = (!is_garbage)
-                        .then(|| cross_line::line_edges(analyzer, &normalized))
-                        .flatten();
-                    (*page_idx, normalized, is_garbage, edges)
-                },
-            )
-            .collect();
+        let prepared: Vec<Prepared> =
+            crate::indexing_buffers::preparation_cpu(economy_indexing, || {
+                lines
+                    .par_iter()
+                    .map_init(
+                        || edge_analyzer.clone(),
+                        |analyzer, (page_idx, raw_line)| {
+                            let normalized =
+                                hebrew_query::normalize_pdf_text_for_indexing(raw_line);
+                            let is_garbage =
+                                hebrew_query::is_probably_garbage_pdf_text(&normalized);
+                            let edges = (!is_garbage)
+                                .then(|| cross_line::line_edges(analyzer, &normalized))
+                                .flatten();
+                            (*page_idx, normalized, is_garbage, edges)
+                        },
+                    )
+                    .collect()
+            })?;
         let prepare_time = prepare_started.elapsed();
         // A dropped line sits between its neighbours' consecutive ids: no
         // phrase may continue across it.
@@ -8942,10 +8955,6 @@ impl SearchEngine {
         &self.index_path
     }
 
-    pub(crate) fn economy_indexing_for_preparation(&self) -> bool {
-        self.economy_indexing
-    }
-
     pub(crate) fn library_preparation_policy(&self) -> crate::indexing_buffers::PreparationPolicy {
         crate::indexing_buffers::PreparationPolicy::new(
             self.economy_indexing,
@@ -8958,6 +8967,14 @@ impl SearchEngine {
     /// writer budget. A mobile writer's 50MB default does not imply economy mode.
     /// Live writer changes commit pending documents before replacing the writer.
     pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
+        self.set_economy_indexing_with_reload(enabled, |reader| Ok(reader.reload()?))
+    }
+
+    fn set_economy_indexing_with_reload(
+        &mut self,
+        enabled: bool,
+        reload: impl FnOnce(&IndexReader) -> Result<()>,
+    ) -> Result<()> {
         let target = if enabled {
             ECONOMY_WRITER_HEAP_SIZE
         } else {
@@ -8965,7 +8982,10 @@ impl SearchEngine {
         };
         if target != self.writer_heap_size {
             if let Some(mut writer) = self.index_writer.take() {
-                writer.commit()?;
+                if let Err(error) = writer.commit() {
+                    self.index_writer = Some(writer);
+                    return Err(error.into());
+                }
                 writer.wait_merging_threads()?;
                 let previous = self.writer_heap_size;
                 self.writer_heap_size = target;
@@ -8973,7 +8993,26 @@ impl SearchEngine {
                     self.writer_heap_size = previous;
                     return Err(error);
                 }
-                self.index_reader.reload()?;
+                if let Err(error) = reload(&self.index_reader) {
+                    self.writer_heap_size = previous;
+                    let closing = self
+                        .index_writer
+                        .take()
+                        .expect("the replacement writer")
+                        .wait_merging_threads();
+                    let restoring = self.restore_writer();
+                    if let Err(restore_error) = restoring {
+                        return Err(error.context(format!(
+                            "restoring the previous writer failed: {restore_error:#}"
+                        )));
+                    }
+                    if let Err(close_error) = closing {
+                        return Err(error.context(format!(
+                            "closing the replacement writer failed: {close_error}"
+                        )));
+                    }
+                    return Err(error);
+                }
             } else {
                 self.writer_heap_size = target;
             }
