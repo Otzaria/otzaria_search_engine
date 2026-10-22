@@ -8455,7 +8455,7 @@ impl SearchEngine {
         // כערכי facet נוספים על כל שורה.
         let extra_facet_values: Vec<Facet> = extra_facets
             .iter()
-            .map(|f| Facet::from_text(f))
+            .map(Facet::from_text)
             .collect::<std::result::Result<_, _>>()?;
         let stamps = Stamps {
             content: book_fingerprint(text, title, topics, extra_facets.clone()),
