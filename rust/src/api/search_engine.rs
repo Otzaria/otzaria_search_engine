@@ -8321,6 +8321,16 @@ impl SearchEngine {
         text_storage: TextStorage,
         stored_lines: &[u32],
     ) -> Result<PreparedTextBook> {
+        if self.normal_fast_preparation(text) {
+            return self.prepare_text_book_fast(
+                book,
+                text,
+                text_storage,
+                stored_lines,
+                self.library_preparation_policy().document_bytes,
+                &|| false,
+            );
+        }
         let mut sorted = std::borrow::Cow::Borrowed(stored_lines);
         if !stored_lines.windows(2).all(|pair| pair[0] <= pair[1]) {
             sorted.to_mut().sort_unstable();
@@ -8348,6 +8358,19 @@ impl SearchEngine {
         stop: &dyn Fn() -> bool,
     ) -> Result<PreparedTextBook> {
         use std::io::Read;
+        if let Some(source) = text.as_str()? {
+            if self.normal_fast_preparation(source) {
+                let stored: Vec<u32> = stored_lines.iter()?.collect::<Result<_>>()?;
+                return self.prepare_text_book_fast(
+                    book,
+                    source,
+                    text_storage,
+                    &stored,
+                    document_budget,
+                    stop,
+                );
+            }
+        }
         let mut content = Fnv::new();
         content.feed(&text.len().to_le_bytes());
         let mut text_hash = Fnv::new();
@@ -8380,6 +8403,256 @@ impl SearchEngine {
             document_budget,
             stop,
         )
+    }
+
+    // Bound the original full-book parallel preparation by both bytes and rows.
+    // Oversized books retain the streaming safety path; economy always streams.
+    fn normal_fast_preparation(&self, text: &str) -> bool {
+        !self.economy_indexing
+            && text.len() <= self.library_preparation_policy().text_bytes
+            && text
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .take(65_536)
+                .count()
+                < 65_536
+    }
+
+    fn prepare_text_book_fast(
+        &self,
+        book: &TextBookMeta,
+        text: &str,
+        text_storage: TextStorage,
+        stored_lines: &[u32],
+        document_budget: usize,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<PreparedTextBook> {
+        anyhow::ensure!(!stop(), "indexing preparation interrupted");
+        let TextBookMeta {
+            title,
+            topics,
+            file_path,
+            extra_facets,
+            source_hash,
+        } = book;
+        let lines: Vec<&str> = text.split('\n').collect();
+        let (
+            title_f,
+            reference_f,
+            text_f,
+            id_f,
+            segment_f,
+            is_pdf_f,
+            file_path_f,
+            topics_f,
+            text_vocalized_f,
+            section_id_f,
+            line_hash_f,
+        ) = self.all_fields()?;
+        let stamp_fields = StampFields::of(&self.schema)?;
+        let topics_facet = Facet::from_text(&topics)?;
+        // נתיבי הממדים (מחבר/תקופה/יסוד) נפרסים פעם אחת לספר ומוטבעים
+        // כערכי facet נוספים על כל שורה.
+        let extra_facet_values: Vec<Facet> = extra_facets
+            .iter()
+            .map(|f| Facet::from_text(f))
+            .collect::<std::result::Result<_, _>>()?;
+        let stamps = Stamps {
+            content: book_fingerprint(text, title, topics, extra_facets.clone()),
+            text: content_fingerprint(text),
+            metadata: metadata_fingerprint(title, topics, extra_facets.clone()),
+            source: *source_hash,
+        };
+        let book_number = self.book_number(file_path)?;
+        let id_base = u64::from(book_number) << 32;
+        let chunk_key_f = self.chunk_key_field;
+        let library = text_storage == TextStorage::LibraryDb;
+        let mut kept_in_index = Vec::new();
+        if library && !stored_lines.is_empty() {
+            kept_in_index = vec![false; lines.len()];
+            for &ordinal in stored_lines {
+                if let Some(kept) = kept_in_index.get_mut(ordinal as usize) {
+                    *kept = true;
+                }
+            }
+        }
+        let stores_text = |segment: usize| !library || kept_in_index.get(segment) == Some(&true);
+        let stored_fields = self.stored_text_fields()?;
+        let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
+        let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
+        let edge_analyzer = self.text_index_analyzer()?;
+
+        // "prepare" — the pure-CPU phase (trail + normalization); "enqueue" —
+        // writer.add_document (queue push; grows only when tantivy's indexing
+        // threads apply backpressure).
+        let prepare_started = Instant::now();
+
+        // Sequential cheap pass: the reference trail is stateful across
+        // lines, so resolve each line to its reference index first. The
+        // stripped trail is recomputed only when a heading changes it.
+        let mut trail: Vec<&str> = Vec::new();
+        let mut references: Vec<String> = vec![String::new()];
+        let mut reference_of_line: Vec<u32> = Vec::with_capacity(lines.len());
+        for raw_line in &lines {
+            if raw_line.starts_with("<h") {
+                update_reference_trail(&mut trail, raw_line);
+                // כיווץ אחרי ההסרה: תג הכותרת עצמו (תג שבירה) הופך לרווח.
+                references.push(
+                    trail
+                        .iter()
+                        .map(|part| {
+                            hebrew_query::collapse_whitespace(
+                                &hebrew_query::strip_html_for_indexing(part),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+            reference_of_line.push((references.len() - 1) as u32);
+        }
+
+        // The expensive pass — normalization is order-independent across
+        // lines, so it fans out over all cores. A line carrying nikud/taamim
+        // also gets its vocalized rendering, for the `textVocalized` field
+        // (the mark check is cheap and almost always short-circuits false).
+        use rayon::prelude::*;
+        type Prepared = (
+            String,
+            Option<String>,
+            u64,
+            Option<u32>,
+            Option<cross_line::LineEdges>,
+        );
+        let normalized: Vec<Prepared> = lines
+            .par_iter()
+            .enumerate()
+            .map_init(
+                || edge_analyzer.clone(),
+                |analyzer, (segment, raw_line)| {
+                    let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw_line);
+                    let line_hash = line_dedup_hash(&plain);
+                    let line_check =
+                        (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
+                    // A heading interrupts the text: no phrase continues into or out of it.
+                    let edges = (!raw_line.starts_with("<h"))
+                        .then(|| cross_line::line_edges(analyzer, &plain))
+                        .flatten();
+                    (plain, vocalized, line_hash, line_check, edges)
+                },
+            )
+            .collect();
+        let prepare_time = prepare_started.elapsed();
+
+        // The key each line's vector is stored under: the production recipe over the text
+        // the index stores and the sections the headings open, which the passes above just
+        // made. Only for a column in use — one written under another recipe counts as
+        // absent.
+        let keys_started = Instant::now();
+        let chunk_keys: Vec<u64> = match chunk_key_f {
+            Some(_) => {
+                let lines: Vec<LineRef<'_>> = normalized
+                    .iter()
+                    .zip(&reference_of_line)
+                    .map(|((plain, _, _, _, _), section)| LineRef {
+                        text: plain,
+                        section: u64::from(*section),
+                    })
+                    .collect();
+                semantic_keys::column_values(&lines)
+            }
+            None => Vec::new(),
+        };
+        let keys_time = keys_started.elapsed();
+        anyhow::ensure!(!stop(), "indexing preparation interrupted");
+
+        let mut documents = Vec::with_capacity(lines.len());
+        let mut spooled_documents: Option<crate::indexing_buffers::DocumentSpool> = None;
+        let mut buffered_documents = crate::indexing_diagnostics::BufferedBytes::default();
+        let mut document_bytes = 0usize;
+        for (segment, (normalized_line, vocalized_line, line_hash, line_check, edges)) in
+            normalized.into_iter().enumerate()
+        {
+            anyhow::ensure!(!stop(), "indexing preparation interrupted");
+            let reference = references[reference_of_line[segment] as usize].as_str();
+            let id = id_base + segment as u64 + 1;
+            let mut document = doc!(
+                title_f        => title.as_str(),
+                reference_f    => reference,
+                text_f         => normalized_line.as_str(),
+                id_f           => id,
+                is_pdf_f       => false,
+                file_path_f    => file_path.as_str(),
+                topics_f       => topics_facet.clone(),
+                // כל השורות של אותו בלוק כותרת חולקות ערך; id_base מבדל
+                // בין ספרים, אז sectionId הנגזר ייחודי גלובלית.
+                section_id_f   => u64::from(reference_of_line[segment]),
+                line_hash_f    => line_hash
+            );
+            if let Some(stored) = segment_to_store(id, segment as u64) {
+                document.add_u64(segment_f, stored);
+            }
+            let chunk_key = chunk_keys.get(segment).copied().unwrap_or(0);
+            set_chunk_key(&mut document, chunk_key_f, chunk_key);
+            if segment == 0 {
+                stamp_book(&mut document, stamp_fields, stamps);
+            }
+            for facet in &extra_facet_values {
+                document.add_facet(topics_f, facet.clone());
+            }
+            if let Some(vocalized) = &vocalized_line {
+                document.add_text(text_vocalized_f, vocalized);
+            }
+            if let Some(edges) = &edges {
+                edge_fields.add(&mut document, edges, true, true);
+            }
+            if let Some(check) = line_check {
+                document.add_u64(line_check_f, u64::from(check));
+            } else {
+                add_stored_text(
+                    &mut document,
+                    stored_fields,
+                    &normalized_line,
+                    vocalized_line.as_deref(),
+                );
+            }
+            let bytes = document.node_data.capacity()
+                + document.len() * 16
+                + std::mem::size_of::<TantivyDocument>();
+            if spooled_documents.is_none() && document_bytes.saturating_add(bytes) > document_budget
+            {
+                let mut spool =
+                    crate::indexing_buffers::DocumentSpool::new(&self.schema, &self.index_path)?;
+                for previous in documents.drain(..) {
+                    spool.push(&previous)?;
+                }
+                documents = Vec::new();
+                buffered_documents.set(64 << 10);
+                spooled_documents = Some(spool);
+            }
+            if let Some(spool) = &mut spooled_documents {
+                spool.push(&document)?;
+            } else {
+                document_bytes += bytes;
+                documents.push(document);
+                buffered_documents.set(document_bytes);
+            }
+        }
+        crate::indexing_diagnostics::prepare(prepare_started.elapsed());
+        Ok(PreparedTextBook {
+            documents,
+            spooled_documents,
+            buffered_documents,
+            source_generation: None,
+            book_number,
+            content_hash: stamps.content,
+            text_hash: stamps.text,
+            metadata_hash: stamps.metadata,
+            source_hash: stamps.source,
+            text_storage,
+            prepare_time,
+            keys_time,
+        })
     }
 
     fn prepare_text_book_reader(

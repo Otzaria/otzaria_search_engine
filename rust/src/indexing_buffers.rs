@@ -193,6 +193,15 @@ impl TextBuffer {
         self.len() == 0
     }
 
+    pub(crate) fn as_str(&self) -> Result<Option<&str>> {
+        if self.file.is_some() || self.fingerprints.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(std::str::from_utf8(
+            &self.memory[self.skip as usize..],
+        )?))
+    }
+
     pub(crate) fn reader(&mut self) -> Result<Box<dyn BufRead + '_>> {
         anyhow::ensure!(
             self.fingerprints.is_none(),
