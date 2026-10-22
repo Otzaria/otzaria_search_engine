@@ -18091,21 +18091,20 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// build and `false` when done — `optimize` does NOT reset the flag, and
   /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
   /// default; incremental indexing keeps normal merging.
-  /// Desktop bulk preparation reserves up to 160 MiB of source/document buffers per batch.
-  /// Oversized sources keep the smaller document budget; economy/mobile still override.
-  /// These are prepared-buffer budgets, not a total process RSS limit.
   Future<void> setBulkIndexing({required bool enabled}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSetBulkIndexing(
         that: this,
         enabled: enabled,
       );
 
-  /// Economy indexing mode: shrinks the writer's memory budget to the
-  /// mobile footprint (50MB ⇒ tantivy caps itself at 3 indexing threads)
-  /// so the machine stays responsive during a long build; `false` restores
-  /// the platform default. The budget is fixed at writer creation, so a
-  /// live writer is swapped — pending documents are committed first and
-  /// nothing is lost. May be toggled mid-indexing; off by default.
+  /// Explicit economy mode: one preparation worker and CPU thread, small spilling
+  /// buffers, and a 50MB writer. `false` restores normal preparation and the platform's
+  /// writer budget. A mobile writer's 50MB default does not imply economy mode.
+  /// Normal preparation uses the original parallel whole-book pass for sources up to
+  /// 32 MiB and 65,536 lines; larger books stream. Four normal preparation workers
+  /// reserve at most 384 MiB of source/document buffers together, excluding normalized
+  /// text, SQLite and the writer: this is not a process RSS limit. Bulk merge policy
+  /// is independent. Live writer changes commit pending documents before replacement.
   Future<void> setEconomyIndexing({required bool enabled}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSetEconomyIndexing(
         that: this,

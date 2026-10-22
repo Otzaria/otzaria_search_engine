@@ -8524,6 +8524,7 @@ impl SearchEngine {
             Option<u32>,
             Option<cross_line::LineEdges>,
         );
+        anyhow::ensure!(!stop(), "indexing preparation interrupted");
         let normalized: Vec<Prepared> = lines
             .par_iter()
             .enumerate()
@@ -8548,6 +8549,7 @@ impl SearchEngine {
         // the index stores and the sections the headings open, which the passes above just
         // made. Only for a column in use — one written under another recipe counts as
         // absent.
+        anyhow::ensure!(!stop(), "indexing preparation interrupted");
         let keys_started = Instant::now();
         let chunk_keys: Vec<u64> = match chunk_key_f {
             Some(_) => {
@@ -9238,7 +9240,11 @@ impl SearchEngine {
     /// Explicit economy mode: one preparation worker and CPU thread, small spilling
     /// buffers, and a 50MB writer. `false` restores normal preparation and the platform's
     /// writer budget. A mobile writer's 50MB default does not imply economy mode.
-    /// Live writer changes commit pending documents before replacing the writer.
+    /// Normal preparation uses the original parallel whole-book pass for sources up to
+    /// 32 MiB and 65,536 lines; larger books stream. Four normal preparation workers
+    /// reserve at most 384 MiB of source/document buffers together, excluding normalized
+    /// text, SQLite and the writer: this is not a process RSS limit. Bulk merge policy
+    /// is independent. Live writer changes commit pending documents before replacement.
     pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
         self.set_economy_indexing_with_reload(enabled, |reader| Ok(reader.reload()?))
     }
