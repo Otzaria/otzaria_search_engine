@@ -8330,7 +8330,8 @@ impl SearchEngine {
             content_fingerprint(text),
             text_storage,
             &mut stored,
-            8 << 20,
+            self.library_preparation_policy()
+                .document_budget(text.len() as u64),
             &|| false,
         )
     }
@@ -8918,6 +8919,9 @@ impl SearchEngine {
     /// build and `false` when done — `optimize` does NOT reset the flag, and
     /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
     /// default; incremental indexing keeps normal merging.
+    /// Desktop bulk preparation reserves up to 160 MiB of source/document buffers per batch.
+    /// Oversized sources keep the smaller document budget; economy/mobile still override.
+    /// These are prepared-buffer budgets, not a total process RSS limit.
     pub fn set_bulk_indexing(&mut self, enabled: bool) -> Result<()> {
         self.bulk_indexing = enabled;
         let index_path = self.index_path.clone();
@@ -8935,13 +8939,12 @@ impl SearchEngine {
         &self.index_path
     }
 
-    pub(crate) fn library_preparation_policy(&self) -> (usize, usize, usize) {
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-        if self.writer_heap_size <= ECONOMY_WRITER_HEAP_SIZE {
-            (1, 1, 2 << 20)
-        } else {
-            ((cores / 2).clamp(1, 2), (cores / 2).clamp(1, 4), 8 << 20)
-        }
+    pub(crate) fn library_preparation_policy(&self) -> crate::indexing_buffers::PreparationPolicy {
+        crate::indexing_buffers::PreparationPolicy::new(
+            self.bulk_indexing,
+            self.writer_heap_size <= ECONOMY_WRITER_HEAP_SIZE,
+            std::thread::available_parallelism().map_or(1, |n| n.get()),
+        )
     }
 
     /// Economy indexing mode: shrinks the writer's memory budget to the

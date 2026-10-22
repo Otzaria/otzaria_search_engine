@@ -65,6 +65,7 @@ pub(crate) fn read_library_book(
             with_notes,
             &|| !session.is_current(),
             None,
+            1 << 20,
             false,
         )
     });
@@ -88,6 +89,7 @@ pub(crate) fn library_book_fingerprint(
                 source == Source::Library,
                 &|| !session.is_current(),
                 None,
+                0,
                 true,
             )
         })
@@ -129,15 +131,13 @@ fn failed(book: &LibraryBookInput, error: impl std::fmt::Display) -> LibraryBook
 /// Reads and prepares one book; never touches the writer.
 #[cfg(test)]
 pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome {
-    prepare_checked(engine, book, engine.library_preparation_policy().2, &|| {
-        false
-    })
+    prepare_checked(engine, book, engine.library_preparation_policy(), &|| false)
 }
 
 fn prepare_checked(
     engine: &SearchEngine,
     book: &LibraryBookInput,
-    document_budget: usize,
+    policy: crate::indexing_buffers::PreparationPolicy,
     stop: &dyn Fn() -> bool,
 ) -> Outcome {
     #[cfg(test)]
@@ -177,6 +177,7 @@ fn prepare_checked(
             source == Source::Library,
             &|| stop() || !session.is_current(),
             Some(engine.preparation_directory()),
+            policy.text_bytes,
             false,
         )
     });
@@ -215,6 +216,7 @@ fn prepare_checked(
         extra_facets: book.extra_facets.clone().unwrap_or_default(),
         source_hash: book.source_hash.unwrap_or(0),
     };
+    let document_budget = policy.document_budget(text.text.len());
     match engine.prepare_text_book_buffer(
         &meta,
         &mut text.text,
@@ -286,15 +288,15 @@ pub(crate) fn add_library_books(
     let abort = AtomicBool::new(false);
     let stop = || cancelled() || abort.load(Ordering::Relaxed);
     let next_book = AtomicUsize::new(0);
-    let (workers, cpu_threads, document_budget) = engine.library_preparation_policy();
-    let reservation = document_budget + (1 << 20);
+    let policy = engine.library_preparation_policy();
+    let reservation = policy.reservation();
     let budget = Budget {
         state: Mutex::new((0, 0)),
         changed: Condvar::new(),
-        limit: reservation * workers,
+        limit: reservation * policy.book_workers,
     };
     let prepare_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(cpu_threads)
+        .num_threads(policy.cpu_threads)
         .build()?;
     let mut results: Vec<Option<LibraryBookResult>> = vec![None; books.len()];
     let (tx, rx) = mpsc::channel::<(usize, Outcome, usize)>();
@@ -302,7 +304,7 @@ pub(crate) fn add_library_books(
     let mut enqueue_time = Duration::ZERO;
 
     let enqueued = std::thread::scope(|scope| -> Result<()> {
-        for _ in 0..workers.min(books.len()) {
+        for _ in 0..policy.book_workers.min(books.len()) {
             let tx = tx.clone();
             let (books, next_book, budget, stop, prepare_pool) =
                 (&books, &next_book, &budget, &stop, &prepare_pool);
@@ -318,8 +320,7 @@ pub(crate) fn add_library_books(
                     // A panic would leave its book unsent and every later one waiting
                     // in the budget for it: it fails that book instead.
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        prepare_pool
-                            .install(|| prepare_checked(engine, book, document_budget, stop))
+                        prepare_pool.install(|| prepare_checked(engine, book, policy, stop))
                     }))
                     .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")))
                 };

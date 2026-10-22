@@ -764,7 +764,7 @@ impl LineStore {
         with_notes: bool,
         stop: &dyn Fn() -> bool,
     ) -> Result<Option<IndexingText>> {
-        self.read_book_for_indexing_buffered(book_id, title, with_notes, stop, None, false)
+        self.read_book_for_indexing_buffered(book_id, title, with_notes, stop, None, 1 << 20, false)
     }
 
     pub(crate) fn read_book_for_indexing_buffered(
@@ -774,6 +774,7 @@ impl LineStore {
         with_notes: bool,
         stop: &dyn Fn() -> bool,
         directory: Option<&Path>,
+        text_budget: usize,
         fingerprint_only: bool,
     ) -> Result<Option<IndexingText>> {
         self.in_read_txn(|store| {
@@ -812,7 +813,7 @@ impl LineStore {
                 text: if fingerprint_only {
                     crate::indexing_buffers::TextBuffer::fingerprinting()
                 } else {
-                    crate::indexing_buffers::TextBuffer::in_directory(1 << 20, directory)
+                    crate::indexing_buffers::TextBuffer::in_directory(text_budget, directory)
                 },
                 data_uri_rows: crate::indexing_buffers::OrdinalBuffer::in_directory(directory),
                 has_notes,

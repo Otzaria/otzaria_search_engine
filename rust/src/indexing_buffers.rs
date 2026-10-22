@@ -5,6 +5,46 @@ use tantivy::schema::document::ReferenceValueLeaf;
 use tantivy::schema::{Facet, Field, Schema, Value};
 use tantivy::TantivyDocument;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparationPolicy {
+    pub book_workers: usize,
+    pub cpu_threads: usize,
+    pub text_bytes: usize,
+    pub document_bytes: usize,
+}
+
+impl PreparationPolicy {
+    pub(crate) fn new(bulk: bool, economy: bool, cores: usize) -> Self {
+        if economy {
+            Self {
+                book_workers: 1,
+                cpu_threads: 1,
+                text_bytes: 1 << 20,
+                document_bytes: 2 << 20,
+            }
+        } else {
+            Self {
+                book_workers: (cores / 2).clamp(1, 2),
+                cpu_threads: (cores / 2).clamp(1, 4),
+                text_bytes: if bulk { 16 << 20 } else { 1 << 20 },
+                document_bytes: if bulk { 64 << 20 } else { 8 << 20 },
+            }
+        }
+    }
+
+    pub(crate) fn document_budget(self, source_bytes: u64) -> usize {
+        if self.document_bytes > 8 << 20 && source_bytes > self.text_bytes as u64 {
+            8 << 20
+        } else {
+            self.document_bytes
+        }
+    }
+
+    pub(crate) fn reservation(self) -> usize {
+        self.text_bytes + self.document_bytes
+    }
+}
+
 const SPOOL_PREFIX: &str = ".otzaria-prepare-";
 
 /// Call only after acquiring this directory's index-writer lock.
@@ -318,6 +358,42 @@ fn read_string(reader: &mut impl Read) -> Result<String> {
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn preparation_policies_keep_fixed_total_bounds_and_economy_overrides_bulk() {
+        for cores in [1, 2, 4, 8, 64] {
+            let background = PreparationPolicy::new(false, false, cores);
+            let bulk = PreparationPolicy::new(true, false, cores);
+            let economy = PreparationPolicy::new(false, true, cores);
+            assert!(background.reservation() * background.book_workers <= 18 << 20);
+            assert!(bulk.reservation() * bulk.book_workers <= 160 << 20);
+            assert_eq!(bulk.cpu_threads, background.cpu_threads);
+            assert_eq!(bulk.document_budget(16 << 20), 64 << 20);
+            assert_eq!(bulk.document_budget((16 << 20) + 1), 8 << 20);
+            assert_eq!(economy.document_budget(u64::MAX), 2 << 20);
+            assert_eq!(economy, PreparationPolicy::new(true, true, cores));
+            assert_eq!(economy.reservation(), 3 << 20);
+            assert_eq!((economy.book_workers, economy.cpu_threads), (1, 1));
+        }
+    }
+
+    #[test]
+    fn bulk_text_budget_avoids_spilling_a_midsize_source() {
+        let text = "אבגדה".repeat(1 << 18);
+        for bulk in [false, true] {
+            let policy = PreparationPolicy::new(bulk, false, 4);
+            let mut buffer = TextBuffer::new(policy.text_bytes);
+            buffer.push_str(&text).unwrap();
+            assert_eq!(buffer.spilled_bytes() == 0, bulk);
+            let mut actual = String::new();
+            buffer
+                .reader()
+                .unwrap()
+                .read_to_string(&mut actual)
+                .unwrap();
+            assert_eq!(actual, text);
+        }
+    }
 
     #[test]
     fn text_spill_preserves_utf8_bom_and_repeated_reads() {

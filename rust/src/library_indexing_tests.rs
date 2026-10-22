@@ -1418,8 +1418,15 @@ fn economy_mode_limits_preparation_as_well_as_the_writer() {
     let normal = engine.library_preparation_policy();
     engine.set_economy_indexing(true).unwrap();
     let economy = engine.library_preparation_policy();
-    assert_eq!(economy, (1, 1, 2 << 20));
-    assert!(normal.0 >= economy.0 && normal.1 >= economy.1 && normal.2 >= economy.2);
+    assert_eq!(
+        economy,
+        crate::indexing_buffers::PreparationPolicy::new(false, true, 1)
+    );
+    assert!(
+        normal.book_workers >= economy.book_workers
+            && normal.cpu_threads >= economy.cpu_threads
+            && normal.document_bytes >= economy.document_bytes
+    );
     assert!(!engine.holds_writer_for_tests());
 }
 
@@ -1492,5 +1499,89 @@ fn notes_after_the_joined_text_range_are_still_validated() {
             library_book_content_fingerprint(LibraryBookSource::Library, None, 21, None).is_err(),
             "case {case}"
         );
+    }
+}
+
+pub(crate) fn preparation_budget_fixture(
+    path: &Path,
+    books: usize,
+    lines: usize,
+) -> Vec<LibraryBookInput> {
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    connection.execute_batch("CREATE TABLE line(id INTEGER PRIMARY KEY,bookId INTEGER,lineIndex INTEGER,content TEXT); CREATE INDEX idx_line_book_index ON line(bookId,lineIndex);").unwrap();
+    let transaction = connection.transaction().unwrap();
+    let text = "שורה עם טקסט מקורי ארוך מספיק לבדיקת הכנת מסמכים וגבולות התקציב ".repeat(8);
+    {
+        let mut insert = transaction
+            .prepare("INSERT INTO line VALUES(?1,?2,?3,?4)")
+            .unwrap();
+        for book in 0..books {
+            for ordinal in 0..lines {
+                let content = match ordinal % 257 {
+                    0 => format!("<h2>פרק {ordinal}</h2>"),
+                    1 => "קטן מאד".into(),
+                    _ => format!("{text} {ordinal}"),
+                };
+                insert
+                    .execute(rusqlite::params![
+                        book * lines + ordinal + 1,
+                        book + 1,
+                        ordinal,
+                        content
+                    ])
+                    .unwrap();
+            }
+        }
+    }
+    transaction.commit().unwrap();
+    (0..books)
+        .map(|book| LibraryBookInput {
+            db_title: None,
+            ..library_input((book + 1) as i64, "בדיקת תקציב")
+        })
+        .collect()
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn bulk_preparation_avoids_medium_book_spools_without_changing_documents() {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let _guard = crate::external_text_tests::guard();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("budget.db");
+    let input = preparation_budget_fixture(&path, 1, 12_000).remove(0);
+    configure_line_source(path.to_str().unwrap().into()).unwrap();
+    let mut engine = new_engine(&directory.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let mut expected = None;
+    for bulk in [false, true] {
+        engine.set_bulk_indexing(bulk).unwrap();
+        let Outcome::Prepared(mut prepared) = crate::library_indexing::prepare(&engine, &input)
+        else {
+            panic!("preparation failed");
+        };
+        assert_eq!(prepared.spooled_documents.is_none(), bulk);
+        let mut hasher = DefaultHasher::new();
+        let mut count = 0;
+        let searcher = engine.searcher_for_tests();
+        prepared
+            .for_each_document(|document| {
+                tantivy::Document::to_json(&document, searcher.schema()).hash(&mut hasher);
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
+        let actual = (
+            count,
+            hasher.finish(),
+            prepared.content_hash,
+            prepared.text_hash,
+            prepared.metadata_hash,
+        );
+        if let Some(expected) = expected {
+            assert_eq!(actual, expected);
+        } else {
+            expected = Some(actual);
+        }
     }
 }

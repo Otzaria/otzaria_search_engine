@@ -462,3 +462,83 @@ fn measure_corpus() {
         mode => panic!("unknown benchmark mode {mode}"),
     }
 }
+
+#[test]
+#[ignore = "generated SQLite fixtures; run alone in release"]
+fn measure_bounded_bulk_preparation() {
+    let _guard = crate::external_text_tests::guard();
+    let root = tempfile::tempdir().unwrap();
+    for (name, book_count, lines, order) in [
+        (
+            "medium",
+            4usize,
+            12_000usize,
+            vec![false, true, true, false, false, true],
+        ),
+        ("large", 1, 80_000, vec![true, false, false, true]),
+    ] {
+        let path = root.path().join(format!("{name}.db"));
+        let inputs =
+            crate::library_indexing_tests::preparation_budget_fixture(&path, book_count, lines);
+        let mut expected = None;
+        for (run, bulk) in order.into_iter().enumerate() {
+            let index = root.path().join(format!("{name}-{run}"));
+            std::fs::create_dir(&index).unwrap();
+            configure_line_source(path.to_str().unwrap().into()).unwrap();
+            let mut engine = SearchEngine::new(index.to_str().unwrap());
+            engine.set_bulk_indexing(true).unwrap();
+            // Keep NoMergePolicy on both sides; only the preparation budgets differ.
+            engine.bulk_indexing = bulk;
+            crate::indexing_diagnostics::reset();
+            let started = Instant::now();
+            let results = engine
+                .add_library_books(inputs.clone(), &IndexingCancellationToken::new())
+                .unwrap();
+            let add_ms = started.elapsed().as_secs_f64() * 1000.0;
+            engine.commit().unwrap();
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let metrics = crate::indexing_diagnostics::snapshot();
+            if name == "large" {
+                assert!(metrics.peak_buffered_bytes <= 17 << 20);
+                assert!(metrics.spilled_bytes > 0);
+            } else if bulk {
+                assert_eq!(metrics.spilled_bytes, 0);
+            }
+            assert!(results
+                .iter()
+                .all(|result| result.status
+                    == crate::api::library_indexing::LibraryBookStatus::Indexed));
+            assert_eq!(engine.get_document_count(), (book_count * lines) as u64);
+            let stamps: Vec<_> = results
+                .iter()
+                .map(|result| {
+                    (
+                        result.docs,
+                        result.content_hash,
+                        result.text_hash,
+                        result.metadata_hash,
+                    )
+                })
+                .collect();
+            let search = stream_sample(
+                &engine,
+                Case {
+                    query: "שורה",
+                    relevance: false,
+                    group: 0,
+                    offset: 0,
+                },
+            );
+            let parity = (stamps, search["digest"].clone(), search["total"].clone());
+            if let Some(expected) = &expected {
+                assert_eq!(&parity, expected);
+            } else {
+                expected = Some(parity);
+            }
+            println!(
+                "{}",
+                serde_json::json!({"fixture":name,"bulk_budget":bulk,"run":run,"books":book_count,"docs":book_count*lines,"add_ms":add_ms,"total_ms":total_ms,"spilled_bytes":metrics.spilled_bytes,"peak_buffered_bytes":metrics.peak_buffered_bytes,"search_digest":search["digest"]})
+            );
+        }
+    }
+}
