@@ -14657,19 +14657,20 @@ impl SearchEngine {
         let text_f = self.schema.get_field("text")?;
 
         // Start from the edit-distance terms (same automatons as search)...
-        let mut matched = if max_distance == 0 {
-            HashSet::new()
+        let (fuzzy_terms, complete) = if max_distance == 0 {
+            (HashSet::new(), true)
         } else {
             let automatons = term_texts
                 .iter()
                 .map(|t| self.fuzzy_automaton(t, max_distance))
                 .collect::<Result<Vec<_>>>()?;
-            self.automaton_highlight_terms(searcher, &automatons)?
+            self.automaton_highlight_terms_complete(searcher, &automatons)?
         };
 
         // ...then add the literal tokens and the (blacklist-filtered) lexical
         // forms per token. The exact token can otherwise be omitted when a broad
         // fuzzy automaton exhausts its highlight-term budget first.
+        let mut matched = HashSet::new();
         for token in term_texts {
             matched.insert(token.clone());
             matched.extend(Self::quoteless_variant(token));
@@ -14678,8 +14679,16 @@ impl SearchEngine {
             }
         }
 
-        let matched: Vec<String> = matched.into_iter().collect();
-        let terms = quote_expansion::spelling_terms(searcher, text_f, &matched)?;
+        // A complete quote-transparent walk already holds every quoted spelling of
+        // its terms; only a capped one needs them looked up.
+        let mut words: Vec<&String> = matched.iter().collect();
+        if !complete {
+            words.extend(&fuzzy_terms);
+        }
+        let mut terms = quote_expansion::spelling_terms(searcher, text_f, &words)?;
+        if complete {
+            terms.extend(fuzzy_terms.iter().map(|t| Term::from_field_text(text_f, t)));
+        }
         Ok(Box::new(TermSetQuery::new(terms)))
     }
 
@@ -14720,17 +14729,34 @@ impl SearchEngine {
         A: Automaton,
         A::State: Clone,
     {
+        Ok(self
+            .automaton_highlight_terms_complete(searcher, automatons)?
+            .0)
+    }
+
+    /// [`Self::automaton_highlight_terms`], and whether no automaton reached its
+    /// share of the budget (every term it matches is in the set).
+    fn automaton_highlight_terms_complete<A>(
+        &self,
+        searcher: &Searcher,
+        automatons: &[A],
+    ) -> Result<(HashSet<String>, bool)>
+    where
+        A: Automaton,
+        A::State: Clone,
+    {
         let mut matched: HashSet<String> = HashSet::new();
+        let mut complete = true;
         // Split the term budget evenly between automatons: a global cap would
         // let one broad first word exhaust it and leave the remaining query
         // words with no highlighting at all.
         let per_automaton_cap = (MAX_HIGHLIGHT_TERMS / automatons.len().max(1)).max(1);
         for automaton in automatons {
-            for term in self.automaton_terms(searcher, automaton, per_automaton_cap)? {
-                matched.insert(term);
-            }
+            let terms = self.automaton_terms(searcher, automaton, per_automaton_cap)?;
+            complete &= terms.len() < per_automaton_cap;
+            matched.extend(terms);
         }
-        Ok(matched)
+        Ok((matched, complete))
     }
 
     fn automaton_terms<A>(
@@ -22217,6 +22243,81 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn lexical_fuzzy_highlight_terms_hold_every_spelling() {
+        let (mut engine, dir) = make_engine();
+        for (id, line) in [
+            (1, "הלכה הלכ\"ה"),
+            (2, "הלכתי הלכת'י"),
+            (3, "הולכ\"ים הלך"),
+            (4, "הלכו מלך"),
+        ] {
+            add(&mut engine, id, line, &format!("/books/{id}.txt"));
+            engine.commit().unwrap();
+        }
+        assert!(engine.set_magic_dictionary_path(make_lexical_db(&dir)));
+        let searcher = engine.searcher_for_tests();
+        let text_f = engine.schema.get_field("text").unwrap();
+        let dict = engine.magic_dict.as_ref().unwrap();
+        let tokens = vec!["הלך".to_string()];
+        for distance in [0, 1, 2] {
+            // Every spelling of every fuzzy, literal and dictionary term.
+            let mut words = if distance == 0 {
+                HashSet::new()
+            } else {
+                let automaton = engine.fuzzy_automaton(&tokens[0], distance).unwrap();
+                engine
+                    .automaton_highlight_terms(&searcher, &[automaton])
+                    .unwrap()
+            };
+            words.insert(tokens[0].clone());
+            words.extend(dict.highlight_forms(&tokens[0], MAX_LEXICAL_FORMS));
+            let words: Vec<String> = words.into_iter().collect();
+            let expected: std::collections::BTreeSet<Term> =
+                quote_expansion::spelling_terms(&searcher, text_f, &words)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            assert!(expected
+                .iter()
+                .any(|t| t.value().as_str().unwrap().contains('"')));
+
+            let query = engine
+                .build_lexical_fuzzy_highlight_query(&searcher, &tokens, distance)
+                .unwrap();
+            let mut terms = std::collections::BTreeSet::new();
+            query.query_terms(&mut |term, _| {
+                terms.insert(term.clone());
+            });
+            assert_eq!(terms, expected, "distance {distance}");
+        }
+    }
+
+    #[test]
+    fn automaton_highlight_terms_complete_reports_a_capped_walk() {
+        let (mut engine, _dir) = make_engine();
+        add(&mut engine, 1, "שבת שב\"ת", "/books/a.txt");
+        engine.commit().unwrap();
+        let searcher = engine.searcher_for_tests();
+
+        let one = [quote_expansion::Literal::new(["שבת"])];
+        let (terms, complete) = engine
+            .automaton_highlight_terms_complete(&searcher, &one)
+            .unwrap();
+        assert!(complete);
+        assert_eq!(
+            terms,
+            HashSet::from(["שבת".to_string(), "שב\"ת".to_string()])
+        );
+
+        // A share of one term each: every walk stops at its first term.
+        let many = vec![quote_expansion::Literal::new(["שבת"]); MAX_HIGHLIGHT_TERMS];
+        let (_, complete) = engine
+            .automaton_highlight_terms_complete(&searcher, &many)
+            .unwrap();
+        assert!(!complete);
     }
 
     #[test]
