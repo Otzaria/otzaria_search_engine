@@ -677,8 +677,8 @@ const MARKED: &str = "גוף<sup class=\"footnote-marker\">א</sup> המשך\
                       <sup class=\"footnote-marker\">ב</sup> סוף";
 const PLACED: &str = "גוף<sup class=\"footnote-marker\">א</sup> <b>המשך</b> סוף";
 
-/// `(book, row lineIndex, noteIndex, charPos, marker, body)`.
-type FixtureNote = (i64, i64, i64, i64, Option<&'static str>, &'static str);
+/// `(book, row lineIndex, noteIndex, charPos, hasMarker, body)`.
+type FixtureNote = (i64, i64, i64, i64, bool, &'static str);
 
 fn notes_fixture_books() -> Vec<(i64, &'static str, Vec<String>)> {
     vec![
@@ -706,12 +706,12 @@ fn notes_fixture_books() -> Vec<(i64, &'static str, Vec<String>)> {
 
 fn fixture_notes() -> Vec<FixtureNote> {
     vec![
-        (21, 1, 0, -1, Some("א"), "ראשונה זרזיר"),
-        (21, 1, 1, -1, None, "נספחת קורקבן"),
-        (21, 1, 2, -1, Some("ב"), "שנייה חרטום"),
-        (21, 2, 0, 4, Some("א"), "מוקדמת"),
-        (21, 2, 1, 9, None, "באמצע תמנון"),
-        (21, 3, 0, -1, Some("ג"), "בתמונה ינשוף"),
+        (21, 1, 0, -1, true, "ראשונה זרזיר"),
+        (21, 1, 1, -1, false, "נספחת קורקבן"),
+        (21, 1, 2, -1, true, "שנייה חרטום"),
+        (21, 2, 0, 4, true, "מוקדמת"),
+        (21, 2, 1, 9, false, "באמצע תמנון"),
+        (21, 3, 0, -1, true, "בתמונה ינשוף"),
     ]
 }
 
@@ -746,7 +746,7 @@ fn write_notes_fixture(path: &Path, with_note_table: bool) {
     if with_note_table {
         conn.execute_batch(
             "CREATE TABLE line_note (lineId INTEGER NOT NULL, noteIndex INTEGER NOT NULL,
-                                     charPos INTEGER NOT NULL, marker TEXT, body TEXT NOT NULL,
+                                     charPos INTEGER NOT NULL, hasMarker INTEGER NOT NULL, body TEXT NOT NULL,
                                      PRIMARY KEY (lineId, noteIndex)) WITHOUT ROWID;",
         )
         .unwrap();
@@ -773,11 +773,17 @@ fn write_notes_fixture(path: &Path, with_note_table: bool) {
         }
     }
     if with_note_table {
-        for (book, line, note, char_pos, marker, body) in fixture_notes().into_iter().rev() {
+        for (book, line, note, char_pos, has_marker, body) in fixture_notes().into_iter().rev() {
             conn.execute(
-                "INSERT INTO line_note (lineId, noteIndex, charPos, marker, body)
+                "INSERT INTO line_note (lineId, noteIndex, charPos, hasMarker, body)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![book * 1000 - line, note, char_pos, marker, body],
+                rusqlite::params![
+                    book * 1000 - line,
+                    note,
+                    char_pos,
+                    i64::from(has_marker),
+                    body
+                ],
             )
             .unwrap();
         }
@@ -897,6 +903,202 @@ fn line_note_bodies_are_indexed_like_the_apps_rehydrated_text() {
     }
 }
 
+/// Turns a notes fixture into the release shape: every line and every `line_note` body a
+/// zstd frame of the dictionary in `zstd_dict`, as SeforimLibrary's compressLineContent stores them.
+fn compress_notes_fixture(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let dict = crate::external_text_tests::train_dictionary();
+    conn.execute_batch("CREATE TABLE zstd_dict (id INTEGER PRIMARY KEY, dict BLOB NOT NULL);")
+        .unwrap();
+    conn.execute("INSERT INTO zstd_dict (dict) VALUES (?1)", [&dict])
+        .unwrap();
+    let mut compressor = zstd::bulk::Compressor::with_dictionary(3, &dict).unwrap();
+    for (table, key, column) in [
+        ("line_content", "CAST(id AS TEXT)", "content"),
+        ("line_note", "lineId || ':' || noteIndex", "body"),
+    ] {
+        let rows: Vec<(String, String)> = conn
+            .prepare(&format!("SELECT {key}, {column} FROM {table}"))
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (k, text) in rows {
+            let frame = compressor.compress(text.as_bytes()).unwrap();
+            conn.execute(
+                &format!("UPDATE {table} SET {column} = ?1 WHERE {key} = ?2"),
+                rusqlite::params![frame, k],
+            )
+            .unwrap();
+        }
+    }
+    let plain: i64 = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM line_content WHERE typeof(content) <> 'blob') + \
+             (SELECT count(*) FROM line_note WHERE typeof(body) <> 'blob')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(plain, 0);
+}
+
+#[test]
+fn compressed_line_note_bodies_are_indexed_like_plain_ones() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let inputs: Vec<LibraryBookInput> = notes_fixture_books()
+        .iter()
+        .map(|(id, title, _)| library_input(*id, title))
+        .collect();
+    let mut engines = Vec::new();
+    for compressed in [false, true] {
+        let db = dir.path().join(format!("seforim-{compressed}.db"));
+        write_notes_fixture(&db, true);
+        if compressed {
+            compress_notes_fixture(&db);
+        }
+        configure_line_source(db.display().to_string()).unwrap();
+        let mut engine = new_engine(&dir.path().join(format!("engine-{compressed}")));
+        engine.open_index_writer().unwrap();
+        let results = engine
+            .add_library_books(inputs.clone(), &IndexingCancellationToken::new())
+            .unwrap();
+        engine.commit().unwrap();
+        assert!(results
+            .iter()
+            .all(|r| r.status == LibraryBookStatus::Indexed));
+        assert_eq!(
+            results[0].text_hash,
+            compute_content_fingerprint_bytes(book_21_text().into_bytes())
+        );
+        engines.push(engine);
+    }
+    assert_eq!(stored_documents(&engines[0]), stored_documents(&engines[1]));
+    for word in ["זרזיר", "קורקבן", "חרטום", "תמנון", "ינשוף"] {
+        let hits = hit_books(&engines[1], word);
+        assert_eq!(hits.len(), 1, "{word}");
+        assert_eq!(hits[0].0, "id:21", "{word}");
+    }
+}
+
+#[test]
+fn a_note_body_that_cannot_be_decoded_fails_the_book_instead_of_dropping_the_note() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("seforim.db");
+    write_notes_fixture(&db, true);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    // A frame in a database without `zstd_dict`.
+    conn.execute(
+        "UPDATE line_note SET body = X'28B52FFD00' WHERE lineId = 20999 AND noteIndex = 0",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    configure_line_source(db.display().to_string()).unwrap();
+    let mut engine = new_engine(&dir.path().join("index"));
+    engine.open_index_writer().unwrap();
+    let results = engine
+        .add_library_books(
+            vec![library_input(21, "הערות")],
+            &IndexingCancellationToken::new(),
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(results[0].status, LibraryBookStatus::Failed);
+    assert!(hit_books(&engine, "המשך").is_empty());
+}
+
+#[test]
+fn invalid_utf8_in_a_note_fails_the_whole_book_before_adding_documents() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    for compressed in [true, false] {
+        let db = dir.path().join(format!("seforim-{compressed}.db"));
+        write_notes_fixture(&db, true);
+        if compressed {
+            compress_notes_fixture(&db);
+        }
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let invalid_utf8 = [0xff, b'a'];
+        let body = if compressed {
+            let dict: Vec<u8> = conn
+                .query_row("SELECT dict FROM zstd_dict", [], |r| r.get(0))
+                .unwrap();
+            zstd::bulk::Compressor::with_dictionary(3, &dict)
+                .unwrap()
+                .compress(&invalid_utf8)
+                .unwrap()
+        } else {
+            invalid_utf8.to_vec()
+        };
+        // The last note in the book: earlier valid rows must not be partially indexed.
+        conn.execute(
+            if compressed {
+                "UPDATE line_note SET body = ?1 WHERE lineId = 20997 AND noteIndex = 0"
+            } else {
+                "UPDATE line_note SET body = CAST(?1 AS TEXT) WHERE lineId = 20997 AND noteIndex = 0"
+            },
+            [body],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = crate::line_source::LineStore::open(&db).unwrap();
+        let error = store
+            .read_book_for_indexing(21, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("book 21 line 3 note 0"), "{error}");
+        assert!(error.contains("UTF-8"), "{error}");
+        configure_line_source(db.display().to_string()).unwrap();
+        let mut engine = new_engine(&dir.path().join(format!("index-{compressed}")));
+        engine.open_index_writer().unwrap();
+        let results = engine
+            .add_library_books(
+                vec![library_input(21, "הערות")],
+                &IndexingCancellationToken::new(),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(results[0].status, LibraryBookStatus::Failed, "{compressed}");
+        assert_eq!(results[0].docs, 0);
+        assert!(stored_documents(&engine).is_empty());
+        assert!(results[0].error.is_some());
+    }
+}
+
+#[test]
+fn a_has_marker_other_than_0_or_1_fails_the_book() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    for (case, value) in ["2", "'x'"].into_iter().enumerate() {
+        let db = dir.path().join(format!("seforim-{case}.db"));
+        write_notes_fixture(&db, true);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            &format!(
+                "UPDATE line_note SET hasMarker = {value} WHERE lineId = 20999 AND noteIndex = 0"
+            ),
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        configure_line_source(db.display().to_string()).unwrap();
+        let mut engine = new_engine(&dir.path().join(format!("index-{case}")));
+        engine.open_index_writer().unwrap();
+        let results = engine
+            .add_library_books(
+                vec![library_input(21, "הערות")],
+                &IndexingCancellationToken::new(),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(results[0].status, LibraryBookStatus::Failed, "{value}");
+    }
+}
+
 #[test]
 fn without_line_note_or_outside_the_library_the_rows_are_indexed_as_they_are() {
     let _guard = crate::external_text_tests::guard();
@@ -969,8 +1171,8 @@ fn a_footnote_tag_inside_a_marker_does_not_hide_the_external_body() {
     conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
         .unwrap();
     conn.execute(
-        "INSERT INTO line_note VALUES (20999,0,2,?,?)",
-        ["1<i class=\"footnote\"></i>", "הערה זרזיר"],
+        "INSERT INTO line_note VALUES (20999,0,2,1,?)",
+        ["הערה זרזיר"],
     )
     .unwrap();
     drop(conn);
@@ -1007,8 +1209,8 @@ fn an_empty_marker_after_leading_tags_preserves_indexed_text_and_word_boundaries
     conn.execute("DELETE FROM line_note WHERE lineId=20999", [])
         .unwrap();
     conn.execute(
-        "INSERT INTO line_note VALUES (20999,0,0,?,?)",
-        ["", "הערה זרזיר"],
+        "INSERT INTO line_note VALUES (20999,0,0,1,?)",
+        ["הערה זרזיר"],
     )
     .unwrap();
     drop(conn);

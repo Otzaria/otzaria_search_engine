@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.0.1 – 2026-10-20
+
+### Fixed
+
+- **Compressed margin notes are indexed.** From the library release that keeps
+  `line_note.body` as a zstd frame of the dictionary in `zstd_dict` (like
+  `line_content`), a body is decoded like a line. 5.0.0 skipped every body that
+  was not TEXT, so such a library was indexed without its notes and with no
+  error. A body that cannot be decoded now fails its book.
+- **Note markers are read as a flag.** Schema 7 stores `line_note.hasMarker`
+  (INTEGER 0 or 1) instead of the marker text, and the probe requires it. Any
+  other value fails the book.
+
 ## 5.0.0 – 2026-10-19
 
 > Breaking for every existing index: schema 7 gives books stable numbers and

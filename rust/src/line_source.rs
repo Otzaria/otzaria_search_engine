@@ -320,7 +320,7 @@ impl Layout {
         let notes = has_table("line_note")?
             && conn.query_row(
                 "SELECT count(*) FROM pragma_table_info('line_note') \
-                 WHERE name IN ('lineId', 'noteIndex', 'charPos', 'marker', 'body')",
+                 WHERE name IN ('lineId', 'noteIndex', 'charPos', 'hasMarker', 'body')",
                 [],
                 |r| r.get::<_, i64>(0),
             )? == 5;
@@ -373,31 +373,50 @@ pub(crate) struct IndexingText {
     pub has_notes: bool,
 }
 
-/// The app's `_loadBookNotesInIsolate`: the book's `line_note` rows by `lineIndex`, in
-/// `noteIndex` order; a row whose values are not of the expected types is skipped.
+/// Streams valid notes in line/note order, decoding bodies as strictly as source rows.
 fn next_book_note(
     rows: &mut rusqlite::Rows<'_>,
+    book_id: i64,
+    codec: &mut Option<ZstdCodec>,
     stop: &dyn Fn() -> bool,
 ) -> Result<Option<(i64, BookNote)>> {
     while let Some(row) = rows.next()? {
         if stop() {
             return Err(IndexingReadStopped.into());
         }
-        let (ValueRef::Integer(line_index), ValueRef::Integer(_), ValueRef::Text(body)) =
-            (row.get_ref(0)?, row.get_ref(1)?, row.get_ref(4)?)
+        let (ValueRef::Integer(line_index), ValueRef::Integer(note_index)) =
+            (row.get_ref(0)?, row.get_ref(1)?)
         else {
             continue;
+        };
+        let body = match row.get_ref(4)? {
+            ValueRef::Null => continue,
+            value => row_bytes(value, codec).map_err(|reason| {
+                anyhow::anyhow!(
+                    "book {book_id} line {line_index} note {note_index} cannot be decoded: {reason}"
+                )
+            })?,
         };
         let char_pos = match row.get_ref(2)? {
             ValueRef::Integer(char_pos) => char_pos,
             _ => -1,
         };
+        let has_marker = match row.get_ref(3)? {
+            ValueRef::Integer(0) => false,
+            ValueRef::Integer(1) => true,
+            other => anyhow::bail!(
+                "book {book_id} line {line_index} note {note_index} has hasMarker {other:?}, not 0 or 1"
+            ),
+        };
+        let body = String::from_utf8(body.into_owned()).with_context(|| {
+            format!("book {book_id} line {line_index} note {note_index} is not valid UTF-8")
+        })?;
         return Ok(Some((
             line_index,
             BookNote {
                 char_pos,
-                has_marker: matches!(row.get_ref(3)?, ValueRef::Text(_)),
-                body: String::from_utf8_lossy(body).into_owned(),
+                has_marker,
+                body,
             },
         )));
     }
@@ -771,7 +790,7 @@ impl LineStore {
             }
             let mut note_stmt = if with_notes && layout.notes {
                 Some(conn.prepare_cached(
-                    "SELECT l.lineIndex, n.noteIndex, n.charPos, n.marker, n.body \
+                    "SELECT l.lineIndex, n.noteIndex, n.charPos, n.hasMarker, n.body \
                      FROM line l JOIN line_note n ON n.lineId = l.id \
                      WHERE l.bookId = ?1 ORDER BY l.lineIndex, n.noteIndex",
                 )?)
@@ -783,7 +802,7 @@ impl LineStore {
                 .map(|stmt| stmt.query([book_id]))
                 .transpose()?;
             let mut next_note = match &mut note_query {
-                Some(query) => next_book_note(query, stop)?,
+                Some(query) => next_book_note(query, book_id, &mut layout.codec, stop)?,
                 None => None,
             };
             let has_notes = next_note.is_some();
@@ -837,8 +856,12 @@ impl LineStore {
                         if line >= text_line {
                             notes.entry(line).or_default().push(note);
                         }
-                        next_note =
-                            next_book_note(note_query.as_mut().expect("the notes query"), stop)?;
+                        next_note = next_book_note(
+                            note_query.as_mut().expect("the notes query"),
+                            book_id,
+                            &mut layout.codec,
+                            stop,
+                        )?;
                     }
                     let rehydrated =
                         crate::inline_notes::rehydrate_row(row_text, text_line, &notes);
