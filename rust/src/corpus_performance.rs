@@ -465,7 +465,7 @@ fn measure_corpus() {
 
 #[test]
 #[ignore = "generated SQLite fixtures; run alone in release"]
-fn measure_bounded_bulk_preparation() {
+fn measure_preparation_modes() {
     let _guard = crate::external_text_tests::guard();
     let root = tempfile::tempdir().unwrap();
     for (name, book_count, lines, order) in [
@@ -481,14 +481,13 @@ fn measure_bounded_bulk_preparation() {
         let inputs =
             crate::library_indexing_tests::preparation_budget_fixture(&path, book_count, lines);
         let mut expected = None;
-        for (run, bulk) in order.into_iter().enumerate() {
+        for (run, economy) in order.into_iter().enumerate() {
             let index = root.path().join(format!("{name}-{run}"));
             std::fs::create_dir(&index).unwrap();
             configure_line_source(path.to_str().unwrap().into()).unwrap();
             let mut engine = SearchEngine::new(index.to_str().unwrap());
             engine.set_bulk_indexing(true).unwrap();
-            // Keep NoMergePolicy on both sides; only the preparation budgets differ.
-            engine.bulk_indexing = bulk;
+            engine.set_economy_indexing(economy).unwrap();
             crate::indexing_diagnostics::reset();
             let started = Instant::now();
             let results = engine
@@ -498,10 +497,7 @@ fn measure_bounded_bulk_preparation() {
             engine.commit().unwrap();
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             let metrics = crate::indexing_diagnostics::snapshot();
-            if name == "large" {
-                assert!(metrics.peak_buffered_bytes <= 17 << 20);
-                assert!(metrics.spilled_bytes > 0);
-            } else if bulk {
+            if name == "medium" && !economy {
                 assert_eq!(metrics.spilled_bytes, 0);
             }
             assert!(results
@@ -537,7 +533,7 @@ fn measure_bounded_bulk_preparation() {
             }
             println!(
                 "{}",
-                serde_json::json!({"fixture":name,"bulk_budget":bulk,"run":run,"books":book_count,"docs":book_count*lines,"add_ms":add_ms,"total_ms":total_ms,"spilled_bytes":metrics.spilled_bytes,"peak_buffered_bytes":metrics.peak_buffered_bytes,"search_digest":search["digest"]})
+                serde_json::json!({"fixture":name,"economy":economy,"run":run,"books":book_count,"docs":book_count*lines,"add_ms":add_ms,"total_ms":total_ms,"spilled_bytes":metrics.spilled_bytes,"peak_buffered_bytes":metrics.peak_buffered_bytes,"search_digest":search["digest"]})
             );
         }
     }

@@ -4704,6 +4704,7 @@ pub struct SearchEngine {
     index: Index,
     index_writer: Option<IndexWriter>,
     writer_heap_size: usize,
+    economy_indexing: bool,
     index_reader: IndexReader,
     /// Optional lexical morphology lexicon for the approximate (`fuzzy`) path.
     /// `None` until [`SearchEngine::set_magic_dictionary_path`] loads a valid
@@ -4924,6 +4925,7 @@ impl SearchEngine {
             index,
             index_writer,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
+            economy_indexing: false,
             index_reader,
             magic_dict: None,
             translation_dict: None,
@@ -4992,6 +4994,7 @@ impl SearchEngine {
             index,
             index_writer: None,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
+            economy_indexing: false,
             index_reader,
             magic_dict: None,
             translation_dict: None,
@@ -8330,8 +8333,7 @@ impl SearchEngine {
             content_fingerprint(text),
             text_storage,
             &mut stored,
-            self.library_preparation_policy()
-                .document_budget(text.len() as u64),
+            self.library_preparation_policy().document_bytes,
             &|| false,
         )
     }
@@ -8450,11 +8452,15 @@ impl SearchEngine {
         let mut finished = false;
         let mut keys_time = std::time::Duration::ZERO;
         let reach = semantic_keys::production_chunking().context_window_lines;
+        let policy = self.library_preparation_policy();
         while !finished || previous < window.len() {
             anyhow::ensure!(!stop(), "indexing preparation interrupted");
             let mut raw_lines = Vec::new();
             let mut raw_bytes = 0usize;
-            while !finished && raw_lines.len() < 256 && raw_bytes < (1 << 20) {
+            while !finished
+                && raw_lines.len() < policy.window_lines
+                && raw_bytes < policy.window_bytes
+            {
                 let mut raw = String::new();
                 let read = reader.read_line(&mut raw)?;
                 finished = !raw.ends_with('\n');
@@ -8919,9 +8925,6 @@ impl SearchEngine {
     /// build and `false` when done — `optimize` does NOT reset the flag, and
     /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
     /// default; incremental indexing keeps normal merging.
-    /// Desktop bulk preparation reserves up to 160 MiB of source/document buffers per batch.
-    /// Oversized sources keep the smaller document budget; economy/mobile still override.
-    /// These are prepared-buffer budgets, not a total process RSS limit.
     pub fn set_bulk_indexing(&mut self, enabled: bool) -> Result<()> {
         self.bulk_indexing = enabled;
         let index_path = self.index_path.clone();
@@ -8939,36 +8942,43 @@ impl SearchEngine {
         &self.index_path
     }
 
+    pub(crate) fn economy_indexing_for_preparation(&self) -> bool {
+        self.economy_indexing
+    }
+
     pub(crate) fn library_preparation_policy(&self) -> crate::indexing_buffers::PreparationPolicy {
         crate::indexing_buffers::PreparationPolicy::new(
-            self.bulk_indexing,
-            self.writer_heap_size <= ECONOMY_WRITER_HEAP_SIZE,
+            self.economy_indexing,
             std::thread::available_parallelism().map_or(1, |n| n.get()),
         )
     }
 
-    /// Economy indexing mode: shrinks the writer's memory budget to the
-    /// mobile footprint (50MB ⇒ tantivy caps itself at 3 indexing threads)
-    /// so the machine stays responsive during a long build; `false` restores
-    /// the platform default. The budget is fixed at writer creation, so a
-    /// live writer is swapped — pending documents are committed first and
-    /// nothing is lost. May be toggled mid-indexing; off by default.
+    /// Explicit economy mode: one preparation worker and CPU thread, small spilling
+    /// buffers, and a 50MB writer. `false` restores normal preparation and the platform's
+    /// writer budget. A mobile writer's 50MB default does not imply economy mode.
+    /// Live writer changes commit pending documents before replacing the writer.
     pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
         let target = if enabled {
             ECONOMY_WRITER_HEAP_SIZE
         } else {
             DEFAULT_WRITER_HEAP_SIZE
         };
-        if target == self.writer_heap_size {
-            return Ok(());
+        if target != self.writer_heap_size {
+            if let Some(mut writer) = self.index_writer.take() {
+                writer.commit()?;
+                writer.wait_merging_threads()?;
+                let previous = self.writer_heap_size;
+                self.writer_heap_size = target;
+                if let Err(error) = self.restore_writer() {
+                    self.writer_heap_size = previous;
+                    return Err(error);
+                }
+                self.index_reader.reload()?;
+            } else {
+                self.writer_heap_size = target;
+            }
         }
-        self.writer_heap_size = target;
-        if let Some(mut writer) = self.index_writer.take() {
-            writer.commit()?;
-            writer.wait_merging_threads()?;
-            self.restore_writer()?;
-            self.index_reader.reload()?;
-        }
+        self.economy_indexing = enabled;
         debug!("economy_indexing={enabled} (writer budget {target} bytes)");
         Ok(())
     }

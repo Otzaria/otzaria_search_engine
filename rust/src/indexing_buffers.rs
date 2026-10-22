@@ -11,32 +11,30 @@ pub(crate) struct PreparationPolicy {
     pub cpu_threads: usize,
     pub text_bytes: usize,
     pub document_bytes: usize,
+    pub window_lines: usize,
+    pub window_bytes: usize,
 }
 
 impl PreparationPolicy {
-    pub(crate) fn new(bulk: bool, economy: bool, cores: usize) -> Self {
+    pub(crate) fn new(economy: bool, cores: usize) -> Self {
         if economy {
             Self {
                 book_workers: 1,
                 cpu_threads: 1,
                 text_bytes: 1 << 20,
                 document_bytes: 2 << 20,
+                window_lines: 256,
+                window_bytes: 1 << 20,
             }
         } else {
             Self {
-                book_workers: (cores / 2).clamp(1, 2),
-                cpu_threads: (cores / 2).clamp(1, 4),
-                text_bytes: if bulk { 16 << 20 } else { 1 << 20 },
-                document_bytes: if bulk { 64 << 20 } else { 8 << 20 },
+                book_workers: 4,
+                cpu_threads: cores.max(1),
+                text_bytes: 32 << 20,
+                document_bytes: 64 << 20,
+                window_lines: 16_384,
+                window_bytes: 16 << 20,
             }
-        }
-    }
-
-    pub(crate) fn document_budget(self, source_bytes: u64) -> usize {
-        if self.document_bytes > 8 << 20 && source_bytes > self.text_bytes as u64 {
-            8 << 20
-        } else {
-            self.document_bytes
         }
     }
 
@@ -360,31 +358,28 @@ mod tests {
     use std::io::Read;
 
     #[test]
-    fn preparation_policies_keep_fixed_total_bounds_and_economy_overrides_bulk() {
+    fn only_explicit_economy_limits_preparation_parallelism_and_small_buffers() {
         for cores in [1, 2, 4, 8, 64] {
-            let background = PreparationPolicy::new(false, false, cores);
-            let bulk = PreparationPolicy::new(true, false, cores);
-            let economy = PreparationPolicy::new(false, true, cores);
-            assert!(background.reservation() * background.book_workers <= 18 << 20);
-            assert!(bulk.reservation() * bulk.book_workers <= 160 << 20);
-            assert_eq!(bulk.cpu_threads, background.cpu_threads);
-            assert_eq!(bulk.document_budget(16 << 20), 64 << 20);
-            assert_eq!(bulk.document_budget((16 << 20) + 1), 8 << 20);
-            assert_eq!(economy.document_budget(u64::MAX), 2 << 20);
-            assert_eq!(economy, PreparationPolicy::new(true, true, cores));
+            let normal = PreparationPolicy::new(false, cores);
+            let economy = PreparationPolicy::new(true, cores);
+            assert_eq!(normal.cpu_threads, cores);
+            assert_eq!(normal.book_workers, 4);
+            assert_eq!(normal.reservation() * normal.book_workers, 384 << 20);
             assert_eq!(economy.reservation(), 3 << 20);
             assert_eq!((economy.book_workers, economy.cpu_threads), (1, 1));
+            assert!(normal.window_bytes > economy.window_bytes);
+            assert!(normal.window_lines > economy.window_lines);
         }
     }
 
     #[test]
-    fn bulk_text_budget_avoids_spilling_a_midsize_source() {
+    fn normal_text_buffer_keeps_midsize_sources_in_memory() {
         let text = "אבגדה".repeat(1 << 18);
-        for bulk in [false, true] {
-            let policy = PreparationPolicy::new(bulk, false, 4);
+        for economy in [false, true] {
+            let policy = PreparationPolicy::new(economy, 4);
             let mut buffer = TextBuffer::new(policy.text_bytes);
             buffer.push_str(&text).unwrap();
-            assert_eq!(buffer.spilled_bytes() == 0, bulk);
+            assert_eq!(buffer.spilled_bytes() > 0, economy);
             let mut actual = String::new();
             buffer
                 .reader()

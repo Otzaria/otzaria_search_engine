@@ -216,7 +216,7 @@ fn prepare_checked(
         extra_facets: book.extra_facets.clone().unwrap_or_default(),
         source_hash: book.source_hash.unwrap_or(0),
     };
-    let document_budget = policy.document_budget(text.text.len());
+    let document_budget = policy.document_bytes;
     match engine.prepare_text_book_buffer(
         &meta,
         &mut text.text,
@@ -295,9 +295,14 @@ pub(crate) fn add_library_books(
         changed: Condvar::new(),
         limit: reservation * policy.book_workers,
     };
-    let prepare_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(policy.cpu_threads)
-        .build()?;
+    let prepare_pool = engine
+        .economy_indexing_for_preparation()
+        .then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(policy.cpu_threads)
+                .build()
+        })
+        .transpose()?;
     let mut results: Vec<Option<LibraryBookResult>> = vec![None; books.len()];
     let (tx, rx) = mpsc::channel::<(usize, Outcome, usize)>();
     let mut docs_total = 0u64;
@@ -319,8 +324,9 @@ pub(crate) fn add_library_books(
                 } else {
                     // A panic would leave its book unsent and every later one waiting
                     // in the budget for it: it fails that book instead.
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        prepare_pool.install(|| prepare_checked(engine, book, policy, stop))
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match prepare_pool {
+                        Some(pool) => pool.install(|| prepare_checked(engine, book, policy, stop)),
+                        None => prepare_checked(engine, book, policy, stop),
                     }))
                     .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")))
                 };

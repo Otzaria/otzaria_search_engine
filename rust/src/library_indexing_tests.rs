@@ -1420,7 +1420,7 @@ fn economy_mode_limits_preparation_as_well_as_the_writer() {
     let economy = engine.library_preparation_policy();
     assert_eq!(
         economy,
-        crate::indexing_buffers::PreparationPolicy::new(false, true, 1)
+        crate::indexing_buffers::PreparationPolicy::new(true, 1)
     );
     assert!(
         normal.book_workers >= economy.book_workers
@@ -1544,7 +1544,7 @@ pub(crate) fn preparation_budget_fixture(
 
 #[test]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn bulk_preparation_avoids_medium_book_spools_without_changing_documents() {
+fn normal_preparation_avoids_medium_book_spools_without_changing_documents() {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let _guard = crate::external_text_tests::guard();
     let directory = tempfile::tempdir().unwrap();
@@ -1554,13 +1554,13 @@ fn bulk_preparation_avoids_medium_book_spools_without_changing_documents() {
     let mut engine = new_engine(&directory.path().join("index"));
     engine.open_index_writer().unwrap();
     let mut expected = None;
-    for bulk in [false, true] {
-        engine.set_bulk_indexing(bulk).unwrap();
+    for economy in [false, true] {
+        engine.set_economy_indexing(economy).unwrap();
         let Outcome::Prepared(mut prepared) = crate::library_indexing::prepare(&engine, &input)
         else {
             panic!("preparation failed");
         };
-        assert_eq!(prepared.spooled_documents.is_none(), bulk);
+        assert_eq!(prepared.spooled_documents.is_some(), economy);
         let mut hasher = DefaultHasher::new();
         let mut count = 0;
         let searcher = engine.searcher_for_tests();
