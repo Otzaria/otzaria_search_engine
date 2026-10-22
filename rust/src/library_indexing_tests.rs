@@ -974,6 +974,64 @@ fn a_note_body_that_cannot_be_decoded_fails_the_book_instead_of_dropping_the_not
 }
 
 #[test]
+fn invalid_utf8_in_a_note_fails_the_whole_book_before_adding_documents() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::TempDir::new().unwrap();
+    for compressed in [true, false] {
+        let db = dir.path().join(format!("seforim-{compressed}.db"));
+        write_notes_fixture(&db, true);
+        if compressed {
+            compress_notes_fixture(&db);
+        }
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let invalid_utf8 = [0xff, b'a'];
+        let body = if compressed {
+            let dict: Vec<u8> = conn
+                .query_row("SELECT dict FROM zstd_dict", [], |r| r.get(0))
+                .unwrap();
+            zstd::bulk::Compressor::with_dictionary(3, &dict)
+                .unwrap()
+                .compress(&invalid_utf8)
+                .unwrap()
+        } else {
+            invalid_utf8.to_vec()
+        };
+        // The last note in the book: earlier valid rows must not be partially indexed.
+        conn.execute(
+            if compressed {
+                "UPDATE line_note SET body = ?1 WHERE lineId = 20997 AND noteIndex = 0"
+            } else {
+                "UPDATE line_note SET body = CAST(?1 AS TEXT) WHERE lineId = 20997 AND noteIndex = 0"
+            },
+            [body],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = crate::line_source::LineStore::open(&db).unwrap();
+        let error = store
+            .read_book_for_indexing(21, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("book 21 line 3 note 0"), "{error}");
+        assert!(error.contains("UTF-8"), "{error}");
+        configure_line_source(db.display().to_string()).unwrap();
+        let mut engine = new_engine(&dir.path().join(format!("index-{compressed}")));
+        engine.open_index_writer().unwrap();
+        let results = engine
+            .add_library_books(
+                vec![library_input(21, "הערות")],
+                &IndexingCancellationToken::new(),
+            )
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(results[0].status, LibraryBookStatus::Failed, "{compressed}");
+        assert_eq!(results[0].docs, 0);
+        assert!(stored_documents(&engine).is_empty());
+        assert!(results[0].error.is_some());
+    }
+}
+
+#[test]
 fn a_has_marker_other_than_0_or_1_fails_the_book() {
     let _guard = crate::external_text_tests::guard();
     let dir = tempfile::TempDir::new().unwrap();
