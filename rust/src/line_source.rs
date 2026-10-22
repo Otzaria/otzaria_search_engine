@@ -2636,6 +2636,50 @@ mod tests {
     }
 
     #[test]
+    fn reconfiguration_invalidates_active_scan_and_waits_for_connection_close() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let old_path = directory.path().join("old.db");
+        let new_path = directory.path().join("new.db");
+        for path in [&old_path, &new_path] {
+            Connection::open(path).unwrap().execute_batch(
+                "CREATE TABLE line(id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);"
+            ).unwrap();
+        }
+        configure(old_path.to_str().unwrap()).unwrap();
+        let session = begin_scan(Source::Library).unwrap();
+        session.read(|store| store.book_row_count(1)).unwrap();
+        std::thread::scope(|scope| {
+            let changing = scope.spawn(|| configure(new_path.to_str().unwrap()));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while session.is_current() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(!session.is_current());
+            assert!(
+                !changing.is_finished(),
+                "configure must wait for active scan connections"
+            );
+            assert!(matches!(
+                session.read(|_| Ok(())),
+                Err(SourceUnavailable::Suspended)
+            ));
+            drop(session);
+            changing.join().unwrap().unwrap();
+        });
+        Connection::open(&old_path)
+            .unwrap()
+            .execute_batch("BEGIN EXCLUSIVE; ROLLBACK")
+            .unwrap();
+        let replacement = begin_scan(Source::Library).unwrap();
+        assert!(replacement.is_current());
+        assert_eq!(replacement.path, new_path);
+        drop(replacement);
+        reset_for_tests();
+    }
+
+    #[test]
     fn suspension_interrupts_indexing_and_closes_its_connection() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         reset_for_tests();
