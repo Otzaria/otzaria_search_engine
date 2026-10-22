@@ -55,6 +55,9 @@ pub(crate) struct BufferedBytes(u64);
 impl BufferedBytes {
     pub(crate) fn set(&mut self, bytes: usize) {
         let bytes = bytes as u64;
+        if bytes == self.0 {
+            return;
+        }
         if bytes >= self.0 {
             let current = BUFFERED.fetch_add(bytes - self.0, Ordering::Relaxed) + bytes - self.0;
             PEAK_BUFFERED.fetch_max(current, Ordering::Relaxed);

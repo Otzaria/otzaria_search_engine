@@ -23,7 +23,8 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 /// Same ceiling as the app's `LineContentCodec.maxLineBytes`.
@@ -1353,6 +1354,7 @@ struct Global {
     content_epoch: u64,
     /// Open [`ScanSession`]s: suspending or moving the source waits for them to close.
     scans: u32,
+    scan_validity: Vec<Weak<AtomicBool>>,
 }
 
 impl Global {
@@ -1375,6 +1377,7 @@ impl Global {
             seen_version: None,
             content_epoch: 0,
             scans: 0,
+            scan_validity: Vec::new(),
         }
     }
 }
@@ -1411,12 +1414,28 @@ impl Global {
             && self.suspend_depth == 0
         {
             self.drop_store();
-            self.generation += 1;
+            self.advance_generation();
             self.busy_until = None;
         }
     }
 
+    fn invalidate_scans(&mut self) {
+        for valid in self
+            .scan_validity
+            .drain(..)
+            .filter_map(|valid| valid.upgrade())
+        {
+            valid.store(false, Ordering::Release);
+        }
+    }
+
+    fn advance_generation(&mut self) {
+        self.invalidate_scans();
+        self.generation += 1;
+    }
+
     fn drop_store(&mut self) {
+        self.invalidate_scans();
         self.scan_codec = None;
         self.seen_version = None;
         if let Some(store) = self.store.take() {
@@ -1424,7 +1443,7 @@ impl Global {
             // SQLite's data_version is local to a connection. A reopened connection can
             // report the same number for different text, so its query-cache keys must
             // never reuse those of the closed connection.
-            self.generation += 1;
+            self.advance_generation();
         }
     }
 
@@ -1434,7 +1453,7 @@ impl Global {
             self.drop_store();
             self.path = path;
             self.mode = mode;
-            self.generation += 1;
+            self.advance_generation();
             self.missing_logged = false;
         } else if let Some(store) = &self.store {
             // The app may have replaced the file under the same path (POSIX keeps the old
@@ -1534,7 +1553,7 @@ pub(crate) fn resume() -> Result<()> {
     if g.suspend_depth == 0 {
         // The file may have been replaced while suspended: nothing cached survives.
         g.drop_store();
-        g.generation += 1;
+        g.advance_generation();
         g.busy_until = None;
     }
     Ok(())
@@ -1560,7 +1579,7 @@ pub(crate) fn resume_owned(owner_port: i64) {
     g.owner_ports.retain(|&port| port != owner_port);
     if before != g.owner_ports.len() && g.owner_ports.is_empty() && g.suspend_depth == 0 {
         g.drop_store();
-        g.generation += 1;
+        g.advance_generation();
         g.busy_until = None;
     }
 }
@@ -1622,7 +1641,7 @@ fn snapshot_source_generation(source: Source) -> SourceGeneration {
                 }
                 g.seen_version = Some(version);
             }
-            Err(_) => g.generation += 1,
+            Err(_) => g.advance_generation(),
         }
     }
     (
@@ -1663,7 +1682,7 @@ fn user_books_cache_generation() -> SourceGeneration {
                 g.seen_version = Some(version);
             }
             // As for the library: an unverifiable source admits no cached answer.
-            Err(_) => g.generation += 1,
+            Err(_) => g.advance_generation(),
         }
     }
     (g.generation, Some(g.content_epoch as i64), false)
@@ -1672,7 +1691,7 @@ fn user_books_cache_generation() -> SourceGeneration {
 fn source_cache_generation(source: Source) -> SourceGeneration {
     let mut g = global(source);
     let version = if g.busy_until.is_some_and(|until| Instant::now() < until) {
-        g.generation += 1;
+        g.advance_generation();
         None
     } else {
         match g
@@ -1690,7 +1709,7 @@ fn source_cache_generation(source: Source) -> SourceGeneration {
                 }
                 // An unverifiable source must not admit a previously verified cached answer.
                 // Give each failed check a fresh key; a successful retry can be cached again.
-                g.generation += 1;
+                g.advance_generation();
                 None
             }
         }
@@ -1849,6 +1868,7 @@ pub(crate) struct ScanSession {
     mode: OpenMode,
     generation: u64,
     idle: Mutex<Vec<LineStore>>,
+    valid: Arc<AtomicBool>,
 }
 
 /// Opens a scan session of `source`, refused like a window when the source cannot be read.
@@ -1863,6 +1883,9 @@ pub(crate) fn begin_scan(source: Source) -> std::result::Result<ScanSession, Sou
     if matches!(path.try_exists(), Ok(false)) {
         return Err(SourceUnavailable::Missing);
     }
+    let valid = Arc::new(AtomicBool::new(true));
+    g.scan_validity.retain(|entry| entry.strong_count() != 0);
+    g.scan_validity.push(Arc::downgrade(&valid));
     g.scans += 1;
     Ok(ScanSession {
         source,
@@ -1870,21 +1893,13 @@ pub(crate) fn begin_scan(source: Source) -> std::result::Result<ScanSession, Sou
         mode: g.mode,
         generation: g.generation,
         idle: Mutex::new(Vec::new()),
+        valid,
     })
 }
 
 impl ScanSession {
     pub(crate) fn is_current(&self) -> bool {
-        let started = Instant::now();
-        let g = global(self.source);
-        let acquired = Instant::now();
-        let valid =
-            g.suspend_depth == 0 && g.owner_ports.is_empty() && g.generation == self.generation;
-        crate::indexing_diagnostics::source_lock(
-            acquired.duration_since(started),
-            acquired.elapsed(),
-        );
-        valid
+        self.valid.load(Ordering::Acquire)
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -1898,7 +1913,11 @@ impl ScanSession {
     ) -> std::result::Result<R, SourceUnavailable> {
         let cached = {
             let g = global(self.source);
-            if g.suspend_depth > 0 || !g.owner_ports.is_empty() || g.generation != self.generation {
+            if !self.is_current()
+                || g.suspend_depth > 0
+                || !g.owner_ports.is_empty()
+                || g.generation != self.generation
+            {
                 return Err(SourceUnavailable::Suspended);
             }
             g.scan_codec.clone()
@@ -1932,7 +1951,11 @@ impl ScanSession {
             });
         {
             let mut g = global(self.source);
-            if g.generation == self.generation && g.suspend_depth == 0 && g.owner_ports.is_empty() {
+            if self.is_current()
+                && g.generation == self.generation
+                && g.suspend_depth == 0
+                && g.owner_ports.is_empty()
+            {
                 g.scan_codec = codec;
             }
         }
@@ -1940,6 +1963,9 @@ impl ScanSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(store);
+        if !self.is_current() {
+            return Err(SourceUnavailable::Suspended);
+        }
         result.map_err(|err| {
             if err.is::<IndexingReadStopped>() {
                 return SourceUnavailable::Suspended;
@@ -1966,6 +1992,9 @@ impl Drop for ScanSession {
         }
         let mut g = global(self.source);
         g.scans -= 1;
+        let this = Arc::downgrade(&self.valid);
+        g.scan_validity
+            .retain(|entry| entry.strong_count() != 0 && !entry.ptr_eq(&this));
         drop(g);
         self.source.scans_done().notify_all();
     }
@@ -1984,7 +2013,7 @@ pub(crate) fn reset_for_tests() {
         g.path = None;
         g.suspend_depth = 0;
         g.owner_ports.clear();
-        g.generation += 1;
+        g.advance_generation();
         g.busy_until = None;
         g.missing_until = None;
         g.missing_logged = false;
@@ -2562,6 +2591,47 @@ mod tests {
             release.send(()).unwrap();
             assert_eq!(indexing.join().unwrap().text.len(), "בראשית".len() as u64);
         });
+        reset_for_tests();
+    }
+
+    #[test]
+    fn scan_invalidation_is_lock_free_permanent_and_reclaims_registrations() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("scan.db");
+        Connection::open(&database).unwrap();
+        configure(database.to_str().unwrap()).unwrap();
+        for trigger in 0..3 {
+            let session = begin_scan(Source::Library).unwrap();
+            {
+                // Even with the source mutex held, the per-row validity check must work.
+                let mut g = global(Source::Library);
+                assert!(session.is_current());
+                match trigger {
+                    0 => g.advance_generation(),
+                    1 => {
+                        g.suspend_depth += 1;
+                        g.drop_store();
+                        g.suspend_depth -= 1;
+                    }
+                    _ => {
+                        g.owner_ports.push(33);
+                        g.drop_store();
+                        g.owner_ports.clear();
+                    }
+                }
+                assert!(!session.is_current());
+                assert!(g.scan_validity.is_empty());
+            }
+            assert!(!session.is_current());
+            drop(session);
+            assert_eq!(global(Source::Library).scans, 0);
+        }
+        for _ in 0..10 {
+            drop(begin_scan(Source::Library).unwrap());
+            assert!(global(Source::Library).scan_validity.is_empty());
+        }
         reset_for_tests();
     }
 

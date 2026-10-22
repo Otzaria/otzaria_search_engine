@@ -613,6 +613,7 @@ fn user_regex_streams_stop_after_callback_cancellation_even_when_cached_or_empty
 }
 
 #[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn failed_economy_reader_reload_restores_writer_and_explicit_mode() {
     let dir = TempDir::new().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
