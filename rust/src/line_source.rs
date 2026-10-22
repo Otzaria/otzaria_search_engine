@@ -886,6 +886,9 @@ impl LineStore {
                 book.text.push_str(&prepare_row(&bytes, false))?;
                 book.rows += 1;
             }
+            if let Some(query) = &mut note_query {
+                while next_book_note(query, book_id, &mut layout.codec, stop)?.is_some() {}
+            }
             if book.rows == 0 {
                 return Ok(None);
             }

@@ -1,6 +1,45 @@
 use super::*;
 use tempfile::TempDir;
 
+#[test]
+fn empty_grouped_stream_pages_do_not_prepare_highlights() {
+    let (engine, _dir) = fixture();
+    let field = engine.schema.get_field("text").unwrap();
+    for grouping in [ResultGrouping::SameSection, ResultGrouping::IdenticalText] {
+        for (limit, offset, no_hits) in [(0, 0, false), (10, 10_000, false), (10, 0, true)] {
+            let request = engine.lexical_cancellations.begin(None);
+            let query: Box<dyn Query> = if no_hits {
+                Box::new(EmptyQuery)
+            } else {
+                Box::new(AllQuery)
+            };
+            let mut updates = Vec::new();
+            engine
+                .run_search_stream_with_counts(
+                    query,
+                    |_| panic!("an empty page must not prepare highlights"),
+                    field,
+                    limit,
+                    offset,
+                    &ResultsOrder::Catalogue,
+                    &HighlightConfig::default(),
+                    50,
+                    false,
+                    Some(&grouping),
+                    &request,
+                    &mut |update| {
+                        updates.push(update);
+                        true
+                    },
+                )
+                .unwrap();
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0].total_count, Some(if no_hits { 0 } else { 34 }));
+            assert!(updates[0].results.is_empty());
+        }
+    }
+}
+
 fn fixture() -> (SearchEngine, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());

@@ -13876,6 +13876,9 @@ impl SearchEngine {
         if let Some(grouping) = grouping {
             let page = self.collect_grouped(&searcher, &*query, grouping, limit, offset, order)?;
             request.check()?;
+            if page.reps.is_empty() {
+                return Ok(());
+            }
             let plan = Self::resolve_highlight(&searcher, make_highlight);
             let hl_q = plan.query.as_deref().unwrap_or(query.as_ref());
             let generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;
@@ -14006,6 +14009,9 @@ impl SearchEngine {
                 return Ok(());
             }
             request.check()?;
+            if page.reps.is_empty() {
+                return Ok(());
+            }
             let plan = Self::resolve_highlight(&searcher, make_highlight);
             let hl_q = plan.query.as_deref().unwrap_or(query.as_ref());
             let generator = Self::make_snippet_generator(&searcher, hl_q, text_field, hl)?;

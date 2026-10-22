@@ -1047,7 +1047,7 @@ fn invalid_utf8_in_a_note_fails_the_whole_book_before_adding_documents() {
         drop(conn);
         let mut store = crate::line_source::LineStore::open(&db).unwrap();
         let error = store
-            .read_book_for_indexing(21, None, true)
+            .read_book_for_indexing(21, None, true, &|| false)
             .unwrap_err()
             .to_string();
         assert!(error.contains("book 21 line 3 note 0"), "{error}");
@@ -1454,4 +1454,43 @@ fn legacy_library_without_split_content_or_dictionaries_preserves_all_fields() {
     let mut engine = new_engine(&dir.path().join("index"));
     engine.open_index_writer().unwrap();
     assert_prepared_alike(&engine, &db, &library_input(1, "ישן"));
+}
+
+#[test]
+fn notes_after_the_joined_text_range_are_still_validated() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = tempfile::tempdir().unwrap();
+    for (case, update) in [
+        "UPDATE line_note SET hasMarker=2 WHERE lineId=20997",
+        "UPDATE line_note SET body=X'28B52FFD00' WHERE lineId=20997",
+        "UPDATE line_note SET body=CAST(X'FF61' AS TEXT) WHERE lineId=20997",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let db = dir.path().join(format!("notes-{case}.db"));
+        write_notes_fixture(&db, true);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute("UPDATE line SET lineIndex=lineIndex*100+100", [])
+            .unwrap();
+        connection.execute(update, []).unwrap();
+        drop(connection);
+        configure_line_source(db.to_str().unwrap().into()).unwrap();
+        let mut engine = new_engine(&dir.path().join(format!("index-{case}")));
+        engine.open_index_writer().unwrap();
+        let results = engine
+            .add_library_books(
+                vec![library_input(21, "הערות")],
+                &IndexingCancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(results[0].status, LibraryBookStatus::Failed, "case {case}");
+        engine.commit().unwrap();
+        assert!(stored_documents(&engine).is_empty(), "case {case}");
+        assert!(
+            library_book_content_fingerprint(LibraryBookSource::Library, None, 21, None).is_err(),
+            "case {case}"
+        );
+    }
 }
