@@ -1053,6 +1053,7 @@ fn lexical_search_and_status_stay_available_while_indexing_runs() {
                     false,
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
             assert_eq!(page.total_count, lines.len() as u32);

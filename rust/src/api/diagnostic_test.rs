@@ -47,6 +47,7 @@ pub fn run_diagnostic_test() -> Result<()> {
             100,    // Reasonable expansion limit
             ResultsOrder::Relevance,
             None,
+            None,
         ) {
             Ok(results) => {
                 let duration = start.elapsed();

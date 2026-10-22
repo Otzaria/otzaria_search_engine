@@ -55,7 +55,17 @@ fn place(path: &str, catalogue_order: u32, generation_order: u32) -> BookOrderEn
 /// The books of the hits of [`WORD`] in `order`, each once, in the order they first come.
 fn books_in(engine: &SearchEngine, order: ResultsOrder) -> Vec<String> {
     let hits = engine
-        .search_exact(WORD.to_string(), vec![], 100, 0, order, false, false, None)
+        .search_exact(
+            WORD.to_string(),
+            vec![],
+            100,
+            0,
+            order,
+            false,
+            false,
+            None,
+            None,
+        )
         .unwrap();
     first_seen(hits.iter().map(|hit| hit.file_path.clone()))
 }
@@ -224,6 +234,7 @@ fn the_catalogue_and_the_generations_are_the_mapping_s_and_change_without_reinde
             false,
             false,
             None,
+            None,
         )
         .unwrap()
         .iter()
@@ -251,6 +262,7 @@ fn a_new_mapping_is_never_answered_from_the_page_cache() {
                 ResultsOrder::Catalogue,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -291,6 +303,7 @@ fn grouped_and_regex_searches_sort_by_the_mapping() {
                 false,
                 false,
                 Some(ResultGrouping::SameSection),
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -309,7 +322,7 @@ fn grouped_and_regex_searches_sort_by_the_mapping() {
                 0,
                 &order,
                 10,
-                &AtomicBool::new(false),
+                &std::sync::Arc::new(AtomicBool::new(false)),
                 &mut |u| {
                     events.push(u);
                     true
@@ -574,9 +587,11 @@ fn number_of(engine: &SearchEngine, path: &str) -> u32 {
 fn engines_that_take_turns_with_the_writer_never_share_a_number() {
     let dir = TempDir::new().unwrap();
     let mut first = open(dir.path());
+    first.open_index_writer().unwrap();
     let mut second = open(dir.path());
     assert!(first.holds_writer_for_tests());
     assert!(!second.holds_writer_for_tests());
+    assert!(second.open_index_writer().is_err());
     // The second engine reads the (empty) numbers before the first one writes.
     second.warm_book_order().unwrap();
 
@@ -589,15 +604,12 @@ fn engines_that_take_turns_with_the_writer_never_share_a_number() {
     assert_ne!(number_of(&second, "x"), number_of(&second, "y"));
 
     // A number handed out and never committed is not handed out again either.
-    let third = open(dir.path());
+    let mut other = open(dir.path());
     drop(second);
-    let fourth = open(dir.path());
-    assert!(!third.holds_writer_for_tests() || !fourth.holds_writer_for_tests());
-    let (mut writer, mut other) = if third.holds_writer_for_tests() {
-        (third, fourth)
-    } else {
-        (fourth, third)
-    };
+    let mut writer = open(dir.path());
+    writer.open_index_writer().unwrap();
+    assert!(writer.holds_writer_for_tests());
+    assert!(!other.holds_writer_for_tests());
     add_book(&mut writer, "z", 1);
     let lost = writer.book_number_for_tests("z");
     drop(writer);
@@ -748,6 +760,7 @@ fn equal_relevance_in_a_grouped_search_goes_by_the_catalogue() {
             false,
             false,
             Some(ResultGrouping::SameSection),
+            None,
         )
         .unwrap();
     assert_eq!(

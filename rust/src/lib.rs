@@ -54,6 +54,8 @@ mod external_text_tests;
 pub mod inline_notes;
 mod line_source;
 // The batch behind `SearchEngine::add_library_books`; its types are in `crate::api`.
+mod indexing_buffers;
+pub mod indexing_diagnostics;
 mod library_indexing;
 #[cfg(test)]
 mod library_indexing_tests;

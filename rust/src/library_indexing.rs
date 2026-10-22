@@ -1,10 +1,8 @@
 //! [`SearchEngine::add_library_books`]: books read from their database and prepared on
 //! several threads at once, enqueued in input order on the calling thread.
 //!
-//! The batch holds the engine by shared reference, so searches keep running while it
-//! prepares; only the writer's queue is touched, and tantivy's `add_document` takes the
-//! writer by shared reference too. Prepared books wait for their turn under a byte budget;
-//! the book next in line is always admitted, so the budget never stalls the batch.
+//! Source text and prepared documents spill to temporary files before growing beyond
+//! their per-book buffers. A bounded reservation is taken before any book is read.
 //!
 //! [`SearchEngine::add_library_books`]: crate::api::search_engine::SearchEngine::add_library_books
 
@@ -15,20 +13,15 @@ use crate::api::library_indexing::{
 use crate::api::search_engine::{
     line_source_book, PreparedTextBook, SearchEngine, TextBookMeta, TextStorage,
 };
-use crate::line_source::{self, IndexingText, Source, SourceUnavailable};
+#[cfg(test)]
+use crate::line_source::IndexingText;
+use crate::line_source::{self, Source, SourceUnavailable};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tantivy::IndexWriter;
-
-/// Books read and prepared at once. Each also fans its lines out over rayon's pool.
-const PREPARE_WORKERS: usize = 4;
-/// Text bytes of prepared books waiting to be enqueued; their documents take a few times as
-/// much.
-/// Tests use a small budget so that a few small books fill it.
-const IN_FLIGHT_BYTES: usize = if cfg!(test) { 4 << 10 } else { 64 << 20 };
 
 /// The book whose preparation panics, for tests.
 #[cfg(test)]
@@ -55,6 +48,7 @@ pub(crate) fn line_source_of(
 
 /// A book's text as the app would hand it to `add_text_book_bytes`. A read that fails is
 /// logged by the line source and comes back `SourceUnavailable::Failed`.
+#[cfg(test)]
 pub(crate) fn read_library_book(
     source: Source,
     book_id: i64,
@@ -62,13 +56,53 @@ pub(crate) fn read_library_book(
 ) -> std::result::Result<Option<IndexingText>, SourceUnavailable> {
     // The app puts `line_note` bodies back only in books of the library (`_dbBookNotes`).
     let with_notes = source == Source::Library;
-    line_source::with_store_for_indexing(source, |store| {
-        store.read_book_for_indexing(book_id, db_title, with_notes)
-    })
+    let session = line_source::begin_scan(source)?;
+    let started = Instant::now();
+    let result = session.read(|store| {
+        store.read_book_for_indexing_buffered(
+            book_id,
+            db_title,
+            with_notes,
+            &|| !session.is_current(),
+            None,
+            1 << 20,
+            false,
+        )
+    });
+    crate::indexing_diagnostics::source_read(started.elapsed());
+    result
+}
+
+pub(crate) fn library_book_fingerprint(
+    source: Source,
+    book_id: i64,
+    db_title: Option<&str>,
+) -> Result<Option<u64>> {
+    let session = line_source::begin_scan(source).map_err(|unavailable| {
+        anyhow::anyhow!("book {book_id} of {source:?} cannot be read: {unavailable:?}")
+    })?;
+    let text = session
+        .read(|store| {
+            store.read_book_for_indexing_buffered(
+                book_id,
+                db_title,
+                source == Source::Library,
+                &|| !session.is_current(),
+                None,
+                0,
+                true,
+            )
+        })
+        .map_err(|unavailable| {
+            anyhow::anyhow!("book {book_id} of {source:?} cannot be read: {unavailable:?}")
+        })?;
+    text.filter(|text| !text.text.is_empty())
+        .map(|text| text.text.fingerprint())
+        .transpose()
 }
 
 pub(crate) enum Outcome {
-    Prepared(Box<PreparedTextBook>, usize),
+    Prepared(Box<PreparedTextBook>),
     Done(LibraryBookResult),
 }
 
@@ -95,7 +129,17 @@ fn failed(book: &LibraryBookInput, error: impl std::fmt::Display) -> LibraryBook
 }
 
 /// Reads and prepares one book; never touches the writer.
+#[cfg(test)]
 pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome {
+    prepare_checked(engine, book, engine.library_preparation_policy(), &|| false)
+}
+
+fn prepare_checked(
+    engine: &SearchEngine,
+    book: &LibraryBookInput,
+    policy: crate::indexing_buffers::PreparationPolicy,
+    stop: &dyn Fn() -> bool,
+) -> Outcome {
     #[cfg(test)]
     if book.book_id == PANIC_ON_BOOK.load(Ordering::Relaxed) {
         panic!("preparing book {} panics", book.book_id);
@@ -115,7 +159,34 @@ pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome
             ),
         ));
     }
-    let text = match read_library_book(source, book.book_id, book.db_title.as_deref()) {
+    let session = match line_source::begin_scan(source) {
+        Ok(session) => session,
+        Err(unavailable) => {
+            return Outcome::Done(LibraryBookResult {
+                error: Some(format!("{unavailable:?}")),
+                ..result(book, LibraryBookStatus::Unavailable)
+            })
+        }
+    };
+    let generation = session.generation();
+    let read_started = Instant::now();
+    let read = session.read(|store| {
+        store.read_book_for_indexing_buffered(
+            book.book_id,
+            book.db_title.as_deref(),
+            source == Source::Library,
+            &|| stop() || !session.is_current(),
+            Some(engine.preparation_directory()),
+            policy.text_bytes,
+            false,
+        )
+    });
+    crate::indexing_diagnostics::source_read(read_started.elapsed());
+    drop(session);
+    if stop() {
+        return Outcome::Done(result(book, LibraryBookStatus::Cancelled));
+    }
+    let mut text = match read {
         Err(SourceUnavailable::Failed) => {
             return Outcome::Done(failed(
                 book,
@@ -145,20 +216,33 @@ pub(crate) fn prepare(engine: &SearchEngine, book: &LibraryBookInput) -> Outcome
         extra_facets: book.extra_facets.clone().unwrap_or_default(),
         source_hash: book.source_hash.unwrap_or(0),
     };
-    match engine.prepare_text_book(&meta, &text.text, text_storage, &text.data_uri_rows) {
-        Ok(prepared) => Outcome::Prepared(Box::new(prepared), text.text.len()),
+    let document_budget = policy.document_bytes;
+    match engine.prepare_text_book_buffer(
+        &meta,
+        &mut text.text,
+        text_storage,
+        &mut text.data_uri_rows,
+        document_budget,
+        stop,
+    ) {
+        Ok(mut prepared) => {
+            prepared.source_generation = Some((source, generation));
+            Outcome::Prepared(Box::new(prepared))
+        }
+        Err(_) if stop() => Outcome::Done(result(book, LibraryBookStatus::Cancelled)),
         Err(error) => Outcome::Done(failed(book, format!("{error:#}"))),
     }
 }
 
-/// Bytes of prepared books not yet enqueued, and the input position enqueued next.
+/// Reservations for source/document buffers, and the next input allowed to start.
 struct Budget {
     state: Mutex<(usize, usize)>,
     changed: Condvar,
+    limit: usize,
 }
 
 impl Budget {
-    /// Waits until `bytes` fit, or `index` is the book enqueued next; `false` once `stop`.
+    /// Reserves in input order, before reading; later books cannot starve the next one.
     fn admit(&self, index: usize, bytes: usize, stop: &dyn Fn() -> bool) -> bool {
         let mut state = self.state.lock().unwrap();
         loop {
@@ -166,8 +250,10 @@ impl Budget {
                 return false;
             }
             let (in_flight, next) = *state;
-            if index == next || in_flight + bytes <= IN_FLIGHT_BYTES {
+            if index == next && in_flight.saturating_add(bytes) <= self.limit {
                 state.0 += bytes;
+                state.1 += 1;
+                self.changed.notify_all();
                 return true;
             }
             state = self
@@ -178,10 +264,9 @@ impl Budget {
         }
     }
 
-    fn release(&self, bytes: usize, next: usize) {
+    fn release(&self, bytes: usize) {
         let mut state = self.state.lock().unwrap();
         state.0 -= bytes;
-        state.1 = next;
         self.changed.notify_all();
     }
 }
@@ -203,17 +288,20 @@ pub(crate) fn add_library_books(
     let abort = AtomicBool::new(false);
     let stop = || cancelled() || abort.load(Ordering::Relaxed);
     let next_book = AtomicUsize::new(0);
+    let policy = engine.library_preparation_policy();
+    let reservation = policy.reservation();
     let budget = Budget {
         state: Mutex::new((0, 0)),
         changed: Condvar::new(),
+        limit: reservation * policy.book_workers,
     };
     let mut results: Vec<Option<LibraryBookResult>> = vec![None; books.len()];
-    let (tx, rx) = mpsc::channel::<(usize, Outcome)>();
+    let (tx, rx) = mpsc::channel::<(usize, Outcome, usize)>();
     let mut docs_total = 0u64;
     let mut enqueue_time = Duration::ZERO;
 
     let enqueued = std::thread::scope(|scope| -> Result<()> {
-        for _ in 0..PREPARE_WORKERS.min(books.len()) {
+        for _ in 0..policy.book_workers.min(books.len()) {
             let tx = tx.clone();
             let (books, next_book, budget, stop) = (&books, &next_book, &budget, &stop);
             scope.spawn(move || loop {
@@ -221,54 +309,58 @@ pub(crate) fn add_library_books(
                 let Some(book) = books.get(index) else {
                     break;
                 };
-                let outcome = if stop() {
+                let admitted = budget.admit(index, reservation, stop);
+                let outcome = if !admitted {
                     Outcome::Done(result(book, LibraryBookStatus::Cancelled))
                 } else {
                     // A panic would leave its book unsent and every later one waiting
                     // in the budget for it: it fails that book instead.
-                    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        prepare(engine, book)
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        prepare_checked(engine, book, policy, stop)
                     }))
-                    .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")));
-                    match prepared {
-                        Outcome::Prepared(prepared, bytes) => {
-                            if budget.admit(index, bytes, stop) {
-                                Outcome::Prepared(prepared, bytes)
-                            } else {
-                                Outcome::Done(result(book, LibraryBookStatus::Cancelled))
-                            }
-                        }
-                        done => done,
-                    }
+                    .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")))
                 };
-                if tx.send((index, outcome)).is_err() {
+                if tx
+                    .send((index, outcome, if admitted { reservation } else { 0 }))
+                    .is_err()
+                {
                     break;
                 }
             });
         }
         drop(tx);
 
-        let mut waiting: BTreeMap<usize, Outcome> = BTreeMap::new();
+        let mut waiting: BTreeMap<usize, (Outcome, usize)> = BTreeMap::new();
         let mut next = 0usize;
-        let enqueue_in_order = |waiting: &mut BTreeMap<usize, Outcome>,
+        let enqueue_in_order = |waiting: &mut BTreeMap<usize, (Outcome, usize)>,
                                 next: &mut usize,
                                 results: &mut Vec<Option<LibraryBookResult>>,
                                 docs_total: &mut u64,
                                 enqueue_time: &mut Duration|
          -> Result<()> {
-            while let Some(outcome) = waiting.remove(next) {
+            while let Some((outcome, reservation)) = waiting.remove(next) {
                 let book = &books[*next];
-                let (done, bytes) = match outcome {
-                    Outcome::Done(done) => (done, 0),
-                    Outcome::Prepared(_, bytes) if cancelled() => {
-                        (result(book, LibraryBookStatus::Cancelled), bytes)
+                let done = match outcome {
+                    Outcome::Done(done) => done,
+                    Outcome::Prepared(_) if cancelled() => {
+                        result(book, LibraryBookStatus::Cancelled)
                     }
-                    Outcome::Prepared(mut prepared, bytes) => {
+                    Outcome::Prepared(prepared)
+                        if prepared
+                            .source_generation
+                            .is_some_and(|(source, generation)| {
+                                let status = line_source::status(source);
+                                status.generation != generation || status.suspend_depth != 0
+                            }) =>
+                    {
+                        result(book, LibraryBookStatus::Unavailable)
+                    }
+                    Outcome::Prepared(mut prepared) => {
                         let enqueue_started = Instant::now();
                         let docs = prepared.enqueue(writer)?;
                         *enqueue_time += enqueue_started.elapsed();
                         *docs_total += u64::from(docs);
-                        let done = LibraryBookResult {
+                        LibraryBookResult {
                             book_id: book.book_id,
                             status: LibraryBookStatus::Indexed,
                             docs,
@@ -279,18 +371,17 @@ pub(crate) fn add_library_books(
                             metadata_hash: prepared.metadata_hash,
                             source_hash: prepared.source_hash,
                             error: None,
-                        };
-                        (done, bytes)
+                        }
                     }
                 };
                 results[*next] = Some(done);
                 *next += 1;
-                budget.release(bytes, *next);
+                budget.release(reservation);
             }
             Ok(())
         };
-        for (index, outcome) in rx.iter() {
-            waiting.insert(index, outcome);
+        for (index, outcome, reservation) in rx.iter() {
+            waiting.insert(index, (outcome, reservation));
             if let Err(error) = enqueue_in_order(
                 &mut waiting,
                 &mut next,

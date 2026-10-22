@@ -76,6 +76,7 @@ fn advanced_ids(
             None,
             None,
             None,
+            None,
         )
         .unwrap()
         .into_iter()
@@ -91,6 +92,7 @@ fn index_highlight(engine: &SearchEngine, query: &str, flags: &[&str]) -> Highli
             HashMap::new(),
             HashMap::new(),
             options(query, flags),
+            None,
             None,
         )
         .unwrap()

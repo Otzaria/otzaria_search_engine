@@ -69,6 +69,7 @@ fn zero_size_pages_preserve_counts_for_all_orders_groups_and_offsets() {
                                     vocalized,
                                     false,
                                     grouping,
+                                    None,
                                 )
                                 .unwrap()
                         } else {
@@ -82,6 +83,7 @@ fn zero_size_pages_preserve_counts_for_all_orders_groups_and_offsets() {
                                     vocalized,
                                     false,
                                     grouping,
+                                    None,
                                 )
                                 .unwrap()
                         }
@@ -115,6 +117,7 @@ fn zero_size_pages_count_empty_and_filtered_queries_without_panicking() {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         let fuzzy = engine
@@ -127,6 +130,7 @@ fn zero_size_pages_count_empty_and_filtered_queries_without_panicking() {
                 ResultsOrder::Relevance,
                 false,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -147,6 +151,7 @@ fn zero_size_pages_count_empty_and_filtered_queries_without_panicking() {
             false,
             false,
             Some(ResultGrouping::SameSection),
+            None,
         )
         .unwrap();
     assert_eq!(filtered.total_count, 0);
@@ -192,6 +197,7 @@ fn zero_size_pages_preserve_vocalized_expansion_truncation() {
                         true,
                         false,
                         grouping,
+                        None,
                     )
                     .unwrap();
                 let fuzzy = engine
@@ -205,6 +211,7 @@ fn zero_size_pages_preserve_vocalized_expansion_truncation() {
                         true,
                         false,
                         grouping,
+                        None,
                     )
                     .unwrap();
                 for count in [exact, fuzzy] {

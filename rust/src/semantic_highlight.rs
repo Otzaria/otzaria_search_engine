@@ -289,6 +289,13 @@ impl Default for HighlightCache {
 }
 
 impl HighlightCache {
+    pub(crate) fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
     pub(crate) fn get(&self, key: &HighlightKey) -> Option<Highlight> {
         self.0
             .lock()

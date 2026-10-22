@@ -11,6 +11,11 @@ pub(crate) fn sample_books() -> Option<Vec<(i64, Vec<String>)>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
+    let forced: std::collections::HashSet<i64> = std::env::var("OTZARIA_PARITY_BOOK_IDS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|id| id.trim().parse().ok())
+        .collect();
     let mut store = LineStore::open(Path::new(&db)).unwrap();
     let ids: Vec<i64> = {
         let conn = rusqlite::Connection::open_with_flags(
@@ -24,7 +29,9 @@ pub(crate) fn sample_books() -> Option<Vec<(i64, Vec<String>)>> {
             .query_map([], |r| r.get(0))
             .unwrap()
             .map(Result::unwrap)
-            .step_by(step)
+            .enumerate()
+            .filter(|(ordinal, id)| ordinal % step.max(1) == 0 || forced.contains(id))
+            .map(|(_, id)| id)
             .collect();
         ids
     };

@@ -263,7 +263,7 @@ fn events(
     engine: &SearchEngine,
     raw: &str,
     facets: &[&str],
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
 ) -> Vec<UserRegexStreamUpdate> {
     let facets: Vec<String> = facets.iter().map(|f| f.to_string()).collect();
     let mut out = Vec::new();
@@ -311,7 +311,7 @@ fn count(engine: &SearchEngine, raw: &str, facets: &[&str]) -> u32 {
 fn term_patterns_search_the_index_and_paint_their_snippets() {
     let dir = TempDir::new().unwrap();
     let engine = stored_engine(dir.path(), &sample_books());
-    let none = AtomicBool::new(false);
+    let none = Arc::new(AtomicBool::new(false));
 
     let found = events(&engine, "/ספר.*/", &[], &none);
     assert_eq!(last(&found).total_count, Some(1));
@@ -354,7 +354,7 @@ fn term_patterns_sort_by_generation() {
             0,
             &ResultsOrder::Generation,
             10,
-            &AtomicBool::new(false),
+            &Arc::new(AtomicBool::new(false)),
             &mut |u| {
                 out.push(u);
                 true
@@ -369,7 +369,12 @@ fn term_patterns_sort_by_generation() {
 fn a_word_sequence_continues_onto_the_next_line() {
     let dir = TempDir::new().unwrap();
     let engine = stored_engine(dir.path(), &sample_books());
-    let found = events(&engine, r"/שמע\s+ישראל/", &[], &AtomicBool::new(false));
+    let found = events(
+        &engine,
+        r"/שמע\s+ישראל/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
     let hits = results(&found);
     assert_eq!(
         last(&found).total_count,
@@ -386,7 +391,12 @@ fn a_word_sequence_continues_onto_the_next_line() {
 fn a_cross_space_pattern_verifies_candidate_lines() {
     let dir = TempDir::new().unwrap();
     let engine = stored_engine(dir.path(), &sample_books());
-    let found = events(&engine, r"/שמע \S+ ישראל/", &[], &AtomicBool::new(false));
+    let found = events(
+        &engine,
+        r"/שמע \S+ ישראל/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
     let end = last(&found);
     assert_eq!(end.total_count, Some(1));
     assert!(!end.truncated && !end.cancelled);
@@ -473,7 +483,7 @@ fn hits_beyond_the_cap_truncate_the_search() {
     let engine = stored_engine(dir.path(), &sample_books());
     let regex = parse(r"/^\S+\s\S+$/").unwrap();
     let searcher = engine.searcher_for_tests();
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let (order_epoch, order) = engine.order_tables_for_tests();
     let ctx = LineSearch {
         searcher: &searcher,
@@ -522,7 +532,7 @@ fn a_cancelled_search_stops_and_says_so() {
     assert!(err.to_string().contains(CANCELLED));
 
     // Cancelled while reading: after the first batch of books.
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut out = Vec::new();
     engine
         .user_regex_stream_into(
@@ -548,7 +558,7 @@ fn a_cancelled_search_stops_and_says_so() {
     assert!(progress < 300, "stopped after {progress} of 300 books");
 
     // Term kinds look at the token too.
-    let cancelled = AtomicBool::new(true);
+    let cancelled = Arc::new(AtomicBool::new(true));
     let found = events(&engine, "/שורה/", &[], &cancelled);
     assert!(last(&found).cancelled);
 }
@@ -574,7 +584,7 @@ fn a_cancelled_line_search_resumes_where_it_stopped() {
     let engine = three_hundred_books(dir.path());
     // Candidate lines read one by one, and books read whole: two batches each.
     for (pattern, total) in [(r"/שמע \S+ ישראל/", 300), (r"/^\S+\s\S+$/", 600)] {
-        let cancel = AtomicBool::new(false);
+        let cancel = Arc::new(AtomicBool::new(false));
         let mut first = Vec::new();
         engine
             .user_regex_stream_into(
@@ -602,7 +612,7 @@ fn a_cancelled_line_search_resumes_where_it_stopped() {
             "{pattern}: read {read}"
         );
 
-        let resumed = events(&engine, pattern, &[], &AtomicBool::new(false));
+        let resumed = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
         let end = last(&resumed);
         assert!(!end.cancelled, "{pattern}");
         assert_eq!(end.total_count, Some(total), "{pattern}");
@@ -636,7 +646,7 @@ fn a_concurrent_call_waits_for_the_running_scan() {
     let pattern = r"/^\S+\s\S+$/";
     let (started, wait_started) = std::sync::mpsc::channel();
     let (release, wait_release) = std::sync::mpsc::channel::<()>();
-    let cancel_third = AtomicBool::new(false);
+    let cancel_third = Arc::new(AtomicBool::new(false));
     std::thread::scope(|scope| {
         let engine = &engine;
         let first = scope.spawn(move || {
@@ -650,7 +660,7 @@ fn a_concurrent_call_waits_for_the_running_scan() {
                     0,
                     &ResultsOrder::Catalogue,
                     10,
-                    &AtomicBool::new(false),
+                    &Arc::new(AtomicBool::new(false)),
                     &mut |u| {
                         if !paused && u.progress_total > 0 {
                             paused = true;
@@ -665,7 +675,8 @@ fn a_concurrent_call_waits_for_the_running_scan() {
             out
         });
         wait_started.recv().unwrap();
-        let second = scope.spawn(move || events(engine, pattern, &[], &AtomicBool::new(false)));
+        let second =
+            scope.spawn(move || events(engine, pattern, &[], &Arc::new(AtomicBool::new(false))));
         let cancel = &cancel_third;
         let third = scope.spawn(move || events(engine, pattern, &[], cancel));
         std::thread::sleep(Duration::from_millis(300));
@@ -695,7 +706,7 @@ fn a_narrower_scope_reads_nothing_after_a_complete_wider_search() {
     let _guard = crate::external_text_tests::guard();
     let dir = TempDir::new().unwrap();
     let engine = stored_engine(dir.path(), &sample_books());
-    let none = AtomicBool::new(false);
+    let none = Arc::new(AtomicBool::new(false));
     let pattern = r"/^\S+\s\S+$/";
     assert_eq!(
         last(&events(&engine, pattern, &[], &none)).total_count,
@@ -758,7 +769,7 @@ fn every_count_fails_on_a_cancelled_token_even_when_cached() {
                 let err = err.unwrap_or_else(|| panic!("{label}: a cancelled count fails"));
                 assert!(err.to_string().contains(CANCELLED), "{label}: {err}");
             }
-            let found = events(&engine, pattern, &[], &AtomicBool::new(true));
+            let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(true)));
             assert!(last(&found).cancelled, "{label}");
             assert!(results(&found).is_empty(), "{label}");
         }
@@ -881,7 +892,7 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
 
     // No fixed word: every line of two words and more, read from the database.
     let pattern = r"/^\S+\s\S+$/";
-    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     let end = last(&found);
     assert_eq!(end.total_count, Some(5));
     assert!(!end.truncated);
@@ -891,7 +902,12 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
     assert_eq!(count(&engine, pattern, &["/lib/9"]), 2, "one book only");
 
     // Fixed words: candidates read one by one, the compressed row among them.
-    let found = events(&engine, r"/\S*שמע \S+ ישראל/", &[], &AtomicBool::new(false));
+    let found = events(
+        &engine,
+        r"/\S*שמע \S+ ישראל/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
     let hits = results(&found);
     assert_eq!(
         hits.len(),
@@ -905,7 +921,12 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
 
     // A suspended database cannot be read: the answer is partial and says so.
     suspend_line_source().unwrap();
-    let found = events(&engine, r"/^\S+\s\S+\s\S+$/", &[], &AtomicBool::new(false));
+    let found = events(
+        &engine,
+        r"/^\S+\s\S+\s\S+$/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
     assert!(last(&found).truncated);
     resume_line_source().unwrap();
 }
@@ -921,10 +942,10 @@ fn a_database_that_could_not_be_read_is_read_again_by_the_next_call() {
     // A writer's exclusive lock makes every read busy.
     let writer = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
     writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
-    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     assert!(last(&found).truncated);
     writer.execute_batch("COMMIT").unwrap();
-    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     assert!(!last(&found).truncated);
     assert_eq!(last(&found).total_count, Some(2));
 }
@@ -975,7 +996,7 @@ fn a_cross_space_pattern_reads_attached_databases() {
     engine.commit().unwrap();
 
     let pattern = r"/^\S+\s\S+\s\S+$/";
-    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     assert!(!last(&found).truncated);
     let mut hits: Vec<(String, u64)> = results(&found)
         .iter()
@@ -994,7 +1015,7 @@ fn a_cross_space_pattern_reads_attached_databases() {
 
     // A removed database cannot be read: the answer is partial and says so.
     configure_attached_line_source("a".to_string(), None, false).unwrap();
-    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     assert!(last(&found).truncated);
     assert_eq!(results(&found).len(), 2);
 }
@@ -1096,7 +1117,7 @@ fn real_data() {
                 0,
                 &ResultsOrder::Catalogue,
                 50,
-                &AtomicBool::new(false),
+                &Arc::new(AtomicBool::new(false)),
                 &mut |u| {
                     if first_results.is_none() && !u.results.is_empty() {
                         first_results = Some(started.elapsed().as_secs_f64() * 1000.0);
@@ -1285,11 +1306,11 @@ fn a_scan_that_panicked_starts_over_once() {
     }));
     let held = scan.clone();
     let _ = std::thread::spawn(move || {
-        let _guard = lock_unless_cancelled(&held, &AtomicBool::new(false)).unwrap();
+        let _guard = lock_unless_cancelled(&held, &Arc::new(AtomicBool::new(false))).unwrap();
         panic!("a scan panics");
     })
     .join();
-    let none = AtomicBool::new(false);
+    let none = Arc::new(AtomicBool::new(false));
     lock_unless_cancelled(&scan, &none).unwrap().outcome = Some(Arc::new(LineOutcome {
         hits: Vec::new(),
         book_counts: HashMap::new(),
@@ -1313,7 +1334,7 @@ fn a_call_waiting_for_a_running_scan_sleeps_until_it_ends() {
     let holder = {
         let scan = scan.clone();
         std::thread::spawn(move || {
-            let _guard = lock_unless_cancelled(&scan, &AtomicBool::new(false)).unwrap();
+            let _guard = lock_unless_cancelled(&scan, &Arc::new(AtomicBool::new(false))).unwrap();
             held.send(()).unwrap();
             std::thread::sleep(Duration::from_millis(400));
         })
@@ -1321,7 +1342,7 @@ fn a_call_waiting_for_a_running_scan_sleeps_until_it_ends() {
     release.recv().unwrap();
     WAKEUPS.with(|w| w.set(0));
     let started = Instant::now();
-    assert!(lock_unless_cancelled(&scan, &AtomicBool::new(false)).is_some());
+    assert!(lock_unless_cancelled(&scan, &Arc::new(AtomicBool::new(false))).is_some());
     assert!(started.elapsed() >= Duration::from_millis(300));
     assert!(
         WAKEUPS.with(|w| w.get()) <= 10,
@@ -1440,7 +1461,7 @@ fn line_search_cache_observes_commits_to_every_source() {
                     "{source:?}: {pattern}"
                 );
                 assert_eq!(count(&engine, pattern, &[]), expected);
-                let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+                let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
                 assert_eq!(last(&found).total_count, Some(expected));
                 assert_eq!(results(&found).len(), expected as usize);
             }
@@ -1473,7 +1494,12 @@ fn unreadable_rows_mark_whole_book_scans_partial() {
     let conn = rusqlite::Connection::open(dir.path().join("seforim.db")).unwrap();
     conn.execute("UPDATE line_content SET content = ?1", [vec![1u8, 2, 3]])
         .unwrap();
-    let found = events(&engine, r"/^\S+\s\S+\s\S+$/", &[], &AtomicBool::new(false));
+    let found = events(
+        &engine,
+        r"/^\S+\s\S+\s\S+$/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
     assert!(
         last(&found).truncated,
         "an unreadable row must not become a complete zero-hit result"
@@ -1498,7 +1524,7 @@ fn unreadable_rows_preserve_other_hits_and_are_retried() {
         }
         let pattern = r"/^\S+\s\S+\s\S+$/";
         for _ in 0..2 {
-            let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+            let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
             assert!(last(&found).truncated, "missing_decoder={missing_decoder}");
             assert_eq!(last(&found).total_count, Some(1));
             assert_eq!(results(&found).len(), 1);
@@ -1510,7 +1536,7 @@ fn unreadable_rows_preserve_other_hits_and_are_retried() {
                 [],
             )
             .unwrap();
-        let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+        let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
         assert!(!last(&found).truncated);
         assert_eq!(last(&found).total_count, Some(2));
         assert_eq!(results(&found).len(), 2);
@@ -1525,7 +1551,7 @@ fn a_commit_discards_the_partial_hits_of_a_cancelled_scan() {
     let books: Vec<_> = (0..300).map(|id| (id, rows)).collect();
     let engine = library_engine(dir.path(), &books);
     let pattern = r"/^\S+\s\S+\s\S+$/";
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut first = Vec::new();
     engine
         .user_regex_stream_into(
@@ -1554,7 +1580,7 @@ fn a_commit_discards_the_partial_hits_of_a_cancelled_scan() {
         .execute("UPDATE line_content SET content = 'מילה'", [])
         .unwrap();
     assert_eq!(count(&engine, pattern, &[]), 0);
-    let found = events(&engine, pattern, &[], &AtomicBool::new(false));
+    let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     assert!(!last(&found).cancelled);
     assert!(!last(&found).truncated);
     assert!(results(&found).is_empty());
