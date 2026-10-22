@@ -346,7 +346,7 @@ pub(crate) struct IndexingText {
 /// The app's `_loadBookNotesInIsolate`: the book's `line_note` rows by `lineIndex`, in
 /// `noteIndex` order; a row whose keys are not integers, or whose body is NULL, is skipped.
 /// A body is decoded like a line ([`row_bytes`]); one that cannot be, or a `hasMarker` other
-/// than 0 or 1, fails the read.
+/// than 0 or 1, fails the read. Invalid UTF-8 is rejected rather than replaced.
 fn book_notes(conn: &Connection, book_id: i64, codec: &mut Option<ZstdCodec>) -> Result<BookNotes> {
     let mut stmt = conn.prepare_cached(
         "SELECT l.lineIndex, n.noteIndex, n.charPos, n.hasMarker, n.body \
@@ -380,10 +380,13 @@ fn book_notes(conn: &Connection, book_id: i64, codec: &mut Option<ZstdCodec>) ->
                 "book {book_id} line {line_index} note {note_index} has hasMarker {other:?}, not 0 or 1"
             ),
         };
+        let body = String::from_utf8(body.into_owned()).with_context(|| {
+            format!("book {book_id} line {line_index} note {note_index} is not valid UTF-8")
+        })?;
         notes.entry(line_index).or_default().push(BookNote {
             char_pos,
             has_marker,
-            body: String::from_utf8_lossy(&body).into_owned(),
+            body,
         });
     }
     Ok(notes)
