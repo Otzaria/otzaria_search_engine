@@ -161,6 +161,9 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          # The Ubuntu runner needs PulseAudio even for emulator -version.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpulse0
           sdk_root="${ANDROID_HOME:?ANDROID_HOME must point to the Android SDK}"
           sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
           (yes || true) | "$sdkmanager" --licenses > /dev/null
