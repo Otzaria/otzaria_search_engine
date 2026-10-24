@@ -1086,6 +1086,17 @@ fn is_hebrew_letter(c: char) -> bool {
     matches!(c, '\u{05D0}'..='\u{05EA}')
 }
 
+/// A Hebrew letter, or a presentation form that folds to one letter and its marks.
+fn is_script_letter(c: char) -> bool {
+    match fold_presentation_form(c) {
+        Some(folded) => {
+            let mut folded = folded.chars();
+            folded.next().is_some_and(is_hebrew_letter) && folded.all(is_attached_mark)
+        }
+        None => is_hebrew_letter(c),
+    }
+}
+
 /// Whether the tag `source[lt..=gt]` separates words: block tags and sup/sub do, except
 /// a sup/sub around one letter inside a word (a hanging letter, `מְ<sup>נַ</sup>שֶּׁה`).
 pub(crate) fn tag_breaks_word(source: &str, lt: usize, gt: usize) -> bool {
@@ -1109,7 +1120,7 @@ pub(crate) fn tag_breaks_word(source: &str, lt: usize, gt: usize) -> bool {
 /// The tag that ends right before the lone letter (and its marks) preceding `lt`.
 fn script_open_before(source: &str, lt: usize) -> Option<(usize, usize)> {
     let mut before = source[..lt].trim_end_matches(is_attached_mark).chars();
-    before.next_back().filter(|&c| is_hebrew_letter(c))?;
+    before.next_back().filter(|&c| is_script_letter(c))?;
     let gt = before.as_str().len().checked_sub(1)?;
     if source.as_bytes()[gt] != b'>' {
         return None;
@@ -1118,17 +1129,29 @@ fn script_open_before(source: &str, lt: usize) -> Option<(usize, usize)> {
     (!source[lt + 1..gt].contains('>')).then_some((lt, gt))
 }
 
+/// The word `footnote-marker` in a tag's attributes, as inline_notes.rs finds the marker.
+fn marks_footnote(attributes: &str) -> bool {
+    let lower = attributes.to_ascii_lowercase();
+    let word = |b: Option<&u8>| b.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+    lower.match_indices("footnote-marker").any(|(i, found)| {
+        !word(lower.as_bytes()[..i].last()) && !word(lower.as_bytes().get(i + found.len()))
+    })
+}
+
 /// Whether the open tag `source[lt..=gt]` wraps one letter (with marks) between letters.
 fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
     let Some((false, name)) = tag_name(&source[lt + 1..gt]) else {
         return false;
     };
-    let joined = |c: char| is_hebrew_letter(c) || is_attached_mark(c);
+    if marks_footnote(&source[lt + 1..gt]) {
+        return false;
+    }
+    let joined = |c: char| is_script_letter(c) || is_attached_mark(c);
     if !source[..lt].chars().next_back().is_some_and(joined) {
         return false;
     }
     let mut content = source[gt + 1..].chars();
-    if !content.next().is_some_and(is_hebrew_letter) {
+    if !content.next().is_some_and(is_script_letter) {
         return false;
     }
     let Some(close) = content
@@ -1145,7 +1168,7 @@ fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
         && close[close_gt + 1..]
             .chars()
             .next()
-            .is_some_and(is_hebrew_letter)
+            .is_some_and(is_script_letter)
 }
 
 /// [`tag_breaks_word`] over a char vector, written apart so the reference scan checks it.
@@ -1170,7 +1193,14 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
     if !SCRIPT_TAG_NAMES.contains(&name.as_str()) {
         return false;
     }
-    let letter = |i: usize| chars.get(i).is_some_and(|&c| is_hebrew_letter(c));
+    let letter = |i: usize| {
+        chars.get(i).is_some_and(|&c| {
+            let folded: Vec<char> =
+                fold_presentation_form(c).map_or(vec![c], |f| f.chars().collect());
+            folded.first().is_some_and(|&f| is_hebrew_letter(f))
+                && folded[1..].iter().all(|&m| is_attached_mark(m))
+        })
+    };
     let mark = |i: usize| chars.get(i).is_some_and(|&c| is_attached_mark(c));
     let (open_lt, open_gt) = if closing {
         let mut i = lt;
@@ -1191,7 +1221,19 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
     } else {
         (lt, gt)
     };
-    if name_of(open_lt, open_gt) != Some((false, name.clone()))
+    let attributes: Vec<char> = chars[open_lt + 1..open_gt]
+        .iter()
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let marker: Vec<char> = "footnote-marker".chars().collect();
+    let word = |c: Option<&char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_');
+    let footnote = (0..attributes.len()).any(|i| {
+        attributes[i..].starts_with(&marker)
+            && (i == 0 || !word(attributes.get(i - 1)))
+            && !word(attributes.get(i + marker.len()))
+    });
+    if footnote
+        || name_of(open_lt, open_gt) != Some((false, name.clone()))
         || open_lt == 0
         || !(letter(open_lt - 1) || mark(open_lt - 1))
         || !letter(open_gt + 1)
@@ -3265,6 +3307,21 @@ mod tests {
             ("ו<sup>גד</sup>וש", "ו גד וש"),
             ("ו <sup>ג</sup>וש", "ו  ג וש"),
             ("ו<sup>ג</sup> וש", "ו ג  וש"),
+            // A footnote marker always separates.
+            (
+                "גוף<sup class=\"footnote-marker\">א</sup>המשך",
+                "גוף א המשך",
+            ),
+            (
+                "גוף<SUP CLASS=\"x Footnote-Marker\">א</SUP>המשך",
+                "גוף א המשך",
+            ),
+            ("גוף<sup class=\"footnote-markers\">א</sup>המשך", "גוףאהמשך"),
+            // Presentation forms count as the letters they fold to.
+            ("\u{FB2A}<sup>נ</sup>ה", "\u{FB2A}נה"),
+            ("מ<sup>\u{FB2A}</sup>ה", "מ\u{FB2A}ה"),
+            ("מ<sup>נ</sup>\u{FB31}", "מנ\u{FB31}"),
+            ("מ<sup>\u{FB4F}</sup>ה", "מ \u{FB4F} ה"),
         ] {
             assert_eq!(strip_html_for_indexing(html), stripped, "{html:?}");
             assert_eq!(
@@ -3313,6 +3370,7 @@ mod tests {
             "<sub>",
             "</sub>",
             "<sup>ב</sup>",
+            "<sup class=\"footnote-marker\">ב</sup>",
             "ב\u{05B7}",
             "&",
             ";",
