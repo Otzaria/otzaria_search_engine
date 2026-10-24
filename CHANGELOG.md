@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+> The index schema stays 7, so an index built by 5.0.x opens as `compatible`,
+> but it keeps the old terms of the lines these fixes change: rebuild it to
+> get them. `LINE_TEXT_VERSION` is 2, so a vector set built for 5.0.x is
+> `artifactIncompatible` on `text.line_text_version` and must be built and
+> published again, and the chunk-key column of an existing index counts as
+> absent until it is rebuilt.
+
+### Fixed
+
+- **`<sup>` and `<sub>` separate words.** Indexing, search, highlighting and
+  the regex line view read `word<sup>1</sup>word` as two words, as they do
+  other breaking tags, instead of gluing them into one term. The exception is
+  a hanging letter: a tag holding exactly one Hebrew letter (with its marks,
+  or a presentation form of one) between two letters of a word, such as the
+  raised letters of the Tanakh, stays inside the word. A tag whose attributes
+  mark it `footnote-marker` always separates. `LINE_TEXT_VERSION` is 2
+  because the indexed line text changes.
+- **Vocalized search ignores the order of marks.** A query and a line that
+  type the same nikud and cantillation in different orders match: the
+  tokenizer and the vocalized query pattern both put each run of marks in
+  canonical combining class order.
+- **A line regex no longer drops lines with quoted or glued words.** The
+  fixed words that select candidate lines are split the way the index splits
+  them (`''` is `"`, and a run of quotes splits a word), and a word bounded on
+  both sides also finds a term that a quote, gershayim or a numeral that is
+  not `\w` (such as `²`) glues it to. `/ז''ל .* אמר/` and `/תוס' .* שבת/`
+  found no line or too few before. A word glued to another by a character the
+  index drops, such as `יב[ע]ר`, is still not found.
+
 ## 5.0.1 – 2026-10-20
 
 ### Fixed
