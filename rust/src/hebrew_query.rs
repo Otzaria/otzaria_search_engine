@@ -850,13 +850,17 @@ pub(crate) fn mark_combining_class(c: char) -> u8 {
     }
 }
 
+/// Combining grapheme joiner: invisible, and dropped from vocalized terms and queries.
+pub(crate) const CGJ: char = '\u{034F}';
+
 /// `s` with every run of marks stably sorted by [`mark_combining_class`], as NFC orders
-/// them, so canonically-equivalent spellings (דגש+קמץ / קמץ+דגש) are one term.
+/// them, so canonically-equivalent spellings (דגש+קמץ / קמץ+דגש) are one term. [`CGJ`] is
+/// dropped first, so the marks on its two sides (`ירושלַ͏ִם`) sort as one run.
 pub(crate) fn canonical_mark_order(s: &str) -> Cow<'_, str> {
     let mut prev = 0;
     let in_order = s.chars().all(|c| {
         let class = mark_combining_class(c);
-        let ok = class == 0 || prev <= class;
+        let ok = c != CGJ && (class == 0 || prev <= class);
         prev = class;
         ok
     });
@@ -869,7 +873,7 @@ pub(crate) fn canonical_mark_order(s: &str) -> Cow<'_, str> {
         run.sort_by_key(|&(class, _)| class);
         out.extend(run.drain(..).map(|(_, mark)| mark));
     };
-    for c in s.chars() {
+    for c in s.chars().filter(|&c| c != CGJ) {
         match mark_combining_class(c) {
             0 => {
                 flush(&mut run, &mut out);
@@ -3621,10 +3625,14 @@ mod tests {
             canonical_mark_order("ב\u{0599}\u{0592}\u{05BC}"),
             "ב\u{05BC}\u{0599}\u{0592}"
         );
-        // CGJ (class 0) is a barrier: marks never cross it.
+        // CGJ is dropped, and the marks around it sort as one run.
         assert_eq!(
             canonical_mark_order("ב\u{05BC}\u{034F}\u{05B8}"),
-            "ב\u{05BC}\u{034F}\u{05B8}"
+            "ב\u{05B8}\u{05BC}"
+        );
+        assert_eq!(
+            canonical_mark_order("ל\u{05B7}\u{0594}\u{034F}\u{05B4}ם"),
+            "ל\u{05B4}\u{05B7}\u{0594}ם"
         );
         assert_eq!(
             canonical_mark_order("ס\u{0307}\u{0323}"),
@@ -3635,12 +3643,7 @@ mod tests {
             canonical_mark_order("ב\u{05BC}\u{05B8}ר\u{05B8}ש\u{05C1}\u{05B4}"),
             "ב\u{05B8}\u{05BC}ר\u{05B8}ש\u{05B4}\u{05C1}"
         );
-        for sorted in [
-            "",
-            "ברא",
-            "ב\u{05B8}\u{05BC}רָא",
-            "ב\u{05BC}\u{034F}\u{05B8}",
-        ] {
+        for sorted in ["", "ברא", "ב\u{05B8}\u{05BC}רָא"] {
             assert!(matches!(canonical_mark_order(sorted), Cow::Borrowed(_)));
         }
     }

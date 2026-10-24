@@ -3140,11 +3140,15 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // fingerprints sit on one document of a book; `sectionId`/`generationSort` are derived
 // (see `derived_columns`); and the fields no longer index a quote-free twin beside a
 // quoted word (see `quote_expansion`). A version 5 index is rebuilt.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 7;
+//
+// v8: the fields of v7, other terms: `<sup>`/`<sub>` separate words in `text`, and
+// `textVocalized` keeps its marks in canonical order, without CGJ. A version 7 index is
+// rebuilt; one without metadata has v8's schema, so it reads as `legacy_compatible`.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 8;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 7;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 8;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -18831,9 +18835,9 @@ mod tests {
     ]"#;
 
     /// The version 5 fields versions 6 and 7 change, and how; every other version 5 field is
-    /// unchanged. No other version is one this engine reads.
+    /// unchanged, and version 8 has the fields of 7. No other version is one this engine reads.
     #[test]
-    fn version_7_is_version_5_with_its_disk_savings_and_stamps() {
+    fn version_8_is_version_5_with_its_disk_savings_and_stamps() {
         let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
@@ -18963,6 +18967,19 @@ mod tests {
             assert_eq!(compatibility.status, "rebuild_required", "{version:?}");
             assert_eq!(compatibility.required_schema_version, INDEX_SCHEMA_VERSION);
         }
+    }
+
+    /// A version 7 index has the fields of version 8 but not its terms, so its metadata is
+    /// what marks it for rebuilding.
+    #[test]
+    fn a_version_7_index_is_rebuilt() {
+        let fields = serde_json::to_value(current_schema()).unwrap();
+        let dir = index_of_schema(fields, Some(7));
+        let compatibility = check_index_compatibility(dir_path_string(&dir));
+        assert!(!compatibility.compatible);
+        assert_eq!(compatibility.status, "rebuild_required");
+        assert_eq!(compatibility.found_schema_version, Some(7));
+        assert_eq!(compatibility.required_schema_version, 8);
     }
 
     /// An empty index of the schema `fields` (a `meta.json` schema array), with the metadata
@@ -26520,6 +26537,76 @@ mod tests {
             "{}",
             qamats_line.text
         );
+    }
+
+    #[test]
+    fn vocalized_search_ignores_cgj() {
+        // ירושלַ͏ִם as the library spells it: CGJ between the patah and the hiriq, after a
+        // meteg in one line and after a zaqef qatan on the lamed in the other.
+        const METEG: &str =
+            "י\u{05B0}ר\u{05BD}ו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{034F}\u{05B4}ם";
+        const ZAQEF: &str =
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{0594}\u{034F}\u{05B4}ם";
+        const CITY: &str = "ע\u{05B4}יר";
+        let lines = [
+            format!("{METEG} {CITY}"),
+            format!("{ZAQEF} {CITY}"),
+            "ירושלים עיר".to_string(),
+        ];
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book_placed(
+                "ספר".to_string(),
+                "/x".to_string(),
+                "/books/cgj.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let exact = |query: String| {
+            let mut hits = engine
+                .search_exact(
+                    query,
+                    vec![],
+                    20,
+                    0,
+                    ResultsOrder::Catalogue,
+                    true,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            hits.sort_by_key(|h| h.segment);
+            hits
+        };
+        for query in [
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{05B4}ם",
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B4}\u{05B7}ם",
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{034F}\u{05B4}ם",
+        ] {
+            let hits = exact(query.to_string());
+            let segments: Vec<u64> = hits.iter().map(|h| h.segment).collect();
+            assert_eq!(segments, [0, 1], "query {query:?}");
+            for (hit, word) in hits.iter().zip([METEG, ZAQEF]) {
+                assert!(
+                    hit.text.contains(&format!("<font color=red>{word}</font>")),
+                    "query {query:?}, text: {}",
+                    hit.text
+                );
+            }
+            let phrase: Vec<u64> = exact(format!("{query} {CITY}"))
+                .iter()
+                .map(|h| h.segment)
+                .collect();
+            assert_eq!(phrase, [0, 1], "phrase {query:?}");
+        }
     }
 
     // ── SearchScope: "באותה פסקה" / "תחת אותה כותרת" ─────────────────────

@@ -2,12 +2,20 @@
 
 ## Unreleased
 
-> The index schema stays 7, so an index built by 5.0.x opens as `compatible`,
-> but it keeps the old terms of the lines these fixes change: rebuild it to
-> get them. `LINE_TEXT_VERSION` is 2, so a vector set built for 5.0.x is
-> `artifactIncompatible` on `text.line_text_version` and must be built and
-> published again, and the chunk-key column of an existing index counts as
-> absent until it is rebuilt.
+> Breaking for every existing index: schema 8 changes the terms that `text`
+> and `textVocalized` index, so an index built by 5.0.x (schema 7) is
+> `rebuild_required`. `LINE_TEXT_VERSION` is 2, so a vector set built for
+> 5.0.x is `artifactIncompatible` on `text.line_text_version` and must be
+> built and published again, and the chunk-key column of an existing index
+> counts as absent until it is rebuilt.
+
+### Breaking
+
+- **Index schema 8**: the fields of schema 7, with other terms. `text` splits
+  words at `<sup>` and `<sub>`, and `textVocalized` keeps each run of marks in
+  canonical order, without CGJ. A schema 7 index kept the old terms, and a
+  vocalized query, now always in canonical order, missed many of its marked
+  words, so it is rebuilt rather than read.
 
 ### Fixed
 
@@ -22,7 +30,9 @@
 - **Vocalized search ignores the order of marks.** A query and a line that
   type the same nikud and cantillation in different orders match: the
   tokenizer and the vocalized query pattern both put each run of marks in
-  canonical combining class order.
+  canonical combining class order. Both drop the combining grapheme joiner
+  (U+034F) first, so `ירושלַ͏ִם`, with a CGJ between the patah and the hiriq as
+  the library spells it, is found by a query typed without it, in either order.
 - **A line regex no longer drops lines with quoted or glued words.** The
   fixed words that select candidate lines are split the way the index splits
   them (`''` is `"`, and a run of quotes splits a word), and a word bounded on

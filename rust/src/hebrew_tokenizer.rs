@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use tantivy::tokenizer::{Token, TokenStream, Tokenizer};
 
 use crate::hebrew_query::{
-    canonical_mark_order, fold_presentation_form, is_attached_mark, is_invisible_char, is_word_mark,
+    canonical_mark_order, fold_presentation_form, is_attached_mark, is_invisible_char,
+    is_word_mark, CGJ,
 };
 
 /// טוקנייזר עברי שמתנהג כמו SimpleTokenizer עם שלוש תוספות:
@@ -28,7 +29,7 @@ use crate::hebrew_query::{
 /// מגיעה לצורות עם הגרשיים דרך `quote_expansion`.
 ///
 /// עם `keep_marks` (השדה המנוקד, `textVocalized`): ניקוד/טעמים/combining
-/// *נשמרים* בטקסט הטוקן, בסדר הקנוני ([`canonical_mark_order`]). גבולות
+/// *נשמרים* בטקסט הטוקן, בסדר הקנוני ובלי CGJ ([`canonical_mark_order`]). גבולות
 /// הטוקנים ומיקומיהם זהים אחד-לאחד בשני המצבים (סימן צמוד הוא תו-מילה בשניהם), כך ששני השדות של אותה שורה
 /// מטוקננים לאותן עמדות; רק טקסט הטרם שונה.
 #[derive(Clone, Default)]
@@ -315,7 +316,8 @@ impl<'a> TokenStream for HebrewTokenStream<'a> {
                         // הרגיל, נשמר במצב המנוקד — למעט varika (U+FB1E),
                         // שהוא Presentation Form ומקופל ל-"" בהמשך.
                         if is_word_mark(c) && c != '\u{FB1E}' {
-                            if self.keep_marks {
+                            // Dropping CGJ here lets the quotes around it merge as in `text`.
+                            if self.keep_marks && c != CGJ {
                                 self.token.text.push(c);
                             }
                             continue;
@@ -945,6 +947,26 @@ mod tests {
         assert_eq!(tokenize(text), vec!["ברא", "שם"]);
     }
 
+    #[test]
+    fn vocalized_tokens_drop_cgj() {
+        // ירושלַ͏ִם: the marks around the CGJ sort as one run.
+        let word = "י\u{05B0}ר\u{05BD}ו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{034F}\u{05B4}ם";
+        let text = format!("{word} עיר");
+        let mut tokenizer = HebrewTokenizer {
+            keep_marks: true,
+            ..Default::default()
+        };
+        let mut stream = tokenizer.token_stream(&text);
+        assert!(stream.advance());
+        let t = stream.token();
+        assert_eq!(
+            t.text,
+            "י\u{05B0}ר\u{05BD}ו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B4}\u{05B7}ם"
+        );
+        assert_eq!((t.offset_from, t.offset_to), (0, word.len()));
+        assert_eq!(tokenize(&text), vec!["ירושלם", "עיר"]);
+    }
+
     // ── בדיקות property (זרע קבוע — דטרמיניסטי, בלי תלות חדשה) ──────────
 
     /// xorshift64 — מחולל פסאודו-אקראי זעיר ודטרמיניסטי לבדיקות.
@@ -965,6 +987,7 @@ mod tests {
         '?', '(', ')', '{', '}', '\u{05C0}', '\u{05C3}', '.', '[', ']', '*', '+', '\u{200F}',
         '\u{FEFF}', '\u{05B0}', '\u{05B8}', '\u{05BC}', '\u{0591}', '\u{05A3}', '\u{0307}',
         '\u{0300}', '\u{FB1E}', '\u{FB1D}', '\u{FB2A}', '\u{FB4F}', '\u{05C1}', '\u{0323}',
+        '\u{034F}',
     ];
 
     fn random_string(state: &mut u64, alphabet: &[char], max_len: usize) -> String {
